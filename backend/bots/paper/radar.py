@@ -672,6 +672,69 @@ def build_prompt(events: Any, filings: Any, open_hyps: Any, scored_hyps: Any,
 
 
 # --------------------------------------------------------------------------- #
+# Hygiène des tickers (LOT 5) — une hypothèse peut nommer un titre inexistant
+# --------------------------------------------------------------------------- #
+
+def _default_is_quoted(symbol: str) -> bool:
+    """Ce ticker est-il COTABLE ? (I/O — un appel de cotation par symbole)
+
+    Isolé de :func:`mark_unquoted` pour rester substituable : les tests n'ont
+    jamais besoin du réseau, et le point d'écriture peut fournir son propre
+    contrôle.
+    """
+    from backend.bots.paper import quotes as _quotes
+    quote = _quotes.get_quote(symbol) or {}
+    price = quote.get("price")
+    if price is None or isinstance(price, bool):
+        return False
+    try:
+        return float(price) > 0
+    except (TypeError, ValueError):
+        return False
+
+
+def mark_unquoted(hyp: Any,
+                  is_quoted: Optional[Callable[[str], bool]] = None) -> None:
+    """Marque les tickers d'une hypothèse que le marché ne connaît pas. MUTE.
+
+    Vécu : le modèle a écrit « SAP.TO », qui n'existe pas chez Yahoo. Ce
+    fantôme entrait dans l'univers du coach et y restait — sa cotation échouait
+    à chaque passe, en silence, et il occupait une place dans la liste des
+    candidats.
+
+    **On ne SUPPRIME pas l'hypothèse** : sa thèse peut être parfaitement juste,
+    c'est son ticker de MESURE qui est faux. On la garde, on la marque, et les
+    consommateurs (les candidats du coach) sautent les tickers marqués.
+
+    ⚠️ La marque est la LISTE des tickers muets, PAS un booléen sur
+    l'hypothèse : une hypothèse en porte jusqu'à trois, et un booléen ferait
+    jeter deux tickers valides parce qu'un troisième est mort.
+
+    La marque est REFAITE à chaque contrôle (jamais accumulée) : un titre peut
+    redevenir cotable — nouvelle place, fin de suspension.
+
+    ⚠️ Une PANNE du contrôle (Yahoo injoignable) n'est PAS « ce titre n'existe
+    pas » : le ticker reste alors intact. Marquer sur une coupure réseau
+    viderait l'univers du coach le jour où Yahoo tousse.
+    """
+    if not isinstance(hyp, dict):
+        return
+    tickers = [t for t in (hyp.get("tickers") or []) if isinstance(t, str)]
+    check = is_quoted or _default_is_quoted
+    muets: List[str] = []
+    for ticker in tickers:
+        try:
+            if not check(ticker):
+                muets.append(ticker)
+        except Exception:      # noqa: BLE001 — panne != absence (cf. docstring)
+            continue
+    if muets:
+        hyp["unquoted"] = muets
+    else:
+        hyp.pop("unquoted", None)
+
+
+# --------------------------------------------------------------------------- #
 # PUR — lecture de la réponse du LLM
 # --------------------------------------------------------------------------- #
 
@@ -1434,6 +1497,10 @@ def _score_and_generate(now_dt: datetime,
         item["outcome"] = None
         item["scored_at"] = None
         item["move_pct"] = None
+        # LOT 5 — le contrôle vit AU POINT D'ÉCRITURE : une hypothèse née avec
+        # un ticker fantôme (« SAP.TO », vécu) doit porter sa marque tout de
+        # suite, pas au premier échec de cotation trois jours plus tard.
+        mark_unquoted(item)
         hypotheses.append(item)
         counters["generated"] += 1
         # Naissance silencieuse elle aussi : l'hypothèse s'accumule, c'est la

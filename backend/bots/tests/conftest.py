@@ -46,6 +46,12 @@ def pytest_configure(config):
         "(convergence._coach_book -> paper_router.coach_book) -> ne pas la "
         "neutraliser",
     )
+    config.addinivalue_line(
+        "markers",
+        "real_ticker_check: le test vise le contrôle de cotation des tickers "
+        "d'une hypothèse (radar.mark_unquoted -> quotes.get_quote) -> ne pas "
+        "le neutraliser",
+    )
 
 
 @pytest.fixture(autouse=True)
@@ -88,6 +94,29 @@ def _no_backfill_network(request, monkeypatch):
     try:
         from backend.bots.paper import radar
         monkeypatch.setattr(radar, "_fill_history", lambda *a, **k: None, raising=False)
+    except Exception:
+        pass
+
+
+@pytest.fixture(autouse=True)
+def _no_radar_ticker_check(request, monkeypatch):
+    """L'hygiène des tickers (LOT 5) ouvre un chemin RÉSEAU à la NAISSANCE
+    d'une hypothèse : ``radar.run_once`` appelle ``mark_unquoted``, qui cote
+    chaque ticker pour savoir s'il existe. Mesuré : la suite du radar est
+    passée de moins d'une seconde à 28 s, en sortant vraiment sur Yahoo depuis
+    des tests qui se croient hors ligne.
+
+    Neutralisé partout par défaut — TOUT ticker est réputé cotable, donc aucune
+    marque n'est posée, donc le comportement par défaut des tests existants ne
+    change pas. Les tests qui visent SPÉCIFIQUEMENT ce contrôle injectent leur
+    propre ``is_quoted``, ou re-patchent ``_default_is_quoted`` (leur
+    monkeypatch, posé après celui-ci, l'emporte)."""
+    if request.node.get_closest_marker("real_ticker_check"):
+        return
+    try:
+        from backend.bots.paper import radar
+        monkeypatch.setattr(radar, "_default_is_quoted", lambda symbol: True,
+                            raising=False)
     except Exception:
         pass
 

@@ -24,6 +24,8 @@ from backend.bots.paper import coach_trader, models, quotes, risk, store
 # Vendredi 28/08/2026 17:00 Rome (CEST) — jour de semaine, après l'heure.
 FRIDAY_ON_TIME = datetime(2026, 8, 28, 15, 0, 0, tzinfo=timezone.utc)
 FRIDAY_TOO_EARLY = datetime(2026, 8, 28, 14, 59, 0, tzinfo=timezone.utc)   # 16:59 Rome
+# LOT 5 — avant le PREMIER creneau (15:40 Rome) : 07:00 UTC = 09:00 Rome.
+FRIDAY_BEFORE_ANY_SLOT = datetime(2026, 8, 28, 7, 0, 0, tzinfo=timezone.utc)
 SATURDAY = datetime(2026, 8, 29, 15, 0, 0, tzinfo=timezone.utc)
 SUNDAY = datetime(2026, 8, 30, 15, 0, 0, tzinfo=timezone.utc)
 MONDAY = datetime(2026, 8, 31, 15, 0, 0, tzinfo=timezone.utc)
@@ -80,7 +82,8 @@ def test_constants_are_the_announced_contract():
     assert coach_trader.COACH_USERNAME == "coach"
     assert coach_trader.COACH_CAPITAL == 10000.0
     assert coach_trader.ACTIONS_MARKER == "COACH_ACTIONS"
-    assert coach_trader.ACTION_KINDS == ("buy", "sell", "reduce")
+    assert coach_trader.ACTION_KINDS == ("buy", "short", "sell", "reduce",
+                                         "cover", "adjust_stop")
     assert coach_trader.LOCAL_TZ == "Europe/Rome"
     assert coach_trader.STATE_NAME == "coach_trader.state.json"
     assert coach_trader.MAX_LEDGER == 200
@@ -98,9 +101,11 @@ def test_every_reject_code_is_declared():
         "no_thesis", "no_stop", "risk_high", "too_small", "oversize",
         "too_many_positions", "too_many_crypto", "cash_floor",
         "no_position", "qty_over_position",
+        # LOT 5 — le short, le stop qui ne recule pas, le marche ferme.
+        "wrong_side", "stop_widen", "market_closed",
     }
     assert set(coach_trader.REJECT_CODES) == expected
-    assert len(coach_trader.REJECT_CODES) == 14
+    assert len(coach_trader.REJECT_CODES) == 17
 
 
 def test_coach_username_survives_the_store_allowlist():
@@ -109,10 +114,10 @@ def test_coach_username_survives_the_store_allowlist():
 
 
 # --------------------------------------------------------------------------- #
-# gate_decision — les 14 refus, un par un
+# gate_decision — les 17 refus, un par un
 # --------------------------------------------------------------------------- #
 
-@pytest.mark.parametrize("action", [None, "", "short", "cover", "hold", 42, "BUY!"])
+@pytest.mark.parametrize("action", [None, "", "hold", 42, "BUY!", "sortir"])
 def test_gate_rejects_unknown_action(action):
     out = coach_trader.gate_decision({"action": action, "symbol": "NESN.SW", "qty": 1},
                                      _pf(), _quote())
@@ -121,12 +126,19 @@ def test_gate_rejects_unknown_action(action):
     assert out["order"] is None
 
 
-def test_gate_rejects_short_and_cover_as_unknown_action():
-    """``short``/``cover`` sont HORS PÉRIMÈTRE de ce lot — pas un oubli."""
-    for action in ("short", "cover"):
-        assert coach_trader.gate_decision(
-            {"action": action, "symbol": "NESN.SW", "qty": 1}, _pf(),
-            _quote())["reason"] == "unknown_action"
+def test_short_and_cover_are_no_longer_unknown_actions():
+    """LOT 5 — elles etaient hors perimetre, elles sont desormais du mandat.
+    Elles echouent ici sur leurs PROPRES regles (une entree sans these, une
+    sortie sans ligne), jamais plus sur ``unknown_action``.
+
+    Le detail du short vit dans ``test_paper_coach_max.py`` ; ce test-ci ne
+    garde que la bascule, la ou l'ancien contrat etait epingle."""
+    assert coach_trader.gate_decision(
+        {"action": "short", "symbol": "NESN.SW", "qty": 1}, _pf(),
+        _quote())["reason"] == "no_thesis"
+    assert coach_trader.gate_decision(
+        {"action": "cover", "symbol": "NESN.SW", "qty": 1}, _pf(),
+        _quote())["reason"] == "no_position"
 
 
 @pytest.mark.parametrize("symbol", [None, "", "   ", 0])
@@ -1210,15 +1222,86 @@ def test_a_broken_snapshot_never_stops_the_pass():
 def test_maybe_run_never_raises_even_when_everything_burns():
     out = _run_hook(tick=_Spy(boom=True), snap=_Spy(boom=True),
                     pass_=_Spy(boom=True))
-    assert out == {"ticked": False, "snapshotted": False, "passed": False,
-                   "reason": "error"}
+    assert out["ticked"] is False
+    assert out["snapshotted"] is False
+    assert out["passed"] is False
+    assert out["reason"] == "error"
+    # LOT 5 : le creneau retenu voyage avec le resultat -- savoir LEQUEL a
+    # tourne est la premiere chose qu'on regarde quand la cadence surprend.
+    assert out["slot"] == "15:40" and out["crypto_only"] is False
 
 
 @pytest.mark.real_coach_trader
 def test_maybe_run_respects_the_local_hour():
-    """16h59 à Rome : pas de passe (le tick, lui, tourne toujours)."""
+    """09h00 à Rome, avant le premier créneau (15h40) : pas de passe — le
+    tick, lui, tourne toujours.
+
+    ⚠️ LOT 5 : 16h59 ne prouve plus rien (le créneau de 15h40 est atteint
+    depuis longtemps). L'heure de contrôle est passée AVANT le premier
+    créneau, sans quoi ce test validerait le contraire de son intention."""
     tick, pass_ = _Spy(), _Spy()
-    out = _run_hook(now=FRIDAY_TOO_EARLY, tick=tick, pass_=pass_)
+    out = _run_hook(now=FRIDAY_BEFORE_ANY_SLOT, tick=tick, pass_=pass_)
     assert pass_.calls == []
     assert len(tick.calls) == 1
     assert out["reason"] == "not_due"
+
+
+# --------------------------------------------------------------------------- #
+# LOT 5 — la cadence vue du CROCHET (trois créneaux, un le week-end)
+# --------------------------------------------------------------------------- #
+
+# Mercredi 26/08/2026 en heures LOCALES Rome (CEST = UTC+2).
+WED_1545 = datetime(2026, 8, 26, 13, 45, 0, tzinfo=timezone.utc)
+WED_1805 = datetime(2026, 8, 26, 16, 5, 0, tzinfo=timezone.utc)
+WED_2145 = datetime(2026, 8, 26, 19, 45, 0, tzinfo=timezone.utc)
+SUNDAY_1805 = datetime(2026, 8, 30, 16, 5, 0, tzinfo=timezone.utc)
+
+
+@pytest.mark.real_coach_trader
+def test_the_hook_runs_three_passes_on_a_weekday():
+    """La cadence du mois x20 : trois créneaux, et chacun tourne UNE fois."""
+    pass_ = _Spy()
+    slots = []
+    for moment in (WED_1545, WED_1805, WED_2145):
+        out = _run_hook(now=moment, pass_=pass_)
+        slots.append(out["slot"])
+    assert len(pass_.calls) == coach_trader.PASSES_PER_DAY
+    assert slots == ["15:40", "18:00", "21:40"]
+
+
+@pytest.mark.real_coach_trader
+def test_the_hook_never_runs_the_same_slot_twice():
+    """La veille repasse toutes les 5 minutes : sans ce verrou, un créneau
+    tournerait douze fois par heure — douze appels au modèle."""
+    pass_ = _Spy()
+    for _ in range(4):
+        _run_hook(now=WED_1805, pass_=pass_)
+    assert len(pass_.calls) == 1
+
+
+@pytest.mark.real_coach_trader
+def test_the_weekend_has_a_single_crypto_only_slot():
+    pass_ = _Spy()
+    out = _run_hook(now=SUNDAY_1805, pass_=pass_)
+    assert out["slot"] == "18:00"
+    assert out["crypto_only"] is True
+    # Le drapeau descend jusqu'à l'exécutant : c'est lui qui le passera au
+    # garde-fou, sans quoi le créneau du week-end passerait des ordres sur des
+    # actions dont la bourse est fermée.
+    assert pass_.calls[0][1] is True
+
+
+@pytest.mark.real_coach_trader
+def test_a_weekday_pass_is_never_crypto_only():
+    pass_ = _Spy()
+    _run_hook(now=WED_1805, pass_=pass_)
+    assert pass_.calls[0][1] is False
+
+
+@pytest.mark.real_coach_trader
+def test_arming_one_slot_does_not_disarm_the_others():
+    """Le créneau de 18 h ne doit pas effacer la trace de celui de 15h40 :
+    sinon l'état repartirait à zéro et 15h40 pourrait re-tourner."""
+    _run_hook(now=WED_1545, pass_=_Spy())
+    _run_hook(now=WED_1805, pass_=_Spy())
+    assert set(coach_trader.load_state()["slots"]) == {"15:40", "18:00"}

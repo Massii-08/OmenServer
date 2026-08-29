@@ -45,7 +45,7 @@ from backend.auth.permissions import require_role
 from backend.bots.paper import (alerts, board, coach, coach_trader, entities,
                                 fees, fills, graph, idea_journal, llm, models,
                                 mood, price_alerts, quotes, replay, risk,
-                                store, tradestats)
+                                store, ta, tradestats)
 
 logger = logging.getLogger("omenserver")
 
@@ -92,6 +92,20 @@ CANDLE_INTERVALS = ("15m", "1h", "1d", "1wk")
 # Assez fin pour voir un stop sauter, assez court pour ne pas relire l'histoire.
 TICK_RANGE = "1d"
 TICK_INTERVAL = "15m"
+
+# Fenêtre de l'analyse technique du coach (LOT 5) : une ANNÉE de bougies
+# quotidiennes. C'est le minimum pour que la moyenne 200 existe — en dessous,
+# ``ta`` rend ``None`` plutôt qu'une « moyenne 200 » calculée sur 60 séances,
+# qui serait un mensonge.
+TECHNICAL_RANGE = "1y"
+TECHNICAL_INTERVAL = "1d"
+
+# Bornes du DOSSIER d'un titre retenu par le tri (LOT 5, second temps). Elles
+# existent pour que trois dossiers restent lisibles : le but est la PROFONDEUR
+# sur peu de titres, pas de rapatrier toute la mémoire.
+DOSSIER_NEWS_PER_SYMBOL = 6
+DOSSIER_WHALES_PER_SYMBOL = 4
+DOSSIER_MEMORY_PER_SYMBOL = 5
 
 # Post-mortem AUTOMATIQUE (LOT 3, C1) : garde-fou anti-rafale, par compte et
 # par jour. Chaque clôture détache un appel au modèle (60-90 s, cf. le
@@ -1250,9 +1264,17 @@ def _coach_candidate_symbols(hypotheses: Any) -> List[str]:
     for hyp in hypotheses or []:
         if not isinstance(hyp, dict):
             continue
+        # LOT 5 — les tickers que le marché ne connaît pas (``radar.mark_
+        # unquoted``, posé à la NAISSANCE de l'hypothèse) sont sautés. Vécu :
+        # « SAP.TO » n'existe pas chez Yahoo ; il entrait dans l'univers du
+        # coach, y prenait une place et sa cotation échouait à chaque passe,
+        # en silence. L'hypothèse, elle, RESTE — c'est son ticker de mesure
+        # qui est faux, pas forcément sa thèse.
+        muets = {quotes.canonical(t)
+                 for t in (hyp.get("unquoted") or []) if isinstance(t, str)}
         for ticker in hyp.get("tickers") or []:
             symbol = quotes.canonical(ticker) if isinstance(ticker, str) else ""
-            if not symbol or symbol in seen:
+            if not symbol or symbol in seen or symbol in muets:
                 continue
             seen.append(symbol)
             if len(seen) >= MAX_COACH_CANDIDATES:
@@ -1289,8 +1311,50 @@ def _coach_candidates(hypotheses: Any) -> List[Dict[str, Any]]:
             "symbol": symbol,
             "price_chf": round(quote["price"] * quote["fx_rate"], 2),
             "currency": quote["currency"],
+            # LOT 5 — le cours seul ne permet pas de POSER un stop : il faut
+            # un niveau. Absent (``None``) quand les bougies manquent, jamais
+            # inventé.
+            "technical": _coach_technical(symbol),
         })
     return out
+
+
+def _coach_technical(symbol: str) -> Optional[Dict[str, Any]]:
+    """L'analyse technique d'un titre, prête pour le prompt (LOT 5).
+
+    Vécu en prod : le coach a refusé d'entrer faute d'« un niveau technique
+    fiable pour poser un stop ». Il avait le cours et rien d'autre — impossible
+    de nommer un support, impossible de dire si un stop à 3 % est serré ou
+    large sur CE titre. ``ta.technical_summary`` lui donne les moyennes, le
+    RSI, l'ATR et les extrêmes de 52 semaines ; l'ATR à lui seul répond à la
+    question « quelle distance de stop a un sens ici ».
+
+    Une année de bougies quotidiennes : c'est le minimum pour que la moyenne
+    200 existe (en dessous, ``ta`` rend ``None`` plutôt qu'un chiffre faux).
+
+    Best-effort STRICT : bougies en panne -> ``None``, jamais une exception et
+    jamais une valeur inventée. Le coach décidera sans, il décidera juste
+    moins bien — c'est très exactement ce que ce lot cherche à réduire, mais
+    une panne de Yahoo ne doit pas faire tomber toute la passe.
+    """
+    try:
+        candles = quotes.get_candles(symbol, TECHNICAL_RANGE, TECHNICAL_INTERVAL)
+    except Exception as e:                      # noqa: BLE001 — jamais fatal
+        logger.warning("paper coach: bougies indisponibles pour %s (%s)",
+                       symbol, type(e).__name__)
+        return None
+    try:
+        summary = ta.technical_summary(candles)
+    except Exception as e:                      # noqa: BLE001 — jamais fatal
+        logger.warning("paper coach: analyse technique illisible pour %s (%s)",
+                       symbol, type(e).__name__)
+        return None
+    # Une série trop courte rend toutes les clés à ``None`` : mieux vaut ne
+    # rien montrer qu'un bloc de douze « null » qui occupe le prompt sans rien
+    # dire.
+    if not any(value is not None for value in summary.values()):
+        return None
+    return summary
 
 
 def _coach_equity_chf(portfolio: models.Portfolio) -> float:
@@ -1318,7 +1382,9 @@ def _coach_reject_detail(code: str, decision: Dict[str, Any],
         level = None
         if quote:
             level = float(quote["price"]) * float(quote["fx_rate"])
-        held = _find_position(portfolio, symbol, "long")
+        # La ligne du symbole, QUEL QUE SOIT son sens (LOT 5) : le moteur
+        # interdit de tenir les deux, « la première » est donc « la seule ».
+        held = _find_position(portfolio, symbol)
         held_qty = float(held.qty) if held is not None else 0.0
         value = None if (level is None or qty is None) else qty * level
 
@@ -1339,8 +1405,28 @@ def _coach_reject_detail(code: str, decision: Dict[str, Any],
             stop = _num(decision.get("stop"))
             if stop is None:
                 return "aucun stop"
-            return ("stop %.2f au-dessus du prix d'entrée %.2f — il ne protège "
-                    "rien" % (stop, quote["price"] if quote else 0.0))
+            # Le stop d'un long s'attend SOUS le cours, celui d'un short
+            # AU-DESSUS : nommer le mauvais côté serait pire que se taire.
+            sens = str(decision.get("action") or "").strip().lower()
+            if held is not None:
+                sens = held.side
+            attendu = "au-dessus" if sens in ("short", "cover") else "sous"
+            return ("stop %.2f du mauvais côté du cours %.2f — on l'attend %s, "
+                    "il ne protège rien"
+                    % (stop, quote["price"] if quote else 0.0, attendu))
+        if code == "wrong_side":
+            tenu = held.side if held is not None else "?"
+            return ("une position %s est déjà ouverte sur %s — il faut d'abord "
+                    "la solder" % (tenu, symbol))
+        if code == "stop_widen":
+            stop = _num(decision.get("stop"))
+            actuel = held.stop_loss if held is not None else None
+            return ("stop %.2f plus loin que le %.2f en place — un stop ne se "
+                    "desserre pas"
+                    % (stop or 0.0, actuel if actuel is not None else 0.0))
+        if code == "market_closed":
+            return ("%s ne s'échange pas ce jour-là — seules les cryptos cotent "
+                    "le week-end" % symbol)
         if code == "risk_high":
             stop = _num(decision.get("stop"))
             risk_chf = (abs(level - stop * float(quote["fx_rate"])) * qty
@@ -1416,7 +1502,8 @@ def _push_coach_ledger(entries: List[Dict[str, Any]]) -> None:
 
 
 def _coach_execute_one(portfolio: models.Portfolio, action: Dict[str, Any],
-                       source: str, now_iso: str) -> Any:
+                       source: str, now_iso: str,
+                       crypto_only: bool = False) -> Any:
     """UNE décision : cours -> garde-fou -> moteur d'ordres.
 
     Rend ``(entrée_de_registre, (titre, corps)|None)``. MUTE ``portfolio``
@@ -1439,7 +1526,7 @@ def _coach_execute_one(portfolio: models.Portfolio, action: Dict[str, Any],
             detail="aucun cours exploitable pour %s" % symbol), None)
 
     verdict = coach_trader.gate_decision(decision, portfolio.to_dict(),
-                                         quote or {})
+                                         quote or {}, crypto_only=crypto_only)
     if not verdict.get("accepted"):
         code = str(verdict.get("reason") or "")
         return (coach_trader.ledger_entry(
@@ -1450,6 +1537,14 @@ def _coach_execute_one(portfolio: models.Portfolio, action: Dict[str, Any],
     price = float(quote["price"])
     fx_rate = float(quote["fx_rate"])
     qty = int(plan.get("qty") or 0)
+
+    # ``adjust_stop`` (LOT 5) n'est PAS un ordre : rien ne s'échange, aucune
+    # trésorerie ne bouge, aucun trade ne naît. Il repose le niveau
+    # d'invalidation de la ligne — et c'est ce qui rend tenable la consigne
+    # « laisse courir les gagnants » : sans lui, la seule façon de protéger un
+    # gain serait de solder la position, exactement ce qu'on lui reproche.
+    if plan.get("side") == "adjust_stop":
+        return (_coach_move_stop(portfolio, symbol, plan, source, now_iso), None)
 
     order = models.Order(
         id=uuid.uuid4().hex,
@@ -1502,12 +1597,17 @@ def _coach_execute_one(portfolio: models.Portfolio, action: Dict[str, Any],
     # PREMIÈRE boucle de ``run_tick`` qui le déclenchera. Si le stop part
     # d'abord, la position n'existe plus : l'ordre échouera proprement en
     # ``cancelled`` au tick suivant (comportement déjà géré par ``run_tick``).
+    #
+    # ⚠️ Le sens du RETOUR dépend de celui de l'aller (LOT 5) : l'objectif
+    # d'une vente à découvert se prend en RACHETANT sous le prix. Poser un
+    # ``sell`` de plus doublerait l'exposition au lieu de la fermer — et il
+    # serait refusé, faute de ligne longue à vendre.
     target = _num(plan.get("target"))
-    if order.side == "buy" and target is not None and target > 0:
+    if order.side in ("buy", "short") and target is not None and target > 0:
         portfolio.open_orders.append(models.Order(
             id=uuid.uuid4().hex,
             symbol=order.symbol,
-            side="sell",
+            side=("sell" if order.side == "buy" else "cover"),
             kind="limit",
             qty=qty,
             limit_price=target,
@@ -1522,6 +1622,36 @@ def _coach_execute_one(portfolio: models.Portfolio, action: Dict[str, Any],
         now_iso, source, kind, order.symbol, True,
         detail="%d x %.2f %s" % (qty, price, order.currency))
     return entry, _coach_journal_entry(order, fill, source)
+
+
+def _coach_move_stop(portfolio: models.Portfolio, symbol: str,
+                     plan: Dict[str, Any], source: str,
+                     now_iso: str) -> Dict[str, Any]:
+    """Repose le stop d'une ligne ouverte. MUTE ``portfolio``.
+
+    Le garde-fou a DÉJÀ tranché (:func:`coach_trader._gate_adjust_stop`) : le
+    niveau est du bon côté du cours et il RESSERRE. Il ne reste qu'à l'écrire
+    là où il agira — dans la position elle-même, que ``fills.check_protective_
+    stops`` relira au prochain tick. Un stop qui ne vivrait qu'au registre
+    serait une décision affichée mais jamais appliquée.
+
+    Rend une ligne de registre ; ``None`` de position (course entre la
+    validation et l'écriture) redevient un refus honnête plutôt qu'un succès
+    silencieux.
+    """
+    stop = _num(plan.get("stop_loss"))
+    position = _find_position(portfolio, symbol)
+    if position is None or stop is None:
+        return coach_trader.ledger_entry(
+            now_iso, source, "adjust_stop", symbol, False, reason="no_position",
+            detail="aucune position sur %s" % symbol)
+
+    ancien = position.stop_loss
+    position.stop_loss = stop
+    detail = ("stop %.2f -> %.2f" % (ancien, stop) if ancien is not None
+              else "stop posé à %.2f (la ligne n'en avait aucun)" % stop)
+    return coach_trader.ledger_entry(now_iso, source, "adjust_stop", symbol,
+                                     True, detail=detail)
 
 
 def _clean_coach_note(value: Any) -> Optional[str]:
@@ -1544,6 +1674,7 @@ def execute_coach_actions(actions: Any, source: str = "digest",
                           now_iso: Optional[str] = None,
                           parse_error: Any = None,
                           note: Any = None,
+                          crypto_only: bool = False,
                           **_ignored: Any) -> List[Dict[str, Any]]:
     """Exécute les décisions du coach. Rend les lignes de registre produites.
 
@@ -1587,7 +1718,8 @@ def execute_coach_actions(actions: Any, source: str = "digest",
     try:
         return _execute_coach_actions_locked(actions, source, now_iso,
                                              parse_error,
-                                             _clean_coach_note(note))
+                                             _clean_coach_note(note),
+                                             bool(crypto_only))
     except Exception as e:                  # noqa: BLE001 — jamais fatal
         logger.exception("paper coach: exécution des décisions en échec (%s)",
                          type(e).__name__)
@@ -1597,7 +1729,9 @@ def execute_coach_actions(actions: Any, source: str = "digest",
 def _execute_coach_actions_locked(actions: Any, source: str,
                                   now_iso: Optional[str],
                                   parse_error: Any,
-                                  note: Optional[str]) -> List[Dict[str, Any]]:
+                                  note: Optional[str],
+                                  crypto_only: bool = False
+                                  ) -> List[Dict[str, Any]]:
     """Le corps de ``execute_coach_actions``.
 
     Le lire-modifier-écrire (portefeuille + registre) est sous ``_WRITE_LOCK``
@@ -1627,7 +1761,8 @@ def _execute_coach_actions_locked(actions: Any, source: str,
             return [entry]
 
         for action in pending:
-            entry, journal_entry = _coach_execute_one(portfolio, action, source, now)
+            entry, journal_entry = _coach_execute_one(portfolio, action, source,
+                                                      now, crypto_only)
             rows.append(entry)
             if journal_entry is not None:
                 journal.append(journal_entry)
@@ -1708,7 +1843,17 @@ def _equity_now_chf(raw: Dict[str, Any], prices: Dict[str, float],
             price, rate = avg, stored_rate
         else:
             rate = rates.get(currency) or stored_rate
-        total += qty * price * rate
+        # ⚠️ Une ligne VENDUE À DÉCOUVERT se SOUSTRAIT (LOT 5). Le produit de
+        # la vente est déjà dans la trésorerie (``_open_short`` l'y a crédité)
+        # ; ce qui reste à porter, c'est la DETTE de rachat — sa valeur de
+        # marché, en négatif. L'additionner ferait grossir le compte de la
+        # taille de la ligne à la seconde où il shorte, et grossir ENCORE
+        # quand le titre monte contre lui : la courbe de patrimoine dirait
+        # l'exact inverse de la vérité.
+        if str(position.get("side") or "long").lower() == "short":
+            total -= qty * price * rate
+        else:
+            total += qty * price * rate
     return round(total, 2)
 
 
@@ -1802,18 +1947,31 @@ def snapshot_equity_all(now_iso: Optional[str] = None) -> Dict[str, Any]:
 def _coach_position_row(position: models.Position,
                         price: Optional[float],
                         rate: Optional[float]) -> Dict[str, Any]:
-    """Une ligne du coach, valorisée, pour le contexte de sa passe."""
+    """Une ligne du coach, valorisée, pour le contexte de sa passe.
+
+    ``side`` est DANS la ligne (LOT 5) : sans lui, le modèle ne peut pas savoir
+    qu'une position se solde par un RACHAT et proposerait un ``sell``, refusé.
+
+    ``pnl_pct`` est INVERSÉ pour une vente à découvert — même geste que la
+    revue de positions (``positions_review``) et que l'écran. Un short gagnant
+    affiché « -10 % » pousserait le coach à couper un gagnant, c'est-à-dire
+    l'erreur exacte que son mandat lui interdit.
+    """
     fx = rate if rate else (position.fx_rate or 1.0)
     live = price if price is not None else position.avg_price
     cost = position.avg_price or 0.0
+    pnl_pct = round((live - cost) / cost * 100.0, 2) if cost else None
+    if position.side == "short" and pnl_pct is not None:
+        pnl_pct = round(-pnl_pct, 2)
     return {
         "symbol": position.symbol,
         "qty": position.qty,
+        "side": position.side,
         "avg_price": position.avg_price,
         "currency": position.currency,
         "price": live,
         "value_chf": round(abs(position.qty) * live * fx, 2),
-        "pnl_pct": round((live - cost) / cost * 100.0, 2) if cost else None,
+        "pnl_pct": pnl_pct,
         "thesis": position.thesis,
         "stop_loss": position.stop_loss,
         "target": position.target,
@@ -1836,8 +1994,18 @@ def _coach_pass_context(portfolio: models.Portfolio,
         row = _coach_position_row(position,
                                   quote["price"] if quote else None,
                                   quote["fx_rate"] if quote else None)
+        # LOT 5 — gérer une ligne (resserrer un stop, laisser courir) demande
+        # exactement les mêmes niveaux qu'en ouvrir une.
+        row["technical"] = _coach_technical(position.symbol)
         positions.append(row)
-        equity += row["value_chf"]
+        # ⚠️ Une ligne courte se SOUSTRAIT (LOT 5, même raison que
+        # ``_equity_now_chf``) : son produit de vente est déjà dans la
+        # trésorerie, ce qui reste à porter est la dette de rachat. L'ajouter
+        # ferait lire au coach une équité qui GROSSIT quand son short perd.
+        if position.side == "short":
+            equity -= row["value_chf"]
+        else:
+            equity += row["value_chf"]
 
     trades = [t.to_dict() for t in portfolio.trades]
     context: Dict[str, Any] = {
@@ -1855,6 +2023,7 @@ def _coach_pass_context(portfolio: models.Portfolio,
         "market_mood": {},
         "agenda": [],
         "candidates": [],
+        "verdicts": [],
     }
     try:
         context["market_mood"] = mood.get() or {}
@@ -1871,7 +2040,122 @@ def _coach_pass_context(portfolio: models.Portfolio,
         context["candidates"] = _coach_candidates(context["radar"])
     except Exception:                       # noqa: BLE001 — best-effort
         context["candidates"] = []
+    try:
+        # LOT 5 — les rendez-vous RÉCEMMENT JUGÉS : « la réunion a-t-elle tenu
+        # ce qu'elle annonçait ? ». C'est ce qui distingue un catalyseur qui a
+        # produit son effet d'un autre qui est passé sans rien donner — et
+        # donc une thèse encore vivante d'une thèse à couper. LECTURE PURE
+        # (``calendar.recent_verdicts`` ne collecte rien, c'est son contrat).
+        context["verdicts"] = list(_calendar().recent_verdicts() or [])
+    except Exception:                       # noqa: BLE001 — best-effort
+        context["verdicts"] = []
     return context
+
+
+def _coach_dossier(symbol: str, username: str,
+                   news: List[Dict[str, Any]],
+                   history: Dict[str, List[str]],
+                   moves: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """TOUT ce que la mémoire sait d'UN titre (LOT 5, second temps).
+
+    Le tri (premier temps) voit beaucoup de titres et peu de choses ; le
+    dossier voit TROIS titres et tout ce qu'on sait d'eux. C'est là qu'est le
+    gain de la passe en deux temps : porter ce niveau de détail sur vingt
+    candidats donnerait un prompt illisible autant qu'inabordable.
+
+    Les trois sources collectives (presse, historique, gérants) sont relues UNE
+    FOIS pour les trois dossiers et filtrées ici — pas un balayage par titre.
+    """
+    titles = []
+    for event in news:
+        if not isinstance(event, dict):
+            continue
+        if str(event.get("symbol") or "").upper() != symbol:
+            continue
+        titles.append({"title": event.get("title"),
+                       "sentiment": event.get("sentiment"),
+                       "ts": event.get("ts")})
+        if len(titles) >= DOSSIER_NEWS_PER_SYMBOL:
+            break
+
+    whales = [move for move in moves
+              if str((move or {}).get("symbol") or "").upper() == symbol]
+
+    return {
+        "symbol": symbol,
+        "technical": _coach_technical(symbol),
+        "news": titles,
+        "history": history.get(symbol) or [],
+        "whale_moves": whales[:DOSSIER_WHALES_PER_SYMBOL],
+        "memory": _coach_symbol_memory(symbol, username),
+    }
+
+
+def _coach_symbol_memory(symbol: str, username: str) -> List[Dict[str, Any]]:
+    """Ce que le coach a DÉJÀ dit de ce titre : hypothèses du radar qui le
+    portent, avec leur verdict quand elles ont été notées.
+
+    C'est sa branche de toile, en liste. Elle lui évite de re-proposer une
+    thèse qu'il a déjà vue échouer — et l'oubli de ses propres erreurs est
+    précisément ce qu'on lui reproche le plus facilement.
+
+    Best-effort : radar absent ou illisible -> liste vide.
+    """
+    out: List[Dict[str, Any]] = []
+    try:
+        hypotheses = _radar().load_state().get("hypotheses") or []
+    except Exception:                           # noqa: BLE001 — radar absent
+        return []
+    for hyp in hypotheses:
+        if not isinstance(hyp, dict):
+            continue
+        tickers = [str(t or "").strip().upper() for t in (hyp.get("tickers") or [])]
+        if symbol not in tickers:
+            continue
+        out.append({
+            "thesis": hyp.get("thesis"),
+            "direction": hyp.get("direction"),
+            "status": hyp.get("status"),
+            "outcome": hyp.get("outcome"),
+            "created_at": hyp.get("created_at"),
+        })
+        if len(out) >= DOSSIER_MEMORY_PER_SYMBOL:
+            break
+    return out
+
+
+def _coach_dossiers(symbols: List[str],
+                    username: str) -> List[Dict[str, Any]]:
+    """Les dossiers complets des titres retenus par le tri (best-effort).
+
+    Les sources collectives sont relues UNE SEULE FOIS ici, puis distribuées
+    par :func:`_coach_dossier` — un balayage par titre coûterait trois fois le
+    même travail.
+    """
+    wanted = [s for s in (symbols or []) if s][:coach_trader.MAX_FOCUS]
+    if not wanted:
+        return []
+    try:
+        news = _recent_news(username)
+    except Exception:                           # noqa: BLE001 — best-effort
+        news = []
+    try:
+        history = _backfill_digest(wanted)
+    except Exception:                           # noqa: BLE001 — best-effort
+        history = {}
+    try:
+        moves = _whale_moves()
+    except Exception:                           # noqa: BLE001 — best-effort
+        moves = []
+
+    out: List[Dict[str, Any]] = []
+    for symbol in wanted:
+        try:
+            out.append(_coach_dossier(symbol, username, news, history, moves))
+        except Exception as e:                  # noqa: BLE001 — un titre n'en casse pas d'autre
+            logger.warning("paper coach: dossier illisible pour %s (%s)",
+                           symbol, type(e).__name__)
+    return out
 
 
 def coach_book() -> Dict[str, Any]:
@@ -1957,30 +2241,41 @@ def _coach_llm_failure(now_iso: str, detail: str) -> List[Dict[str, Any]]:
 
 
 def run_coach_daily_pass(now_iso: Optional[str] = None,
-                         claude: Optional[Callable[[str], str]] = None
-                         ) -> Dict[str, Any]:
-    """La passe quotidienne de gestion du compte du coach.
+                         claude: Optional[Callable[[str], str]] = None,
+                         crypto_only: bool = False) -> Dict[str, Any]:
+    """La passe de gestion du compte du coach, EN DEUX TEMPS (LOT 5).
 
-    Contexte DÉTERMINISTE -> prompt -> modèle -> bloc structuré -> exécution.
-    Le modèle ne fait que PROPOSER : c'est ``coach_trader.gate_decision`` qui
-    tranche, et ``execute_coach_actions`` qui exécute ce qui a survécu.
+    Contexte DÉTERMINISTE -> **tri** -> dossiers des élus -> **décision** ->
+    bloc structuré -> exécution. Le modèle ne fait que PROPOSER : c'est
+    ``coach_trader.gate_decision`` qui tranche, et ``execute_coach_actions``
+    qui exécute ce qui a survécu.
+
+    **Pourquoi deux temps.** Le contexte complet (livre, candidats cotés,
+    radar, agenda, humeur du marché) suffit à REPÉRER ce qui mérite un examen ;
+    il ne suffit pas à le DÉCIDER. Poser un stop technique demande des niveaux,
+    et juger une thèse demande la presse, le dossier historique et les
+    mouvements de gérants — soit, par titre, plusieurs fois le volume du
+    contexte lui-même. Le porter pour vingt candidats donnerait un prompt
+    illisible autant qu'inabordable ; le porter pour trois est exactement ce
+    qu'il faut.
+
+    **Coût : deux appels au plus, UN seul quand le tri ne retient rien** —
+    et ne rien retenir reste une réponse légitime, archivée avec sa raison.
+
+    ``crypto_only`` (créneau du week-end) descend jusqu'au garde-fou : un ordre
+    sur une action y est refusé (``market_closed``) plutôt que de dormir
+    jusqu'au lundi pour s'exécuter à un prix que personne n'a vu.
 
     ``claude`` est injectable (les tests n'ont jamais besoin du CLI).
 
-    Le constructeur de prompt est résolu par un ``getattr`` TOLÉRANT : il
-    arrive par un lot voisin, et son absence doit dégrader proprement (une
-    ligne de registre) plutôt que faire tomber le cycle de veille.
+    Les constructeurs de prompt sont résolus par un ``getattr`` TOLÉRANT :
+    leur absence doit dégrader proprement (une ligne de registre) plutôt que
+    faire tomber le cycle de veille.
 
-    ⚠️ ``parse_actions`` rend ``"no_block"`` quand la réponse ne porte aucun
-    bloc d'actions. Ce n'est PAS une anomalie — c'est une journée où le coach
-    n'a rien à faire — donc on ne le propage pas comme ``parse_error`` : il
-    ressort en ligne ``hold`` (choix assumé), là où ``"parse_failed"`` (bloc
-    présent mais illisible) reste bien une ligne ``parse``.
-
-    ``note`` (LOT 4bis, ``parsed.get("note")``) voyage jusqu'à
-    ``execute_coach_actions`` : c'est elle qui devient le ``detail`` de la
-    ligne ``hold`` quand le coach n'a rien à faire — la raison ARGUMENTÉE,
-    pas le repli générique.
+    ⚠️ Un bloc ABSENT (``"no_block"``) n'est PAS une anomalie — c'est une
+    journée où le coach n'a rien à faire — donc il ressort en ligne ``hold``,
+    là où ``"parse_failed"`` (bloc présent mais illisible) reste une ligne
+    ``parse``. Cette distinction vaut pour les DEUX temps.
 
     NE LÈVE JAMAIS.
     """
@@ -1993,19 +2288,47 @@ def run_coach_daily_pass(now_iso: Optional[str] = None,
                        type(e).__name__)
         return {"ledger": [], "error": type(e).__name__}
 
+    screen_builder = getattr(llm, "build_coach_screen_prompt", None)
     builder = getattr(llm, "build_coach_trader_prompt", None)
-    if builder is None:
+    if builder is None or screen_builder is None:
         return {"ledger": _coach_llm_failure(now, "prompt indisponible")}
 
     speak = claude if claude is not None else llm._claude_text
+    context["crypto_only"] = bool(crypto_only)
+
+    # --- PREMIER TEMPS : le tri ---------------------------------------- #
+    answer = _coach_speak(speak, screen_builder, context, now)
+    if answer is None:
+        return {"ledger": _coach_llm_failure(now, "tri sans réponse")}
+
+    screened = coach_trader.parse_focus(answer)
+    if screened.get("error") == "parse_failed":
+        return {"ledger": execute_coach_actions([], source="daily", now_iso=now,
+                                                parse_error="parse_failed"),
+                "text": screened.get("text") or ""}
+
+    focus = screened.get("focus") or []
+    if not focus:
+        # Rien à instruire : le second appel NE PART PAS. La raison du coach
+        # (``note``) devient le détail de sa ligne ``hold`` — c'est elle qu'on
+        # lira, pas un repli générique.
+        return {"ledger": execute_coach_actions([], source="daily", now_iso=now,
+                                                note=screened.get("note")),
+                "text": screened.get("text") or ""}
+
+    # --- SECOND TEMPS : les dossiers ----------------------------------- #
     try:
-        answer = speak(builder(context))
-    except Exception as e:                  # noqa: BLE001 — modèle en panne
-        logger.warning("paper coach: passe quotidienne sans réponse (%s)",
+        context["dossiers"] = _coach_dossiers(focus, coach_trader.COACH_USERNAME)
+    except Exception as e:                  # noqa: BLE001 — best-effort
+        logger.warning("paper coach: dossiers indisponibles (%s)",
                        type(e).__name__)
-        return {"ledger": _coach_llm_failure(now, str(e))}
-    if not str(answer or "").strip():
-        return {"ledger": _coach_llm_failure(now, "réponse vide")}
+        context["dossiers"] = []
+    context["focus"] = list(focus)
+    context["focus_note"] = screened.get("note")
+
+    answer = _coach_speak(speak, builder, context, now)
+    if answer is None:
+        return {"ledger": _coach_llm_failure(now, "décision sans réponse")}
 
     parsed = coach_trader.parse_actions(answer)
     error = parsed.get("error")
@@ -2013,8 +2336,25 @@ def run_coach_daily_pass(now_iso: Optional[str] = None,
                                  now_iso=now,
                                  parse_error=(error if error == "parse_failed"
                                               else None),
-                                 note=parsed.get("note"))
+                                 note=parsed.get("note"),
+                                 crypto_only=crypto_only)
     return {"ledger": rows, "text": parsed.get("text") or ""}
+
+
+def _coach_speak(speak: Callable[[str], str], builder: Callable[[Any], str],
+                 context: Dict[str, Any], now: str) -> Optional[str]:
+    """Un tour de parole du modèle : construit, demande, rend le texte.
+
+    ``None`` sur panne OU réponse vide — l'appelant en fait une ligne de
+    registre. Une réponse vide n'est pas « rien à faire » : c'est une panne,
+    et les deux doivent se distinguer à l'écran (cf. ``_coach_llm_failure``).
+    """
+    try:
+        answer = speak(builder(context))
+    except Exception as e:                  # noqa: BLE001 — modèle en panne
+        logger.warning("paper coach: passe sans réponse (%s)", type(e).__name__)
+        return None
+    return answer if str(answer or "").strip() else None
 
 
 def _coach_context(portfolio: models.Portfolio, profile: Dict[str, Any],
@@ -4535,6 +4875,12 @@ def _register_radar_ideas_locked(radar_module: Any, ideas: List[Dict[str, Any]],
                 "risk_level": idea.get("risk_level") or llm.DEFAULT_RISK_LEVEL,
                 "asset_kind": idea.get("asset_kind") or quotes.DEFAULT_KIND,
             })
+            # LOT 5 — même hygiène qu'au point d'écriture du radar : un ticker
+            # inventé par le modèle est marqué à la NAISSANCE, pas découvert
+            # trois passes plus tard par une cotation qui échoue en silence.
+            # Le surcoût (une cotation) est négligeable dans un endpoint qui
+            # vient d'appeler un LLM.
+            radar_module.mark_unquoted(hypotheses[-1])
             open_count += 1
             changed = True
             row["tracked"] = True

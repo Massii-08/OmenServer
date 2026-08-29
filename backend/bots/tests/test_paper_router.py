@@ -5999,13 +5999,22 @@ def _actions_block(actions, note=None):
 
 
 def test_run_coach_daily_pass_executes_what_the_model_returns(tmp_path, monkeypatch):
-    c, _ = make_client(tmp_path, monkeypatch)
-    seen = {}
+    """LOT 5 — la passe est en DEUX temps : le tri designe les dossiers, la
+    decision passe les ordres. Le premier appel repond donc un bloc de TRI, le
+    second le bloc d'actions."""
+    c, market = make_client(tmp_path, monkeypatch)
+    market.candles["NESN.SW"] = _serie()
+    seen = []
 
     def _claude(prompt):
-        seen["prompt"] = prompt
+        seen.append(prompt)
+        if len(seen) == 1:
+            return _focus_answer(["NESN.SW"])
         return _actions_block([coach_action()])
 
+    monkeypatch.setattr(pr.llm, "build_coach_screen_prompt",
+                        lambda context, lang="fr": "TRI " + str(context["now"]),
+                        raising=False)
     monkeypatch.setattr(pr.llm, "build_coach_trader_prompt",
                         lambda context, lang="fr": "PROMPT " + str(context["now"]),
                         raising=False)
@@ -6013,7 +6022,7 @@ def test_run_coach_daily_pass_executes_what_the_model_returns(tmp_path, monkeypa
 
     assert out["ledger"][0]["accepted"] is True
     assert coach_portfolio()["positions"][0]["qty"] == 15
-    assert seen["prompt"].startswith("PROMPT")
+    assert seen[0].startswith("TRI") and seen[1].startswith("PROMPT")
 
 
 def test_the_daily_pass_context_is_deterministic(tmp_path, monkeypatch):
@@ -6024,7 +6033,9 @@ def test_the_daily_pass_context_is_deterministic(tmp_path, monkeypatch):
     seed_coach_position(qty=10)
     captured = {}
 
-    monkeypatch.setattr(pr.llm, "build_coach_trader_prompt",
+    # Le contexte complet est celui du PREMIER temps (le tri) : c'est lui qui
+    # voit large. Le second n'y ajoute que les dossiers des elus.
+    monkeypatch.setattr(pr.llm, "build_coach_screen_prompt",
                         lambda context, lang="fr": captured.update(context) or "P",
                         raising=False)
     pr.run_coach_daily_pass(FIXED_NOW, claude=lambda prompt: "rien à faire")
@@ -6045,7 +6056,7 @@ def test_the_daily_pass_logs_llm_failed_and_acts_on_nothing(tmp_path, monkeypatc
 
     def _boom(prompt):
         raise RuntimeError("le coach n'a pas répondu dans les 180 s")
-    monkeypatch.setattr(pr.llm, "build_coach_trader_prompt",
+    monkeypatch.setattr(pr.llm, "build_coach_screen_prompt",
                         lambda context, lang="fr": "P", raising=False)
     out = pr.run_coach_daily_pass(FIXED_NOW, claude=_boom)
 
@@ -6067,7 +6078,7 @@ def test_the_daily_pass_without_a_prompt_builder_logs_a_failure(tmp_path, monkey
 def test_a_quiet_daily_pass_logs_a_hold(tmp_path, monkeypatch):
     """Le modèle a répondu sans bloc d'actions : rien à faire, mais on le DIT."""
     c, _ = make_client(tmp_path, monkeypatch)
-    monkeypatch.setattr(pr.llm, "build_coach_trader_prompt",
+    monkeypatch.setattr(pr.llm, "build_coach_screen_prompt",
                         lambda context, lang="fr": "P", raising=False)
     pr.run_coach_daily_pass(FIXED_NOW, claude=lambda prompt: "Je ne touche à rien.")
     assert coach_ledger()[0]["action"] == "hold"
@@ -6079,12 +6090,14 @@ def test_a_quiet_daily_pass_WITH_a_note_records_the_ARGUED_reason(tmp_path, monk
     """LOT 4bis — vécu en prod : le coach a rendu deux passes ``hold`` de suite
     et seule la phrase générique était archivée, sa vraie raison perdue."""
     c, _ = make_client(tmp_path, monkeypatch)
-    monkeypatch.setattr(pr.llm, "build_coach_trader_prompt",
+    monkeypatch.setattr(pr.llm, "build_coach_screen_prompt",
                         lambda context, lang="fr": "P", raising=False)
     reason = ("il me faut le cours actuel du titre pour fixer un stop "
              "technique et une taille cohérente avec le risque à 2 %")
+    # LOT 5 : quand le TRI ne retient aucun dossier, c'est SA note qui devient
+    # la raison archivee -- et le second appel ne part pas.
     pr.run_coach_daily_pass(FIXED_NOW,
-                            claude=lambda prompt: _actions_block([], note=reason))
+                            claude=lambda prompt: _focus_answer([], note=reason))
     assert coach_ledger()[0]["action"] == "hold"
     assert coach_ledger()[0]["detail"] == reason
 
@@ -6295,8 +6308,11 @@ def test_coach_pass_context_carries_candidates(tmp_path, monkeypatch):
     portfolio = pr._ensure_coach_account()
 
     context = pr._coach_pass_context(portfolio, FIXED_NOW)
+    # LOT 5 : chaque candidat porte AUSSI son analyse technique -- ``None`` ici,
+    # le faux marche ne servant aucune bougie a ce symbole.
     assert context["candidates"] == [
-        {"symbol": "AAPL", "price_chf": round(200.0 * 0.88, 2), "currency": "USD"}]
+        {"symbol": "AAPL", "price_chf": round(200.0 * 0.88, 2),
+         "currency": "USD", "technical": None}]
 
 
 def test_coach_book_carries_candidates_too(tmp_path, monkeypatch):
@@ -6308,7 +6324,8 @@ def test_coach_book_carries_candidates_too(tmp_path, monkeypatch):
 
     book = pr.coach_book()
     assert book["candidates"] == [
-        {"symbol": "AAPL", "price_chf": round(200.0 * 0.88, 2), "currency": "USD"}]
+        {"symbol": "AAPL", "price_chf": round(200.0 * 0.88, 2),
+         "currency": "USD", "technical": None}]
 
 
 # --- 7) Les endpoints ---------------------------------------------------
@@ -6373,3 +6390,535 @@ def test_portfolio_carries_the_equity_curve(tmp_path, monkeypatch):
                                  {"date": "2026-08-24", "equity": 9900.0}])
     curve = portfolio_of(c)["equity_curve"]
     assert [point["equity"] for point in curve] == [9800.0, 9900.0]
+
+
+# ==========================================================================
+#  LOT 5 « Coach Trader MAX » — le short, les créneaux, les deux temps
+#
+#  Vécu qui motive tout : le coach a refusé QUATRE fois d'entrer, ses
+#  meilleures thèses étant BAISSIÈRES donc « inexécutables en achat seul ».
+#  Le moteur d'ordres savait vendre à découvert depuis le premier lot ; seul
+#  son MANDAT l'interdisait.
+# ==========================================================================
+
+def coach_short(**over):
+    """Une vente à découvert qui passe tout le garde-fou avec le marché par
+    défaut (NESN.SW à 100 CHF, équité 10 000) : 1500 CHF = 15 % de l'équité,
+    stop à 108 -> risque 120 CHF = 1,2 %."""
+    base = {"action": "short", "symbol": "NESN.SW", "qty": 15, "stop": 108.0,
+            "target": 80.0, "thesis": COACH_THESIS, "setup": "contrarian"}
+    base.update(over)
+    return base
+
+
+def seed_coach_short(qty=15, stop_loss=108.0, avg_price=100.0):
+    """Une ligne VENDUE À DÉCOUVERT déjà ouverte, écrite en direct — miroir de
+    ``seed_coach_position`` (la trésorerie encaisse le produit de la vente)."""
+    portfolio = pr._ensure_coach_account()
+    portfolio.positions.append(pr.models.Position(
+        symbol="NESN.SW", qty=qty, avg_price=avg_price, currency="CHF",
+        fx_rate=1.0, opened_at=FIXED_NOW, side="short",
+        thesis=COACH_THESIS, stop_loss=stop_loss))
+    portfolio.cash_chf = round(portfolio.cash_chf + qty * avg_price, 2)
+    pr._save(COACH, portfolio)
+    return portfolio
+
+
+# --- A) Le short, de bout en bout ---------------------------------------
+
+def test_the_coach_can_finally_open_a_short(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+    rows = pr.execute_coach_actions([coach_short()], source="daily")
+
+    assert rows[0]["accepted"] is True and rows[0]["action"] == "short"
+    position = coach_portfolio()["positions"][0]
+    assert position["side"] == "short" and position["qty"] == 15
+    assert position["stop_loss"] == 108.0
+    assert position["thesis"] == COACH_THESIS
+
+
+def test_a_bearish_thesis_that_plays_out_earns_money(tmp_path, monkeypatch):
+    c, market = make_client(tmp_path, monkeypatch)
+    pr.execute_coach_actions([coach_short()], source="daily")
+    market.prices["NESN.SW"] = (85.0, "CHF", "Nestle SA")
+
+    pr.execute_coach_actions([{"action": "cover", "symbol": "NESN.SW"}],
+                             source="daily")
+    trade = coach_portfolio()["trades"][0]
+    assert trade["side"] == "short"
+    assert trade["entry_price"] == 100.0 and trade["exit_price"] == 85.0
+    assert trade["pnl_chf"] > 0            # le cours a BAISSÉ : le short gagne
+    assert coach_portfolio()["positions"] == []
+
+
+def test_a_bearish_thesis_that_fails_loses_money(tmp_path, monkeypatch):
+    """Le miroir, et il compte autant : un short qui se trompe PERD quand le
+    titre monte. Sans ce test, une erreur de signe passerait pour un gain."""
+    c, market = make_client(tmp_path, monkeypatch)
+    pr.execute_coach_actions([coach_short()], source="daily")
+    market.prices["NESN.SW"] = (106.0, "CHF", "Nestle SA")
+
+    pr.execute_coach_actions([{"action": "cover", "symbol": "NESN.SW"}],
+                             source="daily")
+    assert coach_portfolio()["trades"][0]["pnl_chf"] < 0
+
+
+def test_the_stop_of_a_short_fires_upwards_and_honours_the_gap(tmp_path, monkeypatch):
+    """Le miroir EXACT de la règle du gap : un stop de rachat à 108 sur une
+    bougie qui OUVRE à 115 n'exécute pas à 108 — il exécute à 115. C'est la
+    leçon centrale du simulateur, et elle vaut dans les deux sens."""
+    c, market = make_client(tmp_path, monkeypatch)
+    seed_coach_short(qty=15, stop_loss=108.0)
+    market.candles["NESN.SW"] = [
+        {"ts": _ts(11), "open": 115.0, "high": 118.0, "low": 114.0, "close": 117.0}]
+
+    result = pr.tick_coach_account()
+    assert len(result["stopped"]) == 1
+    trade = coach_portfolio()["trades"][0]
+    assert trade["exit_price"] == 115.0        # l'ouverture, PAS le seuil
+    assert trade["pnl_chf"] < 0
+    assert coach_portfolio()["positions"] == []
+
+
+def test_a_short_pays_fees_on_both_legs(tmp_path, monkeypatch):
+    c, market = make_client(tmp_path, monkeypatch)
+    pr.execute_coach_actions([coach_short()], source="daily")
+    market.prices["NESN.SW"] = (90.0, "CHF", "Nestle SA")
+    pr.execute_coach_actions([{"action": "cover", "symbol": "NESN.SW"}],
+                             source="daily")
+
+    trade = coach_portfolio()["trades"][0]
+    # 15 x 100 à l'entrée, 15 x 90 à la sortie — l'aller ET le retour.
+    courtage = (fees.compute_fees("yuh", 1500.0, "NESN.SW")["brokerage_chf"]
+                + fees.compute_fees("yuh", 1350.0, "NESN.SW")["brokerage_chf"])
+    assert trade["fees_chf"] == pytest.approx(courtage, abs=0.01)
+    assert trade["stamp_duty_chf"] > 0
+    # Le gain BRUT vaut 150 ; le net est amputé des deux jambes de frais.
+    assert trade["pnl_chf"] == pytest.approx(
+        150.0 - trade["fees_chf"] - trade["stamp_duty_chf"], abs=0.01)
+
+
+def test_the_excursions_of_a_short_are_measured_upside_down(tmp_path, monkeypatch):
+    """MAE/MFE : pour un vendeur à découvert, le PIRE creux est le plus HAUT
+    traversé et le meilleur sommet le plus BAS. ``tradestats`` le sait déjà —
+    ce test prouve que le chemin du coach le lui demande correctement."""
+    c, market = make_client(tmp_path, monkeypatch)
+    pr.execute_coach_actions([coach_short()], source="daily")
+    market.candles["NESN.SW"] = [
+        {"ts": _ts(1), "open": 100.0, "high": 112.0, "low": 84.0, "close": 90.0}]
+    market.prices["NESN.SW"] = (90.0, "CHF", "Nestle SA")
+    pr.execute_coach_actions([{"action": "cover", "symbol": "NESN.SW"}],
+                             source="daily")
+
+    trade = coach_portfolio()["trades"][0]
+    assert trade["mae_pct"] is not None and trade["mfe_pct"] is not None
+    assert trade["mae_pct"] < 0            # le titre est monté contre lui
+    assert trade["mfe_pct"] > 0            # il est descendu en sa faveur
+
+
+def test_the_target_of_a_short_becomes_a_limit_buyback(tmp_path, monkeypatch):
+    """L'objectif d'un short se prend EN RACHETANT sous le prix : l'ordre en
+    attente doit être un ``cover`` limite, pas une vente de plus (qui
+    doublerait l'exposition au lieu de la fermer)."""
+    c, _ = make_client(tmp_path, monkeypatch)
+    pr.execute_coach_actions([coach_short(target=80.0)], source="daily")
+
+    orders = coach_portfolio()["open_orders"]
+    assert len(orders) == 1
+    assert orders[0]["side"] == "cover" and orders[0]["kind"] == "limit"
+    assert orders[0]["limit_price"] == 80.0
+
+
+def test_the_limit_buyback_of_a_short_actually_closes_it(tmp_path, monkeypatch):
+    c, market = make_client(tmp_path, monkeypatch)
+    pr.execute_coach_actions([coach_short(target=80.0)], source="daily")
+    market.candles["NESN.SW"] = [
+        {"ts": _ts(11), "open": 85.0, "high": 86.0, "low": 78.0, "close": 79.0}]
+
+    pr.tick_coach_account()
+    portfolio = coach_portfolio()
+    assert portfolio["positions"] == []
+    assert portfolio["trades"][0]["pnl_chf"] > 0
+
+
+def test_shorting_a_line_already_held_long_is_refused_with_its_own_reason(
+        tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+    pr.execute_coach_actions([coach_action()], source="daily")
+    rows = pr.execute_coach_actions([coach_short()], source="daily")
+    assert rows[0]["accepted"] is False and rows[0]["reason"] == "wrong_side"
+    assert "NESN.SW" in (rows[0]["detail"] or "")
+
+
+# --- B) L'équité : le piège du short ------------------------------------
+
+def test_the_wealth_curve_does_not_inflate_when_the_coach_shorts(
+        tmp_path, monkeypatch):
+    """⚠️ LE piège de la vente à découvert. La trésorerie ENCAISSE le produit
+    de la vente ; si la courbe de patrimoine ajoute EN PLUS la valeur de marché
+    de la ligne, le compte a l'air de grossir de 15 % à la seconde où il shorte
+    — et de grossir encore quand le titre MONTE contre lui. Une ligne courte
+    doit se SOUSTRAIRE : c'est une dette de rachat, pas un avoir."""
+    c, market = make_client(tmp_path, monkeypatch)
+    pr.execute_coach_actions([coach_short()], source="daily")
+
+    raw = coach_portfolio()
+    prices = {"NESN.SW": 100.0}
+    rates = {"CHF": 1.0}
+    # Au cours d'entrée : l'équité vaut le capital moins les frais payés.
+    equity = pr._equity_now_chf(raw, prices, rates)
+    assert equity == pytest.approx(10000.0 - fee_total(1500.0), abs=0.01)
+
+    # Le titre BAISSE de 10 % : le short gagne 150 CHF.
+    gagnant = pr._equity_now_chf(raw, {"NESN.SW": 90.0}, rates)
+    assert gagnant == pytest.approx(equity + 150.0, abs=0.01)
+
+    # Le titre MONTE de 10 % : le short perd 150 CHF.
+    perdant = pr._equity_now_chf(raw, {"NESN.SW": 110.0}, rates)
+    assert perdant == pytest.approx(equity - 150.0, abs=0.01)
+
+
+def test_the_coach_reads_the_gain_of_his_own_short_the_right_way_up(
+        tmp_path, monkeypatch):
+    """Le contexte de sa passe lui montre ses lignes. Un short gagnant affiché
+    « -10 % » le pousserait à COUPER un gagnant — l'erreur exacte que son
+    mandat lui interdit."""
+    c, market = make_client(tmp_path, monkeypatch)
+    seed_coach_short(qty=15, avg_price=100.0)
+    market.prices["NESN.SW"] = (90.0, "CHF", "Nestle SA")
+
+    context = pr._coach_pass_context(pr._ensure_coach_account(), FIXED_NOW)
+    row = context["positions"][0]
+    assert row["side"] == "short"
+    assert row["pnl_pct"] == pytest.approx(10.0, abs=0.01)
+
+
+def test_the_book_shown_to_the_model_names_the_side_of_each_line(
+        tmp_path, monkeypatch):
+    """Sans le sens, le modèle ne peut pas savoir qu'une ligne se solde par un
+    RACHAT — il proposerait un ``sell``, refusé."""
+    c, _ = make_client(tmp_path, monkeypatch)
+    seed_coach_short()
+    assert pr.coach_book()["positions"][0]["side"] == "short"
+
+
+# --- C) adjust_stop : laisser courir sans jamais reculer ----------------
+
+def test_the_coach_can_tighten_the_stop_of_a_winner(tmp_path, monkeypatch):
+    c, market = make_client(tmp_path, monkeypatch)
+    seed_coach_position(qty=10, stop_loss=90.0)
+    market.prices["NESN.SW"] = (120.0, "CHF", "Nestle SA")
+
+    rows = pr.execute_coach_actions(
+        [{"action": "adjust_stop", "symbol": "NESN.SW", "stop": 110.0}],
+        source="daily")
+    assert rows[0]["accepted"] is True and rows[0]["action"] == "adjust_stop"
+    assert coach_portfolio()["positions"][0]["stop_loss"] == 110.0
+    # Rien ne s'est échangé : ni trade, ni mouvement de trésorerie.
+    assert coach_portfolio()["trades"] == []
+
+
+def test_a_stop_that_retreats_is_refused_and_the_position_keeps_its_own(
+        tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+    seed_coach_position(qty=10, stop_loss=90.0)
+
+    rows = pr.execute_coach_actions(
+        [{"action": "adjust_stop", "symbol": "NESN.SW", "stop": 80.0}],
+        source="daily")
+    assert rows[0]["reason"] == "stop_widen"
+    assert coach_portfolio()["positions"][0]["stop_loss"] == 90.0
+
+
+def test_tightening_the_stop_of_a_short_means_lowering_it_end_to_end(
+        tmp_path, monkeypatch):
+    c, market = make_client(tmp_path, monkeypatch)
+    seed_coach_short(qty=15, stop_loss=108.0)
+    market.prices["NESN.SW"] = (85.0, "CHF", "Nestle SA")
+
+    rows = pr.execute_coach_actions(
+        [{"action": "adjust_stop", "symbol": "NESN.SW", "stop": 92.0}],
+        source="daily")
+    assert rows[0]["accepted"] is True
+    assert coach_portfolio()["positions"][0]["stop_loss"] == 92.0
+
+
+def test_a_tightened_stop_is_actually_enforced_by_the_tick(tmp_path, monkeypatch):
+    """Le stop resserré doit VIVRE dans la position, pas seulement au registre :
+    c'est le tick qui l'exécutera."""
+    c, market = make_client(tmp_path, monkeypatch)
+    seed_coach_position(qty=10, stop_loss=90.0)
+    market.prices["NESN.SW"] = (120.0, "CHF", "Nestle SA")
+    pr.execute_coach_actions(
+        [{"action": "adjust_stop", "symbol": "NESN.SW", "stop": 110.0}],
+        source="daily")
+
+    market.candles["NESN.SW"] = [
+        {"ts": _ts(11), "open": 115.0, "high": 116.0, "low": 108.0, "close": 109.0}]
+    result = pr.tick_coach_account()
+    assert len(result["stopped"]) == 1
+    assert coach_portfolio()["trades"][0]["exit_price"] == 110.0
+
+
+# --- D) L'analyse technique dans le contexte ----------------------------
+
+def _serie(n=260, base=100.0):
+    """Une série de bougies quotidiennes exploitable par ``ta`` (>= 200 pour
+    que la moyenne 200 existe)."""
+    out, price = [], base
+    depart = _ts(10) - n * 86400.0
+    for i in range(n):
+        price = price * (1.004 if i % 3 else 0.997)
+        out.append({"ts": depart + i * 86400.0, "open": price * 0.998,
+                    "high": price * 1.01, "low": price * 0.99,
+                    "close": price, "volume": 1000})
+    return out
+
+
+def test_each_candidate_carries_its_technical_summary(tmp_path, monkeypatch):
+    """Le refus vécu en prod était « je manque d'un niveau technique fiable
+    pour poser un stop ». Le niveau arrive désormais AVEC le cours."""
+    c, market = make_client(tmp_path, monkeypatch)
+    market.candles["NESN.SW"] = _serie()
+    _seed_radar([_open_hyp(["NESN.SW"], "h1")])
+
+    candidat = pr._coach_candidates(pr._open_radar_hypotheses())[0]
+    assert candidat["symbol"] == "NESN.SW"
+    tech = candidat["technical"]
+    assert tech["sma50"] is not None and tech["sma200"] is not None
+    assert tech["rsi14"] is not None and tech["atr14"] is not None
+    assert tech["week52_high"] is not None
+
+
+def test_a_broken_candle_feed_does_not_lose_the_candidate(tmp_path, monkeypatch):
+    """Best-effort PAR SYMBOLE : sans bougies, le cours reste (il vient d'un
+    autre appel) et l'analyse est ABSENTE — jamais inventée, jamais fatale."""
+    c, market = make_client(tmp_path, monkeypatch)
+    market.broken_candles = getattr(market, "broken_candles", set())
+    _seed_radar([_open_hyp(["NESN.SW"], "h1")])
+
+    def _boom(symbol, *a, **kw):
+        raise RuntimeError("bougies indisponibles")
+
+    monkeypatch.setattr(pr.quotes, "get_candles", _boom)
+    candidat = pr._coach_candidates(pr._open_radar_hypotheses())[0]
+    assert candidat["price_chf"] == 100.0
+    assert candidat["technical"] is None
+
+
+def test_the_positions_of_the_pass_carry_their_technical_summary(
+        tmp_path, monkeypatch):
+    """Gérer une ligne (resserrer un stop, laisser courir) demande les mêmes
+    niveaux qu'en ouvrir une."""
+    c, market = make_client(tmp_path, monkeypatch)
+    market.candles["NESN.SW"] = _serie()
+    seed_coach_position(qty=10)
+
+    context = pr._coach_pass_context(pr._ensure_coach_account(), FIXED_NOW)
+    assert context["positions"][0]["technical"]["sma50"] is not None
+
+
+# --- E) Les deux temps : trier, puis instruire --------------------------
+
+class _Speaker(object):
+    """Un modèle factice qui COMPTE ses appels et rend une réponse par tour."""
+
+    def __init__(self, *answers):
+        self.answers = list(answers)
+        self.prompts = []
+
+    def __call__(self, prompt, *a, **kw):
+        self.prompts.append(prompt)
+        if not self.answers:
+            return ""
+        return self.answers.pop(0)
+
+
+def _focus_answer(symbols, note="deux dossiers a instruire"):
+    import json as _json
+    return ("Ma lecture du jour.\n\n```COACH_FOCUS\n"
+            + _json.dumps({"focus": list(symbols), "note": note})
+            + "\n```")
+
+
+def _actions_answer(actions, note=None):
+    import json as _json
+    payload = {"actions": list(actions)}
+    if note is not None:
+        payload["note"] = note
+    return ("Voici ce que je fais.\n\n```COACH_ACTIONS\n"
+            + _json.dumps(payload) + "\n```")
+
+
+def test_an_empty_screening_costs_a_single_call(tmp_path, monkeypatch):
+    """Le tri est le point d'économie : quand rien ne mérite un dossier, le
+    second appel NE PART PAS. C'est aussi la réponse honnête d'une journée
+    sans opportunité — et elle est archivée avec sa raison."""
+    c, _ = make_client(tmp_path, monkeypatch)
+    speaker = _Speaker(_focus_answer([], note="rien au-dessus de mes criteres"))
+
+    out = pr.run_coach_daily_pass(FIXED_NOW, claude=speaker)
+    assert len(speaker.prompts) == 1
+    ledger = coach_ledger()
+    assert ledger[0]["action"] == "hold"
+    assert ledger[0]["detail"] == "rien au-dessus de mes criteres"
+
+
+def test_a_screening_with_names_costs_two_calls_and_trades(tmp_path, monkeypatch):
+    c, market = make_client(tmp_path, monkeypatch)
+    market.candles["NESN.SW"] = _serie()
+    speaker = _Speaker(_focus_answer(["NESN.SW"]),
+                       _actions_answer([coach_action()]))
+
+    pr.run_coach_daily_pass(FIXED_NOW, claude=speaker)
+    assert len(speaker.prompts) == 2
+    assert coach_portfolio()["positions"][0]["symbol"] == "NESN.SW"
+
+
+def test_the_screening_is_capped_at_three_names(tmp_path, monkeypatch):
+    c, market = make_client(tmp_path, monkeypatch)
+    for symbol in ("NESN.SW", "ROG.SW", "ABBN.SW", "UBSG.SW", "ZURN.SW"):
+        market.prices[symbol] = (100.0, "CHF", symbol)
+        market.candles[symbol] = _serie()
+    speaker = _Speaker(
+        _focus_answer(["NESN.SW", "ROG.SW", "ABBN.SW", "UBSG.SW", "ZURN.SW"]),
+        _actions_answer([]))
+
+    pr.run_coach_daily_pass(FIXED_NOW, claude=speaker)
+    dossiers = speaker.prompts[1]
+    assert "UBSG.SW" not in dossiers and "ZURN.SW" not in dossiers
+    assert "NESN.SW" in dossiers
+
+
+def test_the_second_prompt_carries_the_full_file_of_the_chosen_names(
+        tmp_path, monkeypatch):
+    """Le tri voit BEAUCOUP de titres et peu de choses ; le dossier voit TROIS
+    titres et tout ce qu'on sait d'eux. C'est là qu'est le gain."""
+    c, market = make_client(tmp_path, monkeypatch)
+    market.candles["NESN.SW"] = _serie()
+    speaker = _Speaker(_focus_answer(["NESN.SW"]), _actions_answer([]))
+
+    pr.run_coach_daily_pass(FIXED_NOW, claude=speaker)
+    dossier = speaker.prompts[1]
+    assert "DOSSIERS" in dossier
+    assert "sma200" in dossier and "rsi14" in dossier and "atr14" in dossier
+
+
+def test_an_unreadable_screening_stops_the_pass_without_inventing_orders(
+        tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+    speaker = _Speaker("```COACH_FOCUS\n{casse\n```")
+
+    pr.run_coach_daily_pass(FIXED_NOW, claude=speaker)
+    assert len(speaker.prompts) == 1               # aucun second appel
+    assert coach_ledger()[0]["action"] == "parse"
+    assert coach_portfolio()["positions"] == []
+
+
+def test_a_screening_without_a_block_is_a_hold_not_a_failure(tmp_path, monkeypatch):
+    """Pas de bloc = le coach n'a rien à instruire aujourd'hui. C'est une
+    journée normale, pas une panne — et les deux doivent se distinguer."""
+    c, _ = make_client(tmp_path, monkeypatch)
+    speaker = _Speaker("Je ne vois rien de convaincant aujourd'hui.")
+
+    pr.run_coach_daily_pass(FIXED_NOW, claude=speaker)
+    assert len(speaker.prompts) == 1
+    assert coach_ledger()[0]["action"] == "hold"
+
+
+def test_a_model_failure_on_the_first_call_is_logged_as_such(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+
+    def _boom(prompt, *a, **kw):
+        raise RuntimeError("CLI absent")
+
+    pr.run_coach_daily_pass(FIXED_NOW, claude=_boom)
+    assert coach_ledger()[0]["reason"] == "llm_failed"
+
+
+def test_the_weekend_pass_refuses_stocks_and_keeps_crypto(tmp_path, monkeypatch):
+    """Créneau du week-end : les bourses sont fermées. Un ordre sur une action
+    y dormirait jusqu'au lundi pour s'exécuter à un prix que personne n'a vu."""
+    c, market = make_client(tmp_path, monkeypatch)
+    market.prices["BTC-USD"] = (100.0, "USD", "Bitcoin")
+    market.candles["BTC-USD"] = _serie()
+    market.candles["NESN.SW"] = _serie()
+    speaker = _Speaker(
+        _focus_answer(["NESN.SW", "BTC-USD"]),
+        _actions_answer([coach_action(),
+                         coach_action(symbol="BTC-USD", qty=15, stop=90.0)]))
+
+    pr.run_coach_daily_pass(FIXED_NOW, claude=speaker, crypto_only=True)
+    rows = {row["symbol"]: row for row in coach_ledger() if row["symbol"]}
+    assert rows["NESN.SW"]["reason"] == "market_closed"
+    assert rows["BTC-USD"]["accepted"] is True
+
+
+# --- F) Hygiène des tickers : les fantômes ne polluent plus l'univers ----
+
+def test_the_coach_skips_a_ticker_the_market_does_not_know(tmp_path, monkeypatch):
+    """Vécu : « SAP.TO » n'existe pas chez Yahoo. Marqué à la naissance de
+    l'hypothèse, il ne doit plus jamais arriver jusqu'aux candidats — sinon sa
+    cotation échoue à chaque passe, en silence, et il occupe une place."""
+    c, market = make_client(tmp_path, monkeypatch)
+    # ⚠️ Le faux marche COTE ce symbole : sans cela, le test passerait pour la
+    # mauvaise raison (candidat omis faute de cours) et ne prouverait RIEN sur
+    # la marque. C'est bien la MARQUE qu'on veut voir agir.
+    market.prices["SAP.TO"] = (120.0, "CHF", "SAP fantome")
+    hyp = _open_hyp(["SAP.TO", "NESN.SW"], "h1")
+    hyp["unquoted"] = ["SAP.TO"]
+    _seed_radar([hyp])
+
+    assert pr._coach_quote("SAP.TO") is not None      # cotable, donc discriminant
+    symbols = [row["symbol"]
+               for row in pr._coach_candidates(pr._open_radar_hypotheses())]
+    assert symbols == ["NESN.SW"]
+
+
+def test_an_unmarked_hypothesis_keeps_all_its_tickers(tmp_path, monkeypatch):
+    c, market = make_client(tmp_path, monkeypatch)
+    market.prices["AAPL"] = (200.0, "USD", "Apple Inc")
+    _seed_radar([_open_hyp(["AAPL", "NESN.SW"], "h1")])
+
+    symbols = [row["symbol"]
+               for row in pr._coach_candidates(pr._open_radar_hypotheses())]
+    assert symbols == ["AAPL", "NESN.SW"]
+
+
+def test_a_ticker_muted_in_one_hypothesis_survives_in_another(tmp_path, monkeypatch):
+    """La marque est PAR HYPOTHÈSE : si une autre hypothèse cite le même
+    ticker sans le marquer, c'est qu'il cotait au moment de SA naissance — on
+    ne le condamne pas sur la foi d'un contrôle plus ancien."""
+    c, market = make_client(tmp_path, monkeypatch)
+    muette = _open_hyp(["NESN.SW"], "h1")
+    muette["unquoted"] = ["NESN.SW"]
+    _seed_radar([muette, _open_hyp(["NESN.SW"], "h2")])
+
+    symbols = [row["symbol"]
+               for row in pr._coach_candidates(pr._open_radar_hypotheses())]
+    assert symbols == ["NESN.SW"]
+
+
+def test_the_pass_context_carries_the_recent_calendar_verdicts(tmp_path, monkeypatch):
+    """« Le rendez-vous a-t-il tenu ce qu'il annonçait ? » — c'est ce qui
+    distingue un catalyseur qui a produit son effet d'un autre passé sans rien
+    donner, donc une thèse vivante d'une thèse à couper."""
+    c, _ = make_client(tmp_path, monkeypatch)
+    rendus = [{"key": "k1", "label": "FOMC", "verdict": "tenu",
+               "move_pct": 1.4, "date": "2026-08-25"}]
+    monkeypatch.setattr(pr._calendar(), "recent_verdicts",
+                        lambda *a, **kw: rendus)
+
+    context = pr._coach_pass_context(pr._ensure_coach_account(), FIXED_NOW)
+    assert context["verdicts"] == rendus
+
+
+def test_a_broken_calendar_never_stops_the_pass(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+
+    def _boom(*a, **kw):
+        raise RuntimeError("verdicts illisibles")
+
+    monkeypatch.setattr(pr._calendar(), "recent_verdicts", _boom)
+    assert pr._coach_pass_context(pr._ensure_coach_account(),
+                                  FIXED_NOW)["verdicts"] == []

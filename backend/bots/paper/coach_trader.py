@@ -23,9 +23,14 @@ de l'équité — refusé : oversize »). Un garde-fou qui corrige en douce
 n'enseigne rien et masque la dérive du modèle ; un garde-fou qui refuse la
 montre.
 
-Aucun SHORT dans ce lot : ``short``/``cover`` tombent volontairement en
-``unknown_action`` (cf. :data:`ACTION_KINDS`). Le simulateur les gère pour un
-humain, le coach ne les manie pas encore.
+**LOT 5 — le short est OUVERT au coach.** Vécu en prod : quatre passes de
+suite se sont soldées par un refus d'entrer, parce que ses meilleures thèses
+étaient BAISSIÈRES et donc « inexécutables en achat seul ». Le moteur d'ordres
+savait déjà vendre à découvert (un humain le peut depuis le premier lot) ;
+c'était le MANDAT qui l'interdisait. ``short`` et ``cover`` sont désormais des
+actions de plein droit, avec le miroir EXACT des exigences du long — stop
+obligatoire, mais AU-DESSUS de l'entrée. S'y ajoute ``adjust_stop``, qui ne
+sait faire qu'une chose : RESSERRER (cf. :func:`_gate_adjust_stop`).
 
 ⚠️ **Non-fantôme** : les fichiers de ce lot (``<user>.ledger.json``,
 ``<user>.equity.json``, ``coach_trader.state.json``) vivent dans le MÊME
@@ -53,7 +58,20 @@ COACH_CAPITAL = 10000.0        # même capital de départ qu'un humain
 # partie que la machine consomme ; tout ce qui précède est pour l'utilisateur.
 ACTIONS_MARKER = "COACH_ACTIONS"
 
-ACTION_KINDS = ("buy", "sell", "reduce")
+# Les trois familles d'actions, NOMMÉES. Le prompt les cite par ces constantes
+# ; il les découpait auparavant par index (``ACTION_KINDS[1:]`` valait « les
+# sorties »), ce qui devenait FAUX à la seconde où une entrée s'ajoutait au
+# tuple. Une famille se nomme, elle ne se déduit pas d'une position.
+ENTRY_ACTIONS = ("buy", "short")            # ouvrent ou renforcent une ligne
+EXIT_ACTIONS = ("sell", "reduce", "cover")  # réduisent l'exposition
+ACTION_KINDS = ENTRY_ACTIONS + EXIT_ACTIONS + ("adjust_stop",)
+
+# Le sens de position que chaque action manipule. ``reduce`` est ABSENT
+# volontairement : il dit « allège » sans dire dans quel sens, et c'est la
+# ligne DÉJÀ DÉTENUE qui tranche (le moteur interdit de tenir les deux sens sur
+# un même titre, il n'y a donc jamais d'ambiguïté).
+_SIDE_OF_ACTION = {"buy": "long", "sell": "long",
+                   "short": "short", "cover": "short"}
 
 LOCAL_TZ = "Europe/Rome"       # même convention que backup.py / weekly.py
 STATE_NAME = "coach_trader.state.json"
@@ -75,20 +93,57 @@ MAX_POSITIONS = 6         # nombre de fronts ouverts simultanément
 MAX_CRYPTO = 2            # dont au plus deux cryptos
 MIN_CASH_PCT = 5.0        # trésorerie plancher : on ne se met jamais à sec
 
-RUN_AFTER_HOUR = 17       # passe quotidienne : jamais avant 17 h LOCALES
+RUN_AFTER_HOUR = 17       # ancienne passe unique : jamais avant 17 h LOCALES
+
+# --------------------------------------------------------------------------- #
+# BUDGET COACH — mois x20
+#
+# Le plan Claude Max est à x20 CE MOIS-CI : le budget d'appels DU COACH (et de
+# lui seul — aucun autre consommateur du dépôt ne bouge) est desserré pour le
+# pousser au maximum de ses capacités. Tout est ICI, en un bloc, pour qu'un
+# retour au régime normal en octobre soit une modification de CONSTANTES et
+# rien d'autre : remettre ``WEEKDAY_SLOTS`` à un seul créneau suffit.
+#
+# COÛT MESURÉ, pire cas d'un jour ouvré :
+#     3 créneaux x 2 appels (tri + dossier) = 6 appels
+#   + 1 appel de digest (la couche convergence, inchangée)
+#   = 7 appels/jour ouvré. Week-end : 2 appels (un seul créneau) + digest.
+# Un créneau où le tri ne retient RIEN ne coûte qu'UN appel — le second ne
+# part que s'il y a un dossier à instruire.
+#
+# Heures LOCALES (Europe/Rome), et elles ont chacune une raison :
+#   15:40 — dix minutes avant l'ouverture de New York : l'Europe a fait sa
+#           journée, les futures US disent ce qui vient.
+#   18:00 — clôture européenne : les cours du jour sont figés de ce côté.
+#   21:40 — dernière heure américaine : c'est là que les séances se décident.
+# --------------------------------------------------------------------------- #
+WEEKDAY_SLOTS = ("15:40", "18:00", "21:40")
+WEEKEND_SLOTS = ("18:00",)         # crypto UNIQUEMENT (cf. :func:`crypto_only_at`)
+PASSES_PER_DAY = len(WEEKDAY_SLOTS)
+MAX_FOCUS = 3                      # dossiers instruits par créneau, au plus
+LLM_CALLS_PER_PASS = 2             # tri, puis dossier — jamais davantage
 
 # Un seul seuil de thèse dans tout le simulateur — ``risk`` le porte déjà pour
 # la porte de confirmation humaine (LOT 3, C3). On le RÉUTILISE plutôt que d'en
 # poser un second qui divergerait au premier ajustement.
 MIN_THESIS_LEN = risk.PREORDER_MIN_THESIS_LEN
 
-# Les 14 codes de refus. ``reason`` est TOUJOURS l'un d'eux, JAMAIS une phrase :
+# Les 17 codes de refus. ``reason`` est TOUJOURS l'un d'eux, JAMAIS une phrase :
 # la traduction (fr/en/it) vit dans ``lang.js``, comme partout ailleurs.
+#
+# Les trois derniers arrivent avec le LOT 5 :
+#   ``wrong_side``    — ouvrir à l'envers d'une ligne déjà tenue (le moteur le
+#                       refuserait de toute façon, mais trois étages plus bas
+#                       et avec un message technique) ;
+#   ``stop_widen``    — un stop qui S'ÉLOIGNE n'est pas une gestion, c'est
+#                       l'annulation d'une décision déjà prise ;
+#   ``market_closed`` — créneau du week-end : seules les cryptos s'échangent.
 REJECT_CODES = (
     "unknown_action", "no_symbol", "bad_qty", "no_quote",
     "no_thesis", "no_stop", "risk_high", "too_small", "oversize",
     "too_many_positions", "too_many_crypto", "cash_floor",
     "no_position", "qty_over_position",
+    "wrong_side", "stop_widen", "market_closed",
 )
 
 # D'où vient une décision : du digest quotidien, ou de la passe autonome de
@@ -196,22 +251,43 @@ def _equity_chf(cash_chf: Any, positions: List[Dict[str, Any]]) -> float:
     return total
 
 
-def _held_long(positions: List[Dict[str, Any]], symbol: str) -> float:
-    """Quantité DÉTENUE À LA HAUSSE sur ce symbole, toutes lignes confondues.
+def _pos_side(pos: Dict[str, Any]) -> str:
+    """Le sens d'une ligne persistée ; ``long`` par défaut (c'est la convention
+    de ``models.Position``, dont le champ vaut ``"long"`` s'il manque)."""
+    return (_text(pos.get("side")) or "long").lower()
 
-    Le sens compte : une ligne ``short`` ne se solde pas par une vente (aucun
-    short dans ce lot, cf. tête de fichier), elle n'est donc jamais comptée.
+
+def _held(positions: List[Dict[str, Any]], symbol: str, side: str) -> float:
+    """Quantité détenue sur ce symbole DANS CE SENS, toutes lignes confondues.
+
+    Le sens compte, et il compte dans les deux directions : une ligne vendue à
+    découvert ne se solde pas par une vente (``sell``) mais par un rachat
+    (``cover``), et confondre les deux DOUBLERAIT l'exposition au lieu de la
+    fermer.
     """
     total = 0.0
     for pos in positions:
-        if _symbol(pos.get("symbol")) != symbol:
-            continue
-        if (_text(pos.get("side")) or "long").lower() != "long":
+        if _symbol(pos.get("symbol")) != symbol or _pos_side(pos) != side:
             continue
         qty = _val(pos.get("qty"))
         if qty is not None:
             total += abs(qty)
     return total
+
+
+def _line_of(positions: List[Dict[str, Any]], symbol: str) -> Optional[Dict[str, Any]]:
+    """La PREMIÈRE ligne tenue sur ce symbole, quel qu'en soit le sens.
+
+    Le moteur d'ordres interdit de tenir un achat ET une vente à découvert sur
+    le même titre (``_open_long``/``_open_short`` se refusent mutuellement) :
+    « la première » est donc « la seule », et c'est elle qui dit dans quel sens
+    on est engagé — l'information dont ``reduce`` et ``adjust_stop`` ont besoin
+    pour ne pas avoir à la deviner.
+    """
+    for pos in positions:
+        if _symbol(pos.get("symbol")) == symbol:
+            return pos
+    return None
 
 
 def _crypto_symbols(positions: List[Dict[str, Any]]) -> set:
@@ -233,7 +309,8 @@ def _crypto_symbols(positions: List[Dict[str, Any]]) -> set:
 # PUR — le garde-fou
 # --------------------------------------------------------------------------- #
 
-def gate_decision(decision: Any, portfolio: Any, quote: Any) -> Dict[str, Any]:
+def gate_decision(decision: Any, portfolio: Any, quote: Any,
+                  crypto_only: bool = False) -> Dict[str, Any]:
     """Une décision du modèle passe-t-elle le mandat ? (PUR)
 
     **On REJETTE, on ne rogne JAMAIS en silence** (cf. tête de fichier) : le
@@ -254,22 +331,33 @@ def gate_decision(decision: Any, portfolio: Any, quote: Any) -> Dict[str, Any]:
     Rend ``{"accepted": bool, "reason": str|None, "order": dict|None}``.
     ``reason`` est TOUJOURS un code de :data:`REJECT_CODES`.
 
+    ``crypto_only`` (LOT 5) : le créneau du week-end. Seules les cryptos
+    s'échangent alors ; tout ordre sur une action est refusé
+    (``market_closed``) au lieu de dormir jusqu'au lundi sous un prix du
+    vendredi. Déplacer un stop reste permis — ce n'est pas une exécution.
+
     Ordre des contrôles — le PREMIER échec gagne, et cet ordre est DÉTERMINISTE
     (épinglé par les tests) parce qu'il décide ce que l'utilisateur lira quand
     deux règles sont violées à la fois : on nomme d'abord le problème le plus
     grossier (la décision est-elle seulement lisible ?) avant le plus fin (la
     taille est-elle raisonnable ?).
 
-      1. ``unknown_action`` — action absente ou hors :data:`ACTION_KINDS`
-         (``short``/``cover`` compris : hors périmètre de ce lot).
+      1. ``unknown_action`` — action absente ou hors :data:`ACTION_KINDS`.
       2. ``no_symbol``
-      3. ``bad_qty`` — sauf pour ``sell`` sans quantité : « tout solder ».
-      4. ``no_quote`` — sans prix ni taux valides, aucun contrôle de taille
+      3. ``market_closed`` — créneau crypto, titre qui n'en est pas un. Placé
+         AVANT la quantité et le cours : l'heure ferme le marché pour tout le
+         monde, il n'y a pas à examiner un ordre qui ne partira pas.
+      4. ``adjust_stop`` prend sa propre porte (:func:`_gate_adjust_stop`) —
+         il n'échange rien, ni quantité ni taille ne le concernent.
+      5. ``bad_qty`` — sauf pour ``sell``/``cover`` sans quantité : « tout
+         solder ».
+      6. ``no_quote`` — sans prix ni taux valides, aucun contrôle de taille
          n'a de sens ; refuser vaut mieux que calculer sur un chiffre inventé.
-      5. SORTIE (``sell``/``reduce``) : ``no_position``, ``qty_over_position``.
-      6. ENTRÉE (``buy``) : ``no_thesis``, ``no_stop``, ``risk_high``,
-         ``too_small``, ``oversize``, ``too_many_positions``,
-         ``too_many_crypto``, ``cash_floor``.
+      7. SORTIE (``sell``/``cover``/``reduce``) : ``no_position``,
+         ``qty_over_position``.
+      8. ENTRÉE (``buy``/``short``) : ``wrong_side``, ``no_thesis``,
+         ``no_stop``, ``risk_high``, ``too_small``, ``oversize``,
+         ``too_many_positions``, ``too_many_crypto``, ``cash_floor``.
     """
     decision = decision if isinstance(decision, dict) else {}
     portfolio = portfolio if isinstance(portfolio, dict) else {}
@@ -283,9 +371,21 @@ def gate_decision(decision: Any, portfolio: Any, quote: Any) -> Dict[str, Any]:
     if not symbol:
         return _reject("no_symbol")
 
+    positions = _dicts(portfolio.get("positions"))
+
+    # Marché fermé : seule une consigne au CARNET (déplacer un stop) garde un
+    # sens, puisqu'elle n'agira qu'à la réouverture.
+    if crypto_only and action != "adjust_stop" \
+            and quotes.kind_from_symbol(symbol) != "crypto":
+        return _reject("market_closed")
+
+    if action == "adjust_stop":
+        return _gate_adjust_stop(symbol, decision, positions, quote)
+
     qty_raw = decision.get("qty")
     qty = _as_qty(qty_raw)
-    if qty is None and not (action == "sell" and _is_blank_qty(qty_raw)):
+    if qty is None and not (action in ("sell", "cover")
+                            and _is_blank_qty(qty_raw)):
         # ``reduce`` = allègement PARTIEL : sans quantité il n'y a pas d'ordre.
         return _reject("bad_qty")
 
@@ -294,36 +394,53 @@ def gate_decision(decision: Any, portfolio: Any, quote: Any) -> Dict[str, Any]:
     if price is None or price <= 0 or fx is None or fx <= 0:
         return _reject("no_quote")
 
-    positions = _dicts(portfolio.get("positions"))
-    held = _held_long(positions, symbol)
-
     # ----------------------------------------------------------------- #
     # SORTIE — n'exige QUE l'existence de la position.
     #
     # Une sortie réduit TOUJOURS l'exposition : elle n'a besoin ni de thèse ni
     # de stop (même restriction que ``risk.preorder_warnings``, qui ne
     # s'applique qu'aux ouvertures), et aucun plafond de taille ne la concerne.
+    #
+    # ``reduce`` lit le SENS de la ligne qu'il trouve : « allège » ne dit pas
+    # dans quel sens, et le deviner à l'envers doublerait l'exposition. Les
+    # deux autres l'imposent — ``sell`` solde un achat, ``cover`` un short.
     # ----------------------------------------------------------------- #
-    if action in ("sell", "reduce"):
+    if action in EXIT_ACTIONS:
+        if action == "reduce":
+            line = _line_of(positions, symbol)
+            wanted = _pos_side(line) if line is not None else "long"
+        else:
+            wanted = _SIDE_OF_ACTION[action]
+        held = _held(positions, symbol, wanted)
         if held <= 0:
             return _reject("no_position")
         if qty is None:
             qty = int(held)          # « tout solder »
         if qty > held:
             return _reject("qty_over_position")
-        return _accept(symbol, "sell", qty, decision)
+        return _accept(symbol, "sell" if wanted == "long" else "cover",
+                       qty, decision)
 
     # ----------------------------------------------------------------- #
     # ENTRÉE
     # ----------------------------------------------------------------- #
+    wanted = _SIDE_OF_ACTION[action]          # "long" pour buy, "short" pour short
+    opposite = "short" if wanted == "long" else "long"
+    if _held(positions, symbol, opposite) > 0:
+        # Le moteur d'ordres refuserait aussi, mais trois étages plus bas et
+        # avec un message technique. Le mandat le dit ici, avec son code.
+        return _reject("wrong_side")
+    held = _held(positions, symbol, wanted)
+
     thesis = _text(decision.get("thesis"))
     if len(thesis) < MIN_THESIS_LEN:
         return _reject("no_thesis")
 
     stop = _val(decision.get("stop"))
-    if stop is None or stop >= price:
+    if stop is None or not _stop_protects(wanted, stop, price):
         # Un « stop » au-dessus du prix d'entrée d'un long ne protège rien :
-        # c'est l'absence de stop, pas un stop large.
+        # c'est l'absence de stop, pas un stop large. Le miroir vaut pour un
+        # short, dont l'invalidation est AU-DESSUS.
         return _reject("no_stop")
 
     equity = _equity_chf(portfolio.get("cash_chf"), positions)
@@ -359,20 +476,81 @@ def gate_decision(decision: Any, portfolio: Any, quote: Any) -> Dict[str, Any]:
     # moteur d'ordres refusera de toute façon une trésorerie réellement
     # insuffisante, et mieux vaut un plancher un peu large qu'un module pur
     # qui se met à connaître la grille tarifaire du courtier.
-    cash = _val(portfolio.get("cash_chf")) or 0.0
-    if cash - value_chf < equity * MIN_CASH_PCT / 100.0:
-        return _reject("cash_floor")
+    #
+    # ⚠️ Une VENTE À DÉCOUVERT n'achète rien : elle ne peut pas mettre le
+    # compte à sec, et lui appliquer le plancher interdirait de shorter dès
+    # que la trésorerie est investie. Sa contrainte à elle est la MARGE, que
+    # le moteur d'ordres fait respecter (``_open_short``).
+    if wanted == "long":
+        cash = _val(portfolio.get("cash_chf")) or 0.0
+        if cash - value_chf < equity * MIN_CASH_PCT / 100.0:
+            return _reject("cash_floor")
 
-    return _accept(symbol, "buy", qty, decision)
+    return _accept(symbol, action, qty, decision)
+
+
+def _stop_protects(side: str, stop: float, price: float) -> bool:
+    """Le stop est-il du bon côté du cours pour protéger cette ligne ?
+
+    Un long s'invalide EN DESSOUS, un short AU-DESSUS. Un stop du mauvais côté
+    partirait à la seconde même : ce n'est pas une protection large, c'est une
+    sortie déguisée — et on la refuse sous le même code que son absence, parce
+    que dans les deux cas la ligne n'est pas protégée.
+    """
+    return stop < price if side == "long" else stop > price
+
+
+def _gate_adjust_stop(symbol: str, decision: Dict[str, Any],
+                      positions: List[Dict[str, Any]],
+                      quote: Dict[str, Any]) -> Dict[str, Any]:
+    """Déplacer le stop d'une ligne ouverte — il ne peut QUE se resserrer.
+
+    C'est ce qui rend tenable la consigne « laisse courir les gagnants » : sans
+    ce geste, la seule façon de protéger un gain serait de solder la ligne,
+    exactement ce qu'on lui reproche. Mais le mouvement est à SENS UNIQUE — un
+    stop qui s'éloigne n'est pas une gestion, c'est l'annulation d'une décision
+    déjà prise, et c'est par là que les petites pertes deviennent grandes.
+
+    Resserrer, c'est MONTER pour un long et DESCENDRE pour un short. Une ligne
+    sans stop accepte n'importe quel niveau valide : son invalidation était à
+    l'infini, tout niveau la rapproche.
+
+    Aucune quantité n'est demandée : rien ne s'échange.
+    """
+    line = _line_of(positions, symbol)
+    if line is None:
+        return _reject("no_position")
+
+    stop = _val(decision.get("stop"))
+    if stop is None:
+        return _reject("no_stop")
+
+    side = _pos_side(line)
+    price = _val(quote.get("price"))
+    if price is not None and price > 0 and not _stop_protects(side, stop, price):
+        return _reject("no_stop")
+
+    current = _val(line.get("stop_loss"))
+    if current is not None:
+        tighter = stop > current if side == "long" else stop < current
+        if not tighter:
+            return _reject("stop_widen")
+
+    return _accept(symbol, "adjust_stop", 0, decision)
 
 
 def _accept(symbol: str, side: str, qty: int,
             decision: Dict[str, Any]) -> Dict[str, Any]:
     """L'ordre normalisé, prêt pour le moteur d'ordres du simulateur.
 
-    ``sell`` et ``reduce`` rendent tous deux ``side="sell"`` : la différence
-    n'est pas dans l'exécution (une vente est une vente) mais dans l'INTENTION,
-    déjà consignée au registre.
+    ``side`` est un sens du MOTEUR (``models.ORDER_SIDES``), pas le nom de
+    l'action : ``reduce`` rend ``sell`` ou ``cover`` selon la ligne trouvée —
+    la différence n'est pas dans l'exécution (une vente est une vente) mais
+    dans l'INTENTION, déjà consignée au registre.
+
+    ``adjust_stop`` est le seul ``side`` qui ne soit pas un ordre : il ne passe
+    pas par le moteur, il repose le ``stop_loss`` de la ligne. Sa quantité vaut
+    0 — rien ne s'échange.
 
     ``setup`` est conservé s'il appartient à ``models.SETUPS``, sinon ramené à
     :data:`DEFAULT_SETUP` — la whitelist du journal est FERMÉE, un libellé
@@ -411,9 +589,24 @@ def _accept(symbol: str, side: str, qty: int,
 # La clôture est OPTIONNELLE quand le bloc court jusqu'au bout du texte : un
 # modèle tronqué en fin de réponse ne doit pas laisser du JSON à moitié écrit
 # dans un message Telegram (cf. :func:`parse_actions`).
-_BLOCK_RE = re.compile(
-    r"```[ \t]*" + ACTIONS_MARKER + r"[ \t]*\r?\n(.*?)(?:```|\Z)",
-    re.DOTALL | re.IGNORECASE)
+def _block_re(marker: str):
+    """L'expression qui isole un bloc de clôture nommé ``marker``.
+
+    Fabriquée plutôt que constante depuis le LOT 5 : le processus en deux temps
+    lit DEUX blocs de forme identique (``COACH_FOCUS`` au tri, ``COACH_ACTIONS``
+    au dossier), et deux expressions écrites à la main auraient divergé au
+    premier ajustement de tolérance.
+    """
+    return re.compile(r"```[ \t]*" + marker + r"[ \t]*\r?\n(.*?)(?:```|\Z)",
+                      re.DOTALL | re.IGNORECASE)
+
+
+_BLOCK_RE = _block_re(ACTIONS_MARKER)
+
+# Le bloc du PREMIER temps : le tri. Le modèle y désigne les ≤3 dossiers qu'il
+# veut instruire ; c'est ce qui décide si un second appel part.
+FOCUS_MARKER = "COACH_FOCUS"
+_FOCUS_RE = _block_re(FOCUS_MARKER)
 
 
 def _actions_of(payload: Any) -> Optional[List[Dict[str, Any]]]:
@@ -510,6 +703,64 @@ def parse_actions(text: Any) -> Dict[str, Any]:
             "error": None}
 
 
+def parse_focus(text: Any) -> Dict[str, Any]:
+    """Le bloc du PREMIER temps : les dossiers que le coach veut instruire (PUR).
+
+    Rend ``{"text": str, "focus": [symboles], "note": str|None, "error": None|
+    "no_block"|"parse_failed"}`` — le miroir exact de :func:`parse_actions`,
+    dont il partage le lecteur de bloc et la tolérance.
+
+    **Pourquoi ce tri existe** : le contexte complet (livre, candidats, radar,
+    agenda, humeur) suffit à REPÉRER ce qui mérite un examen, pas à le
+    DÉCIDER. Le deuxième appel, lui, ne reçoit que trois titres mais tout ce
+    qu'on sait d'eux — analyse technique, presse récente, dossier historique,
+    mouvements de gérants. Un seul appel qui porterait ces dossiers pour vingt
+    candidats serait illisible autant qu'inabordable.
+
+    Un tri VIDE est une réponse légitime (« rien ne mérite un dossier
+    aujourd'hui ») et coûte alors UN SEUL appel au modèle.
+
+    Les symboles sont canonisés en majuscules et dédoublonnés dans l'ordre
+    d'apparition, puis plafonnés à :data:`MAX_FOCUS` — un modèle bavard ne doit
+    pas faire exploser le coût du second appel. Une entrée qui n'est pas une
+    chaîne est ÉCARTÉE : un nombre n'est pas un ticker (même doctrine que
+    :func:`_symbol`).
+    """
+    body = text if isinstance(text, str) else ""
+    matches = list(_FOCUS_RE.finditer(body))
+    if not matches:
+        return {"text": _tidy(body), "focus": [], "note": None,
+                "error": "no_block"}
+
+    cleaned = _tidy(_FOCUS_RE.sub("", body))
+    try:
+        payload = json.loads(matches[0].group(1).strip())
+    except (TypeError, ValueError):
+        return {"text": cleaned, "focus": [], "note": None,
+                "error": "parse_failed"}
+
+    if isinstance(payload, dict):
+        raw = payload.get("focus")
+    elif isinstance(payload, list):
+        raw = payload
+    else:
+        return {"text": cleaned, "focus": [], "note": None,
+                "error": "parse_failed"}
+    if not isinstance(raw, list):
+        return {"text": cleaned, "focus": [], "note": None,
+                "error": "parse_failed"}
+
+    focus: List[str] = []
+    for item in raw:
+        symbol = _symbol(item)
+        if symbol and symbol not in focus:
+            focus.append(symbol)
+        if len(focus) >= MAX_FOCUS:
+            break
+    return {"text": cleaned, "focus": focus, "note": _note_of(payload),
+            "error": None}
+
+
 # --------------------------------------------------------------------------- #
 # PUR — l'horloge (heure LOCALE, jamais celle du système)
 # --------------------------------------------------------------------------- #
@@ -543,6 +794,88 @@ def _parse_iso(value: Any) -> Optional[datetime]:
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=timezone.utc)
     return parsed
+
+
+def slots_for(now: Any) -> tuple:
+    """Les créneaux du JOUR de ``now`` (heure LOCALE), du plus tôt au plus tard.
+
+    Trois en semaine, un seul le week-end (cf. le bloc « BUDGET COACH »).
+    """
+    return WEEKEND_SLOTS if _local(now).weekday() > 4 else WEEKDAY_SLOTS
+
+
+def crypto_only_at(now: Any) -> bool:
+    """Le créneau de ce moment n'autorise-t-il QUE les cryptos ?
+
+    Le week-end, les bourses sont fermées : un ordre sur une action y dormirait
+    jusqu'au lundi pour s'exécuter à un prix que personne n'a vu. Les cryptos,
+    elles, cotent sans interruption — et c'est justement pour elles que ce
+    créneau existe.
+    """
+    return _local(now).weekday() > 4
+
+
+def _slot_minutes(slot: Any) -> Optional[int]:
+    """``"15:40"`` -> 940 minutes depuis minuit. Illisible -> ``None``."""
+    text = _text(slot)
+    parts = text.split(":")
+    if len(parts) != 2:
+        return None
+    try:
+        hours, minutes = int(parts[0]), int(parts[1])
+    except (TypeError, ValueError):
+        return None
+    if not (0 <= hours < 24 and 0 <= minutes < 60):
+        return None
+    return hours * 60 + minutes
+
+
+def due_slot(now: Any, state: Any) -> Optional[str]:
+    """Quel créneau doit tourner MAINTENANT, ou ``None`` (PUR).
+
+    On rend le DERNIER créneau atteint, s'il n'a pas déjà tourné aujourd'hui.
+
+    ⚠️ **Un créneau manqué ne se rattrape PAS**, et c'est délibéré. La valeur
+    de ces horaires est dans l'HEURE elle-même : 15h40 vaut « dix minutes avant
+    l'ouverture de New York », pas « la première passe de la journée ». Le
+    rattraper à 18 h ferait payer un appel au modèle pour une lecture dont le
+    moment est passé, et enchaînerait deux passes en dix minutes sur un
+    contexte identique. Une machine éteinte tout l'après-midi ne perd donc pas
+    sa journée — elle reprend au créneau courant, qui est le seul encore vrai.
+
+    Une passe par créneau et par jour, comparée sur la DATE LOCALE (comme
+    :func:`pass_due`) : un horodatage absent OU ILLISIBLE compte comme « jamais
+    tourné » — mieux vaut une passe de trop qu'un compte qui cesse de trader en
+    silence parce qu'un fichier a été touché à la main.
+    """
+    local = _local(now)
+    minutes_now = local.hour * 60 + local.minute
+    stamps = {}
+    if isinstance(state, dict) and isinstance(state.get("slots"), dict):
+        stamps = state["slots"]
+
+    for slot in reversed(slots_for(now)):
+        threshold = _slot_minutes(slot)
+        if threshold is None or minutes_now < threshold:
+            continue
+        last = _parse_iso(stamps.get(slot))
+        if last is None or _local(last).date() != local.date():
+            return slot
+        return None            # le créneau courant a déjà tourné
+    return None
+
+
+def arm_slot(state: Any, slot: Any, now_iso: Any) -> Dict[str, Any]:
+    """L'état, ce créneau marqué comme ayant tourné (PUR, ne mute rien).
+
+    Les autres créneaux sont CONSERVÉS : armer celui de 18 h ne doit pas
+    effacer la trace de celui de 15h40, sinon le rattrapage le relancerait.
+    """
+    out = dict(state if isinstance(state, dict) else {})
+    slots = out.get("slots")
+    out["slots"] = dict(slots) if isinstance(slots, dict) else {}
+    out["slots"][_text(slot)] = _text(now_iso)
+    return out
 
 
 def pass_due(now: Any, last_ts: Any, *, hour: int = RUN_AFTER_HOUR) -> bool:
@@ -741,8 +1074,8 @@ def _default_snapshot(now_iso: str) -> Any:
     return _router().snapshot_equity_all(now_iso)
 
 
-def _default_pass(now_iso: str) -> Any:
-    return _router().run_coach_daily_pass(now_iso)
+def _default_pass(now_iso: str, crypto_only: bool = False) -> Any:
+    return _router().run_coach_daily_pass(now_iso, crypto_only=crypto_only)
 
 
 def maybe_run(now: Any = None,
@@ -767,11 +1100,11 @@ def maybe_run(now: Any = None,
        vit dans ``snapshot_equity_all`` et reste l'autorité sur la donnée.
        Conséquence assumée : un compte humain créé APRÈS la photo du jour
        attend celle de demain — sans conséquence sur une courbe quotidienne.
-    3. **la passe quotidienne de gestion** (:func:`pass_due` : jour de semaine,
-       pas avant 17 h locales, une par jour). L'état est ARMÉ après la
-       TENTATIVE, quel qu'en soit le résultat — même doctrine que ``weekly`` :
-       sans cela, une panne du modèle ferait retenter toutes les 5 minutes
-       jusqu'à minuit.
+    3. **la passe de gestion, PAR CRÉNEAU** (:func:`due_slot` — trois par jour
+       ouvré, un seul le week-end et CRYPTO uniquement, cf. le bloc « BUDGET
+       COACH »). L'état est ARMÉ après la TENTATIVE, quel qu'en soit le
+       résultat — même doctrine que ``weekly`` : sans cela, une panne du modèle
+       ferait retenter toutes les 5 minutes jusqu'au créneau suivant.
 
     **Un SEUL horodatage local** (``Europe/Rome``) est passé aux trois volets.
     C'est délibéré : la photo se range sous une DATE, et le gate
@@ -804,6 +1137,9 @@ def maybe_run(now: Any = None,
     Rend ``{"ticked", "snapshotted", "passed", "reason"}`` — ``reason`` décrit
     le sort du VOLET 3 (``None`` s'il a tourné, ``"not_due"`` si l'horloge a
     refusé, ``"error"`` s'il a échoué), le seul dont l'inaction soit normale.
+    S'y ajoutent ``slot`` et ``crypto_only`` quand un créneau a été retenu :
+    savoir LEQUEL a tourné est la première chose qu'on regarde quand la
+    cadence surprend.
     """
     out = {"ticked": False, "snapshotted": False, "passed": False,
            "reason": None}
@@ -833,26 +1169,34 @@ def maybe_run(now: Any = None,
         logger.warning("paper coach_trader: photo de patrimoine en panne (%s)",
                        type(exc).__name__)
 
-    # --- 3) la passe quotidienne de gestion --------------------------- #
+    # --- 3) la passe de gestion, PAR CRÉNEAU (LOT 5) ------------------- #
     try:
         state = load_state()
     except Exception:      # noqa: BLE001 — état illisible : on retente
         state = {}
-    if not pass_due(now, state.get("last_pass")):
+    slot = due_slot(now, state)
+    if slot is None:
         out["reason"] = "not_due"
         return out
 
+    out["slot"] = slot
+    crypto_only = crypto_only_at(now)
+    out["crypto_only"] = crypto_only
     try:
-        (pass_fn or _default_pass)(local_iso)
+        (pass_fn or _default_pass)(local_iso, crypto_only)
         out["passed"] = True
     except Exception as exc:      # noqa: BLE001
         out["reason"] = "error"
-        logger.warning("paper coach_trader: passe quotidienne en panne (%s)",
-                       type(exc).__name__)
+        logger.warning("paper coach_trader: passe du créneau %s en panne (%s)",
+                       slot, type(exc).__name__)
 
     # ARMÉ APRÈS LA TENTATIVE, quel qu'en soit le résultat (cf. docstring).
+    # ``last_pass`` reste écrit à côté de ``slots`` : il ne gate plus rien
+    # (c'est ``due_slot`` qui décide, créneau par créneau) mais il dit quand le
+    # coach a tourné pour la dernière fois, toutes passes confondues — une
+    # trace qu'on ne veut pas perdre en passant aux créneaux.
     try:
-        state = dict(state)
+        state = arm_slot(state, slot, state_iso)
         state["last_pass"] = state_iso
         save_state(state)
     except Exception as exc:      # noqa: BLE001

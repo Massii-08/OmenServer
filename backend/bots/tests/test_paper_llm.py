@@ -1111,3 +1111,130 @@ def test_coach_actions_block_ne_repete_pas_l_intro_de_ses_appelants():
     ).split("150 à 400 mots.")[-1]
     assert section.count("TON PROPRE compte") + \
         section.count("TON PROPRE COMPTE") == 1
+
+
+# ==========================================================================
+#  LOT 5 « Coach Trader MAX » — ce que le prompt doit DIRE, désormais
+# ==========================================================================
+
+def test_le_bloc_annonce_que_le_short_est_disponible():
+    """Le mur vécu en prod : quatre refus d'entrer d'affilée, ses meilleures
+    thèses étant BAISSIÈRES donc « inexécutables en achat seul ». Si le prompt
+    ne le dit pas, le mandat a beau l'autoriser, il ne s'en servira pas."""
+    block = llm.coach_actions_block(BOOK).lower()
+    assert "short" in block
+    assert "baissi" in block                    # « une thèse BAISSIÈRE se JOUE »
+    assert "au-dessus" in block                 # le stop d'un short
+    assert "cover" in block                     # ... et la façon de refermer
+
+
+def test_le_bloc_explique_le_stop_des_deux_cotes():
+    from backend.bots.paper import coach_trader
+
+    block = llm.coach_actions_block(BOOK)
+    for action in coach_trader.ENTRY_ACTIONS + coach_trader.EXIT_ACTIONS:
+        assert action in block, action
+    assert "adjust_stop" in block
+
+
+def test_le_bloc_dit_que_le_stop_ne_se_desserre_jamais():
+    block = llm.coach_actions_block(BOOK).lower()
+    assert "resserr" in block
+    assert "refus" in block                     # un stop qui s'éloigne est REFUSÉ
+
+
+def test_le_bloc_decrit_les_niveaux_techniques_disponibles():
+    """L'autre moitié du blocage : « je n'ai pas de niveau technique fiable
+    pour poser un stop ». Les niveaux existent maintenant — encore faut-il lui
+    dire qu'il les a et à quoi ils servent."""
+    block = llm.coach_actions_block(BOOK).lower()
+    assert "technical" in block
+    for mot in ("rsi", "atr", "52 semaines", "moyenne"):
+        assert mot in block, mot
+    assert "null" in block                      # une donnée absente ne s'invente pas
+
+
+def test_le_bloc_dit_que_le_short_ne_consomme_pas_la_tresorerie():
+    block = llm.coach_actions_block(BOOK).lower()
+    assert "n'achète rien" in block or "n achète rien" in block
+
+
+# --- Le prompt du PREMIER temps : le tri ---------------------------------- #
+
+SCREEN_CTX = {
+    "now": "2026-08-26T18:00:00",
+    "cash_chf": 6200.0,
+    "equity_chf": 10450.0,
+    "positions": [{"symbol": "NESN.SW", "qty": 12, "side": "long"}],
+    "candidates": [{"symbol": "AAPL", "price_chf": 176.0,
+                    "technical": {"rsi14": 61.2}}],
+    "radar": [],
+}
+
+
+def test_le_prompt_de_tri_ne_demande_AUCUN_ordre():
+    """Le tri REPÈRE, il ne décide pas : y glisser un bloc d'actions ferait
+    passer des ordres sur un contexte large, ce que la passe en deux temps
+    cherche précisément à éviter."""
+    from backend.bots.paper import coach_trader
+
+    prompt = llm.build_coach_screen_prompt(SCREEN_CTX)
+    assert coach_trader.ACTIONS_MARKER not in prompt
+    assert coach_trader.FOCUS_MARKER in prompt
+
+
+def test_le_prompt_de_tri_borne_le_nombre_de_dossiers():
+    from backend.bots.paper import coach_trader
+
+    prompt = llm.build_coach_screen_prompt(SCREEN_CTX)
+    assert str(coach_trader.MAX_FOCUS) in prompt
+    assert '"focus"' in prompt
+
+
+def test_le_prompt_de_tri_porte_le_contexte_complet():
+    prompt = llm.build_coach_screen_prompt(SCREEN_CTX)
+    assert "NESN.SW" in prompt and "AAPL" in prompt
+
+
+def test_le_prompt_de_tri_dit_que_la_liste_vide_est_legitime():
+    prompt = llm.build_coach_screen_prompt(SCREEN_CTX).lower()
+    assert "vide" in prompt and "légitime" in prompt
+    assert "timidité" in prompt          # ... mais que ce doit être un CHOIX
+
+
+def test_le_prompt_de_tri_annonce_le_week_end_ferme():
+    ouvert = llm.build_coach_screen_prompt(SCREEN_CTX)
+    ferme = llm.build_coach_screen_prompt(dict(SCREEN_CTX, crypto_only=True))
+    assert "ferm" in ferme.lower() and "crypto" in ferme.lower()
+    assert "ferm" not in ouvert.lower()
+
+
+def test_le_prompt_de_tri_ne_leve_jamais():
+    for junk in (None, {}, [], "pas un dict", 0):
+        assert isinstance(llm.build_coach_screen_prompt(junk), str)
+
+
+# --- Le prompt du SECOND temps : les dossiers ------------------------------ #
+
+def test_les_dossiers_arrivent_dans_le_second_prompt():
+    ctx = dict(SCREEN_CTX, dossiers=[{
+        "symbol": "AAPL",
+        "technical": {"sma200": 180.4, "atr14": 4.2},
+        "news": [{"title": "une dépêche", "sentiment": "pos"}],
+        "history": ["une ligne d'historique"],
+        "whale_moves": [{"symbol": "AAPL", "action": "sortie"}],
+        "memory": [{"thesis": "une thèse déjà jouée", "outcome": "rate"}],
+    }])
+    prompt = llm.build_coach_trader_prompt(ctx)
+    assert "DOSSIERS" in prompt
+    assert "une dépêche" in prompt
+    assert "une ligne d'historique" in prompt
+    assert "une thèse déjà jouée" in prompt
+    assert "180.4" in prompt
+
+
+def test_pas_de_section_dossiers_quand_le_tri_n_a_rien_retenu():
+    """Une section vide inviterait le modèle à la combler tout seul."""
+    assert "DOSSIERS" not in llm.build_coach_trader_prompt(SCREEN_CTX)
+    assert "DOSSIERS" not in llm.build_coach_trader_prompt(
+        dict(SCREEN_CTX, dossiers=[]))

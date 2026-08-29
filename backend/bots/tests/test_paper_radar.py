@@ -1427,3 +1427,88 @@ def test_un_module_whales_absent_ne_casse_pas_le_radar(monkeypatch):
     whales_stub.moves_summary = boom
     _install_whales(monkeypatch, whales_stub)
     assert radar._collect_whale_moves() == []
+
+
+# ==========================================================================
+#  LOT 5 — hygiène des tickers : une hypothèse peut nommer un titre qui
+#  n'existe pas.
+#
+#  Vécu : le modèle a écrit « SAP.TO », qui n'existe pas chez Yahoo. Sans
+#  contrôle, ce fantôme entrait dans l'univers du coach et y restait — la
+#  cotation échouait à chaque passe, silencieusement. On ne SUPPRIME pas
+#  l'hypothèse pour autant : sa thèse peut être juste, c'est le ticker de
+#  mesure qui est faux. On la MARQUE, et le coach l'ignore comme candidat.
+# ==========================================================================
+
+def test_a_quoted_ticker_leaves_no_mark():
+    hyp = {"tickers": ["NESN.SW", "AAPL"]}
+    radar.mark_unquoted(hyp, is_quoted=lambda symbol: True)
+    assert "unquoted" not in hyp
+    assert hyp["tickers"] == ["NESN.SW", "AAPL"]
+
+
+def test_an_unknown_ticker_is_marked_but_kept():
+    """L'hypothèse SURVIT : sa thèse peut être juste, c'est son ticker de
+    mesure qui est faux. La jeter perdrait le raisonnement avec le fantôme."""
+    hyp = {"thesis": "une chaîne valable", "tickers": ["SAP.TO", "NESN.SW"]}
+    radar.mark_unquoted(hyp, is_quoted=lambda symbol: symbol != "SAP.TO")
+    assert hyp["tickers"] == ["SAP.TO", "NESN.SW"]
+    assert hyp["unquoted"] == ["SAP.TO"]
+    assert hyp["thesis"] == "une chaîne valable"
+
+
+def test_the_mark_lists_the_guilty_tickers_not_the_whole_hypothesis():
+    """⚠️ Choix de conception : la marque est la LISTE des tickers muets, pas
+    un booléen sur l'hypothèse. Un booléen ferait jeter deux tickers valides
+    parce qu'un troisième est mort — et une hypothèse en porte jusqu'à trois."""
+    hyp = {"tickers": ["MORT1", "NESN.SW", "MORT2"]}
+    radar.mark_unquoted(hyp, is_quoted=lambda s: s == "NESN.SW")
+    assert hyp["unquoted"] == ["MORT1", "MORT2"]
+
+
+def test_the_mark_is_refreshed_not_accumulated():
+    """Un titre peut redevenir cotable (nouvelle place, fin de suspension) :
+    la marque se REFAIT à chaque contrôle plutôt que de s'empiler."""
+    hyp = {"tickers": ["NESN.SW"], "unquoted": ["NESN.SW"]}
+    radar.mark_unquoted(hyp, is_quoted=lambda symbol: True)
+    assert "unquoted" not in hyp
+
+
+def test_a_quote_failure_is_not_an_absent_ticker():
+    """Yahoo en panne n'est pas « ce titre n'existe pas ». Une exception du
+    contrôle laisse le ticker INTACT : marquer sur une panne réseau
+    supprimerait tout l'univers du coach le jour d'une coupure."""
+    def _boom(symbol):
+        raise RuntimeError("Yahoo injoignable")
+
+    hyp = {"tickers": ["NESN.SW"]}
+    radar.mark_unquoted(hyp, is_quoted=_boom)
+    assert "unquoted" not in hyp
+
+
+def test_marking_tolerates_anything():
+    for junk in (None, {}, {"tickers": None}, {"tickers": [1, None, True]}):
+        radar.mark_unquoted(junk, is_quoted=lambda symbol: False)   # ne lève pas
+
+
+def test_generated_hypotheses_are_checked_at_birth(sources, alice, monkeypatch):
+    """Le contrôle vit au POINT D'ÉCRITURE : une hypothèse née avec un ticker
+    fantôme doit porter sa marque tout de suite, pas au premier échec de
+    cotation trois jours plus tard."""
+    sources.events = [EVENT]
+    monkeypatch.setattr(radar, "_default_is_quoted",
+                        lambda symbol: symbol != "SAP.TO", raising=False)
+    answer = json.dumps({"hypotheses": [{
+        "thesis": "les licences reculent",
+        "chain": ["a", "b"],
+        "tickers": ["SAP.TO", "NESN.SW"],
+        "direction": "down",
+        "horizon_days": 10,
+        "invalidation": "un rebond",
+    }]})
+
+    radar.run_once(now=NOW, llm=_llm(answer), tg_cfg=TG,
+                   fetch_candles=lambda *a: [])
+    hyp = radar.load_state()["hypotheses"][-1]
+    assert hyp["tickers"] == ["SAP.TO", "NESN.SW"]
+    assert hyp["unquoted"] == ["SAP.TO"]

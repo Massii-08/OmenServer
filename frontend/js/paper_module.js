@@ -1869,13 +1869,18 @@ const PaperModule = {
             const pnl = this._n(this._pickField(pos, ['pnl_chf', 'unrealized_pnl_chf', 'pnl']));
             const pnlPct = this._n(this._pickField(pos, ['pnl_pct', 'unrealized_pnl_pct']));
             const cur = pos.currency || '';
+            const side = String(pos.side || 'long');
+            // Le short est la seule position à perte théoriquement illimitée :
+            // un vrai badge (pas un petit texte gris indistinguable du long).
             return '<tr data-paper-act="pos-toggle" data-sym="' + esc(sym) + '" ' +
                    'style="cursor:pointer;' +
                    (this._posOpen === sym ? 'background:var(--bg-elev-2);' : '') + '">' +
                 '<td style="' + td + '">' +
                   '<span style="font-weight:600;">' + esc(sym) + '</span>' +
-                  '<span style="font-size:12px;color:var(--text-dim);margin-left:6px;">' +
-                    esc(this._sideLabel(pos.side || 'long')) + '</span>' +
+                  (side === 'short'
+                    ? ' <span class="badge warn">' + esc(Lang.t('paper.badge_short')) + '</span>'
+                    : '<span style="font-size:12px;color:var(--text-dim);margin-left:6px;">' +
+                      esc(this._sideLabel(side)) + '</span>') +
                 '</td>' +
                 '<td style="' + td + this._mono + '">' + esc(this._num(qty, 0)) + '</td>' +
                 '<td style="' + td + this._mono + '">' + esc(this._money(avg, cur)) + '</td>' +
@@ -3751,9 +3756,14 @@ const PaperModule = {
                 '<span><span style="color:var(--text-dim);">' + esc(Lang.t(labelKey)) +
                 '</span> <span style="' + this._mono + '">' +
                 esc(this._money(v, cur)) + '</span></span>';
+            const side = String((pos && pos.side) || '');
             return '<tr>' +
                 '<td style="' + td + 'font-weight:600;">' + esc(sym) + '</td>' +
-                '<td style="' + td + '">' + esc(this._sideLabel(pos && pos.side)) + '</td>' +
+                '<td style="' + td + '">' +
+                  (side === 'short'
+                    ? '<span class="badge warn">' + esc(Lang.t('paper.badge_short')) + '</span>'
+                    : esc(this._sideLabel(side))) +
+                '</td>' +
                 '<td style="' + td + this._mono + '">' +
                   esc(this._num(this._n(pos && pos.qty), 0)) + '</td>' +
                 '<td style="' + td + this._mono + '">' +

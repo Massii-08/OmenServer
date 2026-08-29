@@ -896,6 +896,9 @@ def coach_actions_block(book: Any) -> str:
     # section — une consigne démentie par ce qui la suit apprend au modèle que
     # les consignes sont approximatives, et le bloc finirait au milieu du
     # message. Épinglé par un test.
+    entrees = " et ".join(coach_trader.ENTRY_ACTIONS)
+    sorties = " et ".join(coach_trader.EXIT_ACTIONS)
+
     return "\n\n".join([
         "Voici ce que tu as en main à cette seconde — c'est TON livre, pas "
         "celui de Massii :",
@@ -911,6 +914,34 @@ def coach_actions_block(book: Any) -> str:
         "le manque de données n'est plus une excuse. Une liste vide veut "
         "dire qu'aucune hypothèse n'est ouverte en ce moment, pas qu'aucun "
         "titre n'existe.",
+        # LOT 5 — l'autre moitié du blocage vécu : « je n'ai pas de niveau
+        # technique fiable pour poser un stop ». Il l'a maintenant.
+        "Chaque candidat et chaque ligne portent un champ ``technical`` : "
+        "moyennes mobiles 20/50/200, RSI 14, ATR 14 (en valeur ET en % du "
+        "cours), plus haut et plus bas de 52 semaines, position dans ce canal, "
+        "variation sur 5 séances. POSE DES STOPS TECHNIQUES : sous un support "
+        "ou une moyenne pour un achat, au-dessus d'une résistance ou d'une "
+        "moyenne pour une vente à découvert. L'ATR te donne l'ORDRE DE "
+        "GRANDEUR — un stop plus serré que 1 ATR se fait sortir par le bruit "
+        "ordinaire du titre, un stop à 2 ou 3 ATR laisse respirer la thèse. "
+        "Un champ ``null`` veut dire que la donnée n'a pas pu être calculée "
+        "(série trop courte) : ne l'invente pas, sers-toi du reste.",
+        # Le mur vécu : quatre refus d'entrer d'affilée, ses meilleures thèses
+        # étant BAISSIÈRES. Le moteur savait shorter, le mandat l'interdisait.
+        "LE SHORT EST DISPONIBLE. Une thèse BAISSIÈRE à conviction se JOUE "
+        "(``short``), elle ne se regarde plus passer : tu vends à découvert, "
+        "avec un stop AU-DESSUS de ton entrée (le miroir exact de l'achat, où "
+        "il est en dessous), et tu refermes par ``cover``. Les mêmes plafonds "
+        "s'appliquent, à un détail près : une vente à découvert n'achète rien, "
+        "elle ne consomme donc pas ton plancher de trésorerie. Tu ne peux pas "
+        "tenir les deux sens sur un même titre — solde avant de retourner ta "
+        "position.",
+        "``adjust_stop`` déplace le stop d'une ligne ouverte, et il ne sait "
+        "faire qu'UNE chose : le RESSERRER (le monter sous un achat, le "
+        "descendre au-dessus d'une vente à découvert). C'est ce qui rend "
+        "tenable « laisser courir les gagnants » — protéger un gain sans "
+        "solder la ligne. Un stop qui s'éloigne est REFUSÉ : ce ne serait pas "
+        "de la gestion, ce serait annuler une décision que tu as déjà prise.",
         # Directive de Massii : « le but, vu que c'est un test, c'est qu'il
         # gagne le plus possible — cela ne veut pas dire d'oublier toute mesure
         # de sûreté ». La sûreté vit dans le garde-fou DÉTERMINISTE
@@ -960,9 +991,9 @@ def coach_actions_block(book: Any) -> str:
             _pct(coach_trader.MIN_CASH_PCT)),
         "Une SORTIE (%s) n'a besoin ni de thèse ni de stop : elle réduit "
         "l'exposition. Une ENTRÉE (%s) exige une thèse écrite d'au moins %d "
-        "caractères et un stop SOUS le prix — sans quoi elle est refusée."
-        % (" et ".join(coach_trader.ACTION_KINDS[1:]),
-           coach_trader.ACTION_KINDS[0], coach_trader.MIN_THESIS_LEN),
+        "caractères et un stop du BON CÔTÉ du prix — sous lui pour un achat, "
+        "au-dessus pour une vente à découvert — sans quoi elle est refusée."
+        % (sorties, entrees, coach_trader.MIN_THESIS_LEN),
         "TU ES NOTÉ, ET LA NOTE EST PUBLIQUE. Chaque décision est archivée puis "
         "comparée : le REGISTRE garde tes ordres acceptés ET tes REFUS avec "
         "leur motif ; un score de DISCIPLINE mesure le respect de ta propre "
@@ -989,17 +1020,100 @@ def coach_actions_block(book: Any) -> str:
         "``symbol`` est un ticker Yahoo ; ``qty`` est un entier ; ``stop`` et "
         "``target`` sont des PRIX exprimés dans la DEVISE DU TITRE (jamais "
         "convertis) ; ``thesis`` tient en une phrase ; ``setup`` est "
-        "facultatif et vaut l'un de : %s. Un ``sell`` SANS ``qty`` veut dire "
-        "« solder la ligne entière ». ``note`` est un champ de TÊTE, à côté "
-        "de ``actions`` (pas dedans) : FACULTATIF et bienvenu en une phrase "
-        "de lecture de marché quand tu agis, OBLIGATOIRE quand tu n'agis pas "
-        "(cf. ci-dessus)." % (kinds, setups),
+        "facultatif et vaut l'un de : %s. Un ``sell`` ou un ``cover`` SANS "
+        "``qty`` veut dire « solder la ligne entière » ; un ``adjust_stop`` "
+        "ne prend que ``symbol`` et ``stop`` (rien ne s'échange). ``note`` "
+        "est un champ de TÊTE, à côté de ``actions`` (pas dedans) : "
+        "FACULTATIF et bienvenu en une phrase de lecture de marché quand tu "
+        "agis, OBLIGATOIRE quand tu n'agis pas (cf. ci-dessus)."
+        % (kinds, setups),
         "```%s\n"
         '{"actions": [{"action": "buy", "symbol": "NESN.SW", "qty": 12, '
         '"stop": 92.5, "target": 118.0, "thesis": "une phrase courte", '
         '"setup": "news"}], "note": "une phrase de lecture de marché"}\n'
         "```" % coach_trader.ACTIONS_MARKER,
     ])
+
+
+def build_coach_screen_prompt(context: Optional[Dict[str, Any]],
+                              lang: str = "fr") -> str:
+    """PREMIER TEMPS de la passe : le TRI (PUR, LOT 5).
+
+    Il reçoit le contexte COMPLET (livre, candidats cotés avec leur analyse
+    technique, radar, humeur du marché, agenda) et ne rend qu'une chose : les
+    ``MAX_FOCUS`` titres qui méritent un dossier. C'est ce tri qui décide si un
+    second appel part — et « aucun » est une réponse légitime qui n'en coûte
+    aucun.
+
+    Il ne PASSE PAS d'ordre : aucun bloc d'actions ici, exprès. Un modèle à qui
+    on demande de décider avec un contexte large décide mal ; on lui demande
+    donc de REPÉRER, puis on lui donne les moyens de décider sur trois titres.
+    """
+    ctx = context if isinstance(context, dict) else {}
+    crypto_only = bool(ctx.get("crypto_only"))
+    return "\n\n".join([
+        SYSTEM_PROMPT,
+        _lang_line(lang),
+        "PREMIER TEMPS — LE TRI. Tu gères TON livre, et tu commences par "
+        "regarder large : ce que tu détiens, ce que le radar suit, la "
+        "nervosité du marché, les rendez-vous datés qui approchent. Ta seule "
+        "tâche ici est de DÉSIGNER les titres qui méritent qu'on ouvre leur "
+        "dossier complet — tu ne passes aucun ordre à cette étape.",
+        _block("CONTEXTE", ctx),
+        "Regarde d'abord tes propres lignes : une position dont la thèse ne "
+        "tient plus, dont le stop mérite d'être resserré ou dont le catalyseur "
+        "est passé sans rien produire mérite un dossier autant qu'une "
+        "opportunité neuve. Regarde ensuite les candidats du radar : un écart "
+        "de prix marquant, un niveau technique atteint, un rendez-vous "
+        "imminent.",
+        ("⚠️ CRÉNEAU DE WEEK-END : les bourses sont FERMÉES. Seules les "
+         "cryptos s'échangent — ne retiens que des cryptos, tout ordre sur une "
+         "action serait refusé. Tu peux en revanche resserrer le stop de "
+         "n'importe quelle ligne : c'est une consigne au carnet, elle agira à "
+         "la réouverture."
+         if crypto_only else
+         "Les marchés sont ouverts : actions et cryptos sont jouables."),
+        "Retiens AU PLUS %d titres, et seulement ceux sur lesquels tu es "
+        "prêt à agir aujourd'hui — pas ceux qui « pourraient être "
+        "intéressants ». Une liste VIDE est une réponse légitime quand rien "
+        "n'atteint tes critères, et elle t'évite un examen inutile ; mais "
+        "elle doit être un CHOIX, pas de la timidité : le registre archive "
+        "aussi les journées sans action." % coach_trader.MAX_FOCUS,
+        "Écris d'abord deux ou trois phrases de lecture du marché et de ton "
+        "livre, puis termine IMPÉRATIVEMENT par ce bloc, et RIEN après. "
+        "``focus`` est une liste de tickers Yahoo (au plus %d, éventuellement "
+        "vide) ; ``note`` dit en une à trois phrases SPÉCIFIQUES pourquoi ces "
+        "titres — ou, si la liste est vide, ce que tu attends précisément pour "
+        "agir : un niveau de prix, une date de l'agenda, une confirmation "
+        "nommée. « J'attends une meilleure opportunité » ne dit rien et sera "
+        "affiché tel quel." % coach_trader.MAX_FOCUS,
+        "```%s\n"
+        '{"focus": ["NESN.SW", "BTC-USD"], "note": "pourquoi ces deux-là"}\n'
+        "```" % coach_trader.FOCUS_MARKER,
+    ])
+
+
+def _dossier_line(context: Any) -> list:
+    """La section DOSSIERS du second temps, ou rien (PUR).
+
+    Absente quand le tri n'a rien retenu — une section vide inviterait le
+    modèle à la combler tout seul (même précaution que :func:`_sweep_line`).
+    """
+    ctx = context if isinstance(context, dict) else {}
+    dossiers = ctx.get("dossiers")
+    if not isinstance(dossiers, list) or not dossiers:
+        return []
+    return [
+        "DOSSIERS — voici TOUT ce que la mémoire sait des titres que tu as "
+        "retenus au premier temps. Pour chacun : son analyse technique "
+        "(``technical``), la presse récente (``news``), son dossier historique "
+        "(``history``), les mouvements de grands gérants qui le concernent "
+        "(``whale_moves``) et ce que TU as déjà dit de lui (``memory`` : tes "
+        "hypothèses passées et leur verdict). C'est sur cette matière que tu "
+        "décides — et ``memory`` est là pour que tu ne rejoues pas une thèse "
+        "que tu as déjà vue échouer.",
+        _block("DOSSIERS", dossiers),
+    ]
 
 
 def build_coach_trader_prompt(context: Optional[Dict[str, Any]],
@@ -1031,6 +1145,7 @@ def build_coach_trader_prompt(context: Optional[Dict[str, Any]],
         "phrase, un stop que tu peux nommer), et tu assumes de NE RIEN FAIRE "
         "quand il n'y a rien à faire.",
         _block("CONTEXTE", ctx),
+    ] + _dossier_line(ctx) + [
         "Écris, dans cet ordre et sans titres pompeux : (1) l'état de ton "
         "livre en deux ou trois phrases — ce qui travaille, ce qui traîne, ce "
         "qui te coûte ; (2) ligne par ligne, ce que tu fais de chacune "
