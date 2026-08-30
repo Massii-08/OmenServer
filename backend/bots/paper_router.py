@@ -1358,10 +1358,12 @@ def _coach_technical(symbol: str) -> Optional[Dict[str, Any]]:
 
 
 def _coach_equity_chf(portfolio: models.Portfolio) -> float:
-    """Équité au PRIX DE REVIENT — exactement la convention de
-    ``paper_place_order`` (trésorerie + lignes longues + lignes courtes)."""
+    """Équité au PRIX DE REVIENT : trésorerie + lignes longues − lignes
+    courtes. Le cash porte DÉJÀ le produit d'une vente à découvert : la ligne
+    courte est une DETTE de rachat, l'additionner la compterait deux fois
+    (vécu 30/08 : tuile Patrimonio à +41 % un week-end, marchés fermés)."""
     return (portfolio.cash_chf + _positions_value_chf(portfolio, "long")
-            + _positions_value_chf(portfolio, "short"))
+            - _positions_value_chf(portfolio, "short"))
 
 
 def _coach_reject_detail(code: str, decision: Dict[str, Any],
@@ -2998,8 +3000,7 @@ def paper_place_order(data: OrderPayload,
                                   "long" if side == "buy" else "short")
         held = existing.qty if existing is not None else 0
         projected = (held + qty) * entry_estimate * fx_rate
-    equity = portfolio.cash_chf + _positions_value_chf(portfolio, "long") \
-        + _positions_value_chf(portfolio, "short")
+    equity = _coach_equity_chf(portfolio)
     warnings = compute_warnings(side, order.thesis, data.stop_loss, risk_chf,
                                 portfolio.initial_capital, projected, equity)
 

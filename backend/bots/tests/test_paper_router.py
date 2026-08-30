@@ -2342,6 +2342,25 @@ class FakeModule(object):
             setattr(self, name, function)
 
 
+def test_coach_equity_counts_a_short_as_a_debt_not_an_asset(tmp_path, monkeypatch):
+    """VECU (30/08, tuile Patrimonio a +41 % un week-end) : le cash porte DEJA
+    le produit de la vente a decouvert — additionner en plus la valeur de la
+    ligne courte compte la dette de rachat comme un avoir."""
+    make_client(tmp_path, monkeypatch)
+    portfolio = pr.models.Portfolio(cash_chf=12000.0, initial_capital=10000.0)
+    portfolio.positions.append(pr.models.Position(
+        symbol="DAL", qty=25, avg_price=80.0, side="short", fx_rate=1.0))
+    assert pr._coach_equity_chf(portfolio) == pytest.approx(10000.0)
+
+
+def test_coach_equity_still_adds_long_lines(tmp_path, monkeypatch):
+    make_client(tmp_path, monkeypatch)
+    portfolio = pr.models.Portfolio(cash_chf=8000.0, initial_capital=10000.0)
+    portfolio.positions.append(pr.models.Position(
+        symbol="NESN.SW", qty=25, avg_price=80.0, side="long", fx_rate=1.0))
+    assert pr._coach_equity_chf(portfolio) == pytest.approx(10000.0)
+
+
 def test_news_endpoint_serves_the_watch(tmp_path, monkeypatch):
     c, _ = make_client(tmp_path, monkeypatch)
     events = [{"ts": 1, "symbol": "NESN.SW", "title": "Résultats", "link": "http://x",
