@@ -3377,8 +3377,11 @@ const PaperModule = {
     // _totalValue pour le portefeuille du lecteur).
     _ctEquityNow() {
         const ct = this._ct || {};
-        const direct = this._n(this._pickField(ct.exposure,
-            ['total_chf', 'total_value_chf', 'total_value']));
+        // Le serveur fournit l'équité NETTE (les shorts se soustraient).
+        // ⚠️ Ne JAMAIS retomber sur ct.exposure : c'est l'exposition BRUTE
+        // (un short y compte en positif, par sémantique de concentration) —
+        // l'utiliser comme patrimoine affichait +41 % un week-end (30/08).
+        const direct = this._n(ct.equity_now_chf);
         if (direct !== null) return direct;
         const p = this._ctPortfolio();
         const cash = this._n(this._pickField(p, ['cash_chf', 'cash']));
@@ -3389,7 +3392,8 @@ const PaperModule = {
             const fx = this._n(pos && pos.fx_rate) || 1;
             let px = this._ctLast(pos);
             if (px === null) px = this._n(pos && pos.avg_price);
-            if (qty !== null && px !== null) sum += Math.abs(qty) * px * fx;
+            const sign = (pos && String(pos.side || 'long') === 'short') ? -1 : 1;
+            if (qty !== null && px !== null) sum += sign * Math.abs(qty) * px * fx;
         });
         return sum;
     },

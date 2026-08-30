@@ -3229,6 +3229,12 @@ def paper_coach_trader(
         "display": COACH_DISPLAY,
         "portfolio": portfolio.to_dict(),
         "quotes": quote_map,
+        # ⚠️ Le PATRIMOINE de la tuile — équité NETTE au cours du jour (les
+        # shorts se SOUSTRAIENT, cf. _equity_now_chf). ``exposure`` en dessous
+        # est BRUT par sémantique (un short EST du risque) : l'écran ne doit
+        # JAMAIS l'utiliser comme patrimoine (vécu 30/08 : +41 % un week-end).
+        "equity_now_chf": _equity_now_chf(portfolio.to_dict(), prices,
+                                          fx_rates),
         "exposure": risk.exposure(positions, prices, portfolio.cash_chf,
                                   fx_rates),
         "stats": risk.portfolio_stats(trades,

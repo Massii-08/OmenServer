@@ -2342,6 +2342,21 @@ class FakeModule(object):
             setattr(self, name, function)
 
 
+def test_coach_trader_payload_serves_net_equity_not_gross_exposure(tmp_path, monkeypatch):
+    """La tuile Patrimonio lit ``equity_now_chf`` (NET, shorts soustraits) —
+    jamais ``exposure`` (BRUT par semantique de concentration)."""
+    c, _ = make_client(tmp_path, monkeypatch)
+    portfolio = pr._ensure_coach_account()
+    portfolio.cash_chf = 12000.0
+    portfolio.positions.append(pr.models.Position(
+        symbol="DAL", qty=25, avg_price=80.0, side="short", fx_rate=1.0))
+    pr._save(pr.coach_trader.COACH_USERNAME, portfolio)
+    monkeypatch.setattr(pr, "_coach_quote", lambda s: None)
+
+    body = c.get("/api/paper/coach-trader").json()
+    assert body["equity_now_chf"] == pytest.approx(10000.0)
+
+
 def test_coach_equity_counts_a_short_as_a_debt_not_an_asset(tmp_path, monkeypatch):
     """VECU (30/08, tuile Patrimonio a +41 % un week-end) : le cash porte DEJA
     le produit de la vente a decouvert — additionner en plus la valeur de la
