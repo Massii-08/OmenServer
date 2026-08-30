@@ -1981,6 +1981,81 @@ def _coach_position_row(position: models.Position,
     }
 
 
+def _coach_dist_pct(live: Optional[float], level: Optional[float],
+                    side: str, kind: str) -> Optional[float]:
+    """Distance en % entre le cours actuel et un niveau (stop ou objectif),
+    LOT 7 — écran « Coach en action ».
+
+    Signée comme ``pnl_pct`` (LOT 5) : POSITIF = marge avant d'atteindre le
+    niveau (stop pas encore touché / objectif pas encore atteint), quel que
+    soit le sens de la position. ``kind`` fixe le sens BRUT (un stop protège
+    par en-dessous pour un long, un objectif se vise par au-dessus) avant
+    l'inversion ``short`` — même geste que ``_coach_position_row``.
+
+    ``None`` sans niveau posé ou sans cours exploitable : une distance
+    inventée serait pire qu'une case vide.
+    """
+    if live is None or live == 0 or level is None:
+        return None
+    if kind == "stop":
+        raw = (live - level) / live * 100.0
+    else:
+        raw = (level - live) / live * 100.0
+    if side == "short":
+        raw = -raw
+    return round(raw, 2)
+
+
+def _coach_position_view_row(position: models.Position,
+                             price: Optional[float],
+                             rate: Optional[float]) -> Dict[str, Any]:
+    """Une ligne du coach pour l'écran « Coach en action » (LOT 7).
+
+    Réutilise ``_coach_position_row`` (LOT 5) pour le cours, la valeur CHF et
+    le ``pnl_pct`` déjà signe-correct pour les shorts — RÈGLE ABSOLUE du lot
+    (leçon du 30/08, e8bec3e/66d3ebd : quatre copies de la formule d'équité,
+    dont une comptait un short comme un avoir) : tout calcul d'argent se fait
+    ICI, une seule fois, jamais recopié côté écran.
+
+    ``pnl_chf`` est dérivé de ``value_chf`` (déjà posé par la ligne réutilisée)
+    et d'un ``cost_chf`` au MÊME taux — pas une seconde formule parallèle,
+    juste la différence entre ce qui est détenu et ce qu'il a coûté, avec la
+    même inversion ``short`` que ``pnl_pct``.
+
+    ``stale`` est ``True`` quand ``price`` est absent (panne de cote) : le
+    ``current_price`` renvoyé est alors le prix de revient (repli déjà fait
+    par ``_coach_position_row``) — un fait visible, jamais un ``None`` muet.
+    """
+    row = _coach_position_row(position, price, rate)
+    stale = price is None
+    fx = rate if rate else (position.fx_rate or 1.0)
+    cost_chf = round(abs(position.qty) * (position.avg_price or 0.0) * fx, 2)
+    pnl_chf = row["value_chf"] - cost_chf
+    if position.side == "short":
+        pnl_chf = -pnl_chf
+    live = row["price"]
+    return {
+        "symbol": row["symbol"],
+        "side": row["side"],
+        "qty": row["qty"],
+        "avg_price": row["avg_price"],
+        "currency": row["currency"],
+        "current_price": live,
+        "stale": stale,
+        "pnl_chf": round(pnl_chf, 2),
+        "pnl_pct": row["pnl_pct"],
+        "stop_loss": row["stop_loss"],
+        "target": row["target"],
+        "dist_stop_pct": _coach_dist_pct(live, row["stop_loss"], position.side, "stop"),
+        "dist_target_pct": _coach_dist_pct(live, row["target"], position.side, "target"),
+        "value_chf": row["value_chf"],
+        "risk_chf": position.risk_chf,
+        "thesis": row["thesis"],
+        "setup": position.setup,
+        "opened_at": row["opened_at"],
+    }
+
+
 def _coach_pass_context(portfolio: models.Portfolio,
                         now_iso: str) -> Dict[str, Any]:
     """Le contexte de la passe quotidienne : des faits DÉJÀ CALCULÉS.
@@ -3224,11 +3299,27 @@ def paper_coach_trader(
     trades = [t.to_dict() for t in portfolio.trades]
     last_pass = coach_trader.load_state().get("last_pass")
 
+    # LOT 7 — « Coach en action » veut VOIR chaque ligne vivre (cours, P&L,
+    # distances) : ``quote_map``/``prices``/``fx_rates`` sont DÉJÀ construits
+    # ci-dessus, aucun appel réseau de plus. Best-effort PAR LIGNE — un titre
+    # illisible ne doit jamais faire tomber tout l'écran.
+    positions_view: List[Dict[str, Any]] = []
+    for position in portfolio.positions:
+        try:
+            quote = quote_map.get(position.symbol) or {}
+            currency = (quote.get("currency") or position.currency or "").upper()
+            positions_view.append(_coach_position_view_row(
+                position, prices.get(position.symbol), fx_rates.get(currency)))
+        except Exception as e:              # noqa: BLE001 — une ligne n'en casse pas une autre
+            logger.warning("paper coach: ligne positions_view illisible pour %s (%s)",
+                           position.symbol, type(e).__name__)
+
     return {
         "username": coach_trader.COACH_USERNAME,
         "display": COACH_DISPLAY,
         "portfolio": portfolio.to_dict(),
         "quotes": quote_map,
+        "positions_view": positions_view,
         # ⚠️ Le PATRIMOINE de la tuile — équité NETTE au cours du jour (les
         # shorts se SOUSTRAIENT, cf. _equity_now_chf). ``exposure`` en dessous
         # est BRUT par sémantique (un short EST du risque) : l'écran ne doit

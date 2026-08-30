@@ -6498,6 +6498,193 @@ def test_coach_trader_view_shows_the_ledger_including_refusals(tmp_path, monkeyp
     assert body["quotes"] == {}          # rien n'a été acheté
 
 
+# --- LOT 7 — positions_view : le vivant des positions -------------------- #
+#
+# Tout calcul d'argent se fait CÔTÉ SERVEUR (leçon du 30/08, e8bec3e/66d3ebd :
+# quatre copies de la formule d'équité, dont une comptait un short comme un
+# avoir). ``positions_view`` réutilise ``_coach_position_row`` (LOT 5) pour le
+# prix, la valeur CHF et le ``pnl_pct`` déjà signe-correct pour les shorts —
+# ces tests couvrent seulement ce que LOT 7 AJOUTE : ``pnl_chf``, les
+# distances au stop/à l'objectif, et le repli ``stale`` sur panne de cote.
+
+def _coach_position(**kwargs):
+    """Une position du coach, prête à empiler dans le portefeuille (LOT 7)."""
+    defaults = dict(symbol="NESN.SW", qty=10, avg_price=100.0, currency="CHF",
+                    fx_rate=1.0, side="long", thesis="Le marché sous-estime X.",
+                    stop_loss=90.0, target=120.0, risk_chf=50.0, setup="breakout",
+                    opened_at="2026-08-20T09:00:00")
+    defaults.update(kwargs)
+    return pr.models.Position(**defaults)
+
+
+def _ct_positions_view(client):
+    return client.get("/api/paper/coach-trader").json()["positions_view"]
+
+
+def test_positions_view_long_winner_has_signed_correct_pnl(tmp_path, monkeypatch):
+    c, market = make_client(tmp_path, monkeypatch)
+    portfolio = pr._ensure_coach_account()
+    portfolio.positions.append(_coach_position())
+    pr._save(pr.coach_trader.COACH_USERNAME, portfolio)
+    market.prices["NESN.SW"] = (110.0, "CHF", "Nestle SA")
+
+    row = _ct_positions_view(c)[0]
+    assert row["symbol"] == "NESN.SW"
+    assert row["side"] == "long"
+    assert row["current_price"] == 110.0
+    assert row["stale"] is False
+    assert row["pnl_pct"] == pytest.approx(10.0)
+    assert row["pnl_chf"] == pytest.approx(100.0)     # 10 titres * 10 CHF de hausse
+    assert row["value_chf"] == pytest.approx(1100.0)
+
+
+def test_positions_view_long_loser_is_negative(tmp_path, monkeypatch):
+    c, market = make_client(tmp_path, monkeypatch)
+    portfolio = pr._ensure_coach_account()
+    portfolio.positions.append(_coach_position())
+    pr._save(pr.coach_trader.COACH_USERNAME, portfolio)
+    market.prices["NESN.SW"] = (90.0, "CHF", "Nestle SA")
+
+    row = _ct_positions_view(c)[0]
+    assert row["pnl_pct"] == pytest.approx(-10.0)
+    assert row["pnl_chf"] == pytest.approx(-100.0)
+
+
+def test_positions_view_short_winner_is_positive_when_price_falls(tmp_path, monkeypatch):
+    """Un short GAGNE quand le cours BAISSE — ``pnl_chf``/``pnl_pct`` doivent
+    être POSITIFS, l'inversion que porte déjà ``_coach_position_row``."""
+    c, market = make_client(tmp_path, monkeypatch)
+    portfolio = pr._ensure_coach_account()
+    portfolio.positions.append(_coach_position(
+        symbol="DAL", qty=25, avg_price=80.0, currency="USD", fx_rate=1.0,
+        side="short", stop_loss=85.0, target=50.0))
+    pr._save(pr.coach_trader.COACH_USERNAME, portfolio)
+    market.fx["USD"] = 0.88
+    market.prices["DAL"] = (60.0, "USD", "Delta")
+
+    row = _ct_positions_view(c)[0]
+    assert row["side"] == "short"
+    assert row["pnl_pct"] == pytest.approx(25.0)
+    assert row["pnl_chf"] == pytest.approx(440.0)     # 25 * 20 CHF de baisse * 0.88
+
+def test_positions_view_short_loser_is_negative_when_price_rises(tmp_path, monkeypatch):
+    c, market = make_client(tmp_path, monkeypatch)
+    portfolio = pr._ensure_coach_account()
+    portfolio.positions.append(_coach_position(
+        symbol="DAL", qty=25, avg_price=80.0, currency="USD", fx_rate=1.0,
+        side="short", stop_loss=85.0, target=50.0))
+    pr._save(pr.coach_trader.COACH_USERNAME, portfolio)
+    market.fx["USD"] = 0.88
+    market.prices["DAL"] = (95.0, "USD", "Delta")
+
+    row = _ct_positions_view(c)[0]
+    assert row["pnl_pct"] == pytest.approx(-18.75)
+    assert row["pnl_chf"] == pytest.approx(-330.0)
+
+
+def test_positions_view_falls_back_to_avg_price_and_flags_stale_on_quote_failure(
+        tmp_path, monkeypatch):
+    c, market = make_client(tmp_path, monkeypatch)
+    portfolio = pr._ensure_coach_account()
+    portfolio.positions.append(_coach_position())
+    pr._save(pr.coach_trader.COACH_USERNAME, portfolio)
+    market.broken.add("NESN.SW")
+
+    row = _ct_positions_view(c)[0]
+    assert row["stale"] is True
+    assert row["current_price"] == 100.0    # repli = prix de revient
+    assert row["pnl_chf"] == 0.0
+    assert row["pnl_pct"] == 0.0
+
+
+def test_positions_view_distances_are_signed_as_margin_before_the_level_long(
+        tmp_path, monkeypatch):
+    c, market = make_client(tmp_path, monkeypatch)
+    portfolio = pr._ensure_coach_account()
+    portfolio.positions.append(_coach_position(stop_loss=95.0, target=120.0))
+    pr._save(pr.coach_trader.COACH_USERNAME, portfolio)
+    market.prices["NESN.SW"] = (110.0, "CHF", "Nestle SA")
+
+    row = _ct_positions_view(c)[0]
+    assert row["dist_stop_pct"] == pytest.approx(13.64, abs=0.01)      # (110-95)/110
+    assert row["dist_target_pct"] == pytest.approx(9.09, abs=0.01)     # (120-110)/110
+
+
+def test_positions_view_distances_are_signed_as_margin_before_the_level_short(
+        tmp_path, monkeypatch):
+    c, market = make_client(tmp_path, monkeypatch)
+    portfolio = pr._ensure_coach_account()
+    portfolio.positions.append(_coach_position(
+        symbol="DAL", qty=25, avg_price=80.0, currency="USD", fx_rate=1.0,
+        side="short", stop_loss=85.0, target=50.0))
+    pr._save(pr.coach_trader.COACH_USERNAME, portfolio)
+    market.fx["USD"] = 0.88
+    market.prices["DAL"] = (60.0, "USD", "Delta")
+
+    row = _ct_positions_view(c)[0]
+    assert row["dist_stop_pct"] == pytest.approx(41.67, abs=0.01)      # (85-60)/60
+    assert row["dist_target_pct"] == pytest.approx(16.67, abs=0.01)    # (60-50)/60
+
+
+def test_positions_view_distance_is_none_without_a_plan(tmp_path, monkeypatch):
+    c, market = make_client(tmp_path, monkeypatch)
+    portfolio = pr._ensure_coach_account()
+    portfolio.positions.append(_coach_position(stop_loss=None, target=None))
+    pr._save(pr.coach_trader.COACH_USERNAME, portfolio)
+    market.prices["NESN.SW"] = (110.0, "CHF", "Nestle SA")
+
+    row = _ct_positions_view(c)[0]
+    assert row["dist_stop_pct"] is None
+    assert row["dist_target_pct"] is None
+
+
+def test_positions_view_carries_risk_chf_setup_and_opened_at(tmp_path, monkeypatch):
+    c, market = make_client(tmp_path, monkeypatch)
+    portfolio = pr._ensure_coach_account()
+    portfolio.positions.append(_coach_position(risk_chf=42.5, setup="breakout",
+                                                opened_at="2026-08-20T09:00:00"))
+    pr._save(pr.coach_trader.COACH_USERNAME, portfolio)
+    market.prices["NESN.SW"] = (110.0, "CHF", "Nestle SA")
+
+    row = _ct_positions_view(c)[0]
+    assert row["risk_chf"] == pytest.approx(42.5)
+    assert row["setup"] == "breakout"
+    assert row["opened_at"] == "2026-08-20T09:00:00"
+
+
+def test_positions_view_never_crashes_when_a_line_is_broken(tmp_path, monkeypatch):
+    """Best-effort PAR LIGNE : un titre illisible ne doit jamais faire tomber
+    tout l'écran — même doctrine que le reste de ce module."""
+    c, market = make_client(tmp_path, monkeypatch)
+    portfolio = pr._ensure_coach_account()
+    portfolio.positions.append(_coach_position(symbol="RO.SW", avg_price=0.0))
+    portfolio.positions.append(_coach_position())
+    pr._save(pr.coach_trader.COACH_USERNAME, portfolio)
+    market.prices["NESN.SW"] = (110.0, "CHF", "Nestle SA")
+    market.prices["RO.SW"] = (280.0, "CHF", "Roche Holding AG")
+
+    body = c.get("/api/paper/coach-trader").json()
+    assert len(body["positions_view"]) == 2
+
+
+def test_positions_view_asks_the_price_once_per_symbol(tmp_path, monkeypatch):
+    """``positions_view`` réutilise le ``quote_map`` déjà construit — AUCUN
+    appel réseau supplémentaire (LOT 7, règle absolue : tout calcul déjà fait
+    côté serveur, jamais refait)."""
+    c, market = make_client(tmp_path, monkeypatch)
+    portfolio = pr._ensure_coach_account()
+    portfolio.positions.append(_coach_position())
+    pr._save(pr.coach_trader.COACH_USERNAME, portfolio)
+    market.prices["NESN.SW"] = (110.0, "CHF", "Nestle SA")
+    calls = []
+    real_get_quote = quotes.get_quote
+    monkeypatch.setattr(quotes, "get_quote",
+                        lambda s: calls.append(s) or real_get_quote(s))
+
+    c.get("/api/paper/coach-trader")
+    assert calls.count("NESN.SW") == 1
+
+
 def test_portfolio_carries_the_equity_curve(tmp_path, monkeypatch):
     """La carte « Courbe d'équité » du dashboard lit ``equity_curve`` — aucun
     backend ne l'avait jamais produite."""
