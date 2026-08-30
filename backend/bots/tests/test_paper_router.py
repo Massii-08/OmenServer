@@ -6349,10 +6349,62 @@ def test_coach_trader_run_forces_the_pass_for_an_admin(tmp_path, monkeypatch):
     c, _ = make_client(tmp_path, monkeypatch)
     calls = []
     monkeypatch.setattr(pr, "run_coach_daily_pass",
-                        lambda now_iso=None: calls.append(now_iso) or {"ok": True})
+                        lambda now_iso=None, crypto_only=False:
+                        calls.append(now_iso) or {"ok": True})
     body = c.post("/api/paper/coach-trader/run?sync=1")
     assert body.status_code == 200 and body.json() == {"ok": True}
     assert len(calls) == 1
+
+
+# --- LOT 6 — la passe FORCÉE applique la MÊME règle d'univers ------------ #
+
+SUNDAY_NOW = "2026-08-23T01:47:00"  # l'incident réel : un short d'action US
+
+
+def test_coach_trader_run_computes_crypto_only_from_the_real_moment(
+        tmp_path, monkeypatch):
+    """Vécu en prod : la passe FORCÉE a shorté une action US un dimanche
+    01:47 — elle saute le gate d'HORAIRE (``pass_due``, c'est le sens du mot
+    « forcer ») mais ne doit JAMAIS sauter le gate d'UNIVERS. Avant ce fix,
+    ``crypto_only`` restait au défaut ``False`` quel que soit le jour, faute
+    d'être calculé du tout."""
+    c, _ = make_client(tmp_path, monkeypatch)
+    calls = []
+    monkeypatch.setattr(pr, "run_coach_daily_pass",
+                        lambda now_iso=None, crypto_only=False:
+                        calls.append(crypto_only) or {"ok": True})
+
+    monkeypatch.setattr(pr, "_now_iso", lambda: SUNDAY_NOW)
+    assert c.post("/api/paper/coach-trader/run?sync=1").status_code == 200
+    monkeypatch.setattr(pr, "_now_iso", lambda: FIXED_NOW)     # lundi
+    assert c.post("/api/paper/coach-trader/run?sync=1").status_code == 200
+
+    assert calls == [True, False]
+
+
+def test_coach_trader_run_forced_on_sunday_refuses_stocks_and_keeps_crypto(
+        tmp_path, monkeypatch):
+    """Bout en bout via l'endpoint HTTP forcé : une action US se voit
+    opposer ``market_closed``, une crypto passe — même verdict que la passe
+    naturelle du week-end (``test_the_weekend_pass_refuses_stocks_and_keeps_
+    crypto``), désormais garanti aussi quand un admin CLIQUE le bouton."""
+    c, market = make_client(tmp_path, monkeypatch)
+    market.prices["BTC-USD"] = (100.0, "USD", "Bitcoin")
+    market.candles["BTC-USD"] = _serie()
+    market.candles["NESN.SW"] = _serie()
+    monkeypatch.setattr(pr, "_now_iso", lambda: SUNDAY_NOW)
+    speaker = _Speaker(
+        _focus_answer(["NESN.SW", "BTC-USD"]),
+        _actions_answer([coach_action(),
+                         coach_action(symbol="BTC-USD", qty=15, stop=90.0)]))
+    monkeypatch.setattr(pr.llm, "_claude_text", speaker)
+
+    body = c.post("/api/paper/coach-trader/run?sync=1")
+    assert body.status_code == 200
+
+    rows = {row["symbol"]: row for row in coach_ledger() if row["symbol"]}
+    assert rows["NESN.SW"]["reason"] == "market_closed"
+    assert rows["BTC-USD"]["accepted"] is True
 
 
 def test_coach_trader_view_returns_both_equity_series(tmp_path, monkeypatch):

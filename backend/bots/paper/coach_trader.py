@@ -767,7 +767,23 @@ def parse_focus(text: Any) -> Dict[str, Any]:
 
 def _aware_utc(now: Any) -> datetime:
     """``now`` en ``datetime`` timezone-aware. Un naïf est traité comme UTC —
-    même convention que ``weekly._aware_utc``."""
+    même convention que ``weekly._aware_utc``.
+
+    **LOT 6** : une chaîne ISO est PARSÉE (même tolérance que
+    :func:`_parse_iso`, naïf traité comme UTC), pas ignorée. Sans ça, la
+    passe FORCÉE (qui ne porte l'instant que sous forme d'une chaîne
+    ``_now_iso()``) retombait silencieusement sur l'heure RÉELLE du système à
+    chaque appel de :func:`crypto_only_at` — invisible en prod (c'est
+    toujours « maintenant » de toute façon), mais rendait le calcul
+    intestable à horloge figée, et surtout AUCUN appelant existant ne passait
+    de chaîne ici avant ce lot (seul ``last_ts`` de :func:`pass_due` en
+    recevait, via :func:`_parse_iso`) : zéro régression.
+    """
+    if isinstance(now, str):
+        parsed = _parse_iso(now)
+        if parsed is not None:
+            return parsed
+        now = None
     if not isinstance(now, datetime):
         now = datetime.now(timezone.utc)
     if now.tzinfo is None:

@@ -3265,12 +3265,23 @@ def paper_coach_trader_run(
     proprement en consignant ``llm_failed`` au registre, elle n'invente aucun
     ordre.
 
+    ⚠️ **LOT 6** — elle ne saute PAS le gate d'UNIVERS. Vécu en prod : un
+    short d'action US un dimanche 01:47, parce que ``crypto_only`` restait au
+    défaut ``False`` de ``run_coach_daily_pass`` — rien ne le calculait ici.
+    « Forcer » lève le gate d'HORAIRE (``pass_due``), jamais celui du week-end
+    (``coach_trader.crypto_only_at``, la MÊME fonction pure que la passe
+    naturelle) : une action ne s'échange toujours pas hors semaine, même sur
+    un clic admin.
+
     Détaché par DÉFAUT, en ligne sur ``?sync=1`` : même patron ``_job_or_sync``
     que les six autres endpoints coûteux de ce fichier, et pour la même raison
     (un appel au modèle dépasse largement le délai d'une requête HTTP).
     """
+    now_iso = _now_iso()
+    crypto_only = coach_trader.crypto_only_at(now_iso)
     return _job_or_sync(sync, current_user.username,
-                        lambda: run_coach_daily_pass(_now_iso()))
+                        lambda: run_coach_daily_pass(now_iso,
+                                                     crypto_only=crypto_only))
 
 
 # --------------------------------------------------------------------------- #

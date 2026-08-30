@@ -782,6 +782,34 @@ def test_pass_due_honours_a_custom_hour():
     assert coach_trader.pass_due(FRIDAY_ON_TIME, None, hour=23) is False
 
 
+# --------------------------------------------------------------------------- #
+# crypto_only_at — LOT 6 : accepte aussi une chaîne ISO (pas seulement un
+# ``datetime``), pour que les 3 chemins (passe naturelle, forcée, digest)
+# puissent tous s'appuyer sur la MÊME fonction avec l'horodatage qu'ils ont
+# sous la main (souvent une chaîne, ``_now_iso()``-style).
+# --------------------------------------------------------------------------- #
+
+def test_crypto_only_at_reads_a_naive_datetime_as_utc():
+    assert coach_trader.crypto_only_at(SUNDAY) is True
+    assert coach_trader.crypto_only_at(MONDAY) is False
+
+
+def test_crypto_only_at_parses_an_iso_string_instead_of_ignoring_it():
+    """Vécu : ``_aware_utc`` ignorait toute chaîne (non-``datetime``) et
+    retombait sur l'heure RÉELLE du système — la passe FORCÉE (qui ne
+    dispose que d'une chaîne ``_now_iso()``) ne pouvait alors jamais tester
+    un dimanche en test à horloge figée."""
+    assert coach_trader.crypto_only_at("2026-08-23T01:47:00") is True   # dimanche
+    assert coach_trader.crypto_only_at("2026-08-24T10:00:00") is False  # lundi
+
+
+@pytest.mark.parametrize("value", [None, "", "   ", "n'importe quoi", 42])
+def test_crypto_only_at_falls_back_to_now_when_unreadable(value):
+    """Illisible -> l'heure réelle du système, jamais une exception (même
+    doctrine que ``pass_due`` : mieux vaut une réponse que planter)."""
+    coach_trader.crypto_only_at(value)      # ne lève pas
+
+
 def test_pass_due_default_hour_is_the_constant():
     assert coach_trader.RUN_AFTER_HOUR == 17
 
