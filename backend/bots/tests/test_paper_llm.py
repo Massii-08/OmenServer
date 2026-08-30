@@ -203,6 +203,16 @@ def test_build_weekly_prompt_handles_a_week_without_any_closed_trade():
     assert "aucun trade" in prompt.lower()
 
 
+def test_build_weekly_prompt_offers_the_bounded_improvement_block():
+    """LOT 6 — le bilan peut se terminer par UNE proposition concrète
+    d'amélioration de l'outillage, que ``coach_medic`` peut transformer en
+    session de réparation le dimanche soir (cf. tools/coach_medic.py)."""
+    prompt = llm.build_weekly_prompt({"closed_this_week": []})
+    assert "AMELIORATION_PROPOSEE" in prompt
+    assert "UNE" in prompt or "une seule" in prompt.lower()
+    assert "refonte" in prompt.lower()
+
+
 def test_write_analysis_returns_the_text():
     out = llm.write_analysis({"symbol": "X"},
                              run=runner(FakeProc(0, envelope("Fiche."))))

@@ -573,12 +573,17 @@ def diagnose(now=None, ledger_path=None, coach_state_path=None,
 
 def run_medic(now=None, disabled_path=None,
              ledger_path=None, coach_state_path=None, newswatch_state_path=None,
-             journal_fetch=None, state_path=None, telegram_cfg=None,
-             notifier=None, popen=subprocess.Popen, claude_bin=None,
-             model="sonnet", git_run=subprocess.run, runs_dir=None,
-             weekly_check=None):
+             journal_fetch=None, journal_reader=None, state_path=None,
+             telegram_cfg=None, notifier=None, popen=subprocess.Popen,
+             claude_bin=None, model="sonnet", git_run=subprocess.run,
+             runs_dir=None, weekly_check=None):
     """Le cycle complet d'un passage de cron. NE LÈVE JAMAIS ce qui peut être
-    évité — un médecin qui plante est un médecin de moins."""
+    évité — un médecin qui plante est un médecin de moins.
+
+    Sans ``weekly_check`` explicite, le chantier 3 (amélioration hebdomadaire
+    bornée) tourne par défaut via :func:`maybe_weekly_improvement` — le
+    dimanche soir, le carnet du coach est lu via ``journal_reader``
+    (injectable, sinon ``coach-vault/Journal.md`` sur disque)."""
     now = now or datetime.now(timezone.utc)
 
     if kill_switch_active(disabled_path):
@@ -602,9 +607,14 @@ def run_medic(now=None, disabled_path=None,
             chosen = failure
             break
 
-    if chosen is None and weekly_check is not None:
-        chosen = weekly_check(now, history)
-        kind = "weekly_improvement"
+    if chosen is None:
+        check = weekly_check
+        if check is None:
+            check = lambda n, h: maybe_weekly_improvement(n, h, journal_reader=journal_reader)
+        weekly_failure = check(now, history)
+        if weekly_failure is not None:
+            chosen = weekly_failure
+            kind = WEEKLY_IMPROVEMENT_KIND
 
     if chosen is None:
         return {"action": "idle", "failures": [f.code for f in failures]}
@@ -636,6 +646,102 @@ def run_medic(now=None, disabled_path=None,
     }]
     save_medic_state({"sessions": history}, state_path)
     return {"action": kind, "signature": chosen.signature, "pushed": pushed, "rc": rc}
+
+
+# --------------------------------------------------------------------------- #
+# chantier 3 — amélioration hebdomadaire bornée
+#
+# Le dimanche soir, le bilan hebdomadaire (``backend/bots/paper/llm.py::
+# build_weekly_prompt``) peut proposer UNE amélioration concrète et bornée
+# (outillage/données/règles — jamais une refonte, jamais un conseil de
+# trading). Le médecin la lit dans le carnet du COACH (``coach-vault/
+# Journal.md`` — décision de scope : ce lot est L'INFIRMIER DU COACH, pas de
+# tous les comptes) et, s'il en trouve une, en fait une session — même
+# mécanique/périmètre/portes que la réparation.
+# --------------------------------------------------------------------------- #
+
+WEEKLY_IMPROVEMENT_KIND = "weekly_improvement"
+WEEKLY_RUN_WEEKDAY = 6      # dimanche (datetime.weekday())
+WEEKLY_RUN_AFTER_HOUR = 21  # heure LOCALE Europe/Rome
+
+# Même famille de motif que ``coach_trader._block_re`` (bloc fenced, clôture
+# optionnelle si le texte est tronqué en fin de réponse).
+_AMELIORATION_RE = re.compile(
+    r"```[ \t]*AMELIORATION_PROPOSEE[ \t]*\r?\n(.*?)(?:```|\Z)",
+    re.DOTALL | re.IGNORECASE)
+
+# Une entrée du carnet commence par ``## <date> — <titre>`` (cf.
+# ``coach.journal_entry``) ; le corps va jusqu'à la PROCHAINE entrée ou la
+# fin du fichier.
+_WEEKLY_ENTRY_RE = re.compile(
+    r"^## .*? — bilan hebdomadaire.*?$\n\n(.*?)(?=^## |\Z)",
+    re.DOTALL | re.MULTILINE)
+
+
+def extract_amelioration(text):
+    """Le bloc ``AMELIORATION_PROPOSEE`` d'un bilan (PUR). Plusieurs blocs ->
+    le PREMIER seulement (le modèle s'est répété). Absent ou vide -> ``None``."""
+    matches = list(_AMELIORATION_RE.finditer(text or ""))
+    if not matches:
+        return None
+    body = matches[0].group(1).strip()
+    return body or None
+
+
+def last_weekly_bilan_body(journal_text):
+    """Le corps de la DERNIÈRE entrée ``bilan hebdomadaire`` du carnet (PUR)
+    — un carnet est APPEND-ONLY, donc « la dernière » est la PLUS RÉCENTE
+    (le dernier match du texte)."""
+    matches = list(_WEEKLY_ENTRY_RE.finditer(journal_text or ""))
+    if not matches:
+        return None
+    return matches[-1].group(1).strip()
+
+
+def weekly_gate_ok(history, now, weekday=WEEKLY_RUN_WEEKDAY,
+                   after_hour=WEEKLY_RUN_AFTER_HOUR, tz=LOCAL_TZ):
+    """Le moment est-il venu de regarder le bilan hebdo ? Dimanche, à partir
+    de :data:`WEEKLY_RUN_AFTER_HOUR` heure LOCALE, et pas déjà fait cette
+    semaine ISO (une session ``weekly_improvement`` par semaine — les
+    sessions ``repair`` de l'historique ne comptent PAS ici, elles ont leur
+    propre garde-fou)."""
+    local = now.astimezone(ZoneInfo(tz))
+    if local.weekday() != weekday or local.hour < after_hour:
+        return False
+    iso_week = "%04d-W%02d" % local.isocalendar()[:2]
+    for entry in (history or []):
+        if not isinstance(entry, dict) or entry.get("kind") != WEEKLY_IMPROVEMENT_KIND:
+            continue
+        ts = _parse_iso_utc(entry.get("ts"))
+        if ts is None:
+            continue
+        ts_local = ts.astimezone(ZoneInfo(tz))
+        if "%04d-W%02d" % ts_local.isocalendar()[:2] == iso_week:
+            return False
+    return True
+
+
+def maybe_weekly_improvement(now, history, journal_reader=None):
+    """Assemble le gate + la lecture du carnet + l'extraction (I/O + PUR).
+    Rend une :class:`Failure` (code ``"weekly_improvement"``) ou ``None``."""
+    if not weekly_gate_ok(history, now):
+        return None
+    reader = journal_reader or (lambda: _read_text(COACH_JOURNAL_PATH))
+    body = last_weekly_bilan_body(reader())
+    if body is None:
+        return None
+    proposal = extract_amelioration(body)
+    if proposal is None:
+        return None
+    return Failure(WEEKLY_IMPROVEMENT_KIND, _sig(WEEKLY_IMPROVEMENT_KIND, proposal),
+                  proposal)
+
+
+def _read_text(path):
+    try:
+        return Path(path).read_text(encoding="utf-8")
+    except OSError:
+        return ""
 
 
 # --------------------------------------------------------------------------- #

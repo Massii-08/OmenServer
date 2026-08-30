@@ -494,6 +494,17 @@ def build_weekly_prompt(context: Optional[Dict[str, Any]],
         "commente plutôt les positions encore ouvertes et la discipline "
         "générale — un bilan vide n'est pas un problème à masquer, c'est un "
         "fait à commenter.",
+        "En complément, et SEULEMENT si tu as une idée vraiment concrète — "
+        "pas à chaque bilan — tu peux terminer ta réponse par ce bloc "
+        "optionnel, après le texte normal et rien d'autre dedans que ta "
+        "proposition :\n"
+        "```AMELIORATION_PROPOSEE\n"
+        "UNE proposition concrète d'amélioration de l'outillage, d'une "
+        "donnée, ou d'une règle du simulateur — jamais une refonte, jamais "
+        "un conseil de trading.\n"
+        "```\n"
+        "Une seule proposition, jamais une liste, et seulement si elle est "
+        "vraiment actionnable — sinon omets le bloc entièrement.",
     ])
 
 

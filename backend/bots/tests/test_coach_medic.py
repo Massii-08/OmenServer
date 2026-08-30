@@ -615,6 +615,38 @@ def test_run_medic_runs_a_full_repair_session_and_records_it(tmp_path):
     assert len(dossiers) == 1 and "llm_failed" in dossiers[0].read_text(encoding="utf-8")
 
 
+def test_run_medic_runs_the_real_weekly_improvement_by_default_on_sunday(tmp_path):
+    """Sans ``weekly_check`` injecté, ``run_medic`` utilise le VRAI
+    ``maybe_weekly_improvement`` (via ``journal_reader``) — chantier 3."""
+    fixtures = _healthy_fixtures(tmp_path)
+    sent = []
+
+    def _notifier(text, cfg):
+        sent.append(text)
+        return True
+
+    out = medic.run_medic(now=SUNDAY_2200, disabled_path=tmp_path / "absent",
+                          state_path=tmp_path / "state.json",
+                          runs_dir=tmp_path / "medic-runs",
+                          telegram_cfg={}, notifier=_notifier,
+                          popen=lambda cmd, **kw: _FakePopen(cmd, **kw),
+                          git_run=lambda cmd, **kw: _FakeCompleted("same\n"),
+                          claude_bin="/opt/claude",
+                          journal_reader=lambda: _JOURNAL_TWO_BILANS,
+                          **fixtures)
+    assert out["action"] == "weekly_improvement"
+    assert "amélioration" in sent[0]
+
+
+def test_run_medic_stays_idle_on_sunday_without_a_proposal(tmp_path):
+    fixtures = _healthy_fixtures(tmp_path)
+    out = medic.run_medic(now=SUNDAY_2200, disabled_path=tmp_path / "absent",
+                          state_path=tmp_path / "state.json",
+                          journal_reader=lambda: _JOURNAL_ONE_BILAN,
+                          **fixtures)
+    assert out == {"action": "idle", "failures": []}
+
+
 def test_run_medic_reports_without_pushing_when_no_new_commit(tmp_path):
     fixtures = _healthy_fixtures(tmp_path)
     fixtures["ledger_path"].write_text(
@@ -650,6 +682,150 @@ def test_main_returns_1_when_run_medic_raises(monkeypatch):
         raise RuntimeError("boom")
     monkeypatch.setattr(medic, "run_medic", _boom)
     assert medic.main() == 1
+
+
+# --------------------------------------------------------------------------- #
+# chantier 3 — extraction du bloc AMELIORATION_PROPOSEE
+# --------------------------------------------------------------------------- #
+
+def test_extract_amelioration_none_without_a_block():
+    assert medic.extract_amelioration("Rien de spécial cette semaine.") is None
+
+
+def test_extract_amelioration_finds_the_block():
+    text = ("Bilan honnête.\n\n```AMELIORATION_PROPOSEE\n"
+           "Ajouter une source de données pour X.\n```\n")
+    assert medic.extract_amelioration(text) == "Ajouter une source de données pour X."
+
+
+def test_extract_amelioration_keeps_only_the_first_of_several_blocks():
+    text = ("```AMELIORATION_PROPOSEE\nPremière idée.\n```\n"
+           "blabla\n"
+           "```AMELIORATION_PROPOSEE\nDeuxième idée.\n```\n")
+    assert medic.extract_amelioration(text) == "Première idée."
+
+
+def test_extract_amelioration_none_on_an_empty_block():
+    text = "```AMELIORATION_PROPOSEE\n\n```\n"
+    assert medic.extract_amelioration(text) is None
+
+
+def test_extract_amelioration_none_on_none_or_empty_input():
+    assert medic.extract_amelioration(None) is None
+    assert medic.extract_amelioration("") is None
+
+
+# --------------------------------------------------------------------------- #
+# chantier 3 — dernier bilan hebdo du carnet
+# --------------------------------------------------------------------------- #
+
+_JOURNAL_ONE_BILAN = (
+    "## 23/08 — bilan hebdomadaire\n\n"
+    "Semaine calme. Rien à signaler.\n\n"
+)
+
+_JOURNAL_TWO_BILANS = (
+    "## 16/08 — bilan hebdomadaire\n\n"
+    "Premier bilan.\n\n"
+    "```AMELIORATION_PROPOSEE\nAncienne proposition.\n```\n\n"
+    "## 23/08 — bilan hebdomadaire\n\n"
+    "Bilan le plus récent.\n\n"
+    "```AMELIORATION_PROPOSEE\nNouvelle proposition.\n```\n\n"
+)
+
+_JOURNAL_WITH_OTHER_ENTRIES = (
+    "## 20/08 — post-mortem\n\n"
+    "Un trade a mal tourné.\n\n"
+    "## 23/08 — bilan hebdomadaire\n\n"
+    "Le seul bilan de la semaine.\n\n"
+    "## 24/08 — session coach\n\n"
+    "Question posée par Massii.\n\n"
+)
+
+
+def test_last_weekly_bilan_body_none_without_any_entry():
+    assert medic.last_weekly_bilan_body("Rien du tout.") is None
+    assert medic.last_weekly_bilan_body("") is None
+    assert medic.last_weekly_bilan_body(None) is None
+
+
+def test_last_weekly_bilan_body_returns_the_single_entry():
+    body = medic.last_weekly_bilan_body(_JOURNAL_ONE_BILAN)
+    assert "Semaine calme" in body
+
+
+def test_last_weekly_bilan_body_returns_the_most_recent_of_several():
+    body = medic.last_weekly_bilan_body(_JOURNAL_TWO_BILANS)
+    assert "Bilan le plus récent" in body
+    assert "Nouvelle proposition" in body
+    assert "Premier bilan" not in body
+
+
+def test_last_weekly_bilan_body_stops_at_the_next_entry():
+    body = medic.last_weekly_bilan_body(_JOURNAL_WITH_OTHER_ENTRIES)
+    assert "Le seul bilan de la semaine" in body
+    assert "session coach" not in body
+    assert "Question posée" not in body
+
+
+# --------------------------------------------------------------------------- #
+# chantier 3 — gate hebdomadaire du médecin (dimanche >= 21h, 1x/semaine)
+# --------------------------------------------------------------------------- #
+
+SUNDAY_2200 = datetime(2026, 8, 23, 20, 0, tzinfo=timezone.utc)   # 22h Rome (CEST)
+
+
+def test_weekly_gate_ok_true_on_sunday_evening_with_no_history():
+    assert medic.weekly_gate_ok([], SUNDAY_2200) is True
+
+
+def test_weekly_gate_ok_false_before_21h_local():
+    early = datetime(2026, 8, 23, 15, 0, tzinfo=timezone.utc)   # 17h Rome
+    assert medic.weekly_gate_ok([], early) is False
+
+
+def test_weekly_gate_ok_false_on_a_weekday():
+    assert medic.weekly_gate_ok([], MONDAY_NOON) is False
+
+
+def test_weekly_gate_ok_false_when_already_run_this_iso_week():
+    history = [{"signature": "x", "ts": (SUNDAY_2200 - timedelta(hours=1)).isoformat(),
+               "kind": "weekly_improvement"}]
+    assert medic.weekly_gate_ok(history, SUNDAY_2200) is False
+
+
+def test_weekly_gate_ok_ignores_repair_sessions_in_the_history():
+    history = [{"signature": "x", "ts": (SUNDAY_2200 - timedelta(hours=1)).isoformat(),
+               "kind": "repair"}]
+    assert medic.weekly_gate_ok(history, SUNDAY_2200) is True
+
+
+def test_weekly_gate_ok_true_again_the_following_sunday():
+    next_sunday = SUNDAY_2200 + timedelta(days=7)
+    history = [{"signature": "x", "ts": SUNDAY_2200.isoformat(), "kind": "weekly_improvement"}]
+    assert medic.weekly_gate_ok(history, next_sunday) is True
+
+
+# --------------------------------------------------------------------------- #
+# chantier 3 — maybe_weekly_improvement (assemble tout)
+# --------------------------------------------------------------------------- #
+
+def test_maybe_weekly_improvement_none_outside_the_gate():
+    reader = lambda: _JOURNAL_TWO_BILANS
+    assert medic.maybe_weekly_improvement(MONDAY_NOON, [], journal_reader=reader) is None
+
+
+def test_maybe_weekly_improvement_none_without_a_proposal_in_the_journal():
+    reader = lambda: _JOURNAL_ONE_BILAN
+    assert medic.maybe_weekly_improvement(SUNDAY_2200, [], journal_reader=reader) is None
+
+
+def test_maybe_weekly_improvement_returns_the_proposal_from_the_last_bilan():
+    reader = lambda: _JOURNAL_TWO_BILANS
+    out = medic.maybe_weekly_improvement(SUNDAY_2200, [], journal_reader=reader)
+    assert out is not None
+    assert "Nouvelle proposition" in out.detail
+    assert out.code == "weekly_improvement"
 
 
 def test_notify_never_logs_the_token(caplog):
