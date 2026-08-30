@@ -3745,41 +3745,93 @@ const PaperModule = {
     },
 
     // --- Ses positions : le plan complet, à découvert -----------------------
+    //
+    // LOT 7 — « voir COMMENT il fait » : ``positions_view`` (LOT 7, backend)
+    // porte le cours actuel, le P&L CHF/% déjà signe-correct pour les shorts
+    // et les distances au stop/objectif, TOUT calculé côté serveur (règle
+    // absolue du lot — jamais un calcul monétaire recopié ici). Repli sur
+    // l'ancien portefeuille brut (positions_view absent = vieux payload en
+    // cache) : les anciens accesseurs client font alors le même travail
+    // qu'avant, jamais de NaN à l'écran.
+
+    // ``null`` = payload sans positions_view (repli) ; un tableau, même vide,
+    // = payload à jour (``!rows.length`` gère alors l'état vide).
+    _ctPositionsView() {
+        const ct = this._ct || {};
+        return Array.isArray(ct.positions_view) ? ct.positions_view : null;
+    },
+
+    // Distances signées comme le P&L (LOT 7) : POSITIF = marge avant
+    // d'atteindre le niveau. Compact plutôt qu'une jauge graphique — les deux
+    // distances suffisent à lire « combien de route avant le stop / l'objectif ».
+    _ctRangeBar(view) {
+        const ds = view ? this._n(view.dist_stop_pct) : null;
+        const dt = view ? this._n(view.dist_target_pct) : null;
+        if (ds === null && dt === null) return '<span style="color:var(--text-dim);">—</span>';
+        const seg = (labelKey, v, color) =>
+            '<span style="color:' + color + ';">' + esc(Lang.t(labelKey)) + ' ' +
+            esc(v === null ? '—' : this._signed(v, 1, '%')) + '</span>';
+        return '<div style="display:flex;align-items:center;gap:6px;font-size:12px;' +
+                   'flex-wrap:wrap;' + this._mono + '">' +
+            seg('paper.ct_stop', ds, 'var(--danger)') +
+            '<span style="color:var(--text-dim);">&larr; ' +
+              esc(Lang.t('paper.ct_range_price')) + ' &rarr;</span>' +
+            seg('paper.ct_target', dt, 'var(--accent)') +
+        '</div>';
+    },
 
     _ctPositionsCard() {
-        const rows = this._ctList(this._ctPortfolio().positions);
+        const view = this._ctPositionsView();
+        const rows = view || this._ctList(this._ctPortfolio().positions);
         const head = this._head(Lang.t('paper.ct_positions_title'));
         if (!rows.length) return this._card(head + this._muted(Lang.t('paper.ct_positions_empty')));
         const td = this._td();
         const body = rows.map((pos) => {
             const sym = String((pos && pos.symbol) || '');
             const cur = (pos && pos.currency) || '';
-            const pct = this._ctPnlPct(pos);
+            const side = String((pos && pos.side) || '');
             const thesis = String((pos && pos.thesis) || '').trim();
+            // Repli : sans positions_view, on retombe sur les anciens
+            // accesseurs client (cours du jour depuis ``quotes``, formule de
+            // pnl_pct dupliquée — c'est PRÉCISÉMENT ce que le lot retire du
+            // chemin normal, gardé ici pour ne jamais montrer un NaN sur un
+            // vieux payload en cache).
+            const last = view ? this._n(pos && pos.current_price) : this._ctLast(pos);
+            const pnlChf = view ? this._n(pos && pos.pnl_chf) : null;
+            const pnlPct = view ? this._n(pos && pos.pnl_pct) : this._ctPnlPct(pos);
+            const stale = !!(view && pos && pos.stale);
             const plan = (labelKey, v) =>
                 '<span><span style="color:var(--text-dim);">' + esc(Lang.t(labelKey)) +
                 '</span> <span style="' + this._mono + '">' +
                 esc(this._money(v, cur)) + '</span></span>';
-            const side = String((pos && pos.side) || '');
             return '<tr>' +
-                '<td style="' + td + 'font-weight:600;">' + esc(sym) + '</td>' +
                 '<td style="' + td + '">' +
                   (side === 'short'
                     ? '<span class="badge warn">' + esc(Lang.t('paper.badge_short')) + '</span>'
                     : esc(this._sideLabel(side))) +
                 '</td>' +
+                '<td style="' + td + 'font-weight:600;">' + esc(sym) + '</td>' +
                 '<td style="' + td + this._mono + '">' +
                   esc(this._num(this._n(pos && pos.qty), 0)) + '</td>' +
                 '<td style="' + td + this._mono + '">' +
-                  esc(this._money(this._n(pos && pos.avg_price), cur)) + '</td>' +
-                '<td style="' + td + this._mono + '">' +
-                  esc(this._money(this._ctLast(pos), cur)) + '</td>' +
-                '<td style="' + td + this._mono + 'color:' + this._color(pct) + ';">' +
-                  esc(this._signed(pct, 2, '%')) + '</td>' +
+                  esc(this._money(this._n(pos && pos.avg_price), cur)) +
+                  ' <span style="color:var(--text-dim);">&rarr;</span> ' +
+                  esc(this._money(last, cur)) +
+                  (stale
+                    ? ' <span class="badge warn" style="font-size:10px;">' +
+                      esc(Lang.t('paper.ct_stale')) + '</span>' : '') +
+                '</td>' +
+                '<td style="' + td + this._mono + 'color:' + this._color(pnlChf) + ';">' +
+                  esc(view ? this._signedChf(pnlChf, 2) : '—') +
+                '</td>' +
+                '<td style="' + td + this._mono + 'color:' + this._color(pnlPct) + ';">' +
+                  esc(this._signed(pnlPct, 2, '%')) +
+                '</td>' +
+                '<td style="' + td + '">' + this._ctRangeBar(view ? pos : null) + '</td>' +
             '</tr>' +
             // La thèse, le stop et l'objectif ne sont PAS repliés derrière un
             // dépliant : c'est précisément ce qu'on vient lire.
-            '<tr><td colspan="6" style="' + td + 'padding-top:0;">' +
+            '<tr><td colspan="7" style="' + td + 'padding-top:0;">' +
               '<div style="font-size:13px;line-height:1.55;color:' +
                    (thesis ? 'var(--text-muted)' : 'var(--text-dim)') + ';">' +
                 '<span style="color:var(--text-dim);">' + esc(Lang.t('paper.ct_thesis')) +
@@ -3792,8 +3844,9 @@ const PaperModule = {
             '</td></tr>';
         }).join('');
         return this._card(head + this._table([
-            Lang.t('paper.col_symbol'), Lang.t('paper.col_side'), Lang.t('paper.col_qty'),
-            Lang.t('paper.col_avg_price'), Lang.t('paper.col_last'), Lang.t('paper.ct_col_pnl_pct'),
+            Lang.t('paper.col_side'), Lang.t('paper.col_symbol'), Lang.t('paper.col_qty'),
+            Lang.t('paper.ct_col_price'), Lang.t('paper.ct_col_pnl_chf'),
+            Lang.t('paper.ct_col_pnl_pct'), Lang.t('paper.ct_col_range'),
         ], body));
     },
 
