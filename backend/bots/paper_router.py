@@ -1576,7 +1576,7 @@ def _coach_execute_one(portfolio: models.Portfolio, action: Dict[str, Any],
     # humain qui confirme — et suivent la chaîne jusqu'au ``Trade`` clos.
     order.forced_warnings = risk.preorder_warnings(
         {"side": order.side, "symbol": order.symbol, "thesis": order.thesis,
-         "stop_loss": order.stop_loss, "qty": order.qty},
+         "stop_loss": order.stop_loss, "target": order.target, "qty": order.qty},
         portfolio.to_dict(), price * fx_rate)
 
     try:
@@ -3014,7 +3014,7 @@ def paper_place_order(data: OrderPayload,
     confirm_level = None if entry_estimate is None else entry_estimate * fx_rate
     confirm_codes = risk.preorder_warnings(
         {"side": side, "symbol": symbol, "thesis": data.thesis,
-         "stop_loss": data.stop_loss, "qty": qty},
+         "stop_loss": data.stop_loss, "target": data.target, "qty": qty},
         portfolio.to_dict(), confirm_level)
     if confirm_codes and not data.confirmed:
         # 200, JAMAIS un refus dur (invariant 1 du module) : une pause, pas

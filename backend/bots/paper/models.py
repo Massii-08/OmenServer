@@ -124,7 +124,7 @@ class Position:
     setup: str = ""
     emotion: str = ""
     # LOT 3, C3 — les codes du garde-fou pré-ordre (``no_stop``/``no_thesis``/
-    # ``risk_high``/``oversize``) que Massii a EXPLICITEMENT forcés
+    # ``risk_high``/``reward_risk_below_1``/``oversize``) que Massii a EXPLICITEMENT forcés
     # (``confirmed: true`` malgré l'avertissement). Portée depuis l'ordre
     # jusqu'au ``Trade`` clos, même geste que ``setup``/``emotion`` — le score
     # de discipline pourra les lire plus tard (stocké, pas encore câblé).

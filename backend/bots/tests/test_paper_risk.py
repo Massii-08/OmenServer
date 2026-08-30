@@ -335,6 +335,41 @@ def test_preorder_warnings_tolerates_a_missing_or_empty_portfolio():
     assert preorder_warnings(payload, None, 100.0) == []
 
 
+def test_preorder_warnings_flags_reward_risk_below_1():
+    # risque = |100-95| = 5, gain visé = |100.5-100| = 0.5 -> R = 0.1 (< 1).
+    payload = {"side": "buy", "thesis": _LONG_THESIS, "stop_loss": 95.0, "qty": 5,
+              "target": 100.5}
+    assert preorder_warnings(payload, _pf(), 100.0) == ["reward_risk_below_1"]
+
+
+def test_preorder_warnings_does_not_flag_a_reward_risk_of_1_or_more():
+    # R = (110-100) / (100-95) = 2.0 -- au-dessus du seuil, rien à signaler.
+    payload = {"side": "buy", "thesis": _LONG_THESIS, "stop_loss": 95.0, "qty": 5,
+              "target": 110.0}
+    assert preorder_warnings(payload, _pf(), 100.0) == []
+
+
+def test_preorder_warnings_reward_risk_mirrors_for_a_short():
+    # short : risque = |105-100| = 5, gain visé = |100-99.5| = 0.5 -> R = 0.1.
+    payload = {"side": "short", "thesis": _LONG_THESIS, "stop_loss": 105.0, "qty": 5,
+              "target": 99.5}
+    assert preorder_warnings(payload, _pf(), 100.0) == ["reward_risk_below_1"]
+
+
+def test_preorder_warnings_without_a_target_skips_the_reward_risk_check():
+    payload = {"side": "buy", "thesis": _LONG_THESIS, "stop_loss": 95.0, "qty": 5}
+    assert preorder_warnings(payload, _pf(), 100.0) == []
+
+
+def test_preorder_warnings_can_flag_risk_high_and_reward_risk_together():
+    # risque = |100-20| x 5 = 400 CHF = 4 % du capital (> 2 %) -> risk_high ;
+    # ET R = (100.5-100)/(100-20) tout petit -> reward_risk_below_1 aussi.
+    payload = {"side": "buy", "thesis": _LONG_THESIS, "stop_loss": 20.0, "qty": 5,
+              "target": 100.5}
+    assert preorder_warnings(payload, _pf(), 100.0) == \
+        ["risk_high", "reward_risk_below_1"]
+
+
 # --------------------------------------------------------------------------- #
 # Garde-fou fiscal — circulaire AFC n°36
 # --------------------------------------------------------------------------- #

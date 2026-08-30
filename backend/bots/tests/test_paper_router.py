@@ -489,6 +489,27 @@ def test_a_clean_order_never_needs_confirmation(tmp_path, monkeypatch):
     assert body["order"]["status"] == "filled"
 
 
+def test_a_poor_reward_risk_target_needs_confirmation(tmp_path, monkeypatch):
+    # risque = |100-95| = 5, gain visé = |100.5-100| = 0.5 -> R = 0.1 (< 1).
+    c, _ = make_client(tmp_path, monkeypatch)
+    r = order(c, qty=5, stop_loss=95.0, target=100.5,
+             thesis="Thèse suffisamment longue pour passer le seuil du coach",
+             confirmed=False)
+    body = r.json()
+    assert body["needs_confirm"] is True
+    assert body["warnings"] == ["reward_risk_below_1"]
+
+
+def test_a_good_reward_risk_target_does_not_need_confirmation(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+    r = order(c, qty=5, stop_loss=95.0, target=110.0,
+             thesis="Thèse suffisamment longue pour passer le seuil du coach",
+             confirmed=False)
+    body = r.json()
+    assert "needs_confirm" not in body
+    assert body["order"]["status"] == "filled"
+
+
 def test_sell_orders_never_need_confirmation_even_unconfirmed(tmp_path, monkeypatch):
     c, _ = make_client(tmp_path, monkeypatch)
     buy(c, qty=10, thesis="Thèse suffisamment longue pour passer le seuil")
@@ -5674,6 +5695,16 @@ def test_a_clean_entry_records_no_forced_warning(tmp_path, monkeypatch):
     c, _ = make_client(tmp_path, monkeypatch)
     pr.execute_coach_actions([coach_action()], source="daily")
     assert coach_portfolio()["positions"][0]["forced_warnings"] == []
+
+
+def test_reward_risk_below_1_is_recorded_on_the_coach_order(tmp_path, monkeypatch):
+    """Objectif trop proche de l'entrée (100.5 pour un stop à 90, entrée 100) :
+    le gain visé est bien plus petit que le risque accepté -- CONSIGNÉ, même
+    geste que ``oversize``."""
+    c, _ = make_client(tmp_path, monkeypatch)
+    pr.execute_coach_actions([coach_action(target=100.5)], source="daily")
+    assert coach_portfolio()["positions"][0]["forced_warnings"] == \
+        ["reward_risk_below_1"]
 
 
 def test_the_coach_can_sell_what_he_holds(tmp_path, monkeypatch):

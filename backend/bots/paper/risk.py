@@ -315,8 +315,10 @@ def preorder_warnings(payload: Dict[str, Any], portfolio: Dict[str, Any],
     Codes possibles, dans cet ordre : ``no_thesis`` (thèse vide ou trop
     courte), ``no_stop`` (aucun stop de protection planifié), ``risk_high``
     (risque planifié au-delà de ``PREORDER_RISK_PCT`` % du capital initial),
-    ``oversize`` (position projetée au-delà de ``PREORDER_SIZE_PCT`` % de
-    l'équité). Liste vide -> rien à confirmer.
+    ``reward_risk_below_1`` (l'objectif visé rapporte MOINS que ce que le stop
+    risque -- le ``r_multiple`` du plan, entrée->cible, est sous 1), ``oversize``
+    (position projetée au-delà de ``PREORDER_SIZE_PCT`` % de l'équité). Liste
+    vide -> rien à confirmer.
 
     Ne s'applique qu'aux ordres d'OUVERTURE (``buy``/``short``) — une sortie
     n'a besoin ni de thèse ni de stop, et elle réduit toujours l'exposition
@@ -324,20 +326,23 @@ def preorder_warnings(payload: Dict[str, Any], portfolio: Dict[str, Any],
     ``compute_warnings``).
 
     ``payload`` : les champs bruts de l'ordre (``side``/``thesis``/
-    ``stop_loss``/``qty``) — un dict, jamais le modèle Pydantic (ce module
-    reste PUR au sens du dépôt : zéro dépendance FastAPI).
+    ``stop_loss``/``target``/``qty``) — un dict, jamais le modèle Pydantic (ce
+    module reste PUR au sens du dépôt : zéro dépendance FastAPI).
     ``portfolio`` : ``Portfolio.to_dict()`` — ``cash_chf``/``positions``/
     ``initial_capital``.
     ``level`` : le prix de référence de l'ordre, DÉJÀ CONVERTI EN CHF par
     l'appelant (même taux que le reste du trade — invariant du module, cf.
     tête de ``paper_router.py`` : un seul taux de change par opération).
-    ``None`` -> ``risk_high``/``oversize`` ne peuvent pas être évalués et ne
-    sortent jamais (mieux vaut ne rien confirmer que confirmer sur un chiffre
-    inventé).
+    ``None`` -> ``risk_high``/``reward_risk_below_1``/``oversize`` ne peuvent
+    pas être évalués et ne sortent jamais (mieux vaut ne rien confirmer que
+    confirmer sur un chiffre inventé). Même politique pour ``target`` absent :
+    sans objectif chiffré, le ratio n'a pas de sens.
     """
     side = str((payload or {}).get("side") or "").strip().lower()
     if side not in ("buy", "short"):
         return []
+
+    wanted_side = "long" if side == "buy" else "short"
 
     out: List[str] = []
     thesis = str((payload or {}).get("thesis") or "").strip()
@@ -357,9 +362,14 @@ def preorder_warnings(payload: Dict[str, Any], portfolio: Dict[str, Any],
         if capital and capital > 0 and risk_chf > capital * PREORDER_RISK_PCT / 100.0:
             out.append("risk_high")
 
+    target = _val((payload or {}).get("target"))
+    if price is not None and stop_loss is not None and target is not None:
+        ratio = r_multiple(price, target, stop_loss, wanted_side)
+        if ratio is not None and ratio < 1.0:
+            out.append("reward_risk_below_1")
+
     if price is not None and qty > 0:
         symbol = str((payload or {}).get("symbol") or "").strip()
-        wanted_side = "long" if side == "buy" else "short"
         rows = _dicts((portfolio or {}).get("positions"))
         held = sum(abs(_val(p.get("qty")) or 0.0) for p in rows
                   if str(p.get("symbol") or "") == symbol
