@@ -6568,7 +6568,7 @@ def test_coach_candidates_tags_each_row_with_its_provenance(tmp_path, monkeypatc
     assert by_symbol["NOVN.SW"] == pr.CANDIDATE_SOURCE_EUROPE_POOL
 
 
-MORNING_NOW = "2026-08-24T07:10:00"   # 09:10 Europe/Rome (UTC+2, CEST)
+MORNING_NOW = "2026-08-24T09:10:00"   # 09:10 HEURE LOCALE (convention maison depuis 3e10b61 : un naif EST local)
 
 
 def test_coach_candidates_at_the_european_morning_slot_include_the_pool_tradable(
