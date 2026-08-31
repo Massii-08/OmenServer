@@ -421,6 +421,12 @@ if os.path.exists(frontend_dir):
     if os.path.exists(fonts_dir):
         app.mount("/fonts", StaticFiles(directory=fonts_dir), name="fonts")
 
+# Pack de ressources Minecraft (HordeTown) — servi derrière Cloudflare car le
+# self-host RPM du serveur Minestrator tronque les transferts au-dela de ~64 Mo.
+mc_pack_dir = os.path.expanduser("~/mc-pack")
+if os.path.isdir(mc_pack_dir):
+    app.mount("/mcpack", StaticFiles(directory=mc_pack_dir), name="mcpack")
+
 
 @app.get("/")
 async def serve_index():
