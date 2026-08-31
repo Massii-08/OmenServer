@@ -35,7 +35,7 @@ import time
 import uuid
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
@@ -1180,12 +1180,49 @@ COACH_DISPLAY = "Coach"
 # où la passe n'a pas tourné se ressembleraient à l'écran.
 COACH_HOLD_DETAIL = "aucune action : le coach a choisi de ne rien changer"
 
-# Le nombre de tickers DISTINCTS des hypothèses radar ouvertes dont le coach
-# reçoit le cours (LOT 4bis, ``_coach_candidates``). Même ordre de grandeur
-# que ``MAX_POSITIONS_IN_PROMPT``/``radar.MAX_OPEN`` : assez pour couvrir tout
-# ce que le radar suit activement, borné pour ne pas facturer un cours par
-# ticker jamais retenu par une hypothèse morte.
-MAX_COACH_CANDIDATES = 10
+# Le nombre de tickers DISTINCTS que le coach reçoit COTÉS (LOT 4bis, étendu
+# LOT 8b) — le plafond du TOTAL fusionné de :func:`_coach_candidate_entries`,
+# pas de chaque source prise seule. Monté de 10 à 14 avec la fusion à quatre
+# sources : de la place pour couvrir positions + radar + watchlist + le pool
+# européen permanent SANS que la dernière source évince systématiquement les
+# précédentes.
+MAX_COACH_CANDIDATES = 14
+
+# LOT 8b — mesuré en prod le 31/08 : aux créneaux du matin européen (Lot 8),
+# l'univers du coach (jusqu'ici les seuls tickers des hypothèses radar
+# ouvertes) ne laissait plus, une fois filtré par ``coach_trader.
+# tradable_now``, que NOVN.SW et ROG.SW sur 26 candidats — le radar
+# hypothèse sur des news dominées US (24 tickers US sur 26 ce jour-là).
+# ``_coach_candidate_entries`` fusionne désormais QUATRE sources, dans cet
+# ORDRE DE PRIORITÉ (la première apparition d'un symbole GAGNE) :
+#   (a) les positions OUVERTES du coach — il doit toujours voir ce qu'il
+#       détient, quoi qu'il arrive ailleurs ;
+#   (b) les tickers des hypothèses radar OUVERTES (comportement historique) ;
+#   (c) la watchlist de :data:`COACH_WATCHLIST_OWNER` — ses favoris sont des
+#       candidats naturels : il creusera plus volontiers ce type d'action ;
+#   (d) le pool EUROPÉEN PERMANENT (:func:`_coach_europe_pool`) — les
+#       tickers européens de ``entities._COMPANIES``, TOUJOURS candidats,
+#       hypothèse ou pas. C'est lui qui rend les créneaux du matin européen
+#       enfin utiles : même un livre neuf, un radar muet et une watchlist
+#       vide laissent au coach un univers suisse/européen à examiner.
+# Chaque candidat garde son marquage ``tradable`` (LOT 8) — le pool ne
+# change rien à CETTE règle, il change seulement d'où vient l'univers.
+
+# Le SEUL compte réel dont la watchlist alimente le coach (LOT 8b, source
+# (c) ci-dessus). Le coach est un compte UNIQUE, pas un assistant par
+# utilisateur connecté : ses candidats ne peuvent pas dépendre de qui est
+# loggé au moment de la passe — Massii08 est le seul compte qui en tient
+# une en usage réel.
+COACH_WATCHLIST_OWNER = "Massii08"
+
+# Les quatre provenances possibles d'un candidat (LOT 8b, point 2) : le
+# prompt de tri (``llm.build_coach_screen_prompt``) les explique une fois
+# pour toutes, EXACTEMENT ces quatre chaînes — le coach sait alors POURQUOI
+# un titre est sous ses yeux et peut le dire dans ses notes.
+CANDIDATE_SOURCE_POSITION = "position"
+CANDIDATE_SOURCE_RADAR = "radar"
+CANDIDATE_SOURCE_WATCHLIST = "watchlist"
+CANDIDATE_SOURCE_EUROPE_POOL = "europe_pool"
 
 
 def _num(value: Any) -> Optional[float]:
@@ -1252,39 +1289,98 @@ def _coach_quote(symbol: str) -> Optional[Dict[str, Any]]:
     return {"price": price, "currency": currency, "fx_rate": rate}
 
 
-def _coach_candidate_symbols(hypotheses: Any) -> List[str]:
-    """Tickers DISTINCTS des hypothèses radar reçues, dans l'ordre où ils
-    apparaissent (PUR — aucun réseau), plafonnés à
-    :data:`MAX_COACH_CANDIDATES`.
+def _coach_watchlist_symbols() -> List[str]:
+    """Les tickers de la watchlist de :data:`COACH_WATCHLIST_OWNER` (LOT 8b,
+    source (c)), dans l'ordre où ils ont été ajoutés.
+
+    Best-effort : ``store.load_watchlist`` rend déjà ``[]`` sur un fichier
+    absent ou corrompu, mais on entoure quand même — une watchlist illisible
+    ne doit JAMAIS faire tomber la résolution de l'univers du coach."""
+    try:
+        rows = store.load_watchlist(COACH_WATCHLIST_OWNER)
+    except Exception as e:                       # noqa: BLE001 — jamais fatal
+        logger.warning("paper coach: watchlist utilisateur indisponible (%s)",
+                       type(e).__name__)
+        return []
+    return [row.get("symbol") for row in rows if isinstance(row, dict)]
+
+
+def _coach_europe_pool() -> List[str]:
+    """Le pool EUROPÉEN PERMANENT (LOT 8b, source (d), PUR — aucun réseau) :
+    les symboles de ``entities.known_symbols()`` dont ``coach_trader.
+    market_of`` dit ``"europe"``, dans l'ordre de la table livrée.
+
+    Volontairement dérivé de la table d'``entities`` plutôt que d'une liste
+    posée ici en double : une seule source d'entreprises reconnues dans tout
+    le dépôt, jamais deux qui divergeraient au premier ajout."""
+    return [symbol for symbol in entities.known_symbols()
+           if coach_trader.market_of(symbol) == "europe"]
+
+
+def _coach_candidate_entries(hypotheses: Any,
+                             positions: Any = None) -> List[Tuple[str, str]]:
+    """La fusion ORDONNÉE des QUATRE sources de l'univers du coach (LOT 8b),
+    en paires ``(symbole canonique, source)`` — PUR hormis la lecture
+    best-effort de la watchlist. Voir le bloc de constantes juste au-dessus
+    de :data:`MAX_COACH_CANDIDATES` pour l'ordre de priorité et sa raison.
+
+    Dédoublonnée par symbole : la PREMIÈRE apparition gagne, aussi bien la
+    valeur que sa ``source`` — une position déjà détenue qui se trouve AUSSI
+    dans le pool européen reste taguée ``"position"``, jamais ``"europe_
+    pool"``. Plafonnée au TOTAL fusionné (:data:`MAX_COACH_CANDIDATES`).
 
     Appelée avec des hypothèses déjà filtrées OUVERTES
     (``_open_radar_hypotheses``) : ce filtre-ci ne fait QUE dédoublonner et
     canoniser, il ne relit pas le statut."""
-    seen: List[str] = []
-    for hyp in hypotheses or []:
-        if not isinstance(hyp, dict):
-            continue
-        # LOT 5 — les tickers que le marché ne connaît pas (``radar.mark_
-        # unquoted``, posé à la NAISSANCE de l'hypothèse) sont sautés. Vécu :
-        # « SAP.TO » n'existe pas chez Yahoo ; il entrait dans l'univers du
-        # coach, y prenait une place et sa cotation échouait à chaque passe,
-        # en silence. L'hypothèse, elle, RESTE — c'est son ticker de mesure
-        # qui est faux, pas forcément sa thèse.
-        muets = {quotes.canonical(t)
-                 for t in (hyp.get("unquoted") or []) if isinstance(t, str)}
-        for ticker in hyp.get("tickers") or []:
-            symbol = quotes.canonical(ticker) if isinstance(ticker, str) else ""
-            if not symbol or symbol in seen or symbol in muets:
+    def _raw():
+        for position in positions or []:
+            yield getattr(position, "symbol", None), CANDIDATE_SOURCE_POSITION
+        for hyp in hypotheses or []:
+            if not isinstance(hyp, dict):
                 continue
-            seen.append(symbol)
-            if len(seen) >= MAX_COACH_CANDIDATES:
-                return seen
-    return seen
+            # LOT 5 — les tickers que le marché ne connaît pas (``radar.mark_
+            # unquoted``, posé à la NAISSANCE de l'hypothèse) sont sautés.
+            # Vécu : « SAP.TO » n'existe pas chez Yahoo ; il entrait dans
+            # l'univers du coach, y prenait une place et sa cotation
+            # échouait à chaque passe, en silence. L'hypothèse, elle, RESTE
+            # — c'est son ticker de mesure qui est faux, pas sa thèse.
+            muets = {quotes.canonical(t)
+                    for t in (hyp.get("unquoted") or []) if isinstance(t, str)}
+            for ticker in hyp.get("tickers") or []:
+                symbol = quotes.canonical(ticker) if isinstance(ticker, str) else ""
+                if symbol and symbol in muets:
+                    continue
+                yield ticker, CANDIDATE_SOURCE_RADAR
+        for symbol in _coach_watchlist_symbols():
+            yield symbol, CANDIDATE_SOURCE_WATCHLIST
+        for symbol in _coach_europe_pool():
+            yield symbol, CANDIDATE_SOURCE_EUROPE_POOL
+
+    seen_symbols: set = set()
+    entries: List[Tuple[str, str]] = []
+    for raw, source in _raw():
+        symbol = quotes.canonical(raw) if isinstance(raw, str) else ""
+        if not symbol or symbol in seen_symbols:
+            continue
+        seen_symbols.add(symbol)
+        entries.append((symbol, source))
+        if len(entries) >= MAX_COACH_CANDIDATES:
+            break
+    return entries
 
 
-def _coach_candidates(hypotheses: Any, now: Any = None) -> List[Dict[str, Any]]:
-    """Le cours ACTUEL, converti en CHF, de chaque candidat des hypothèses
-    radar OUVERTES — un par ticker DISTINCT (:func:`_coach_candidate_symbols`).
+def _coach_candidate_symbols(hypotheses: Any, positions: Any = None) -> List[str]:
+    """Tickers DISTINCTS de l'univers fusionné du coach (LOT 8b), dans
+    l'ordre de priorité de :func:`_coach_candidate_entries` — raccourci pour
+    les appelants qui ne veulent pas la provenance."""
+    return [symbol for symbol, _source in _coach_candidate_entries(hypotheses, positions)]
+
+
+def _coach_candidates(hypotheses: Any, now: Any = None,
+                      positions: Any = None) -> List[Dict[str, Any]]:
+    """Le cours ACTUEL, converti en CHF, de chaque candidat de l'univers
+    fusionné du coach — un par ticker DISTINCT
+    (:func:`_coach_candidate_entries`, LOT 8b).
 
     Vécu en prod (2026-08-28) : sans lui, le coach n'a AUCUN prix hors de ce
     qu'il détient déjà — ``positions``/``coach_book`` ne cotent QUE
@@ -1300,12 +1396,16 @@ def _coach_candidates(hypotheses: Any, now: Any = None) -> List[Dict[str, Any]]:
     l'heure réelle du système, jamais une exception — même doctrine que
     :func:`coach_trader.tradable_now`.
 
+    ``positions`` (LOT 8b) : les lignes OUVERTES du coach, en tête de
+    l'univers (source (a)) — ``None``/absent revient au comportement
+    radar-seul historique (aucune position à faire figurer).
+
     Best-effort PAR SYMBOLE (même doctrine que ``_coach_quote``) : une panne
     de cours OMET le candidat plutôt que de lever ou d'inventer un prix, et un
     symbole qui plante N'EMPÊCHE PAS les suivants d'être cotés.
     """
     out: List[Dict[str, Any]] = []
-    for symbol in _coach_candidate_symbols(hypotheses):
+    for symbol, source in _coach_candidate_entries(hypotheses, positions):
         try:
             quote = _coach_quote(symbol)
         except Exception as e:                  # noqa: BLE001 — jamais fatal
@@ -1316,6 +1416,10 @@ def _coach_candidates(hypotheses: Any, now: Any = None) -> List[Dict[str, Any]]:
             continue
         out.append({
             "symbol": symbol,
+            # LOT 8b — POURQUOI ce titre est sous ses yeux : une des quatre
+            # valeurs ``CANDIDATE_SOURCE_*``. Le prompt de tri explique le
+            # champ une fois pour toutes (``llm.build_coach_screen_prompt``).
+            "source": source,
             "price_chf": round(quote["price"] * quote["fx_rate"], 2),
             "currency": quote["currency"],
             # LOT 5 — le cours seul ne permet pas de POSER un stop : il faut
@@ -2143,8 +2247,10 @@ def _coach_pass_context(portfolio: models.Portfolio,
     try:
         # LOT 4bis — le cours de ce qu'il ne détient PAS ENCORE : sans lui, un
         # livre neuf n'a aucun prix pour dimensionner une entrée (cf. tête de
-        # fonction de ``_coach_candidates``).
-        context["candidates"] = _coach_candidates(context["radar"], now_iso)
+        # fonction de ``_coach_candidates``). LOT 8b : ses propres positions
+        # ouvertes rejoignent l'univers fusionné (source (a), toujours en tête).
+        context["candidates"] = _coach_candidates(context["radar"], now_iso,
+                                                  positions=portfolio.positions)
     except Exception:                       # noqa: BLE001 — best-effort
         context["candidates"] = []
     try:
@@ -2325,7 +2431,11 @@ def coach_book() -> Dict[str, Any]:
             "equity_chf": round(_coach_equity_chf(portfolio), 2),
             "positions": positions,
             "open_orders": [o.to_dict() for o in portfolio.open_orders],
-            "candidates": _coach_candidates(_open_radar_hypotheses(), _now_iso()),
+            # LOT 8b : ses positions OUVERTES (les objets, pas les lignes
+            # ci-dessus déjà réduites pour l'affichage) rejoignent l'univers
+            # fusionné, source (a).
+            "candidates": _coach_candidates(_open_radar_hypotheses(), _now_iso(),
+                                            positions=portfolio.positions),
         }
     except Exception as e:                  # noqa: BLE001 — jamais fatal
         logger.warning("paper coach: livre indisponible pour le digest (%s)",

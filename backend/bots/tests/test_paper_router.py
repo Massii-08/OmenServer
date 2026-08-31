@@ -6239,7 +6239,11 @@ def test_coach_book_rend_les_cinq_cles_sur_un_compte_neuf(tmp_path, monkeypatch)
     """La forme EXACTE que ``llm.coach_actions_block`` consomme, sur un compte
     tout neuf — et rien ne lève. ``candidates`` (LOT 4bis) rejoint les quatre
     clés historiques."""
-    c, _ = make_client(tmp_path, monkeypatch)
+    c, market = make_client(tmp_path, monkeypatch)
+    # LOT 8b : le pool européen permanent est TOUJOURS candidat -- vider le
+    # faux marché isole ici la forme des 5 clés de la question du contenu de
+    # ``candidates`` (déjà couverte par les tests dédiés du pool).
+    market.prices.clear()
     book = pr.coach_book()
     assert set(book) == {"cash_chf", "equity_chf", "positions", "open_orders",
                          "candidates"}
@@ -6344,6 +6348,12 @@ def _seed_radar(hyps):
     radar.save_state(state)
 
 
+def _seed_watchlist(rows):
+    """La watchlist de :data:`pr.COACH_WATCHLIST_OWNER` (LOT 8b) — le SEUL
+    compte réel dont les favoris nourrissent l'univers du coach."""
+    store.save_watchlist(pr.COACH_WATCHLIST_OWNER, rows)
+
+
 def test_coach_candidates_quotes_each_distinct_ticker_from_open_hypotheses(
         tmp_path, monkeypatch):
     c, market = make_client(tmp_path, monkeypatch)
@@ -6375,7 +6385,12 @@ def test_coach_candidates_ignores_hypotheses_that_are_not_open(tmp_path, monkeyp
     market.prices["AAPL"] = (200.0, "USD", "Apple Inc")
     _seed_radar([_open_hyp(["AAPL"], "h1", status="scored")])
 
-    assert pr._coach_candidates(pr._open_radar_hypotheses()) == []
+    # LOT 8b : le radar ne retient plus rien (hypothèse fermée), mais le pool
+    # EUROPÉEN PERMANENT reste candidat quel que soit l'état du radar — c'est
+    # justement le point du lot. NESN.SW est le seul membre du pool que le
+    # faux marché cote par défaut.
+    symbols = [row["symbol"] for row in pr._coach_candidates(pr._open_radar_hypotheses())]
+    assert symbols == ["NESN.SW"]
 
 
 def test_coach_candidates_omits_a_broken_quote_without_raising(tmp_path, monkeypatch):
@@ -6397,24 +6412,177 @@ def test_coach_candidates_omits_an_unknown_symbol_without_raising(tmp_path, monk
     assert [row["symbol"] for row in candidates] == ["NESN.SW"]
 
 
-def test_coach_candidates_caps_at_ten_distinct_tickers(tmp_path, monkeypatch):
+def test_coach_candidates_caps_at_max_coach_candidates_distinct_tickers(
+        tmp_path, monkeypatch):
+    """LOT 8b : le plafond est monté à 14 (4 sources fusionnées) — le radar
+    seul, à lui tout seul, peut encore l'atteindre et empêcher le pool
+    d'ajouter quoi que ce soit derrière."""
     c, market = make_client(tmp_path, monkeypatch)
     hyps = []
-    for i in range(15):
+    for i in range(20):
         symbol = "T%d.SW" % i
         market.prices[symbol] = (10.0 + i, "CHF", "Titre %d" % i)
         hyps.append(_open_hyp([symbol], "h%d" % i))
     _seed_radar(hyps)
 
     candidates = pr._coach_candidates(pr._open_radar_hypotheses())
-    assert len(candidates) == 10
-    assert [row["symbol"] for row in candidates] == ["T%d.SW" % i for i in range(10)]
+    assert len(candidates) == pr.MAX_COACH_CANDIDATES
+    assert ([row["symbol"] for row in candidates]
+            == ["T%d.SW" % i for i in range(pr.MAX_COACH_CANDIDATES)])
 
 
-def test_coach_candidates_is_empty_without_any_open_hypothesis(tmp_path, monkeypatch):
-    c, _ = make_client(tmp_path, monkeypatch)
+def test_coach_candidates_is_empty_when_literally_nothing_prices(tmp_path, monkeypatch):
+    """Sans hypothèse, sans position, sans watchlist ET sans le SEUL prix que
+    le faux marché sert par défaut (NESN.SW, membre du pool) : la liste est
+    VRAIMENT vide, le pool n'invente aucun cours."""
+    c, market = make_client(tmp_path, monkeypatch)
+    market.prices.clear()
     assert pr._coach_candidates([]) == []
     assert pr._coach_candidates(None) == []
+
+
+# --- 6quater) LOT 8b : l'univers du coach = QUATRE sources fusionnées -----
+#
+#  Mesuré en prod le 31/08 : aux créneaux du matin européen, l'univers du
+#  coach (uniquement les tickers des hypothèses radar) ne laissait plus que
+#  NOVN.SW/ROG.SW une fois filtré par ``tradable_now`` — le radar hypothèse
+#  sur des news dominées US. Le pool européen permanent (d) répare ça : les
+#  grandes valeurs suisses/européennes de ``entities._COMPANIES`` sont
+#  TOUJOURS candidates, hypothèse ou pas.
+
+def test_coach_candidate_symbols_starts_with_open_positions(tmp_path, monkeypatch):
+    """(a) Les positions OUVERTES passent en tête, même sans radar ni
+    watchlist — le coach doit toujours voir ce qu'il détient. Le pool
+    européen permanent (d) suit toujours derrière (LOT 8b, aucune autre
+    source ici pour l'évincer)."""
+    c, _ = make_client(tmp_path, monkeypatch)
+    positions = [pr.models.Position(symbol="POS1.SW"),
+                pr.models.Position(symbol="POS2.SW")]
+    symbols = pr._coach_candidate_symbols([], positions=positions)
+    assert symbols[:2] == ["POS1.SW", "POS2.SW"]
+    assert symbols[2:] == pr._coach_europe_pool()
+
+
+def test_coach_candidate_symbols_fuses_the_four_sources_in_priority_order(
+        tmp_path, monkeypatch):
+    """(a) positions -> (b) radar -> (c) watchlist -> (d) pool européen, dans
+    cet ordre, chacune apportant ses tickers propres (aucun chevauchement
+    ici : c'est l'ORDRE qu'on prouve, le dédoublonnage est testé à part)."""
+    c, _ = make_client(tmp_path, monkeypatch)
+    positions = [pr.models.Position(symbol="POS1.SW")]
+    hyps = [_open_hyp(["RAD1", "RAD2"], "h1")]
+    _seed_watchlist([{"symbol": "WL1"}, {"symbol": "WL2"}])
+
+    symbols = pr._coach_candidate_symbols(hyps, positions=positions)
+    assert symbols == ["POS1.SW", "RAD1", "RAD2", "WL1", "WL2",
+                       "NESN.SW", "NOVN.SW", "RO.SW", "UBSG.SW", "MC.PA"]
+
+
+def test_coach_candidate_symbols_dedupes_across_all_four_sources(tmp_path, monkeypatch):
+    """Le même ticker cité par plusieurs sources ne compte qu'une fois, à la
+    place de sa PREMIÈRE apparition (même doctrine que le dédoublonnage
+    radar historique)."""
+    c, _ = make_client(tmp_path, monkeypatch)
+    positions = [pr.models.Position(symbol="NESN.SW")]   # aussi dans le pool
+    hyps = [_open_hyp(["NESN.SW", "AAPL"], "h1")]         # NESN.SW re-cité
+    _seed_watchlist([{"symbol": "NESN.SW"}, {"symbol": "MSFT"}])  # re-cité
+
+    symbols = pr._coach_candidate_symbols(hyps, positions=positions)
+    assert symbols == ["NESN.SW", "AAPL", "MSFT",
+                       "NOVN.SW", "RO.SW", "UBSG.SW", "MC.PA"]
+
+
+def test_coach_candidate_symbols_caps_the_fusion_at_max_coach_candidates(
+        tmp_path, monkeypatch):
+    """Le plafond porte sur le TOTAL fusionné, pas sur chaque source prise
+    séparément : 2 positions + 5 radar + 3 watchlist + 5 pool = 15, coupé à
+    :data:`pr.MAX_COACH_CANDIDATES` (14) -- le DERNIER membre du pool tombe."""
+    c, _ = make_client(tmp_path, monkeypatch)
+    assert pr.MAX_COACH_CANDIDATES == 14
+    positions = [pr.models.Position(symbol="POS1.SW"),
+                pr.models.Position(symbol="POS2.SW")]
+    hyps = [_open_hyp(["RAD%d" % i for i in range(1, 6)], "h1")]
+    _seed_watchlist([{"symbol": "WL%d" % i} for i in range(1, 4)])
+
+    symbols = pr._coach_candidate_symbols(hyps, positions=positions)
+    assert symbols == ["POS1.SW", "POS2.SW",
+                       "RAD1", "RAD2", "RAD3", "RAD4", "RAD5",
+                       "WL1", "WL2", "WL3",
+                       "NESN.SW", "NOVN.SW", "RO.SW", "UBSG.SW"]  # MC.PA coupé
+    assert len(symbols) == pr.MAX_COACH_CANDIDATES
+
+
+def test_coach_candidate_symbols_still_skips_unquoted_tickers(tmp_path, monkeypatch):
+    """LOT 5, toujours vrai après la fusion LOT 8b : un ticker marqué
+    ``unquoted`` à la naissance de SON hypothèse ne rejoint jamais l'univers,
+    quelle que soit la source qui l'aurait sinon apporté."""
+    c, _ = make_client(tmp_path, monkeypatch)
+    hyp = _open_hyp(["SAP.TO", "AAPL"], "h1")
+    hyp["unquoted"] = ["SAP.TO"]
+    symbols = pr._coach_candidate_symbols([hyp])
+    assert "SAP.TO" not in symbols
+    assert "AAPL" in symbols
+
+
+def test_coach_candidate_symbols_tolerates_a_missing_watchlist(tmp_path, monkeypatch):
+    """(c) Aucune watchlist écrite pour :data:`pr.COACH_WATCHLIST_OWNER` ->
+    aucune exception, les autres sources restent servies."""
+    c, _ = make_client(tmp_path, monkeypatch)
+    symbols = pr._coach_candidate_symbols([_open_hyp(["AAPL"], "h1")])
+    assert "AAPL" in symbols
+
+
+def test_coach_europe_pool_is_exactly_the_known_european_symbols(tmp_path, monkeypatch):
+    """(d) Le pool ne CONTIENT que des suffixes EUROPÉENS réellement présents
+    dans ``entities._COMPANIES`` — rien d'inventé (pas de SAP : absent de la
+    table)."""
+    from backend.bots.paper import coach_trader
+    c, _ = make_client(tmp_path, monkeypatch)
+    pool = pr._coach_europe_pool()
+    assert pool == ["NESN.SW", "NOVN.SW", "RO.SW", "UBSG.SW", "MC.PA"]
+    assert all(coach_trader.market_of(s) == "europe" for s in pool)
+    assert "SAP" not in pool and "SAP.DE" not in pool
+
+
+def test_coach_candidates_tags_each_row_with_its_provenance(tmp_path, monkeypatch):
+    """LOT 8b, point 2 : chaque candidat porte le pourquoi de sa présence."""
+    c, market = make_client(tmp_path, monkeypatch)
+    market.prices["MSFT"] = (300.0, "USD", "Microsoft Corp")
+    market.prices["AAPL"] = (200.0, "USD", "Apple Inc")
+    market.prices["NOVN.SW"] = (80.0, "CHF", "Novartis")
+    seed_coach_position(qty=5)                       # NESN.SW, déjà détenue
+    _seed_radar([_open_hyp(["MSFT"], "h1")])
+    _seed_watchlist([{"symbol": "AAPL"}])
+
+    portfolio = pr._ensure_coach_account()
+    candidates = pr._coach_candidates(pr._open_radar_hypotheses(), FIXED_NOW,
+                                      positions=portfolio.positions)
+    by_symbol = {row["symbol"]: row["source"] for row in candidates}
+    assert by_symbol["NESN.SW"] == pr.CANDIDATE_SOURCE_POSITION
+    assert by_symbol["MSFT"] == pr.CANDIDATE_SOURCE_RADAR
+    assert by_symbol["AAPL"] == pr.CANDIDATE_SOURCE_WATCHLIST
+    assert by_symbol["NOVN.SW"] == pr.CANDIDATE_SOURCE_EUROPE_POOL
+
+
+MORNING_NOW = "2026-08-24T07:10:00"   # 09:10 Europe/Rome (UTC+2, CEST)
+
+
+def test_coach_candidates_at_the_european_morning_slot_include_the_pool_tradable(
+        tmp_path, monkeypatch):
+    """LE bug vécu en prod (31/08) : au créneau 09:10, seuls NOVN.SW/ROG.SW
+    restaient ``tradable`` une fois le radar (biaisé US) filtré par
+    ``tradable_now`` -- parfois AUCUN. Sans aucune hypothèse ouverte, sans
+    position, sans watchlist, le pool européen permanent donne à lui seul un
+    univers tradable au coach à cette heure."""
+    c, market = make_client(tmp_path, monkeypatch)
+    for symbol in ("NESN.SW", "NOVN.SW", "RO.SW", "UBSG.SW", "MC.PA"):
+        market.prices[symbol] = (100.0, "CHF", symbol)
+
+    candidates = pr._coach_candidates([], MORNING_NOW)
+    tradable = {row["symbol"] for row in candidates if row["tradable"]}
+    assert tradable == {"NESN.SW", "NOVN.SW", "RO.SW", "UBSG.SW", "MC.PA"}
+    assert all(row["source"] == pr.CANDIDATE_SOURCE_EUROPE_POOL
+              for row in candidates)
 
 
 def test_coach_pass_context_carries_candidates(tmp_path, monkeypatch):
@@ -6427,10 +6595,15 @@ def test_coach_pass_context_carries_candidates(tmp_path, monkeypatch):
     # LOT 5 : chaque candidat porte AUSSI son analyse technique -- ``None`` ici,
     # le faux marche ne servant aucune bougie a ce symbole. LOT 8 : et son
     # univers -- AAPL (US) est fermé à FIXED_NOW (12h locales, Wall Street
-    # n'ouvre qu'à 15h35).
+    # n'ouvre qu'à 15h35). LOT 8b : le pool ajoute NESN.SW (seul membre du
+    # pool coté par défaut par le faux marché), tradable à 12h locales.
     assert context["candidates"] == [
-        {"symbol": "AAPL", "price_chf": round(200.0 * 0.88, 2),
-         "currency": "USD", "technical": None, "tradable": False}]
+        {"symbol": "AAPL", "source": pr.CANDIDATE_SOURCE_RADAR,
+         "price_chf": round(200.0 * 0.88, 2),
+         "currency": "USD", "technical": None, "tradable": False},
+        {"symbol": "NESN.SW", "source": pr.CANDIDATE_SOURCE_EUROPE_POOL,
+         "price_chf": 100.0, "currency": "CHF", "technical": None,
+         "tradable": True}]
 
 
 def test_coach_pass_context_marks_a_tradable_candidate_true(tmp_path, monkeypatch):
@@ -6454,9 +6627,15 @@ def test_coach_book_carries_candidates_too(tmp_path, monkeypatch):
     monkeypatch.setattr(pr, "_now_iso", lambda: FIXED_NOW)
 
     book = pr.coach_book()
+    # LOT 8b : le pool européen s'ajoute ici aussi (NESN.SW, seul membre coté
+    # par défaut par le faux marché) -- même enrichissement que la passe.
     assert book["candidates"] == [
-        {"symbol": "AAPL", "price_chf": round(200.0 * 0.88, 2),
-         "currency": "USD", "technical": None, "tradable": False}]
+        {"symbol": "AAPL", "source": pr.CANDIDATE_SOURCE_RADAR,
+         "price_chf": round(200.0 * 0.88, 2),
+         "currency": "USD", "technical": None, "tradable": False},
+        {"symbol": "NESN.SW", "source": pr.CANDIDATE_SOURCE_EUROPE_POOL,
+         "price_chf": 100.0, "currency": "CHF", "technical": None,
+         "tradable": True}]
 
 
 # --- 7) Les endpoints ---------------------------------------------------

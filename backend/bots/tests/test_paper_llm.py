@@ -1220,6 +1220,15 @@ def test_le_prompt_de_tri_explique_le_champ_tradable():
     assert "tradable" in prompt and "market_closed" in prompt
 
 
+def test_le_prompt_de_tri_explique_le_champ_source():
+    """LOT 8b : chaque candidat porte sa provenance, et le prompt explique la
+    règle une fois pour toutes (même patron que ``tradable`` juste au-dessus)."""
+    prompt = llm.build_coach_screen_prompt(SCREEN_CTX).lower()
+    assert "source" in prompt
+    for mot in ("position", "radar", "watchlist", "europe_pool"):
+        assert mot in prompt, mot
+
+
 def test_le_prompt_de_tri_ne_leve_jamais():
     for junk in (None, {}, [], "pas un dict", 0):
         assert isinstance(llm.build_coach_screen_prompt(junk), str)

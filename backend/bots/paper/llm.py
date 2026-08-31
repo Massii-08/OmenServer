@@ -1084,6 +1084,22 @@ def build_coach_screen_prompt(context: Optional[Dict[str, Any]],
         "automatiquement refusé (``market_closed``). Tu peux en revanche "
         "TOUJOURS resserrer le stop d'une ligne, marché ouvert ou fermé : "
         "c'est une consigne au carnet, elle n'agira qu'à la réouverture.",
+        # LOT 8b — chaque candidat sait maintenant dire POURQUOI il est là :
+        # sans ça, un candidat du pool européen (jamais mentionné par une
+        # actualité) et une opportunité repérée par le radar se ressemblent
+        # à l'écran, alors qu'elles ne méritent pas le même degré de
+        # confiance a priori.
+        "Chaque candidat porte aussi un champ ``source`` : ``position`` (tu "
+        "la détiens déjà), ``radar`` (une hypothèse ouverte le suit), "
+        "``watchlist`` (Massii le surveille personnellement — tu peux "
+        "creuser plus volontiers ce type de titre) ou ``europe_pool`` (une "
+        "grande valeur suisse ou européenne, TOUJOURS présente même sans "
+        "actualité récente, pour que tu aies un univers à examiner même aux "
+        "heures où seule l'Europe est ouverte). Ce n'est pas une note de "
+        "qualité : un ``europe_pool`` sans rien de neuf ne mérite peut-être "
+        "aucun dossier, un ``radar`` peut être daté — la source dit "
+        "seulement d'où vient le titre, c'est TOI qui juges s'il mérite un "
+        "dossier, et tu peux citer cette raison dans ta note.",
         "Retiens AU PLUS %d titres, et seulement ceux sur lesquels tu es "
         "prêt à agir aujourd'hui — pas ceux qui « pourraient être "
         "intéressants ». Une liste VIDE est une réponse légitime quand rien "

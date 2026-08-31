@@ -21,7 +21,7 @@ from datetime import datetime, timedelta
 
 import pytest
 
-from backend.bots.paper import alerts, convergence, store
+from backend.bots.paper import alerts, convergence, quotes, store
 
 NOW = datetime(2026, 8, 24, 12, 0, 0)
 TG = {"token": "t", "chat_id": "c"}
@@ -2680,10 +2680,21 @@ def test_maybe_fire_resout_le_livre_du_coach_TOUT_SEUL(sources, alice, monkeypat
 
 
 @pytest.mark.real_coach_book
-def test_maybe_fire_resout_le_VRAI_livre_du_router(sources, alice):
+def test_maybe_fire_resout_le_VRAI_livre_du_router(sources, alice, monkeypatch):
     """Pas un stub : le vrai ``paper_router.coach_book``, sur un compte de coach
     créé à la volée dans ``tmp_path``. C'est lui qui prouve que la couture tient
-    jusqu'au bout de la chaîne réelle (le compte neuf porte ses 10 000 CHF)."""
+    jusqu'au bout de la chaîne réelle (le compte neuf porte ses 10 000 CHF).
+
+    LOT 8b : ``coach_book`` tente désormais un cours pour le pool européen
+    permanent MÊME sur un radar vide (c'est tout le point du lot) — sans ce
+    monkeypatch, ce test sortirait pour de vrai sur Yahoo pour 5 symboles.
+    ``QuoteError`` immédiate = exactement ce que le best-effort de
+    ``_coach_quote`` attend d'une place injoignable, aucun test ici n'inspecte
+    le CONTENU des candidats."""
+    def _no_network(*a, **kw):
+        raise quotes.QuoteError("réseau neutralisé en test")
+    monkeypatch.setattr(quotes, "get_quote", _no_network)
+
     _arm_two_factors(sources)
     seen = []
     runner = _Exec()
