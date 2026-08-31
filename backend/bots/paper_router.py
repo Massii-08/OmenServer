@@ -1282,7 +1282,7 @@ def _coach_candidate_symbols(hypotheses: Any) -> List[str]:
     return seen
 
 
-def _coach_candidates(hypotheses: Any) -> List[Dict[str, Any]]:
+def _coach_candidates(hypotheses: Any, now: Any = None) -> List[Dict[str, Any]]:
     """Le cours ACTUEL, converti en CHF, de chaque candidat des hypothèses
     radar OUVERTES — un par ticker DISTINCT (:func:`_coach_candidate_symbols`).
 
@@ -1292,6 +1292,13 @@ def _coach_candidates(hypotheses: Any) -> List[Dict[str, Any]]:
     passes de suite se sont terminées sur la même raison honnête : « il me
     faut le cours actuel du titre pour fixer un stop technique et une taille
     cohérente avec le risque à 2 % ». Il était affamé de données, pas timide.
+
+    ``now`` (LOT 8) : marque chaque candidat ``tradable`` (``coach_trader.
+    tradable_now``) — c'est ce qui permet au modèle de voir, AVANT de choisir
+    ses dossiers, quels titres sont seulement « intéressants » et lesquels
+    sont RÉELLEMENT jouables à cet instant. ``None`` (défaut) retombe sur
+    l'heure réelle du système, jamais une exception — même doctrine que
+    :func:`coach_trader.tradable_now`.
 
     Best-effort PAR SYMBOLE (même doctrine que ``_coach_quote``) : une panne
     de cours OMET le candidat plutôt que de lever ou d'inventer un prix, et un
@@ -1315,6 +1322,7 @@ def _coach_candidates(hypotheses: Any) -> List[Dict[str, Any]]:
             # un niveau. Absent (``None``) quand les bougies manquent, jamais
             # inventé.
             "technical": _coach_technical(symbol),
+            "tradable": coach_trader.tradable_now(symbol, now),
         })
     return out
 
@@ -1505,8 +1513,9 @@ def _push_coach_ledger(entries: List[Dict[str, Any]]) -> None:
 
 def _coach_execute_one(portfolio: models.Portfolio, action: Dict[str, Any],
                        source: str, now_iso: str,
-                       crypto_only: bool = False) -> Any:
-    """UNE décision : cours -> garde-fou -> moteur d'ordres.
+                       focus_symbol: Optional[str] = None) -> Any:
+    """UNE décision : [périmètre du gardien] -> cours -> garde-fou -> moteur
+    d'ordres.
 
     Rend ``(entrée_de_registre, (titre, corps)|None)``. MUTE ``portfolio``
     seulement si la décision est acceptée ET exécutée.
@@ -1521,6 +1530,16 @@ def _coach_execute_one(portfolio: models.Portfolio, action: Dict[str, Any],
         # pour le même titre (même geste que ``paper_place_order``).
         decision["symbol"] = symbol
 
+    # LOT 8 — le périmètre du GARDIEN. AVANT même de toucher un cours : une
+    # décision hors périmètre ne mérite pas un appel réseau pour un cours
+    # qu'elle n'utilisera jamais.
+    if focus_symbol is not None:
+        scope_code = coach_trader.guardian_gate(decision, focus_symbol)
+        if scope_code is not None:
+            return (coach_trader.ledger_entry(
+                now_iso, source, kind, symbol, False, reason=scope_code,
+                detail="hors du périmètre du gardien (%s)" % focus_symbol), None)
+
     quote = _coach_quote(symbol) if symbol else None
     if symbol and quote is None:
         return (coach_trader.ledger_entry(
@@ -1528,7 +1547,7 @@ def _coach_execute_one(portfolio: models.Portfolio, action: Dict[str, Any],
             detail="aucun cours exploitable pour %s" % symbol), None)
 
     verdict = coach_trader.gate_decision(decision, portfolio.to_dict(),
-                                         quote or {}, crypto_only=crypto_only)
+                                         quote or {}, now=now_iso)
     if not verdict.get("accepted"):
         code = str(verdict.get("reason") or "")
         return (coach_trader.ledger_entry(
@@ -1676,7 +1695,7 @@ def execute_coach_actions(actions: Any, source: str = "digest",
                           now_iso: Optional[str] = None,
                           parse_error: Any = None,
                           note: Any = None,
-                          crypto_only: bool = False,
+                          focus_symbol: Optional[str] = None,
                           **_ignored: Any) -> List[Dict[str, Any]]:
     """Exécute les décisions du coach. Rend les lignes de registre produites.
 
@@ -1686,7 +1705,18 @@ def execute_coach_actions(actions: Any, source: str = "digest",
 
     ``**_ignored`` est délibéré : l'appelant convergence peut lui passer des
     mots-clés qu'elle ne connaît pas encore (un ``trigger``, une langue), et
-    une signature trop stricte transformerait un ajout anodin en panne.
+    une signature trop stricte transformerait un ajout anodin en panne. Il
+    absorbe aussi sans effet un ``crypto_only`` (LOT 6, RETIRÉ en LOT 8 —
+    l'univers se juge désormais SYMBOLE PAR SYMBOLE, via ``now_iso`` transmis
+    jusqu'à ``coach_trader.gate_decision``) qu'un appelant non mis à jour
+    passerait encore.
+
+    ``focus_symbol`` (LOT 8) : SEUL le gardien le fournit — c'est le périmètre
+    de SA passe (:func:`run_coach_guardian_pass`). Chaque décision passe alors
+    D'ABORD par ``coach_trader.guardian_gate`` (refus ``out_of_scope`` si elle
+    porte sur un AUTRE symbole ou tente d'OUVRIR une ligne neuve) avant même
+    de toucher un cours — les 3 autres chemins ne le passent jamais
+    (``None`` par défaut), et ne sont donc pas concernés.
 
     ``note`` (LOT 4bis) est le champ de tête FACULTATIF du bloc ``COACH_
     ACTIONS`` (``coach_trader.parse_actions``/``convergence._parse_coach_
@@ -1721,7 +1751,7 @@ def execute_coach_actions(actions: Any, source: str = "digest",
         return _execute_coach_actions_locked(actions, source, now_iso,
                                              parse_error,
                                              _clean_coach_note(note),
-                                             bool(crypto_only))
+                                             focus_symbol)
     except Exception as e:                  # noqa: BLE001 — jamais fatal
         logger.exception("paper coach: exécution des décisions en échec (%s)",
                          type(e).__name__)
@@ -1732,7 +1762,7 @@ def _execute_coach_actions_locked(actions: Any, source: str,
                                   now_iso: Optional[str],
                                   parse_error: Any,
                                   note: Optional[str],
-                                  crypto_only: bool = False
+                                  focus_symbol: Optional[str] = None,
                                   ) -> List[Dict[str, Any]]:
     """Le corps de ``execute_coach_actions``.
 
@@ -1764,7 +1794,7 @@ def _execute_coach_actions_locked(actions: Any, source: str,
 
         for action in pending:
             entry, journal_entry = _coach_execute_one(portfolio, action, source,
-                                                      now, crypto_only)
+                                                      now, focus_symbol)
             rows.append(entry)
             if journal_entry is not None:
                 journal.append(journal_entry)
@@ -2114,7 +2144,7 @@ def _coach_pass_context(portfolio: models.Portfolio,
         # LOT 4bis — le cours de ce qu'il ne détient PAS ENCORE : sans lui, un
         # livre neuf n'a aucun prix pour dimensionner une entrée (cf. tête de
         # fonction de ``_coach_candidates``).
-        context["candidates"] = _coach_candidates(context["radar"])
+        context["candidates"] = _coach_candidates(context["radar"], now_iso)
     except Exception:                       # noqa: BLE001 — best-effort
         context["candidates"] = []
     try:
@@ -2295,7 +2325,7 @@ def coach_book() -> Dict[str, Any]:
             "equity_chf": round(_coach_equity_chf(portfolio), 2),
             "positions": positions,
             "open_orders": [o.to_dict() for o in portfolio.open_orders],
-            "candidates": _coach_candidates(_open_radar_hypotheses()),
+            "candidates": _coach_candidates(_open_radar_hypotheses(), _now_iso()),
         }
     except Exception as e:                  # noqa: BLE001 — jamais fatal
         logger.warning("paper coach: livre indisponible pour le digest (%s)",
@@ -2318,8 +2348,8 @@ def _coach_llm_failure(now_iso: str, detail: str) -> List[Dict[str, Any]]:
 
 
 def run_coach_daily_pass(now_iso: Optional[str] = None,
-                         claude: Optional[Callable[[str], str]] = None,
-                         crypto_only: bool = False) -> Dict[str, Any]:
+                         claude: Optional[Callable[[str], str]] = None
+                         ) -> Dict[str, Any]:
     """La passe de gestion du compte du coach, EN DEUX TEMPS (LOT 5).
 
     Contexte DÉTERMINISTE -> **tri** -> dossiers des élus -> **décision** ->
@@ -2339,9 +2369,14 @@ def run_coach_daily_pass(now_iso: Optional[str] = None,
     **Coût : deux appels au plus, UN seul quand le tri ne retient rien** —
     et ne rien retenir reste une réponse légitime, archivée avec sa raison.
 
-    ``crypto_only`` (créneau du week-end) descend jusqu'au garde-fou : un ordre
-    sur une action y est refusé (``market_closed``) plutôt que de dormir
-    jusqu'au lundi pour s'exécuter à un prix que personne n'a vu.
+    ⚠️ **LOT 8** : l'univers ne se juge plus par un ``crypto_only`` calculé une
+    fois pour toute la passe (LOT 6) — chaque candidat porte désormais son
+    propre ``tradable`` (:func:`_coach_candidates`), et c'est ``now`` lui-même,
+    transmis jusqu'à ``coach_trader.gate_decision`` via ``execute_coach_
+    actions``, qui fait juger CHAQUE décision, SYMBOLE PAR SYMBOLE
+    (``coach_trader.tradable_now``) : un ordre sur un marché fermé à cet
+    instant est refusé (``market_closed``) plutôt que de dormir jusqu'à la
+    réouverture pour s'exécuter à un prix que personne n'a vu.
 
     ``claude`` est injectable (les tests n'ont jamais besoin du CLI).
 
@@ -2371,7 +2406,6 @@ def run_coach_daily_pass(now_iso: Optional[str] = None,
         return {"ledger": _coach_llm_failure(now, "prompt indisponible")}
 
     speak = claude if claude is not None else llm._claude_text
-    context["crypto_only"] = bool(crypto_only)
 
     # --- PREMIER TEMPS : le tri ---------------------------------------- #
     answer = _coach_speak(speak, screen_builder, context, now)
@@ -2413,9 +2447,114 @@ def run_coach_daily_pass(now_iso: Optional[str] = None,
                                  now_iso=now,
                                  parse_error=(error if error == "parse_failed"
                                               else None),
-                                 note=parsed.get("note"),
-                                 crypto_only=crypto_only)
+                                 note=parsed.get("note"))
     return {"ledger": rows, "text": parsed.get("text") or ""}
+
+
+def _coach_guardian_dossier(position: models.Position, price: float, rate: float,
+                            trigger: str) -> Dict[str, Any]:
+    """Le dossier COURT d'UNE position pour le prompt du gardien (LOT 8) —
+    cours, technique, plan, P&L, distances au stop/objectif, déclencheur
+    nommé. Réutilise ``_coach_position_view_row`` (LOT 7, l'écran « Coach en
+    action ») : mêmes calculs, un seul endroit — pas une formule dupliquée
+    pour le prompt."""
+    row = _coach_position_view_row(position, price, rate)
+    row["technical"] = _coach_technical(position.symbol)
+    row["trigger"] = trigger
+    return row
+
+
+def run_coach_guardian_pass(now_iso: Optional[str] = None,
+                            claude: Optional[Callable[[str], str]] = None
+                            ) -> Dict[str, Any]:
+    """LE GARDIEN (LOT 8) — la sentinelle déclenchée par le MARCHÉ, entre deux
+    créneaux planifiés.
+
+    Le bloc BUDGET COACH (``coach_trader.py``) couvre le CALENDRIER (8
+    créneaux/jour ouvré) ; ce volet couvre l'IMPRÉVU. Pour chaque ligne
+    OUVERTE du coach, le cours ACTUEL est comparé au dernier vu
+    (``coach_trader.guardian_decision``) — un mouvement notable, un stop qui
+    chauffe ou un objectif qui mûrit déclenchent UN appel au modèle, restreint
+    à CETTE seule ligne (``focus_symbol``, cf. ``coach_trader.guardian_
+    gate``). Le reste du temps — l'écrasante majorité des cycles de 5
+    minutes — aucun appel ne part : « plus d'appels » ne veut pas dire
+    « plus de bruit ».
+
+    Best-effort PAR POSITION (même doctrine que ``_coach_candidates``) : une
+    ligne en panne (cours, modèle) n'empêche JAMAIS les autres d'être
+    vérifiées. NE LÈVE JAMAIS.
+
+    Rend ``{"checked": [symboles regardés], "fired": [symboles ayant
+    déclenché un appel], "ledger": [lignes de registre produites]}``.
+    """
+    now = now_iso or _now_iso()
+    out: Dict[str, Any] = {"checked": [], "fired": [], "ledger": []}
+    try:
+        portfolio = _ensure_coach_account()
+    except Exception as e:                  # noqa: BLE001 — jamais fatal
+        logger.warning("paper coach guardian: compte indisponible (%s)",
+                       type(e).__name__)
+        return out
+
+    try:
+        state = coach_trader.load_guardian_state()
+    except Exception:      # noqa: BLE001 — état illisible : on repart à zéro
+        state = {}
+
+    builder = getattr(llm, "build_coach_guardian_prompt", None)
+    if builder is None:
+        return out
+    speak = claude if claude is not None else llm._claude_text
+
+    for position in list(portfolio.positions):
+        symbol = position.symbol
+        try:
+            quote = _coach_quote(symbol)
+        except Exception as e:              # noqa: BLE001 — best-effort PAR SYMBOLE
+            logger.warning("paper coach guardian: cours indisponible pour %s (%s)",
+                           symbol, type(e).__name__)
+            continue
+        if quote is None:
+            continue
+        out["checked"].append(symbol)
+
+        price = quote["price"]
+        decision = coach_trader.guardian_decision(
+            symbol, position.to_dict(), price, state, now)
+        # « Vu » à CHAQUE regard, déclenché ou non : la fenêtre du
+        # déclencheur "move" est le cycle guetteur (~5 min), pas le temps
+        # écoulé depuis le dernier APPEL au modèle.
+        state = coach_trader.guardian_seen(state, symbol, price)
+        if not decision.get("fire"):
+            continue
+        out["fired"].append(symbol)
+
+        context = _coach_guardian_dossier(position, price, quote["fx_rate"],
+                                          decision["trigger"])
+        answer = _coach_speak(speak, builder, context, now)
+        if answer is None:
+            rows = execute_coach_actions([], source=coach_trader.GUARDIAN_SOURCE,
+                                         now_iso=now, parse_error="llm_failed")
+        else:
+            parsed = coach_trader.parse_actions(answer)
+            error = parsed.get("error")
+            rows = execute_coach_actions(
+                parsed.get("actions") or [], source=coach_trader.GUARDIAN_SOURCE,
+                now_iso=now,
+                parse_error=(error if error == "parse_failed" else None),
+                note=parsed.get("note"), focus_symbol=symbol)
+        out["ledger"].extend(rows)
+        # ARMÉ APRÈS LA TENTATIVE, quel qu'en soit le résultat — même doctrine
+        # que ``coach_trader.maybe_run`` : sans cela, une panne du modèle
+        # ferait retenter ce symbole à chaque passage du guetteur.
+        state = coach_trader.guardian_mark_fired(state, symbol, now)
+
+    try:
+        coach_trader.save_guardian_state(state)
+    except Exception as e:                  # noqa: BLE001
+        logger.warning("paper coach guardian: état non persisté (%s)",
+                       type(e).__name__)
+    return out
 
 
 def _coach_speak(speak: Callable[[str], str], builder: Callable[[Any], str],
@@ -3297,7 +3436,8 @@ def paper_coach_trader(
 
     positions = [p.to_dict() for p in portfolio.positions]
     trades = [t.to_dict() for t in portfolio.trades]
-    last_pass = coach_trader.load_state().get("last_pass")
+    pass_state = coach_trader.load_state()
+    last_pass = pass_state.get("last_pass")
 
     # LOT 7 — « Coach en action » veut VOIR chaque ligne vivre (cours, P&L,
     # distances) : ``quote_map``/``prices``/``fx_rates`` sont DÉJÀ construits
@@ -3338,10 +3478,14 @@ def paper_coach_trader(
             "user": store.load_equity(current_user.username),
         },
         "next_pass": {
-            # ``pass_due(None, …)`` prend l'heure courante (UTC) et la lit en
-            # heure LOCALE — le module est l'unique horloge de ce rituel.
-            "due": coach_trader.pass_due(None, last_pass),
-            "after_hour": coach_trader.RUN_AFTER_HOUR,
+            # LOT 8 — ``slots``/``due`` reflètent la cadence RÉELLE à
+            # plusieurs créneaux (``coach_trader.due_slot``/``slots_for``),
+            # pas l'ancien rituel « une passe par soir après 17h »
+            # (``pass_due``/``RUN_AFTER_HOUR``, superseded depuis LOT 5 mais
+            # encore affichés jusqu'ici — le texte « chaque soir à partir de
+            # 17h » avait cessé d'être vrai sans que l'écran ne le dise).
+            "slots": list(coach_trader.slots_for(_now_iso())),
+            "due": coach_trader.due_slot(_now_iso(), pass_state) is not None,
             "last_pass": last_pass,
         },
         "capital": coach_trader.COACH_CAPITAL,
@@ -3363,23 +3507,22 @@ def paper_coach_trader_run(
     proprement en consignant ``llm_failed`` au registre, elle n'invente aucun
     ordre.
 
-    ⚠️ **LOT 6** — elle ne saute PAS le gate d'UNIVERS. Vécu en prod : un
-    short d'action US un dimanche 01:47, parce que ``crypto_only`` restait au
-    défaut ``False`` de ``run_coach_daily_pass`` — rien ne le calculait ici.
-    « Forcer » lève le gate d'HORAIRE (``pass_due``), jamais celui du week-end
-    (``coach_trader.crypto_only_at``, la MÊME fonction pure que la passe
-    naturelle) : une action ne s'échange toujours pas hors semaine, même sur
-    un clic admin.
+    ⚠️ **LOT 6, généralisé en LOT 8** — elle ne saute PAS le gate d'UNIVERS.
+    Vécu en prod : un short d'action US un dimanche 01:47, parce que
+    ``crypto_only`` restait au défaut ``False`` de ``run_coach_daily_pass`` —
+    rien ne le calculait ici. « Forcer » lève le gate d'HORAIRE (``pass_due``),
+    jamais celui d'univers : ``now_iso`` voyage jusqu'à ``coach_trader.
+    gate_decision``, qui juge CHAQUE décision, SYMBOLE PAR SYMBOLE
+    (``coach_trader.tradable_now``) — une action hors de sa fenêtre de
+    marché ne s'échange toujours pas, même sur un clic admin.
 
     Détaché par DÉFAUT, en ligne sur ``?sync=1`` : même patron ``_job_or_sync``
     que les six autres endpoints coûteux de ce fichier, et pour la même raison
     (un appel au modèle dépasse largement le délai d'une requête HTTP).
     """
     now_iso = _now_iso()
-    crypto_only = coach_trader.crypto_only_at(now_iso)
     return _job_or_sync(sync, current_user.username,
-                        lambda: run_coach_daily_pass(now_iso,
-                                                     crypto_only=crypto_only))
+                        lambda: run_coach_daily_pass(now_iso))
 
 
 # --------------------------------------------------------------------------- #

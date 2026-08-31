@@ -5927,6 +5927,57 @@ def test_a_rejected_action_is_not_written_to_the_journal(tmp_path, monkeypatch):
     assert (store.read_note(COACH, "Journal.md") or "") == ""
 
 
+# --- LOT 8 : ``focus_symbol`` — le périmètre du GARDIEN --------------------- #
+
+def test_focus_symbol_lets_a_matching_exit_through(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+    seed_coach_position(qty=10)
+    rows = pr.execute_coach_actions(
+        [{"action": "sell", "symbol": "NESN.SW", "qty": 5}],
+        source="guardian", focus_symbol="NESN.SW")
+    assert rows[0]["accepted"] is True
+
+
+def test_focus_symbol_rejects_a_decision_on_another_symbol(tmp_path, monkeypatch):
+    """Le gardien de NESN.SW ne doit jamais pouvoir agir sur un AUTRE titre —
+    même un titre par ailleurs parfaitement valide."""
+    c, market = make_client(tmp_path, monkeypatch)
+    market.prices["AAPL"] = (200.0, "USD", "Apple Inc")
+    rows = pr.execute_coach_actions(
+        [coach_action(symbol="AAPL")], source="guardian", focus_symbol="NESN.SW")
+    assert len(rows) == 1
+    assert rows[0]["reason"] == "out_of_scope"
+    assert rows[0]["accepted"] is False
+    assert coach_portfolio()["positions"] == []
+
+
+def test_focus_symbol_rejects_a_new_entry_even_on_the_focus_symbol(tmp_path, monkeypatch):
+    """Le gardien gère une ligne EXISTANTE — il ne doit jamais pouvoir en
+    ouvrir une, même sur son propre symbole."""
+    c, _ = make_client(tmp_path, monkeypatch)
+    rows = pr.execute_coach_actions(
+        [coach_action()], source="guardian", focus_symbol="NESN.SW")
+    assert rows[0]["reason"] == "out_of_scope"
+    assert coach_portfolio()["positions"] == []
+
+
+def test_focus_symbol_accepts_adjust_stop_on_the_focus_symbol(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+    seed_coach_position(qty=10, stop_loss=90.0)
+    rows = pr.execute_coach_actions(
+        [{"action": "adjust_stop", "symbol": "NESN.SW", "stop": 95.0}],
+        source="guardian", focus_symbol="NESN.SW")
+    assert rows[0]["accepted"] is True
+
+
+def test_focus_symbol_absent_does_not_restrict_anything(tmp_path, monkeypatch):
+    """Les 3 autres chemins (passe planifiée, digest, forcée) n'ont jamais à
+    fournir ``focus_symbol`` : son absence laisse tout passer, comme avant."""
+    c, _ = make_client(tmp_path, monkeypatch)
+    rows = pr.execute_coach_actions([coach_action()], source="daily")
+    assert rows[0]["accepted"] is True
+
+
 # --- 4) L'inclusion dans le tick (LE point critique du lot) -------------
 
 def test_tick_coach_account_executes_the_protective_stop(tmp_path, monkeypatch):
@@ -6374,10 +6425,24 @@ def test_coach_pass_context_carries_candidates(tmp_path, monkeypatch):
 
     context = pr._coach_pass_context(portfolio, FIXED_NOW)
     # LOT 5 : chaque candidat porte AUSSI son analyse technique -- ``None`` ici,
-    # le faux marche ne servant aucune bougie a ce symbole.
+    # le faux marche ne servant aucune bougie a ce symbole. LOT 8 : et son
+    # univers -- AAPL (US) est fermé à FIXED_NOW (12h locales, Wall Street
+    # n'ouvre qu'à 15h35).
     assert context["candidates"] == [
         {"symbol": "AAPL", "price_chf": round(200.0 * 0.88, 2),
-         "currency": "USD", "technical": None}]
+         "currency": "USD", "technical": None, "tradable": False}]
+
+
+def test_coach_pass_context_marks_a_tradable_candidate_true(tmp_path, monkeypatch):
+    """LOT 8 : un candidat CRYPTO est toujours ``tradable``, quelle que soit
+    l'heure."""
+    c, market = make_client(tmp_path, monkeypatch)
+    market.prices["BTC-USD"] = (100.0, "USD", "Bitcoin")
+    _seed_radar([_open_hyp(["BTC-USD"], "h1")])
+    portfolio = pr._ensure_coach_account()
+
+    context = pr._coach_pass_context(portfolio, FIXED_NOW)
+    assert context["candidates"][0]["tradable"] is True
 
 
 def test_coach_book_carries_candidates_too(tmp_path, monkeypatch):
@@ -6386,11 +6451,12 @@ def test_coach_book_carries_candidates_too(tmp_path, monkeypatch):
     c, market = make_client(tmp_path, monkeypatch)
     market.prices["AAPL"] = (200.0, "USD", "Apple Inc")
     _seed_radar([_open_hyp(["AAPL"], "h1")])
+    monkeypatch.setattr(pr, "_now_iso", lambda: FIXED_NOW)
 
     book = pr.coach_book()
     assert book["candidates"] == [
         {"symbol": "AAPL", "price_chf": round(200.0 * 0.88, 2),
-         "currency": "USD", "technical": None}]
+         "currency": "USD", "technical": None, "tradable": False}]
 
 
 # --- 7) Les endpoints ---------------------------------------------------
@@ -6414,37 +6480,16 @@ def test_coach_trader_run_forces_the_pass_for_an_admin(tmp_path, monkeypatch):
     c, _ = make_client(tmp_path, monkeypatch)
     calls = []
     monkeypatch.setattr(pr, "run_coach_daily_pass",
-                        lambda now_iso=None, crypto_only=False:
+                        lambda now_iso=None:
                         calls.append(now_iso) or {"ok": True})
     body = c.post("/api/paper/coach-trader/run?sync=1")
     assert body.status_code == 200 and body.json() == {"ok": True}
     assert len(calls) == 1
 
 
-# --- LOT 6 — la passe FORCÉE applique la MÊME règle d'univers ------------ #
+# --- LOT 8 — la passe FORCÉE applique la MÊME règle d'univers, PAR SYMBOLE #
 
 SUNDAY_NOW = "2026-08-23T01:47:00"  # l'incident réel : un short d'action US
-
-
-def test_coach_trader_run_computes_crypto_only_from_the_real_moment(
-        tmp_path, monkeypatch):
-    """Vécu en prod : la passe FORCÉE a shorté une action US un dimanche
-    01:47 — elle saute le gate d'HORAIRE (``pass_due``, c'est le sens du mot
-    « forcer ») mais ne doit JAMAIS sauter le gate d'UNIVERS. Avant ce fix,
-    ``crypto_only`` restait au défaut ``False`` quel que soit le jour, faute
-    d'être calculé du tout."""
-    c, _ = make_client(tmp_path, monkeypatch)
-    calls = []
-    monkeypatch.setattr(pr, "run_coach_daily_pass",
-                        lambda now_iso=None, crypto_only=False:
-                        calls.append(crypto_only) or {"ok": True})
-
-    monkeypatch.setattr(pr, "_now_iso", lambda: SUNDAY_NOW)
-    assert c.post("/api/paper/coach-trader/run?sync=1").status_code == 200
-    monkeypatch.setattr(pr, "_now_iso", lambda: FIXED_NOW)     # lundi
-    assert c.post("/api/paper/coach-trader/run?sync=1").status_code == 200
-
-    assert calls == [True, False]
 
 
 def test_coach_trader_run_forced_on_sunday_refuses_stocks_and_keeps_crypto(
@@ -6484,7 +6529,9 @@ def test_coach_trader_view_returns_both_equity_series(tmp_path, monkeypatch):
     assert body["capital"] == 10000.0
     assert body["equity"]["coach"][0]["equity"] == 10100.0
     assert body["equity"]["user"][0]["equity"] == 9800.0
-    assert body["next_pass"]["after_hour"] == 17
+    # LOT 8 : FIXED_NOW (lundi) -> les créneaux de semaine, plus l'ancien
+    # champ ``after_hour`` (rituel superseded depuis LOT 5).
+    assert body["next_pass"]["slots"] == list(pr.coach_trader.WEEKDAY_SLOTS)
     assert "portfolio" in body and "stats" in body and "discipline" in body
     assert body["ledger"] == []
 
@@ -7079,7 +7126,9 @@ def test_a_screening_with_names_costs_two_calls_and_trades(tmp_path, monkeypatch
     assert coach_portfolio()["positions"][0]["symbol"] == "NESN.SW"
 
 
-def test_the_screening_is_capped_at_three_names(tmp_path, monkeypatch):
+def test_the_screening_is_capped_at_max_focus_names(tmp_path, monkeypatch):
+    """LOT 8 : ``MAX_FOCUS`` est passé à 4 — les 4 premiers noms passent, le
+    5ᵉ (au-delà du cap) est écarté."""
     c, market = make_client(tmp_path, monkeypatch)
     for symbol in ("NESN.SW", "ROG.SW", "ABBN.SW", "UBSG.SW", "ZURN.SW"):
         market.prices[symbol] = (100.0, "CHF", symbol)
@@ -7090,8 +7139,9 @@ def test_the_screening_is_capped_at_three_names(tmp_path, monkeypatch):
 
     pr.run_coach_daily_pass(FIXED_NOW, claude=speaker)
     dossiers = speaker.prompts[1]
-    assert "UBSG.SW" not in dossiers and "ZURN.SW" not in dossiers
-    assert "NESN.SW" in dossiers
+    assert pr.coach_trader.MAX_FOCUS == 4
+    assert "ZURN.SW" not in dossiers
+    assert "NESN.SW" in dossiers and "UBSG.SW" in dossiers
 
 
 def test_the_second_prompt_carries_the_full_file_of_the_chosen_names(
@@ -7142,7 +7192,9 @@ def test_a_model_failure_on_the_first_call_is_logged_as_such(tmp_path, monkeypat
 
 def test_the_weekend_pass_refuses_stocks_and_keeps_crypto(tmp_path, monkeypatch):
     """Créneau du week-end : les bourses sont fermées. Un ordre sur une action
-    y dormirait jusqu'au lundi pour s'exécuter à un prix que personne n'a vu."""
+    y dormirait jusqu'au lundi pour s'exécuter à un prix que personne n'a vu.
+    LOT 8 : plus de ``crypto_only`` forcé — c'est le ``now_iso`` (un vrai
+    dimanche) qui fait juger ``NESN.SW`` non-tradable via ``tradable_now``."""
     c, market = make_client(tmp_path, monkeypatch)
     market.prices["BTC-USD"] = (100.0, "USD", "Bitcoin")
     market.candles["BTC-USD"] = _serie()
@@ -7152,7 +7204,7 @@ def test_the_weekend_pass_refuses_stocks_and_keeps_crypto(tmp_path, monkeypatch)
         _actions_answer([coach_action(),
                          coach_action(symbol="BTC-USD", qty=15, stop=90.0)]))
 
-    pr.run_coach_daily_pass(FIXED_NOW, claude=speaker, crypto_only=True)
+    pr.run_coach_daily_pass(SUNDAY_NOW, claude=speaker)
     rows = {row["symbol"]: row for row in coach_ledger() if row["symbol"]}
     assert rows["NESN.SW"]["reason"] == "market_closed"
     assert rows["BTC-USD"]["accepted"] is True
@@ -7226,3 +7278,176 @@ def test_a_broken_calendar_never_stops_the_pass(tmp_path, monkeypatch):
     monkeypatch.setattr(pr._calendar(), "recent_verdicts", _boom)
     assert pr._coach_pass_context(pr._ensure_coach_account(),
                                   FIXED_NOW)["verdicts"] == []
+
+
+# --------------------------------------------------------------------------- #
+# LOT 8 — ``run_coach_guardian_pass`` : la sentinelle déclenchée par le
+# MARCHÉ, entre deux créneaux planifiés. Une passe FOCALISÉE par position
+# dont le marché a bougé — 1 appel LLM au plus PAR SYMBOLE déclenché.
+# --------------------------------------------------------------------------- #
+
+def _seed_position(symbol, qty=10, stop_loss=None, avg_price=100.0,
+                   currency="CHF", fx_rate=1.0, side="long"):
+    portfolio = pr._ensure_coach_account()
+    portfolio.positions.append(pr.models.Position(
+        symbol=symbol, qty=qty, avg_price=avg_price, currency=currency,
+        fx_rate=fx_rate, opened_at=FIXED_NOW, side=side,
+        thesis=COACH_THESIS, stop_loss=stop_loss))
+    pr._save(COACH, portfolio)
+    return portfolio
+
+
+def test_guardian_pass_with_no_open_position_does_nothing(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+    assert pr.run_coach_guardian_pass() == {"checked": [], "fired": [], "ledger": []}
+
+
+def test_guardian_pass_fires_on_a_moved_position(tmp_path, monkeypatch):
+    c, market = make_client(tmp_path, monkeypatch)
+    seed_coach_position(qty=10, stop_loss=90.0, avg_price=100.0)
+    pr.coach_trader.save_guardian_state({"NESN.SW": {"last_price": 100.0}})
+    market.prices["NESN.SW"] = (98.0, "CHF", "Nestle SA")
+    speaker = _Speaker(_actions_answer(
+        [{"action": "adjust_stop", "symbol": "NESN.SW", "stop": 95.0}]))
+
+    result = pr.run_coach_guardian_pass(claude=speaker)
+
+    assert result["checked"] == ["NESN.SW"]
+    assert result["fired"] == ["NESN.SW"]
+    assert len(speaker.prompts) == 1
+    rows = coach_ledger()
+    assert rows[0]["source"] == "guardian"
+    assert rows[0]["accepted"] is True
+    assert coach_portfolio()["positions"][0]["stop_loss"] == 95.0
+    state = pr.coach_trader.load_guardian_state()
+    assert state["NESN.SW"]["calls_today"] == 1
+    assert state["NESN.SW"]["last_price"] == 98.0
+
+
+def test_guardian_pass_skips_a_shut_market(tmp_path, monkeypatch):
+    """AAPL (US) est fermé à FIXED_NOW (12h locales) : même un stop à 2,5 %
+    ne réveille pas le gardien — mais le cours VU est quand même retenu."""
+    c, market = make_client(tmp_path, monkeypatch)
+    market.prices["AAPL"] = (200.0, "USD", "Apple Inc")
+    _seed_position("AAPL", stop_loss=195.0, avg_price=180.0,
+                  currency="USD", fx_rate=0.88)
+    speaker = _Speaker()
+
+    result = pr.run_coach_guardian_pass(claude=speaker)
+
+    assert result["checked"] == ["AAPL"]
+    assert result["fired"] == []
+    assert speaker.prompts == []
+    assert coach_ledger() == []
+    state = pr.coach_trader.load_guardian_state()
+    assert state["AAPL"]["last_price"] == 200.0
+
+
+def test_guardian_pass_respects_the_cooldown(tmp_path, monkeypatch):
+    c, market = make_client(tmp_path, monkeypatch)
+    seed_coach_position(qty=10, stop_loss=90.0, avg_price=100.0)
+    pr.coach_trader.save_guardian_state({"NESN.SW": {
+        "last_price": 100.0, "last_call": "2026-08-24T09:30:00+00:00"}})
+    market.prices["NESN.SW"] = (98.0, "CHF", "Nestle SA")
+    speaker = _Speaker()
+
+    result = pr.run_coach_guardian_pass(claude=speaker)
+
+    assert result["fired"] == []
+    assert speaker.prompts == []
+
+
+def test_guardian_pass_respects_the_daily_cap(tmp_path, monkeypatch):
+    c, market = make_client(tmp_path, monkeypatch)
+    seed_coach_position(qty=10, stop_loss=90.0, avg_price=100.0)
+    pr.coach_trader.save_guardian_state({"NESN.SW": {
+        "last_price": 100.0,
+        "calls_today": pr.coach_trader.MAX_GUARDIAN_CALLS_PER_DAY,
+        "calls_date": "2026-08-24"}})
+    market.prices["NESN.SW"] = (98.0, "CHF", "Nestle SA")
+    speaker = _Speaker()
+
+    result = pr.run_coach_guardian_pass(claude=speaker)
+
+    assert result["fired"] == []
+    assert speaker.prompts == []
+
+
+def test_guardian_pass_checks_each_position_independently(tmp_path, monkeypatch):
+    c, market = make_client(tmp_path, monkeypatch)
+    seed_coach_position(qty=10, stop_loss=90.0, avg_price=100.0)   # NESN.SW
+    market.prices["AAPL"] = (200.0, "USD", "Apple Inc")
+    _seed_position("AAPL", stop_loss=None, avg_price=180.0,
+                  currency="USD", fx_rate=0.88)
+    pr.coach_trader.save_guardian_state({
+        "NESN.SW": {"last_price": 100.0}, "AAPL": {"last_price": 200.0}})
+    market.prices["NESN.SW"] = (98.0, "CHF", "Nestle SA")   # bouge de 2 %
+    speaker = _Speaker(_actions_answer([]))
+
+    result = pr.run_coach_guardian_pass(claude=speaker)
+
+    assert result["checked"] == ["NESN.SW", "AAPL"]
+    assert result["fired"] == ["NESN.SW"]
+    assert len(speaker.prompts) == 1
+
+
+def test_guardian_pass_records_a_hold_when_nothing_to_do(tmp_path, monkeypatch):
+    c, market = make_client(tmp_path, monkeypatch)
+    seed_coach_position(qty=10, stop_loss=90.0, avg_price=100.0)
+    pr.coach_trader.save_guardian_state({"NESN.SW": {"last_price": 100.0}})
+    market.prices["NESN.SW"] = (98.0, "CHF", "Nestle SA")
+    speaker = _Speaker(_actions_answer([], note="rien à signaler, la thèse tient"))
+
+    pr.run_coach_guardian_pass(claude=speaker)
+
+    rows = coach_ledger()
+    assert rows[0]["source"] == "guardian"
+    assert rows[0]["action"] == "hold"
+    assert rows[0]["detail"] == "rien à signaler, la thèse tient"
+
+
+def test_guardian_pass_rejects_an_action_on_another_symbol(tmp_path, monkeypatch):
+    c, market = make_client(tmp_path, monkeypatch)
+    seed_coach_position(qty=10, stop_loss=90.0, avg_price=100.0)
+    market.prices["AAPL"] = (200.0, "USD", "Apple Inc")
+    pr.coach_trader.save_guardian_state({"NESN.SW": {"last_price": 100.0}})
+    market.prices["NESN.SW"] = (98.0, "CHF", "Nestle SA")
+    speaker = _Speaker(_actions_answer(
+        [{"action": "sell", "symbol": "AAPL", "qty": 1}]))
+
+    pr.run_coach_guardian_pass(claude=speaker)
+
+    rows = coach_ledger()
+    assert rows[0]["reason"] == "out_of_scope"
+
+
+def test_guardian_pass_never_raises_on_a_broken_quote(tmp_path, monkeypatch):
+    c, market = make_client(tmp_path, monkeypatch)
+    seed_coach_position(qty=10, stop_loss=90.0, avg_price=100.0)
+    market.broken.add("NESN.SW")
+
+    result = pr.run_coach_guardian_pass()
+
+    assert result["checked"] == []
+    assert result["fired"] == []
+
+
+def test_guardian_pass_records_a_failure_when_the_model_does_not_answer(
+        tmp_path, monkeypatch):
+    c, market = make_client(tmp_path, monkeypatch)
+    seed_coach_position(qty=10, stop_loss=90.0, avg_price=100.0)
+    pr.coach_trader.save_guardian_state({"NESN.SW": {"last_price": 100.0}})
+    market.prices["NESN.SW"] = (98.0, "CHF", "Nestle SA")
+
+    def _boom(prompt, *a, **kw):
+        raise RuntimeError("CLI absent")
+
+    pr.run_coach_guardian_pass(claude=_boom)
+
+    rows = coach_ledger()
+    assert rows[0]["source"] == "guardian"
+    assert rows[0]["reason"] == "llm_failed"
+    # ARMÉ après la TENTATIVE, même échouée -- sinon une panne du modèle
+    # ferait retenter toutes les 5 minutes (même doctrine que ``maybe_run``).
+    state = pr.coach_trader.load_guardian_state()
+    assert state["NESN.SW"]["calls_today"] == 1

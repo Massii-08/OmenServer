@@ -96,61 +96,82 @@ MIN_CASH_PCT = 5.0        # trésorerie plancher : on ne se met jamais à sec
 RUN_AFTER_HOUR = 17       # ancienne passe unique : jamais avant 17 h LOCALES
 
 # --------------------------------------------------------------------------- #
-# BUDGET COACH — mois x20
+# BUDGET COACH — mois x20 (LOT 8 : cadence resserrée)
 #
-# Le plan Claude Max est à x20 CE MOIS-CI : le budget d'appels DU COACH (et de
-# lui seul — aucun autre consommateur du dépôt ne bouge) est desserré pour le
-# pousser au maximum de ses capacités. Tout est ICI, en un bloc, pour qu'un
-# retour au régime normal en octobre soit une modification de CONSTANTES et
-# rien d'autre : remettre ``WEEKDAY_SLOTS`` à un seul créneau suffit.
+# Le plan Claude Max est à x20 : le budget d'appels DU COACH (et de lui
+# seul — aucun autre consommateur du dépôt ne bouge) est desserré pour le
+# pousser au maximum de ses capacités — mais INTELLIGEMMENT : des appels
+# quand les marchés sont OUVERTS et quand le marché BOUGE (cf. le GARDIEN
+# plus bas), jamais du bruit. Tout est ICI, en un bloc, pour qu'un retour au
+# régime normal soit une modification de CONSTANTES et rien d'autre : remettre
+# ``WEEKDAY_SLOTS`` à un seul créneau suffit.
 #
-# COÛT MESURÉ, pire cas d'un jour ouvré :
-#     3 créneaux x 2 appels (tri + dossier) = 6 appels
+# COÛT RÉEL, pire cas d'un jour ouvré :
+#     8 créneaux x 2 appels (tri + dossier) = 16 appels
 #   + 1 appel de digest (la couche convergence, inchangée)
-#   = 7 appels/jour ouvré. Week-end : 2 appels (un seul créneau) + digest.
-# Un créneau où le tri ne retient RIEN ne coûte qu'UN appel — le second ne
-# part que s'il y a un dossier à instruire.
+#   + le GARDIEN (:data:`MAX_GUARDIAN_CALLS_PER_DAY` par position ouverte AU
+#     PLUS, et seulement quand le marché BOUGE — la plupart des créneaux de
+#     5 min ne déclenchent RIEN)
+#   ≈ 20-30 appels/jour ouvré EN PRATIQUE (le plafond théorique est plus haut,
+#   mais un créneau où le tri ne retient rien ne coûte qu'UN appel, et le
+#   gardien ne parle que sur mouvement réel). Week-end : 2 créneaux CRYPTO
+#   uniquement (cf. :func:`tradable_now`) + digest + gardien.
 #
 # Heures LOCALES (Europe/Rome), et elles ont chacune une raison :
+#   09:10 — l'Europe vient d'ouvrir (09:05) : le coach peut ENFIN jouer les
+#           actions européennes (.SW/.PA/.DE/.F/.MI/.AS/.MC/.L) dès le matin,
+#           plutôt que d'attendre le créneau de fin d'après-midi.
+#   11:30 — mi-matinée européenne : les premières tendances du jour se lisent.
+#   14:00 — avant l'ouverture US, l'Europe est bien établie.
 #   15:40 — dix minutes avant l'ouverture de New York : l'Europe a fait sa
 #           journée, les futures US disent ce qui vient.
-#   18:00 — clôture européenne : les cours du jour sont figés de ce côté.
+#   17:00 — première heure de la séance US : les réactions à l'ouverture.
+#   18:30 — l'Europe est fermée (17:25), la séance US bat son plein.
+#   20:00 — après-midi américaine.
 #   21:40 — dernière heure américaine : c'est là que les séances se décident.
 # --------------------------------------------------------------------------- #
-WEEKDAY_SLOTS = ("15:40", "18:00", "21:40")
-WEEKEND_SLOTS = ("18:00",)         # crypto UNIQUEMENT (cf. :func:`crypto_only_at`)
+WEEKDAY_SLOTS = ("09:10", "11:30", "14:00", "15:40",
+                 "17:00", "18:30", "20:00", "21:40")
+WEEKEND_SLOTS = ("11:00", "18:00")   # crypto UNIQUEMENT (cf. :func:`tradable_now`)
 PASSES_PER_DAY = len(WEEKDAY_SLOTS)
-MAX_FOCUS = 3                      # dossiers instruits par créneau, au plus
-LLM_CALLS_PER_PASS = 2             # tri, puis dossier — jamais davantage
+MAX_FOCUS = 4                       # dossiers instruits par créneau, au plus
+LLM_CALLS_PER_PASS = 2              # tri, puis dossier — jamais davantage
 
 # Un seul seuil de thèse dans tout le simulateur — ``risk`` le porte déjà pour
 # la porte de confirmation humaine (LOT 3, C3). On le RÉUTILISE plutôt que d'en
 # poser un second qui divergerait au premier ajustement.
 MIN_THESIS_LEN = risk.PREORDER_MIN_THESIS_LEN
 
-# Les 17 codes de refus. ``reason`` est TOUJOURS l'un d'eux, JAMAIS une phrase :
+# Les 18 codes de refus. ``reason`` est TOUJOURS l'un d'eux, JAMAIS une phrase :
 # la traduction (fr/en/it) vit dans ``lang.js``, comme partout ailleurs.
 #
-# Les trois derniers arrivent avec le LOT 5 :
+# Les trois avant-derniers arrivent avec le LOT 5 :
 #   ``wrong_side``    — ouvrir à l'envers d'une ligne déjà tenue (le moteur le
 #                       refuserait de toute façon, mais trois étages plus bas
 #                       et avec un message technique) ;
 #   ``stop_widen``    — un stop qui S'ÉLOIGNE n'est pas une gestion, c'est
 #                       l'annulation d'une décision déjà prise ;
-#   ``market_closed`` — créneau du week-end : seules les cryptos s'échangent.
+#   ``market_closed`` — le marché DE CE SYMBOLE est fermé à cet instant
+#                       (:func:`tradable_now`, LOT 8 — généralisé depuis le
+#                       simple « créneau du week-end » du LOT 6).
+# Le dernier arrive avec le LOT 8 :
+#   ``out_of_scope``  — décision hors du PÉRIMÈTRE du gardien
+#                       (:func:`guardian_gate`) : mauvais symbole, ou
+#                       tentative d'ouvrir une ligne NEUVE.
 REJECT_CODES = (
     "unknown_action", "no_symbol", "bad_qty", "no_quote",
     "no_thesis", "no_stop", "risk_high", "too_small", "oversize",
     "too_many_positions", "too_many_crypto", "cash_floor",
     "no_position", "qty_over_position",
-    "wrong_side", "stop_widen", "market_closed",
+    "wrong_side", "stop_widen", "market_closed", "out_of_scope",
 )
 
-# D'où vient une décision : du digest quotidien, ou de la passe autonome de
-# fin de journée. Constante de CONTRAT pour les appelants — le registre, lui,
-# archive ce qu'on lui donne sans le policer (une trace ne valide pas, elle
-# consigne).
-SOURCES = ("digest", "daily")
+# D'où vient une décision : du digest quotidien, de la passe planifiée (créneau),
+# ou du GARDIEN (LOT 8 — la sentinelle déclenchée par un mouvement de marché
+# entre deux créneaux). Constante de CONTRAT pour les appelants — le registre,
+# lui, archive ce qu'on lui donne sans le policer (une trace ne valide pas,
+# elle consigne).
+SOURCES = ("digest", "daily", "guardian")
 
 # Le setup de repli quand le modèle en invente un hors de ``models.SETUPS``.
 DEFAULT_SETUP = "coach_idea"
@@ -310,7 +331,7 @@ def _crypto_symbols(positions: List[Dict[str, Any]]) -> set:
 # --------------------------------------------------------------------------- #
 
 def gate_decision(decision: Any, portfolio: Any, quote: Any,
-                  crypto_only: bool = False) -> Dict[str, Any]:
+                  now: Any = None) -> Dict[str, Any]:
     """Une décision du modèle passe-t-elle le mandat ? (PUR)
 
     **On REJETTE, on ne rogne JAMAIS en silence** (cf. tête de fichier) : le
@@ -331,10 +352,14 @@ def gate_decision(decision: Any, portfolio: Any, quote: Any,
     Rend ``{"accepted": bool, "reason": str|None, "order": dict|None}``.
     ``reason`` est TOUJOURS un code de :data:`REJECT_CODES`.
 
-    ``crypto_only`` (LOT 5) : le créneau du week-end. Seules les cryptos
-    s'échangent alors ; tout ordre sur une action est refusé
-    (``market_closed``) au lieu de dormir jusqu'au lundi sous un prix du
-    vendredi. Déplacer un stop reste permis — ce n'est pas une exécution.
+    ``now`` (LOT 8, remplace le ``crypto_only`` de LOT 5) : l'instant de la
+    décision. Sert à :func:`tradable_now` à juger, SYMBOLE PAR SYMBOLE, si le
+    marché de ``symbol`` est ouvert MAINTENANT ; sinon l'ordre est refusé
+    (``market_closed``) au lieu de dormir jusqu'à la réouverture sous un prix
+    que personne n'a vu. Déplacer un stop reste permis — ce n'est pas une
+    exécution. ``now`` est OPTIONNEL : ``None`` (par défaut) désactive ce
+    contrôle — un appelant qui ne s'occupe pas des horaires de marché continue
+    de voir un marché ouvert.
 
     Ordre des contrôles — le PREMIER échec gagne, et cet ordre est DÉTERMINISTE
     (épinglé par les tests) parce qu'il décide ce que l'utilisateur lira quand
@@ -344,9 +369,10 @@ def gate_decision(decision: Any, portfolio: Any, quote: Any,
 
       1. ``unknown_action`` — action absente ou hors :data:`ACTION_KINDS`.
       2. ``no_symbol``
-      3. ``market_closed`` — créneau crypto, titre qui n'en est pas un. Placé
-         AVANT la quantité et le cours : l'heure ferme le marché pour tout le
-         monde, il n'y a pas à examiner un ordre qui ne partira pas.
+      3. ``market_closed`` — le marché de ``symbol`` est fermé à cet instant
+         (:func:`tradable_now`). Placé AVANT la quantité et le cours : l'heure
+         ferme le marché pour tout le monde, il n'y a pas à examiner un ordre
+         qui ne partira pas.
       4. ``adjust_stop`` prend sa propre porte (:func:`_gate_adjust_stop`) —
          il n'échange rien, ni quantité ni taille ne le concernent.
       5. ``bad_qty`` — sauf pour ``sell``/``cover`` sans quantité : « tout
@@ -374,9 +400,10 @@ def gate_decision(decision: Any, portfolio: Any, quote: Any,
     positions = _dicts(portfolio.get("positions"))
 
     # Marché fermé : seule une consigne au CARNET (déplacer un stop) garde un
-    # sens, puisqu'elle n'agira qu'à la réouverture.
-    if crypto_only and action != "adjust_stop" \
-            and quotes.kind_from_symbol(symbol) != "crypto":
+    # sens, puisqu'elle n'agira qu'à la réouverture. ``now`` absent -> aucun
+    # contrôle (cf. docstring) : sans horloge, rien à juger.
+    if now is not None and action != "adjust_stop" \
+            and not tradable_now(symbol, now):
         return _reject("market_closed")
 
     if action == "adjust_stop":
@@ -773,7 +800,8 @@ def _aware_utc(now: Any) -> datetime:
     :func:`_parse_iso`, naïf traité comme UTC), pas ignorée. Sans ça, la
     passe FORCÉE (qui ne porte l'instant que sous forme d'une chaîne
     ``_now_iso()``) retombait silencieusement sur l'heure RÉELLE du système à
-    chaque appel de :func:`crypto_only_at` — invisible en prod (c'est
+    chaque appel de ``crypto_only_at`` (LOT 6, retiré en LOT 8, remplacée par
+    :func:`tradable_now`) — invisible en prod (c'est
     toujours « maintenant » de toute façon), mais rendait le calcul
     intestable à horloge figée, et surtout AUCUN appelant existant ne passait
     de chaîne ici avant ce lot (seul ``last_ts`` de :func:`pass_due` en
@@ -815,20 +843,92 @@ def _parse_iso(value: Any) -> Optional[datetime]:
 def slots_for(now: Any) -> tuple:
     """Les créneaux du JOUR de ``now`` (heure LOCALE), du plus tôt au plus tard.
 
-    Trois en semaine, un seul le week-end (cf. le bloc « BUDGET COACH »).
+    Huit en semaine, deux le week-end (cf. le bloc « BUDGET COACH »).
     """
     return WEEKEND_SLOTS if _local(now).weekday() > 4 else WEEKDAY_SLOTS
 
 
-def crypto_only_at(now: Any) -> bool:
-    """Le créneau de ce moment n'autorise-t-il QUE les cryptos ?
+# --------------------------------------------------------------------------- #
+# PUR — l'univers : quel marché, quelles heures (LOT 8)
+#
+# Remplace ``crypto_only_at`` (LOT 6), qui ne posait qu'une question binaire
+# pour toute la passe (« est-on le week-end ? ») et ratait toute la semaine :
+# un short US à 10h du matin Rome n'a JAMAIS eu de raison de passer (Wall
+# Street n'ouvre qu'à 15h35 locales), et rien ne le refusait. Ici, la question
+# se pose PAR SYMBOLE et PAR INSTANT — exactement ce que chaque décision
+# individuelle a besoin de savoir.
+# --------------------------------------------------------------------------- #
 
-    Le week-end, les bourses sont fermées : un ordre sur une action y dormirait
-    jusqu'au lundi pour s'exécuter à un prix que personne n'a vu. Les cryptos,
-    elles, cotent sans interruption — et c'est justement pour elles que ce
-    créneau existe.
+# Suffixes Yahoo des places EUROPÉENNES qu'on sait situer. Table FERMÉE : un
+# suffixe absent d'ici n'est PAS une place inconnue par défaut — c'est une
+# place qu'on refuse de DEVINER (cf. :func:`market_of`).
+_EUROPE_SUFFIXES = (".SW", ".PA", ".DE", ".F", ".MI", ".AS", ".MC", ".L")
+
+# ``.TO`` (Toronto) n'a pas sa propre fenêtre horaire : elle ouvre et ferme
+# dans la même heure que Wall Street (9h30-16h heure de l'Est). L'approximation
+# « horaires US » est DOCUMENTÉE ici, pas devinée en silence ailleurs.
+_US_HOURS_SUFFIXES = (".TO",)
+
+# Fenêtres locales (Europe/Rome), lundi-vendredi uniquement — ``((h,m), (h,m))``
+# de l'ouverture à la fermeture. La crypto n'y figure pas : elle ne connaît ni
+# jour ni heure (cf. :func:`tradable_now`).
+_MARKET_WINDOWS = {
+    "europe": ((9, 5), (17, 25)),
+    "us": ((15, 35), (21, 55)),
+}
+
+
+def market_of(symbol: Any) -> str:
+    """Le marché d'un symbole, DEVINÉ depuis sa FORME (PUR, aucun réseau) —
+    ``"crypto"``/``"europe"``/``"us"``/``"unknown"``.
+
+    Table FERMÉE, doctrine assumée : un suffixe qu'on ne sait pas situer rend
+    ``"unknown"``, jamais un repli optimiste — on ne trade pas ce qu'on ne
+    sait pas situer (cf. :func:`tradable_now`). Un symbole SANS suffixe est
+    une action/ETF US par convention Yahoo (``AAPL``, ``DAL``…).
     """
-    return _local(now).weekday() > 4
+    text = _symbol(symbol)
+    if not text:
+        return "unknown"
+    if quotes.kind_from_symbol(text) == "crypto":
+        return "crypto"
+    if text.endswith("=X"):
+        return "unknown"       # forex : hors du mandat du coach, aucune fenêtre connue
+    if text.endswith(_EUROPE_SUFFIXES):
+        return "europe"
+    if text.endswith(_US_HOURS_SUFFIXES):
+        return "us"
+    if "." in text:
+        return "unknown"       # un suffixe non recensé : on ne le devine pas
+    return "us"
+
+
+def tradable_now(symbol: Any, now: Any) -> bool:
+    """Ce symbole s'échange-t-il À CET INSTANT ? (PUR, LOT 8)
+
+    Crypto : 24 h/24, 7 j/7. Europe et US : lundi-vendredi, dans leur fenêtre
+    LOCALE (Europe/Rome) respective (:data:`_MARKET_WINDOWS`) — c'est
+    délibérément l'heure de Rome, pas celle de la place elle-même : c'est
+    l'heure à laquelle le coach AGIT, la seule qui compte pour décider si son
+    ordre partira ou dormira. Marché inconnu -> ``False`` : impossible de dire
+    qu'une place est ouverte quand on ne sait même pas laquelle c'est.
+
+    ``now`` accepte la même tolérance que :func:`pass_due`/:func:`_aware_utc`
+    (``datetime`` naïf traité comme UTC, chaîne ISO parsée) — les 3 chemins
+    (passe naturelle, forcée, digest) le portent parfois sous forme de chaîne.
+    """
+    market = market_of(symbol)
+    if market == "crypto":
+        return True
+    window = _MARKET_WINDOWS.get(market)
+    if window is None:
+        return False
+    local = _local(now)
+    if local.weekday() > 4:
+        return False
+    (start_h, start_m), (end_h, end_m) = window
+    minutes_now = local.hour * 60 + local.minute
+    return start_h * 60 + start_m <= minutes_now <= end_h * 60 + end_m
 
 
 def _slot_minutes(slot: Any) -> Optional[int]:
@@ -923,6 +1023,205 @@ def pass_due(now: Any, last_ts: Any, *, hour: int = RUN_AFTER_HOUR) -> bool:
     if last is None:
         return True
     return _local(last).date() != local.date()
+
+
+# --------------------------------------------------------------------------- #
+# PUR — le GARDIEN (LOT 8) : la sentinelle déclenchée par le MARCHÉ, entre
+# deux créneaux planifiés.
+#
+# « Profite du plan Max x20 pour faire PLUS D'APPELS » ne doit pas dire « plus
+# de bruit » : les 8 créneaux du bloc BUDGET COACH couvrent le calendrier, le
+# gardien couvre l'IMPRÉVU — un titre détenu qui décroche de 3 % à 15h12,
+# entre le créneau de 14h00 et celui de 15h40, ne doit pas attendre 88 minutes
+# pour être regardé. Il ne PROPOSE jamais d'idée neuve (cf. :func:`guardian_gate`) :
+# il gère la ligne qui l'a réveillé, et rien d'autre.
+# --------------------------------------------------------------------------- #
+
+GUARDIAN_STATE_NAME = "coach_guardian.state.json"
+GUARDIAN_SOURCE = "guardian"
+
+GUARDIAN_COOLDOWN_MIN = 45          # minutes entre deux passes gardien sur le MÊME symbole
+MAX_GUARDIAN_CALLS_PER_DAY = 4      # par symbole — le plafond que le bloc BUDGET COACH cite
+GUARDIAN_MOVE_PCT = 2.0             # déclencheur A : |variation depuis le dernier regard|
+GUARDIAN_STOP_PROXIMITY_PCT = 2.5   # déclencheur B : distance au stop — « ça chauffe »
+GUARDIAN_TARGET_PROXIMITY_PCT = 1.5 # déclencheur C : distance à l'objectif — « ça mûrit »
+
+# Les trois codes de déclencheur, DANS L'ORDRE DE SÉVÉRITÉ retenu par
+# :func:`guardian_trigger` (le premier qui s'applique gagne) : un stop qui
+# chauffe (risque de PERTE) prime sur un objectif qui mûrit (opportunité de
+# GAIN), qui prime sur un simple mouvement (routine). Les trois peuvent
+# survenir ensemble sur la même ligne ; un seul est nommé au modèle.
+GUARDIAN_TRIGGERS = ("stop", "target", "move")
+
+# Les seules actions qu'une décision GARDIEN a le droit de proposer (cf.
+# :func:`guardian_gate`) : gérer la ligne existante, jamais en ouvrir une
+# neuve — ``buy``/``short`` restent le privilège des passes planifiées, qui
+# seules voient le CONTEXTE COMPLET (radar, candidats, agenda) nécessaire pour
+# juger qu'une thèse neuve mérite d'entrer.
+GUARDIAN_ALLOWED_ACTIONS = EXIT_ACTIONS + ("adjust_stop",)
+
+
+def guardian_trigger(position: Any, live_price: Any, last_seen: Any) -> Optional[str]:
+    """Le déclencheur du GARDIEN pour cette position, ou ``None`` (PUR, LOT 8).
+
+    Un code de :data:`GUARDIAN_TRIGGERS`, le PREMIER qui s'applique dans
+    l'ordre de sévérité documenté sur cette constante :
+
+      - ``"stop"``   — distance au stop <= :data:`GUARDIAN_STOP_PROXIMITY_PCT`.
+      - ``"target"`` — distance à l'objectif <= :data:`GUARDIAN_TARGET_PROXIMITY_PCT`.
+      - ``"move"``   — |variation depuis le dernier regard| >= :data:`GUARDIAN_MOVE_PCT`.
+
+    Distances calculées en VALEUR ABSOLUE (``|prix - niveau| / prix``) — à la
+    différence de ``paper_router._coach_dist_pct`` (qui SIGNE selon le sens
+    pour l'affichage), ce contrôle ne se soucie que de la PROXIMITÉ, pas de la
+    direction : le sens ne change rien à la question « faut-il regarder cette
+    ligne maintenant ? ».
+
+    ``position`` : ``{"stop_loss", "target"}`` (les deux optionnels — une
+    ligne sans l'un des deux ne peut simplement pas déclencher ce contrôle-là).
+    ``live_price`` : le cours ACTUEL, illisible -> ``None`` (aucun calcul n'a
+    de sens sans lui). ``last_seen`` : le DERNIER cours vu par le gardien à un
+    tour précédent (``None`` -> premier regard, le déclencheur ``"move"`` ne
+    peut pas se calculer).
+    """
+    price = _val(live_price)
+    if price is None or price <= 0:
+        return None
+
+    position = position if isinstance(position, dict) else {}
+
+    stop = _val(position.get("stop_loss"))
+    if stop is not None and stop > 0 \
+            and abs(price - stop) / price * 100.0 <= GUARDIAN_STOP_PROXIMITY_PCT:
+        return "stop"
+
+    target = _val(position.get("target"))
+    if target is not None and target > 0 \
+            and abs(price - target) / price * 100.0 <= GUARDIAN_TARGET_PROXIMITY_PCT:
+        return "target"
+
+    last = _val(last_seen)
+    if last is not None and last > 0 \
+            and abs(price - last) / last * 100.0 >= GUARDIAN_MOVE_PCT:
+        return "move"
+
+    return None
+
+
+def guardian_decision(symbol: Any, position: Any, live_price: Any,
+                      state: Any, now: Any) -> Dict[str, Any]:
+    """Le gardien doit-il APPELER le modèle sur ce symbole MAINTENANT ? (PUR, LOT 8)
+
+    Rend ``{"fire": bool, "trigger": str|None, "reason": str|None}``.
+    ``trigger`` est le code de :func:`guardian_trigger`, posé dès qu'il existe
+    même si ``fire`` est ``False`` (un cooldown/plafond BLOQUE un déclencheur
+    RÉEL, il ne l'efface pas — utile pour le diagnostic). ``reason`` explique
+    un ``fire=False`` : ``"no_price"``/``"market_closed"``/``"cooldown"``/
+    ``"daily_cap"``, ou ``None`` si rien n'a simplement déclenché.
+
+    Ordre des contrôles, le PREMIER qui bloque gagne :
+      1. cours illisible -> ``"no_price"`` (rien à évaluer).
+      2. marché fermé pour ce symbole MAINTENANT (:func:`tradable_now`) ->
+         ``"market_closed"`` — un appel qui ne peut mener à AUCUN ordre
+         exécutable est un appel gaspillé, vérifié AVANT le déclencheur.
+      3. aucun déclencheur (:func:`guardian_trigger`) -> pas de raison,
+         situation normale.
+      4. cooldown non expiré (:data:`GUARDIAN_COOLDOWN_MIN` depuis le dernier
+         appel SUR CE SYMBOLE) -> ``"cooldown"``.
+      5. plafond quotidien atteint (:data:`MAX_GUARDIAN_CALLS_PER_DAY`, remis
+         à zéro à la date LOCALE) -> ``"daily_cap"``.
+
+    ``state`` : l'état PERSISTÉ du gardien, ``{symbole: {"last_price",
+    "last_call", "calls_today", "calls_date"}}`` (:func:`load_guardian_state`)
+    — TOLÉRANT, n'importe quelle forme absente/inattendue compte comme
+    « jamais vu ». Ne LÈVE JAMAIS.
+    """
+    price = _val(live_price)
+    if price is None or price <= 0:
+        return {"fire": False, "trigger": None, "reason": "no_price"}
+
+    try:
+        symbol_text = _symbol(symbol)
+        if not tradable_now(symbol_text, now):
+            return {"fire": False, "trigger": None, "reason": "market_closed"}
+    except Exception:      # noqa: BLE001 — horloge/symbole illisible : prudence
+        return {"fire": False, "trigger": None, "reason": "market_closed"}
+
+    sym_state = state.get(symbol_text) if isinstance(state, dict) else None
+    sym_state = sym_state if isinstance(sym_state, dict) else {}
+
+    trigger = guardian_trigger(position, price, sym_state.get("last_price"))
+    if trigger is None:
+        return {"fire": False, "trigger": None, "reason": None}
+
+    last_call = _parse_iso(sym_state.get("last_call"))
+    if last_call is not None:
+        elapsed_min = (_aware_utc(now) - last_call).total_seconds() / 60.0
+        if elapsed_min < GUARDIAN_COOLDOWN_MIN:
+            return {"fire": False, "trigger": trigger, "reason": "cooldown"}
+
+    local_day = _local(now).date().isoformat()
+    calls_today = sym_state.get("calls_today") or 0
+    if sym_state.get("calls_date") != local_day:
+        calls_today = 0
+    if calls_today >= MAX_GUARDIAN_CALLS_PER_DAY:
+        return {"fire": False, "trigger": trigger, "reason": "daily_cap"}
+
+    return {"fire": True, "trigger": trigger, "reason": None}
+
+
+def guardian_seen(state: Any, symbol: Any, price: Any) -> Dict[str, Any]:
+    """Le DERNIER cours vu par le gardien sur ce symbole, mis à jour (PUR).
+
+    Appelé à CHAQUE regard, déclenchement ou non — la fenêtre du déclencheur
+    ``"move"`` (:func:`guardian_trigger`) est le cycle guetteur (~5 min), pas
+    le temps écoulé depuis le dernier APPEL au modèle (:func:`guardian_mark_
+    fired`, qui touche des clés DIFFÉRENTES du même sous-dict). Ne mute jamais
+    l'état reçu.
+    """
+    out = dict(state if isinstance(state, dict) else {})
+    symbol_text = _symbol(symbol)
+    sym = dict(out.get(symbol_text) if isinstance(out.get(symbol_text), dict) else {})
+    sym["last_price"] = _val(price)
+    out[symbol_text] = sym
+    return out
+
+
+def guardian_mark_fired(state: Any, symbol: Any, now: Any) -> Dict[str, Any]:
+    """Enregistre un appel du gardien sur ce symbole (PUR) — pose le cooldown
+    et incrémente le plafond quotidien, remis à zéro à la date LOCALE. Ne mute
+    jamais l'état reçu ; ne touche pas ``last_price`` (:func:`guardian_seen`)."""
+    out = dict(state if isinstance(state, dict) else {})
+    symbol_text = _symbol(symbol)
+    sym = dict(out.get(symbol_text) if isinstance(out.get(symbol_text), dict) else {})
+    local_day = _local(now).date().isoformat()
+    calls_today = sym.get("calls_today") or 0
+    if sym.get("calls_date") != local_day:
+        calls_today = 0
+    sym["calls_today"] = calls_today + 1
+    sym["calls_date"] = local_day
+    sym["last_call"] = _aware_utc(now).isoformat()
+    out[symbol_text] = sym
+    return out
+
+
+def guardian_gate(decision: Any, focus_symbol: Any) -> Optional[str]:
+    """Le garde-fou de PÉRIMÈTRE du gardien (PUR, LOT 8) — SUPPLÉMENTAIRE à
+    :func:`gate_decision`, qu'il ne remplace pas : une passe gardien ne gère
+    QUE la position qui l'a déclenchée, jamais une autre ligne, jamais une
+    ouverture neuve (cf. :data:`GUARDIAN_ALLOWED_ACTIONS`).
+
+    Rend ``"out_of_scope"`` (:data:`REJECT_CODES`) si la décision sort du
+    périmètre, ``None`` sinon — la décision passe alors par
+    :func:`gate_decision`, INCHANGÉ.
+    """
+    decision = decision if isinstance(decision, dict) else {}
+    action = _text(decision.get("action")).lower()
+    if action not in GUARDIAN_ALLOWED_ACTIONS:
+        return "out_of_scope"
+    if _symbol(decision.get("symbol")) != _symbol(focus_symbol):
+        return "out_of_scope"
+    return None
 
 
 # --------------------------------------------------------------------------- #
@@ -1057,6 +1356,36 @@ def save_state(state: Dict[str, Any]) -> None:
 
 
 # --------------------------------------------------------------------------- #
+# I/O — l'état du GARDIEN (LOT 8), MÊME PATRON que ci-dessus, fichier séparé
+# (par SYMBOLE, pas par compte — cf. tête de section PURE du gardien).
+# --------------------------------------------------------------------------- #
+
+def guardian_state_path() -> Path:
+    return Path(_store().DATA_DIR) / GUARDIAN_STATE_NAME
+
+
+def load_guardian_state() -> Dict[str, Any]:
+    """L'état du gardien (``{symbole: {"last_price","last_call","calls_today",
+    "calls_date"}}``). Absent/corrompu -> ``{}`` — le gardien ne doit jamais
+    tomber parce qu'un fichier a été touché à la main."""
+    path = guardian_state_path()
+    if not path.is_file():
+        return {}
+    try:
+        with open(str(path), "r", encoding="utf-8") as handle:
+            data = json.load(handle)
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def save_guardian_state(state: Dict[str, Any]) -> None:
+    """Persiste l'état du gardien de façon atomique, 0o600 — même mécanisme
+    que :func:`save_state`."""
+    _store()._atomic_write_json(guardian_state_path(), dict(state or {}))
+
+
+# --------------------------------------------------------------------------- #
 # I/O — le CROCHET du cycle de veille (best-effort STRICT), tâche 3
 #
 # ⚠️ POURQUOI CE CROCHET EXISTE, et pourquoi il n'est pas optionnel :
@@ -1090,22 +1419,27 @@ def _default_snapshot(now_iso: str) -> Any:
     return _router().snapshot_equity_all(now_iso)
 
 
-def _default_pass(now_iso: str, crypto_only: bool = False) -> Any:
-    return _router().run_coach_daily_pass(now_iso, crypto_only=crypto_only)
+def _default_pass(now_iso: str) -> Any:
+    return _router().run_coach_daily_pass(now_iso)
+
+
+def _default_guardian(now_iso: str) -> Any:
+    return _router().run_coach_guardian_pass(now_iso)
 
 
 def maybe_run(now: Any = None,
               tick_fn: Optional[Any] = None,
               snapshot_fn: Optional[Any] = None,
-              pass_fn: Optional[Any] = None) -> Dict[str, Any]:
+              pass_fn: Optional[Any] = None,
+              guardian_fn: Optional[Any] = None) -> Dict[str, Any]:
     """Le compte du coach, appelé à CHAQUE passage du guetteur (5 min).
 
     NE LÈVE JAMAIS — l'appelant (``newswatch.run_once``) ne doit jamais perdre
     un cycle de veille pour une panne du compte du coach (même doctrine que
     ``weekly.maybe_run``/``backup.maybe_run``).
 
-    **Trois volets, chacun best-effort STRICT** — aucun ne peut faire tomber
-    les deux autres :
+    **Quatre volets, chacun best-effort STRICT** — aucun ne peut faire tomber
+    les autres :
 
     1. **le tick, À CHAQUE PASSAGE** (cf. le commentaire de section ci-dessus :
        c'est la garantie d'inclusion, pas une commodité). Il tourne aussi le
@@ -1116,11 +1450,18 @@ def maybe_run(now: Any = None,
        vit dans ``snapshot_equity_all`` et reste l'autorité sur la donnée.
        Conséquence assumée : un compte humain créé APRÈS la photo du jour
        attend celle de demain — sans conséquence sur une courbe quotidienne.
-    3. **la passe de gestion, PAR CRÉNEAU** (:func:`due_slot` — trois par jour
-       ouvré, un seul le week-end et CRYPTO uniquement, cf. le bloc « BUDGET
+    3. **la passe de gestion, PAR CRÉNEAU** (:func:`due_slot` — huit par jour
+       ouvré, deux le week-end et CRYPTO uniquement, cf. le bloc « BUDGET
        COACH »). L'état est ARMÉ après la TENTATIVE, quel qu'en soit le
        résultat — même doctrine que ``weekly`` : sans cela, une panne du modèle
        ferait retenter toutes les 5 minutes jusqu'au créneau suivant.
+    4. **le GARDIEN (LOT 8), l'IMPRÉVU entre deux créneaux** — SEULEMENT
+       quand AUCUN créneau ne tourne ce cycle-ci (``slot is None``, verrou
+       simple : « jamais pendant qu'une passe à créneau tourne »). Une passe
+       créneau vient déjà de relire TOUT le livre ; le gardien serait
+       redondant dans le même cycle. Ses propres cooldown/plafond quotidien
+       (``coach_trader.guardian_decision``) vivent dans SON état
+       (``coach_guardian.state.json``), séparé de celui-ci.
 
     **Un SEUL horodatage local** (``Europe/Rome``) est passé aux trois volets.
     C'est délibéré : la photo se range sous une DATE, et le gate
@@ -1147,25 +1488,34 @@ def maybe_run(now: Any = None,
     la MÊME clé — une divergence rendrait ``pass_due`` toujours vrai, donc une
     passe toutes les 5 minutes après 17 h.
 
-    Les trois ``*_fn`` sont injectables : les tests n'ont jamais besoin du
+    Les quatre ``*_fn`` sont injectables : les tests n'ont jamais besoin du
     router, du réseau ni du modèle.
 
-    Rend ``{"ticked", "snapshotted", "passed", "reason"}`` — ``reason`` décrit
-    le sort du VOLET 3 (``None`` s'il a tourné, ``"not_due"`` si l'horloge a
-    refusé, ``"error"`` s'il a échoué), le seul dont l'inaction soit normale.
-    S'y ajoutent ``slot`` et ``crypto_only`` quand un créneau a été retenu :
-    savoir LEQUEL a tourné est la première chose qu'on regarde quand la
-    cadence surprend.
+    Rend ``{"ticked", "snapshotted", "passed", "reason", "guarded"}`` —
+    ``reason`` décrit le sort du VOLET 3 (``None`` s'il a tourné, ``"not_due"``
+    si l'horloge a refusé, ``"error"`` s'il a échoué), le seul dont l'inaction
+    soit normale. S'y ajoute ``slot`` quand un créneau a été retenu : savoir
+    LEQUEL a tourné est la première chose qu'on regarde quand la cadence
+    surprend. ``guarded`` dit si le VOLET 4 a été TENTÉ (verrou levé) — pas
+    s'il a APPELÉ le modèle sur une ligne : ça, c'est ``run_coach_guardian_
+    pass`` qui le sait, via son propre ``{"checked","fired","ledger"}``.
+
+    ⚠️ **LOT 8** : ce volet ne calcule plus un ``crypto_only`` global pour
+    toute la passe (LOT 6) — l'univers se juge désormais SYMBOLE PAR SYMBOLE,
+    à l'intérieur même de la passe (``coach_trader.tradable_now``, appelée par
+    ``gate_decision`` avec l'horodatage de CHAQUE décision). Une passe de
+    semaine peut donc parfaitement agir sur une action européenne à 10 h et se
+    voir refuser une action US à la même heure, dans le MÊME appel.
     """
     out = {"ticked": False, "snapshotted": False, "passed": False,
-           "reason": None}
+           "reason": None, "guarded": False}
     try:
         local_iso = _local(now).replace(tzinfo=None).isoformat(timespec="seconds")
         state_iso = _aware_utc(now).isoformat()
         day = local_iso[:10]
     except Exception:      # noqa: BLE001 — horloge illisible : rien n'est sûr
         return {"ticked": False, "snapshotted": False, "passed": False,
-                "reason": "error"}
+                "reason": "error", "guarded": False}
 
     # --- 1) le tick, à chaque passage --------------------------------- #
     try:
@@ -1193,13 +1543,19 @@ def maybe_run(now: Any = None,
     slot = due_slot(now, state)
     if slot is None:
         out["reason"] = "not_due"
+        # --- 4) LE GARDIEN (LOT 8) — verrou : jamais pendant qu'une passe à
+        # créneau tourne. Aucun créneau ce cycle-ci -> le verrou est levé.
+        try:
+            (guardian_fn or _default_guardian)(local_iso)
+            out["guarded"] = True
+        except Exception as exc:      # noqa: BLE001
+            logger.warning("paper coach_trader: passe gardien en panne (%s)",
+                           type(exc).__name__)
         return out
 
     out["slot"] = slot
-    crypto_only = crypto_only_at(now)
-    out["crypto_only"] = crypto_only
     try:
-        (pass_fn or _default_pass)(local_iso, crypto_only)
+        (pass_fn or _default_pass)(local_iso)
         out["passed"] = True
     except Exception as exc:      # noqa: BLE001
         out["reason"] = "error"

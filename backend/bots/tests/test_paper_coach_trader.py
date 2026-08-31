@@ -26,7 +26,7 @@ FRIDAY_ON_TIME = datetime(2026, 8, 28, 15, 0, 0, tzinfo=timezone.utc)
 FRIDAY_TOO_EARLY = datetime(2026, 8, 28, 14, 59, 0, tzinfo=timezone.utc)   # 16:59 Rome
 # LOT 5 — avant le PREMIER creneau (15:40 Rome) : 07:00 UTC = 09:00 Rome.
 FRIDAY_BEFORE_ANY_SLOT = datetime(2026, 8, 28, 7, 0, 0, tzinfo=timezone.utc)
-SATURDAY = datetime(2026, 8, 29, 15, 0, 0, tzinfo=timezone.utc)
+SATURDAY = datetime(2026, 8, 29, 7, 0, 0, tzinfo=timezone.utc)  # 09:00 Rome — avant le 1er créneau du week-end (11:00, LOT 8)
 SUNDAY = datetime(2026, 8, 30, 15, 0, 0, tzinfo=timezone.utc)
 MONDAY = datetime(2026, 8, 31, 15, 0, 0, tzinfo=timezone.utc)
 # 22:30 UTC un vendredi = SAMEDI 00:30 à Rome — le piège de l'heure locale.
@@ -103,9 +103,11 @@ def test_every_reject_code_is_declared():
         "no_position", "qty_over_position",
         # LOT 5 — le short, le stop qui ne recule pas, le marche ferme.
         "wrong_side", "stop_widen", "market_closed",
+        # LOT 8 — hors du périmètre du gardien.
+        "out_of_scope",
     }
     assert set(coach_trader.REJECT_CODES) == expected
-    assert len(coach_trader.REJECT_CODES) == 17
+    assert len(coach_trader.REJECT_CODES) == 18
 
 
 def test_coach_username_survives_the_store_allowlist():
@@ -783,35 +785,266 @@ def test_pass_due_honours_a_custom_hour():
 
 
 # --------------------------------------------------------------------------- #
-# crypto_only_at — LOT 6 : accepte aussi une chaîne ISO (pas seulement un
-# ``datetime``), pour que les 3 chemins (passe naturelle, forcée, digest)
-# puissent tous s'appuyer sur la MÊME fonction avec l'horodatage qu'ils ont
-# sous la main (souvent une chaîne, ``_now_iso()``-style).
+# market_of / tradable_now — LOT 8 : l'univers PAR SYMBOLE et PAR INSTANT.
+#
+# Remplace ``crypto_only_at`` (LOT 6), qui ne posait qu'une question binaire
+# pour toute la passe (« est-on le week-end ? ») et ratait toute la semaine —
+# un short US à 10h du matin Rome n'avait JAMAIS de raison de passer (Wall
+# Street n'ouvre qu'à 15h35 locales), et rien ne le refusait.
 # --------------------------------------------------------------------------- #
 
-def test_crypto_only_at_reads_a_naive_datetime_as_utc():
-    assert coach_trader.crypto_only_at(SUNDAY) is True
-    assert coach_trader.crypto_only_at(MONDAY) is False
+# Mardi 25/08/2026, heures LOCALES Rome (CEST = UTC+2).
+TUESDAY_1000 = datetime(2026, 8, 25, 8, 0, 0, tzinfo=timezone.utc)    # 10:00 Rome
+TUESDAY_1600 = datetime(2026, 8, 25, 14, 0, 0, tzinfo=timezone.utc)   # 16:00 Rome
 
 
-def test_crypto_only_at_parses_an_iso_string_instead_of_ignoring_it():
-    """Vécu : ``_aware_utc`` ignorait toute chaîne (non-``datetime``) et
-    retombait sur l'heure RÉELLE du système — la passe FORCÉE (qui ne
-    dispose que d'une chaîne ``_now_iso()``) ne pouvait alors jamais tester
-    un dimanche en test à horloge figée."""
-    assert coach_trader.crypto_only_at("2026-08-23T01:47:00") is True   # dimanche
-    assert coach_trader.crypto_only_at("2026-08-24T10:00:00") is False  # lundi
+@pytest.mark.parametrize("symbol,expected", [
+    ("NESN.SW", "europe"), ("MC.PA", "europe"), ("SAP.DE", "europe"),
+    ("AI.F", "europe"), ("ENI.MI", "europe"), ("ASML.AS", "europe"),
+    ("SAN.MC", "europe"), ("SHEL.L", "europe"),
+    ("DAL", "us"), ("AAPL", "us"), ("RY.TO", "us"),
+    ("BTC-USD", "crypto"), ("ETH-EUR", "crypto"),
+    ("EURUSD=X", "unknown"), ("XYZ.ZZ", "unknown"), ("", "unknown"),
+])
+def test_market_of_reads_the_ticker_suffix(symbol, expected):
+    assert coach_trader.market_of(symbol) == expected
 
 
-@pytest.mark.parametrize("value", [None, "", "   ", "n'importe quoi", 42])
-def test_crypto_only_at_falls_back_to_now_when_unreadable(value):
-    """Illisible -> l'heure réelle du système, jamais une exception (même
-    doctrine que ``pass_due`` : mieux vaut une réponse que planter)."""
-    coach_trader.crypto_only_at(value)      # ne lève pas
+def test_tradable_now_a_crypto_never_closes():
+    assert coach_trader.tradable_now("BTC-USD", SUNDAY) is True
+    assert coach_trader.tradable_now("BTC-USD", TUESDAY_1000) is True
+
+
+def test_tradable_now_a_us_stock_is_shut_on_sunday():
+    assert coach_trader.tradable_now("DAL", SUNDAY) is False
+
+
+def test_tradable_now_a_european_stock_is_open_tuesday_morning():
+    assert coach_trader.tradable_now("NESN.SW", TUESDAY_1000) is True
+
+
+def test_tradable_now_a_us_stock_is_shut_tuesday_morning():
+    """10h à Rome, c'est 4h du matin à New York : Wall Street n'a pas encore
+    ouvert."""
+    assert coach_trader.tradable_now("DAL", TUESDAY_1000) is False
+
+
+def test_tradable_now_a_us_stock_opens_tuesday_afternoon():
+    assert coach_trader.tradable_now("DAL", TUESDAY_1600) is True
+
+
+def test_tradable_now_an_unknown_market_is_never_tradable():
+    """On ne trade pas ce qu'on ne sait pas situer."""
+    assert coach_trader.tradable_now("XYZ.ZZ", TUESDAY_1600) is False
+
+
+def test_tradable_now_accepts_an_iso_string():
+    """Même tolérance que ``pass_due``/``_aware_utc`` : une chaîne ISO (le
+    format que les 3 chemins ont sous la main, ``_now_iso()``-style) est
+    PARSÉE, jamais ignorée."""
+    assert coach_trader.tradable_now("DAL", "2026-08-23T01:47:00") is False   # dimanche
+    assert coach_trader.tradable_now("BTC-USD", "2026-08-23T01:47:00") is True
 
 
 def test_pass_due_default_hour_is_the_constant():
     assert coach_trader.RUN_AFTER_HOUR == 17
+
+
+# --------------------------------------------------------------------------- #
+# Le GARDIEN — LOT 8 : la sentinelle déclenchée par le MARCHÉ, entre deux
+# créneaux planifiés. PUR : ``guardian_trigger`` (quel déclencheur, s'il y en
+# a un), ``guardian_decision`` (doit-on APPELER le modèle maintenant, tout
+# compris : marché, cooldown, plafond quotidien), ``guardian_seen``/
+# ``guardian_mark_fired`` (les deux mutations d'état), ``guardian_gate`` (le
+# garde-fou de PÉRIMÈTRE : cette décision porte-t-elle sur LA bonne ligne ?).
+# --------------------------------------------------------------------------- #
+
+GUARDIAN_MOVED = {"stop_loss": None, "target": None}
+
+
+def test_guardian_trigger_move_at_the_threshold():
+    assert coach_trader.guardian_trigger(GUARDIAN_MOVED, 98.0, 100.0) == "move"
+
+
+def test_guardian_trigger_no_move_under_the_threshold():
+    assert coach_trader.guardian_trigger(GUARDIAN_MOVED, 98.5, 100.0) is None
+
+
+def test_guardian_trigger_stop_at_the_threshold():
+    position = {"stop_loss": 97.5, "target": None}
+    assert coach_trader.guardian_trigger(position, 100.0, None) == "stop"
+
+
+def test_guardian_trigger_no_stop_trigger_far_from_the_stop():
+    position = {"stop_loss": 90.0, "target": None}
+    assert coach_trader.guardian_trigger(position, 100.0, None) is None
+
+
+def test_guardian_trigger_target_at_the_threshold():
+    position = {"stop_loss": None, "target": 101.5}
+    assert coach_trader.guardian_trigger(position, 100.0, None) == "target"
+
+
+def test_guardian_trigger_no_target_trigger_far_from_the_target():
+    position = {"stop_loss": None, "target": 110.0}
+    assert coach_trader.guardian_trigger(position, 100.0, None) is None
+
+
+def test_guardian_trigger_stop_wins_over_target_when_both_apply():
+    """Ordre de sévérité DÉLIBÉRÉ : un stop qui chauffe (risque de perte)
+    prime sur un objectif qui mûrit (opportunité)."""
+    position = {"stop_loss": 97.5, "target": 101.5}
+    assert coach_trader.guardian_trigger(position, 100.0, None) == "stop"
+
+
+def test_guardian_trigger_none_of_the_three_fire():
+    position = {"stop_loss": 50.0, "target": 200.0}
+    assert coach_trader.guardian_trigger(position, 100.0, 100.5) is None
+
+
+def test_guardian_trigger_no_price_is_never_a_trigger():
+    assert coach_trader.guardian_trigger(GUARDIAN_MOVED, None, 100.0) is None
+    assert coach_trader.guardian_trigger(GUARDIAN_MOVED, 0, 100.0) is None
+
+
+def test_guardian_decision_fires_on_a_trigger():
+    state = {"NESN.SW": {"last_price": 100.0}}
+    out = coach_trader.guardian_decision(
+        "NESN.SW", GUARDIAN_MOVED, 98.0, state, TUESDAY_1000)
+    assert out == {"fire": True, "trigger": "move", "reason": None}
+
+
+def test_guardian_decision_nothing_to_report():
+    """Ni déclencheur ni état antérieur (premier regard) : rien à signaler."""
+    out = coach_trader.guardian_decision(
+        "NESN.SW", GUARDIAN_MOVED, 100.0, {}, TUESDAY_1000)
+    assert out == {"fire": False, "trigger": None, "reason": None}
+
+
+def test_guardian_decision_no_price_never_calls():
+    out = coach_trader.guardian_decision(
+        "NESN.SW", GUARDIAN_MOVED, None, {}, TUESDAY_1000)
+    assert out == {"fire": False, "trigger": None, "reason": "no_price"}
+
+
+def test_guardian_decision_a_shut_market_never_calls_even_on_a_trigger():
+    """DAL (US) est fermé à 10h Rome : même une position qui a bougé de 2 %
+    ne réveille pas le gardien — un appel qui ne peut mener à AUCUN ordre
+    exécutable est un appel gaspillé."""
+    out = coach_trader.guardian_decision(
+        "DAL", GUARDIAN_MOVED, 98.0, {}, TUESDAY_1000)
+    assert out == {"fire": False, "trigger": None, "reason": "market_closed"}
+
+
+def test_guardian_decision_a_crypto_can_always_fire():
+    state = {"BTC-USD": {"last_price": 100.0}}
+    out = coach_trader.guardian_decision(
+        "BTC-USD", GUARDIAN_MOVED, 98.0, state, SUNDAY)
+    assert out["fire"] is True
+
+
+def test_guardian_decision_respects_the_cooldown():
+    state = {"NESN.SW": {"last_price": 100.0,
+                         "last_call": "2026-08-25T07:30:00+00:00"}}   # 09:30 Rome
+    out = coach_trader.guardian_decision(
+        "NESN.SW", GUARDIAN_MOVED, 98.0, state, TUESDAY_1000)   # 10:00 Rome, 30 min après
+    assert out == {"fire": False, "trigger": "move", "reason": "cooldown"}
+
+
+def test_guardian_decision_the_cooldown_expires():
+    state = {"NESN.SW": {"last_price": 100.0,
+                         "last_call": "2026-08-25T07:00:00+00:00"}}   # 09:00 Rome
+    out = coach_trader.guardian_decision(
+        "NESN.SW", GUARDIAN_MOVED, 98.0, state, TUESDAY_1000)   # 10:00 Rome, 60 min après
+    assert out["fire"] is True
+
+
+def test_guardian_decision_respects_the_daily_cap():
+    state = {"NESN.SW": {"last_price": 100.0,
+                         "calls_today": coach_trader.MAX_GUARDIAN_CALLS_PER_DAY,
+                         "calls_date": "2026-08-25"}}
+    out = coach_trader.guardian_decision(
+        "NESN.SW", GUARDIAN_MOVED, 98.0, state, TUESDAY_1000)
+    assert out == {"fire": False, "trigger": "move", "reason": "daily_cap"}
+
+
+def test_guardian_decision_the_daily_cap_resets_the_next_day():
+    state = {"NESN.SW": {"last_price": 100.0,
+                         "calls_today": coach_trader.MAX_GUARDIAN_CALLS_PER_DAY,
+                         "calls_date": "2026-08-24"}}   # hier
+    out = coach_trader.guardian_decision(
+        "NESN.SW", GUARDIAN_MOVED, 98.0, state, TUESDAY_1000)
+    assert out["fire"] is True
+
+
+def test_guardian_decision_never_raises_on_junk():
+    for junk in (None, {}, [], "pas un dict", 0, "n'importe quoi"):
+        out = coach_trader.guardian_decision("NESN.SW", junk, 98.0, junk, junk)
+        assert isinstance(out, dict) and "fire" in out
+
+
+def test_guardian_seen_records_the_last_price():
+    state = coach_trader.guardian_seen({}, "NESN.SW", 101.5)
+    assert state == {"NESN.SW": {"last_price": 101.5}}
+
+
+def test_guardian_seen_keeps_the_other_symbols():
+    state = coach_trader.guardian_seen(
+        {"BTC-USD": {"last_price": 50000.0}}, "NESN.SW", 101.5)
+    assert state["BTC-USD"] == {"last_price": 50000.0}
+    assert state["NESN.SW"]["last_price"] == 101.5
+
+
+def test_guardian_seen_never_mutates_the_input():
+    original = {"NESN.SW": {"last_price": 100.0}}
+    coach_trader.guardian_seen(original, "NESN.SW", 200.0)
+    assert original["NESN.SW"]["last_price"] == 100.0
+
+
+def test_guardian_mark_fired_increments_the_daily_count():
+    state = coach_trader.guardian_mark_fired({}, "NESN.SW", TUESDAY_1000)
+    sym = state["NESN.SW"]
+    assert sym["calls_today"] == 1
+    assert sym["calls_date"] == "2026-08-25"
+    assert sym["last_call"]
+
+
+def test_guardian_mark_fired_resets_the_count_on_a_new_day():
+    state = {"NESN.SW": {"calls_today": 3, "calls_date": "2026-08-24"}}
+    state = coach_trader.guardian_mark_fired(state, "NESN.SW", TUESDAY_1000)
+    assert state["NESN.SW"]["calls_today"] == 1
+    assert state["NESN.SW"]["calls_date"] == "2026-08-25"
+
+
+def test_guardian_mark_fired_keeps_the_last_price():
+    """``guardian_seen`` et ``guardian_mark_fired`` mutent des clés
+    DIFFÉRENTES du même sous-dict : l'une n'écrase pas l'autre."""
+    state = coach_trader.guardian_seen({}, "NESN.SW", 101.5)
+    state = coach_trader.guardian_mark_fired(state, "NESN.SW", TUESDAY_1000)
+    assert state["NESN.SW"]["last_price"] == 101.5
+    assert state["NESN.SW"]["calls_today"] == 1
+
+
+def test_guardian_gate_accepts_an_exit_on_the_focus_symbol():
+    for action in ("sell", "reduce", "cover", "adjust_stop"):
+        decision = {"action": action, "symbol": "NESN.SW"}
+        assert coach_trader.guardian_gate(decision, "NESN.SW") is None
+
+
+def test_guardian_gate_rejects_a_different_symbol():
+    decision = {"action": "sell", "symbol": "AAPL"}
+    assert coach_trader.guardian_gate(decision, "NESN.SW") == "out_of_scope"
+
+
+def test_guardian_gate_rejects_a_new_entry():
+    for action in ("buy", "short"):
+        decision = {"action": action, "symbol": "NESN.SW"}
+        assert coach_trader.guardian_gate(decision, "NESN.SW") == "out_of_scope"
+
+
+def test_guardian_gate_never_raises_on_junk():
+    for junk in (None, {}, [], "pas un dict", 0):
+        assert coach_trader.guardian_gate(junk, "NESN.SW") == "out_of_scope"
 
 
 # --------------------------------------------------------------------------- #
@@ -978,6 +1211,38 @@ def test_state_file_is_600():
 
 
 # --------------------------------------------------------------------------- #
+# État du GARDIEN (I/O, LOT 8) — même patron, FICHIER SÉPARÉ (par symbole,
+# pas par compte : le gardien n'a qu'un seul compte à surveiller, le coach).
+# --------------------------------------------------------------------------- #
+
+def test_guardian_state_path_lives_next_to_the_accounts(tmp_path):
+    assert (coach_trader.guardian_state_path()
+           == tmp_path / "paper_trading" / "coach_guardian.state.json")
+
+
+def test_load_guardian_state_missing_returns_empty():
+    assert coach_trader.load_guardian_state() == {}
+
+
+def test_guardian_state_roundtrip():
+    coach_trader.save_guardian_state({"NESN.SW": {"last_price": 101.5}})
+    assert coach_trader.load_guardian_state() == {"NESN.SW": {"last_price": 101.5}}
+
+
+def test_load_guardian_state_on_a_corrupt_file_returns_empty():
+    path = coach_trader.guardian_state_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("{pas du json", encoding="utf-8")
+    assert coach_trader.load_guardian_state() == {}
+
+
+def test_guardian_state_file_is_600():
+    coach_trader.save_guardian_state({"a": 1})
+    mode = stat.S_IMODE(os.stat(str(coach_trader.guardian_state_path())).st_mode)
+    assert mode == 0o600
+
+
+# --------------------------------------------------------------------------- #
 # store — registre & patrimoine
 # --------------------------------------------------------------------------- #
 
@@ -1099,6 +1364,9 @@ def test_the_new_names_are_documented_in_the_explicit_lists():
     assert ".equity.json" in weekly._AUX_SUFFIXES
     assert coach_trader.STATE_NAME in weekly._AUX_NAMES
     assert coach_trader.STATE_NAME in radar._NON_USER_FILES
+    # LOT 8 — le fichier d'état du GARDIEN, même doctrine.
+    assert coach_trader.GUARDIAN_STATE_NAME in weekly._AUX_NAMES
+    assert coach_trader.GUARDIAN_STATE_NAME in radar._NON_USER_FILES
 
 
 def test_the_coach_is_a_real_account_for_the_community():
@@ -1138,11 +1406,12 @@ class _Spy:
         return self.result
 
 
-def _run_hook(now=FRIDAY_ON_TIME, tick=None, snap=None, pass_=None):
+def _run_hook(now=FRIDAY_ON_TIME, tick=None, snap=None, pass_=None, guardian=None):
     return coach_trader.maybe_run(now=now,
                                   tick_fn=tick if tick is not None else _Spy(),
                                   snapshot_fn=snap if snap is not None else _Spy(),
-                                  pass_fn=pass_ if pass_ is not None else _Spy())
+                                  pass_fn=pass_ if pass_ is not None else _Spy(),
+                                  guardian_fn=guardian if guardian is not None else _Spy())
 
 
 @pytest.mark.real_coach_trader
@@ -1165,7 +1434,7 @@ def test_maybe_run_ticks_even_when_the_pass_is_not_due():
     assert len(tick.calls) == 1
     assert pass_.calls == []
     assert out == {"ticked": True, "snapshotted": True, "passed": False,
-                   "reason": "not_due"}
+                   "reason": "not_due", "guarded": True}
 
 
 @pytest.mark.real_coach_trader
@@ -1256,17 +1525,15 @@ def test_maybe_run_never_raises_even_when_everything_burns():
     assert out["reason"] == "error"
     # LOT 5 : le creneau retenu voyage avec le resultat -- savoir LEQUEL a
     # tourne est la premiere chose qu'on regarde quand la cadence surprend.
-    assert out["slot"] == "15:40" and out["crypto_only"] is False
+    # LOT 8 : FRIDAY_ON_TIME (17h00 Rome) tombe maintenant PILE sur le
+    # creneau "17:00" du nouveau planning a 8 creneaux.
+    assert out["slot"] == "17:00"
 
 
 @pytest.mark.real_coach_trader
 def test_maybe_run_respects_the_local_hour():
-    """09h00 à Rome, avant le premier créneau (15h40) : pas de passe — le
-    tick, lui, tourne toujours.
-
-    ⚠️ LOT 5 : 16h59 ne prouve plus rien (le créneau de 15h40 est atteint
-    depuis longtemps). L'heure de contrôle est passée AVANT le premier
-    créneau, sans quoi ce test validerait le contraire de son intention."""
+    """09h00 à Rome, avant le premier créneau (09h10) : pas de passe — le
+    tick, lui, tourne toujours."""
     tick, pass_ = _Spy(), _Spy()
     out = _run_hook(now=FRIDAY_BEFORE_ANY_SLOT, tick=tick, pass_=pass_)
     assert pass_.calls == []
@@ -1275,26 +1542,74 @@ def test_maybe_run_respects_the_local_hour():
 
 
 # --------------------------------------------------------------------------- #
-# LOT 5 — la cadence vue du CROCHET (trois créneaux, un le week-end)
+# LOT 8 — LE GARDIEN vu du CROCHET : verrou « jamais pendant qu'une passe à
+# créneau tourne ».
 # --------------------------------------------------------------------------- #
 
-# Mercredi 26/08/2026 en heures LOCALES Rome (CEST = UTC+2).
-WED_1545 = datetime(2026, 8, 26, 13, 45, 0, tzinfo=timezone.utc)
-WED_1805 = datetime(2026, 8, 26, 16, 5, 0, tzinfo=timezone.utc)
-WED_2145 = datetime(2026, 8, 26, 19, 45, 0, tzinfo=timezone.utc)
-SUNDAY_1805 = datetime(2026, 8, 30, 16, 5, 0, tzinfo=timezone.utc)
+@pytest.mark.real_coach_trader
+def test_the_guardian_runs_when_no_slot_is_due():
+    guardian = _Spy()
+    out = _run_hook(now=FRIDAY_BEFORE_ANY_SLOT, guardian=guardian)
+    assert len(guardian.calls) == 1
+    assert out["guarded"] is True
 
 
 @pytest.mark.real_coach_trader
-def test_the_hook_runs_three_passes_on_a_weekday():
-    """La cadence du mois x20 : trois créneaux, et chacun tourne UNE fois."""
+def test_the_guardian_receives_the_same_local_timestamp():
+    guardian = _Spy()
+    _run_hook(now=FRIDAY_BEFORE_ANY_SLOT, guardian=guardian)
+    assert guardian.calls[0][0][:10] == _local_day(FRIDAY_BEFORE_ANY_SLOT)
+
+
+@pytest.mark.real_coach_trader
+def test_the_guardian_never_runs_the_same_cycle_as_a_slot_pass():
+    """Le verrou : une passe créneau vient DÉJÀ de relire tout le livre, le
+    gardien serait redondant dans le même cycle de 5 minutes."""
+    guardian = _Spy()
+    out = _run_hook(now=WED_1705, guardian=guardian)
+    assert out["slot"] == "17:00"
+    assert out["passed"] is True
+    assert guardian.calls == []
+    assert out["guarded"] is False
+
+
+@pytest.mark.real_coach_trader
+def test_a_broken_guardian_never_breaks_the_hook():
+    out = _run_hook(now=FRIDAY_BEFORE_ANY_SLOT, guardian=_Spy(boom=True))
+    assert out["guarded"] is False
+    assert out["reason"] == "not_due"          # le VOLET 3 reste "not_due"
+
+
+# --------------------------------------------------------------------------- #
+# LOT 8 — la cadence vue du CROCHET (huit créneaux, deux le week-end)
+# --------------------------------------------------------------------------- #
+
+# Mercredi 26/08/2026 en heures LOCALES Rome (CEST = UTC+2), 5 min après
+# chacun des 8 créneaux du planning x20.
+WED_0915 = datetime(2026, 8, 26, 7, 15, 0, tzinfo=timezone.utc)   # 09:15 Rome
+WED_1135 = datetime(2026, 8, 26, 9, 35, 0, tzinfo=timezone.utc)   # 11:35 Rome
+WED_1405 = datetime(2026, 8, 26, 12, 5, 0, tzinfo=timezone.utc)   # 14:05 Rome
+WED_1545 = datetime(2026, 8, 26, 13, 45, 0, tzinfo=timezone.utc)  # 15:45 Rome
+WED_1705 = datetime(2026, 8, 26, 15, 5, 0, tzinfo=timezone.utc)   # 17:05 Rome
+WED_1835 = datetime(2026, 8, 26, 16, 35, 0, tzinfo=timezone.utc)  # 18:35 Rome
+WED_2005 = datetime(2026, 8, 26, 18, 5, 0, tzinfo=timezone.utc)   # 20:05 Rome
+WED_2145 = datetime(2026, 8, 26, 19, 45, 0, tzinfo=timezone.utc)  # 21:45 Rome
+SUNDAY_1105 = datetime(2026, 8, 30, 9, 5, 0, tzinfo=timezone.utc)  # 11:05 Rome
+SUNDAY_1805 = datetime(2026, 8, 30, 16, 5, 0, tzinfo=timezone.utc)  # 18:05 Rome
+
+
+@pytest.mark.real_coach_trader
+def test_the_hook_runs_eight_passes_on_a_weekday():
+    """La cadence du mois x20 : huit créneaux, et chacun tourne UNE fois."""
     pass_ = _Spy()
     slots = []
-    for moment in (WED_1545, WED_1805, WED_2145):
+    for moment in (WED_0915, WED_1135, WED_1405, WED_1545,
+                  WED_1705, WED_1835, WED_2005, WED_2145):
         out = _run_hook(now=moment, pass_=pass_)
         slots.append(out["slot"])
     assert len(pass_.calls) == coach_trader.PASSES_PER_DAY
-    assert slots == ["15:40", "18:00", "21:40"]
+    assert slots == ["09:10", "11:30", "14:00", "15:40",
+                     "17:00", "18:30", "20:00", "21:40"]
 
 
 @pytest.mark.real_coach_trader
@@ -1303,33 +1618,31 @@ def test_the_hook_never_runs_the_same_slot_twice():
     tournerait douze fois par heure — douze appels au modèle."""
     pass_ = _Spy()
     for _ in range(4):
-        _run_hook(now=WED_1805, pass_=pass_)
+        _run_hook(now=WED_1835, pass_=pass_)
     assert len(pass_.calls) == 1
 
 
 @pytest.mark.real_coach_trader
-def test_the_weekend_has_a_single_crypto_only_slot():
+def test_the_weekend_still_runs_its_two_slots():
+    """LOT 8 : le crochet ne calcule plus de ``crypto_only`` global — c'est
+    ``run_coach_daily_pass`` (via ``gate_decision``/``tradable_now``) qui
+    juge, décision par décision, ce qui s'échange. Le crochet ne fait plus
+    que passer l'horodatage local, SEUL argument désormais — c'est lui qui
+    compte. Le week-end porte désormais DEUX créneaux (matin + soir)."""
+    morning = _run_hook(now=SUNDAY_1105, pass_=_Spy())
+    assert morning["slot"] == "11:00"
+
     pass_ = _Spy()
     out = _run_hook(now=SUNDAY_1805, pass_=pass_)
     assert out["slot"] == "18:00"
-    assert out["crypto_only"] is True
-    # Le drapeau descend jusqu'à l'exécutant : c'est lui qui le passera au
-    # garde-fou, sans quoi le créneau du week-end passerait des ordres sur des
-    # actions dont la bourse est fermée.
-    assert pass_.calls[0][1] is True
-
-
-@pytest.mark.real_coach_trader
-def test_a_weekday_pass_is_never_crypto_only():
-    pass_ = _Spy()
-    _run_hook(now=WED_1805, pass_=pass_)
-    assert pass_.calls[0][1] is False
+    assert len(pass_.calls[0]) == 1
+    assert pass_.calls[0][0][:10] == _local_day(SUNDAY_1805)
 
 
 @pytest.mark.real_coach_trader
 def test_arming_one_slot_does_not_disarm_the_others():
-    """Le créneau de 18 h ne doit pas effacer la trace de celui de 15h40 :
+    """Le créneau de 18h30 ne doit pas effacer la trace de celui de 15h40 :
     sinon l'état repartirait à zéro et 15h40 pourrait re-tourner."""
     _run_hook(now=WED_1545, pass_=_Spy())
-    _run_hook(now=WED_1805, pass_=_Spy())
-    assert set(coach_trader.load_state()["slots"]) == {"15:40", "18:00"}
+    _run_hook(now=WED_1835, pass_=_Spy())
+    assert set(coach_trader.load_state()["slots"]) == {"15:40", "18:30"}

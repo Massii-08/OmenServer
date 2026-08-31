@@ -34,6 +34,16 @@ WED_2145 = datetime(2026, 8, 26, 19, 45, 0, tzinfo=timezone.utc)  # 21:45 Rome
 SAT_1805 = datetime(2026, 8, 29, 16, 5, 0, tzinfo=timezone.utc)   # samedi 18:05
 SUN_1805 = datetime(2026, 8, 30, 16, 5, 0, tzinfo=timezone.utc)   # dimanche 18:05
 SUN_0900 = datetime(2026, 8, 30, 7, 0, 0, tzinfo=timezone.utc)    # dimanche 09:00
+# Mardi 25/08/2026, heures LOCALES Rome (CEST = UTC+2) — LOT 8.
+TUE_1000 = datetime(2026, 8, 25, 8, 0, 0, tzinfo=timezone.utc)    # 10:00 Rome
+TUE_1600 = datetime(2026, 8, 25, 14, 0, 0, tzinfo=timezone.utc)   # 16:00 Rome
+# Mercredi 26/08/2026, 5 min après chacun des 8 créneaux (LOT 8, cadence x20).
+WED_0915 = datetime(2026, 8, 26, 7, 15, 0, tzinfo=timezone.utc)   # 09:15 Rome
+WED_1135 = datetime(2026, 8, 26, 9, 35, 0, tzinfo=timezone.utc)   # 11:35 Rome
+WED_1405 = datetime(2026, 8, 26, 12, 5, 0, tzinfo=timezone.utc)   # 14:05 Rome
+WED_1705 = datetime(2026, 8, 26, 15, 5, 0, tzinfo=timezone.utc)   # 17:05 Rome
+WED_1835 = datetime(2026, 8, 26, 16, 35, 0, tzinfo=timezone.utc)  # 18:35 Rome
+WED_2005 = datetime(2026, 8, 26, 18, 5, 0, tzinfo=timezone.utc)   # 20:05 Rome
 
 
 @pytest.fixture(autouse=True)
@@ -335,19 +345,21 @@ def test_adjust_stop_does_not_need_a_quantity():
 
 
 # --------------------------------------------------------------------------- #
-# Le week-end : crypto seulement
+# L'univers PAR SYMBOLE et PAR INSTANT (LOT 8, remplace le crypto_only du
+# week-end de LOT 6) — ``now`` remplace ``crypto_only`` : le garde-fou calcule
+# lui-même, via ``tradable_now``, si CE symbole s'échange à CET instant.
 # --------------------------------------------------------------------------- #
 
-def test_a_stock_order_is_refused_when_only_crypto_trades():
-    out = coach_trader.gate_decision(_short(), _pf(), _quote(), crypto_only=True)
+def test_a_stock_order_is_refused_outside_its_market_hours():
+    out = coach_trader.gate_decision(_short(), _pf(), _quote(), now=SUN_1805)
     assert out["reason"] == "market_closed"
 
 
-def test_a_crypto_order_passes_when_only_crypto_trades():
+def test_a_crypto_order_passes_whatever_the_hour():
     out = coach_trader.gate_decision(
         {"action": "buy", "symbol": "BTC-USD", "qty": 20, "stop": 95.0,
          "thesis": THESIS},
-        _pf(), _quote(), crypto_only=True)
+        _pf(), _quote(), now=SUN_1805)
     assert out["accepted"] is True
 
 
@@ -357,7 +369,7 @@ def test_selling_a_stock_is_refused_too_when_the_market_is_shut():
     held = [_pos("NESN.SW", qty=20, avg_price=100.0)]
     out = coach_trader.gate_decision(
         {"action": "sell", "symbol": "NESN.SW", "qty": 5},
-        _pf(positions=held), _quote(), crypto_only=True)
+        _pf(positions=held), _quote(), now=SUN_1805)
     assert out["reason"] == "market_closed"
 
 
@@ -368,14 +380,33 @@ def test_moving_a_stop_stays_allowed_when_the_market_is_shut():
     held = [_pos("NESN.SW", qty=20, avg_price=100.0, side="long", stop=90.0)]
     out = coach_trader.gate_decision(
         {"action": "adjust_stop", "symbol": "NESN.SW", "stop": 95.0},
-        _pf(positions=held), _quote(), crypto_only=True)
+        _pf(positions=held), _quote(), now=SUN_1805)
     assert out["accepted"] is True
 
 
 def test_by_default_nothing_is_shut():
-    """``crypto_only`` est OPTIONNEL : tous les appelants existants passent
-    trois arguments et doivent continuer à voir un marché ouvert."""
+    """``now`` est OPTIONNEL : sans horloge, le garde-fou ne peut pas juger de
+    l'heure et laisse passer — tous les appelants existants qui ne s'occupent
+    pas des horaires de marché doivent continuer à voir un marché ouvert."""
     out = coach_trader.gate_decision(_short(), _pf(), _quote())
+    assert out["accepted"] is True
+
+
+def test_a_european_stock_passes_on_a_tuesday_morning():
+    out = coach_trader.gate_decision(_short(), _pf(), _quote(), now=TUE_1000)
+    assert out["accepted"] is True
+
+
+def test_a_us_stock_is_refused_on_a_tuesday_morning():
+    """10h à Rome, Wall Street n'a pas encore ouvert (15h35 locales)."""
+    out = coach_trader.gate_decision(_short(symbol="DAL"), _pf(), _quote(),
+                                     now=TUE_1000)
+    assert out["reason"] == "market_closed"
+
+
+def test_a_us_stock_passes_on_a_tuesday_afternoon():
+    out = coach_trader.gate_decision(_short(symbol="DAL"), _pf(), _quote(),
+                                     now=TUE_1600)
     assert out["accepted"] is True
 
 
@@ -384,21 +415,28 @@ def test_by_default_nothing_is_shut():
 # --------------------------------------------------------------------------- #
 
 def test_the_budget_block_is_the_documented_contract():
-    assert coach_trader.WEEKDAY_SLOTS == ("15:40", "18:00", "21:40")
-    assert coach_trader.WEEKEND_SLOTS == ("18:00",)
-    assert coach_trader.PASSES_PER_DAY == 3
-    assert coach_trader.MAX_FOCUS == 3
+    assert coach_trader.WEEKDAY_SLOTS == ("09:10", "11:30", "14:00", "15:40",
+                                          "17:00", "18:30", "20:00", "21:40")
+    assert coach_trader.WEEKEND_SLOTS == ("11:00", "18:00")
+    assert coach_trader.PASSES_PER_DAY == 8
+    assert coach_trader.MAX_FOCUS == 4
     assert coach_trader.LLM_CALLS_PER_PASS == 2
 
 
 def test_slots_of_the_day_depend_on_the_weekday():
-    assert coach_trader.slots_for(WED_1805) == ("15:40", "18:00", "21:40")
-    assert coach_trader.slots_for(SAT_1805) == ("18:00",)
+    assert coach_trader.slots_for(WED_1805) == coach_trader.WEEKDAY_SLOTS
+    assert coach_trader.slots_for(SAT_1805) == coach_trader.WEEKEND_SLOTS
 
 
 def test_due_slot_is_the_latest_one_reached():
+    """Les 8 créneaux du mois x20 : chacun est reconnu à son heure."""
+    assert coach_trader.due_slot(WED_0915, {}) == "09:10"
+    assert coach_trader.due_slot(WED_1135, {}) == "11:30"
+    assert coach_trader.due_slot(WED_1405, {}) == "14:00"
     assert coach_trader.due_slot(WED_1545, {}) == "15:40"
-    assert coach_trader.due_slot(WED_1805, {}) == "18:00"
+    assert coach_trader.due_slot(WED_1705, {}) == "17:00"
+    assert coach_trader.due_slot(WED_1835, {}) == "18:30"
+    assert coach_trader.due_slot(WED_2005, {}) == "20:00"
     assert coach_trader.due_slot(WED_2145, {}) == "21:40"
 
 
@@ -417,25 +455,30 @@ def test_the_same_slot_runs_again_the_next_day():
 
 
 def test_a_missed_slot_is_not_caught_up_afterwards():
-    """La valeur d'un créneau est dans son HEURE : 15h40 vaut « avant
-    l'ouverture de New York », pas « la première passe du jour ». Une machine
-    éteinte tout l'après-midi reprend à 18 h et ne repaie pas un appel pour une
-    lecture dont le moment est passé — deux passes en dix minutes sur un
-    contexte identique ne diraient rien de plus."""
-    state = {"slots": {"18:00": "2026-08-26T18:01:00"}}
-    assert coach_trader.due_slot(WED_1805, state) is None
+    """La valeur d'un créneau est dans son HEURE : 17h00 vaut « première heure
+    de la séance US », pas « la première passe de l'après-midi ». Une machine
+    qui vient de tourner à 17h00 ne repaie pas un appel cinq minutes plus tard
+    pour une lecture dont le moment est déjà passé."""
+    state = {"slots": {"17:00": "2026-08-26T17:01:00"}}
+    assert coach_trader.due_slot(WED_1705, state) is None
 
 
 def test_the_next_slot_still_runs_after_one_was_missed():
-    """Sauter 15h40 ne condamne pas la journée : 21h40 tourne normalement."""
-    state = {"slots": {"18:00": "2026-08-26T18:01:00"}}
-    assert coach_trader.due_slot(WED_2145, state) == "21:40"
+    """Sauter 18h30 (jamais marqué) ne condamne pas la journée : 20h00 tourne
+    normalement dès qu'on l'atteint."""
+    state = {"slots": {"17:00": "2026-08-26T17:01:00"}}
+    assert coach_trader.due_slot(WED_2005, state) == "20:00"
 
 
-def test_the_weekend_slot_is_crypto_only():
-    assert coach_trader.crypto_only_at(SAT_1805) is True
-    assert coach_trader.crypto_only_at(SUN_1805) is True
-    assert coach_trader.crypto_only_at(WED_1805) is False
+def test_the_weekend_stays_crypto_only_via_tradable_now():
+    """``crypto_only_at`` (LOT 6) a disparu — la même réalité (le week-end,
+    seules les cryptos s'échangent) découle désormais de ``tradable_now``,
+    appliquée symbole par symbole."""
+    assert coach_trader.tradable_now("NESN.SW", SAT_1805) is False
+    assert coach_trader.tradable_now("NESN.SW", SUN_1805) is False
+    assert coach_trader.tradable_now("NESN.SW", WED_1805) is False   # hors fenêtre Europe
+    assert coach_trader.tradable_now("BTC-USD", SAT_1805) is True
+    assert coach_trader.tradable_now("BTC-USD", SUN_1805) is True
 
 
 def test_no_weekend_pass_before_its_slot():

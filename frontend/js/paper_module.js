@@ -3466,14 +3466,14 @@ const PaperModule = {
         const ct = this._ct || {};
         const cap = this._ctCapital();
         const np = (ct.next_pass && typeof ct.next_pass === 'object') ? ct.next_pass : {};
-        const hour = this._n(np.after_hour);
+        const slots = Array.isArray(np.slots) ? np.slots.filter((s) => typeof s === 'string') : [];
         const due = !!np.due;
         const last = np.last_pass
             ? this._dateTime(np.last_pass) : Lang.t('paper.ct_last_pass_never');
         const when = due
             ? Lang.t('paper.ct_next_due')
             : (Lang.t('paper.ct_next_schedule') +
-               (hour === null ? '' : (' ' + this._num(hour, 0) + ':00')));
+               (slots.length ? (' ' + slots.join(', ')) : ''));
         return this._card(
             this._head(Lang.t('paper.ct_title'),
                 (cap === null) ? '' : (Lang.t('paper.ct_capital') + ' ' + this._chf(cap, 0))) +

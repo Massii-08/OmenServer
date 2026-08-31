@@ -83,7 +83,9 @@ _AUX_NAMES = ("alerts_mode.json", "x_accounts.json", "backup.state.json",
              "backfill.json", "calendar.verdicts.json", "convergence.json",
              "radar.json", "newswatch_global.json", "weekly.state.json",
              # État du module de trading du coach (LOT 4).
-             "coach_trader.state.json")
+             "coach_trader.state.json",
+             # État du GARDIEN (LOT 8) — sentinelle de marché du coach.
+             "coach_guardian.state.json")
 
 
 # --------------------------------------------------------------------------- #

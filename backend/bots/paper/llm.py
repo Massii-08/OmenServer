@@ -1061,7 +1061,6 @@ def build_coach_screen_prompt(context: Optional[Dict[str, Any]],
     donc de REPÉRER, puis on lui donne les moyens de décider sur trois titres.
     """
     ctx = context if isinstance(context, dict) else {}
-    crypto_only = bool(ctx.get("crypto_only"))
     return "\n\n".join([
         SYSTEM_PROMPT,
         _lang_line(lang),
@@ -1077,13 +1076,14 @@ def build_coach_screen_prompt(context: Optional[Dict[str, Any]],
         "opportunité neuve. Regarde ensuite les candidats du radar : un écart "
         "de prix marquant, un niveau technique atteint, un rendez-vous "
         "imminent.",
-        ("⚠️ CRÉNEAU DE WEEK-END : les bourses sont FERMÉES. Seules les "
-         "cryptos s'échangent — ne retiens que des cryptos, tout ordre sur une "
-         "action serait refusé. Tu peux en revanche resserrer le stop de "
-         "n'importe quelle ligne : c'est une consigne au carnet, elle agira à "
-         "la réouverture."
-         if crypto_only else
-         "Les marchés sont ouverts : actions et cryptos sont jouables."),
+        "⚠️ Chaque candidat porte un champ ``tradable`` : ``true`` si son "
+        "marché est OUVERT à cet instant, ``false`` sinon (bourse fermée hors "
+        "de ses horaires locaux, week-end compris — les cryptos, elles, sont "
+        "TOUJOURS ``tradable``). Tu ne peux agir — ouvrir, alléger ou sortir — "
+        "QUE sur un titre ``tradable`` : un ordre sur un marché fermé sera "
+        "automatiquement refusé (``market_closed``). Tu peux en revanche "
+        "TOUJOURS resserrer le stop d'une ligne, marché ouvert ou fermé : "
+        "c'est une consigne au carnet, elle n'agira qu'à la réouverture.",
         "Retiens AU PLUS %d titres, et seulement ceux sur lesquels tu es "
         "prêt à agir aujourd'hui — pas ceux qui « pourraient être "
         "intéressants ». Une liste VIDE est une réponse légitime quand rien "
@@ -1176,6 +1176,96 @@ def build_coach_trader_prompt(context: Optional[Dict[str, Any]],
         "contexte ci-dessus — pas un chiffre, pas un événement, pas un cours.",
         coach_actions_block(_coach_book_of(ctx)),
     ])
+
+
+_GUARDIAN_TRIGGER_LINES = {
+    "move": "le cours a bougé de %s ou plus depuis le dernier passage du "
+           "gardien sur cette ligne — un mouvement de cette ampleur en un "
+           "seul cycle de veille mérite un coup d'œil.",
+    "stop": "le cours est à moins de %s de ton STOP — ÇA CHAUFFE. Vérifie "
+           "si la thèse tient encore, ou si c'est déjà l'heure de couper.",
+    "target": "le cours est à moins de %s de ton OBJECTIF — il MÛRIT. "
+             "Pense à RESSERRER le stop pour protéger le gain plutôt que "
+             "d'attendre passivement qu'il soit atteint.",
+}
+
+
+def build_coach_guardian_prompt(context: Optional[Dict[str, Any]],
+                                lang: str = "fr") -> str:
+    """Prompt de la passe GARDIEN — gestion FOCALISÉE d'UNE SEULE position,
+    entre deux passes planifiées (PUR, LOT 8).
+
+    COURT, DÉLIBÉRÉMENT : le gardien réagit à un mouvement de marché sur UNE
+    ligne, il ne relit pas tout le livre (radar, candidats, agenda) comme les
+    passes planifiées — juste la ligne qui l'a réveillé, avec ce qu'il faut
+    pour en juger (cours, technique, plan, P&L, déclencheur nommé). C'est ce
+    qui rend soutenable un appel toutes les quelques minutes sur un titre qui
+    bouge, là où le prompt complet des passes planifiées ne l'est pas.
+
+    ``context`` : ``{"symbol","side","qty","avg_price","current_price",
+    "pnl_pct","stop_loss","target","dist_stop_pct","dist_target_pct",
+    "technical","thesis","trigger"}`` — ``trigger`` ∈ ``coach_trader.
+    GUARDIAN_TRIGGERS``, tout le reste tolère l'absence (PUR, ne lève jamais).
+
+    Le bloc de clôture réutilise ``coach_trader.ACTIONS_MARKER``/``parse_
+    actions`` (MÊME contrat que les passes planifiées) mais restreint la
+    LISTE des actions à ``coach_trader.GUARDIAN_ALLOWED_ACTIONS`` : le
+    périmètre (cette ligne, jamais une ouverture neuve) est ENFONCÉ dans le
+    prompt ET vérifié au garde-fou (``coach_trader.guardian_gate``) — la
+    double sécurité habituelle de ce module.
+    """
+    ctx = context if isinstance(context, dict) else {}
+    symbol = str(ctx.get("symbol") or "").strip() or "SYMBOLE"
+    trigger = str(ctx.get("trigger") or "").strip()
+    pct_by_trigger = {
+        "move": coach_trader.GUARDIAN_MOVE_PCT,
+        "stop": coach_trader.GUARDIAN_STOP_PROXIMITY_PCT,
+        "target": coach_trader.GUARDIAN_TARGET_PROXIMITY_PCT,
+    }
+    if trigger in _GUARDIAN_TRIGGER_LINES:
+        pourquoi = _GUARDIAN_TRIGGER_LINES[trigger] % _pct(pct_by_trigger[trigger])
+    else:
+        pourquoi = "le marché a bougé sur cette ligne."
+
+    kinds = " | ".join(coach_trader.GUARDIAN_ALLOWED_ACTIONS)
+    return "\n\n".join([
+        SYSTEM_PROMPT,
+        _lang_line(lang),
+        "PASSE GARDIEN — GESTION FOCALISÉE D'UNE SEULE LIGNE. Une sentinelle "
+        "déterministe t'a réveillé, entre deux passes planifiées, POUR CETTE "
+        "POSITION SEULE (%s) : %s" % (symbol, pourquoi),
+        _block("LA POSITION", ctx),
+        "Tu ne gères QUE cette ligne — aucune autre, et surtout aucune "
+        "OUVERTURE nouvelle (ça, c'est le travail des passes planifiées, qui "
+        "voient tout le livre). Trois gestes possibles : COUPER (``sell``/"
+        "``cover`` pour solder, ``reduce`` pour alléger) si la thèse ne tient "
+        "plus ou que le stop est touché ; RESSERRER (``adjust_stop``, il ne "
+        "sait QUE monter le stop d'un long ou descendre celui d'un short) si "
+        "la position travaille et qu'un gain mérite d'être protégé ; ou NE "
+        "RIEN FAIRE — un choix ARGUMENTÉ, jamais un silence : ``note`` "
+        "devient alors OBLIGATOIRE, en une phrase précise (pas « je "
+        "surveille », ça ne dit rien).",
+        "Termine IMPÉRATIVEMENT ta réponse par ce bloc, et RIEN après. "
+        "``action`` vaut %s ; ``symbol`` est « %s » (rien d'autre n'a de sens "
+        "ici, toute autre valeur est refusée) ; un ``sell``/``cover`` SANS "
+        "``qty`` veut dire « solder la ligne entière »." % (kinds, symbol),
+        "```%s\n"
+        '{"actions": [{"action": "adjust_stop", "symbol": "%s", "stop": %s}], '
+        '"note": "une phrase courte"}\n'
+        "```" % (coach_trader.ACTIONS_MARKER, symbol,
+                 _num_or_null(ctx.get("stop_loss"))),
+    ])
+
+
+def _num_or_null(value: Any) -> str:
+    """``92.5`` -> ``"92.5"``, illisible -> ``"null"`` — pour un exemple JSON
+    dont le stop peut être absent (PUR)."""
+    try:
+        if value is None or isinstance(value, bool):
+            return "null"
+        return repr(float(value))
+    except (TypeError, ValueError):
+        return "null"
 
 
 # --------------------------------------------------------------------------- #

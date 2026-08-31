@@ -1931,8 +1931,7 @@ def _coach_book() -> Any:
 
 def _execute_coach(execute_actions: Optional[Callable[..., Any]],
                    actions: List[Dict[str, Any]], now_iso: str,
-                   parse_error: Any, note: Any = None,
-                   crypto_only: bool = False) -> int:
+                   parse_error: Any, note: Any = None) -> int:
     """Confie au moteur d'ordres ce que le coach vient de décider.
 
     **Best-effort TOTAL** : le digest est DÉJÀ parti quand on arrive ici, et
@@ -1946,11 +1945,13 @@ def _execute_coach(execute_actions: Optional[Callable[..., Any]],
     silence, il se consigne au registre du coach (« il n'a rien décidé », ou
     « il a rendu du JSON illisible »). ``note`` (LOT 4bis) voyage de même : la
     raison ARGUMENTÉE du coach quand il n'agit pas, sa lecture de marché quand
-    il agit. ``crypto_only`` (LOT 6) voyage pareil — c'est LA MÊME règle
-    d'univers que la passe naturelle et la passe forcée (``coach_trader.
-    crypto_only_at``, calculée par l'appelant sur le ``now`` du digest) :
-    sans elle, un digest qui tire un dimanche pouvait faire acheter une
-    action que personne ne peut coter avant lundi. L'appel passe tout en
+    il agit.
+
+    ⚠️ **LOT 8** : ce chemin ne calcule plus de ``crypto_only`` (LOT 6) — la
+    règle d'univers voyage désormais avec ``now_iso`` lui-même, jusqu'à
+    ``coach_trader.gate_decision`` (``coach_trader.tradable_now``, SYMBOLE PAR
+    SYMBOLE) : sans elle, un digest qui tire un dimanche pouvait faire acheter
+    une action que personne ne peut coter avant lundi. L'appel passe tout en
     mots-clés et avale un ``TypeError`` comme le reste — la signature de
     l'autre côté peut ne pas encore porter ce paramètre.
 
@@ -1965,8 +1966,7 @@ def _execute_coach(execute_actions: Optional[Callable[..., Any]],
         runner = execute_coach_actions
     try:
         rows = runner(list(actions), source=COACH_SOURCE, now_iso=now_iso,
-                      parse_error=parse_error, note=note,
-                      crypto_only=crypto_only)
+                      parse_error=parse_error, note=note)
     except Exception:      # noqa: BLE001 — y compris TypeError de signature
         logger.warning("paper convergence: actions du coach non exécutées",
                        exc_info=True)
@@ -2180,16 +2180,13 @@ def maybe_fire(now: Any = None,
     # HORS de la section critique : le moteur d'ordres lit des cours et écrit
     # un portefeuille, il n'a rien à faire sous le verrou du déclencheur.
     if coach_book or execute_actions is not None:
-        # LOT 6 — MÊME règle d'univers que les passes naturelle et forcée :
-        # sans elle, un digest tiré un dimanche pouvait faire acheter une
-        # action que personne ne peut coter avant lundi.
-        try:
-            from backend.bots.paper import coach_trader
-            crypto_only = coach_trader.crypto_only_at(now_dt)
-        except Exception:  # noqa: BLE001 — best-effort, comme _coach_book
-            crypto_only = False
+        # LOT 8 — MÊME règle d'univers que les passes naturelle et forcée,
+        # désormais SYMBOLE PAR SYMBOLE (``now_iso`` porte l'instant jusqu'à
+        # ``coach_trader.gate_decision``) : sans elle, un digest tiré un
+        # dimanche pouvait faire acheter une action que personne ne peut coter
+        # avant lundi.
         _execute_coach(execute_actions, coach_actions, now_iso, coach_error,
-                       coach_note, crypto_only)
+                       coach_note)
 
     return {"fired": True, "reason": "ok", "factors": flags,
             "sent": sent, "llm": used_llm,

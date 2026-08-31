@@ -213,6 +213,8 @@ _NON_USER_FILES = frozenset({
     # ``coach.json``, qui EST le portefeuille du coach : un VRAI compte,
     # visible dans la communauté par design (cf. ``coach_trader.py``).
     "coach_trader.state.json",
+    # État du GARDIEN (LOT 8) — sentinelle de marché du coach, même doctrine.
+    "coach_guardian.state.json",
 })
 _USER_FILE_RE = re.compile(r"^([A-Za-z0-9_-]+)\.json$")
 

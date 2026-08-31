@@ -2133,11 +2133,11 @@ class _Exec(object):
         self.boom = boom
 
     def __call__(self, actions, source="digest", now_iso=None, parse_error=None,
-                note=None, crypto_only=False, **_ignored):
+                note=None, **_ignored):
         self.log.append("execute")
         self.calls.append({"actions": list(actions), "source": source,
                            "now_iso": now_iso, "parse_error": parse_error,
-                           "note": note, "crypto_only": crypto_only})
+                           "note": note})
         if self.boom:
             raise RuntimeError("moteur d'ordres cassé")
         return [{"accepted": True}]
@@ -2384,17 +2384,18 @@ def test_maybe_fire_tolere_un_executeur_a_l_ancienne_signature(sources, alice):
     assert out["fired"] is True and out["sent"] is True
 
 
-# --- LOT 6 — le digest applique la MÊME règle d'univers que les passes --- #
+# --- LOT 8 — le digest applique la MÊME règle d'univers que les passes,   --#
+# --- désormais SYMBOLE PAR SYMBOLE via ``now_iso`` (plus de ``crypto_only``)#
 
 SUNDAY = datetime(2026, 8, 23, 12, 0, 0)   # NOW (24/08) est un lundi
 
 
-def test_maybe_fire_computes_crypto_only_true_on_a_sunday(sources, alice):
-    """``_execute_coach`` ne recevait et ne transmettait JAMAIS ``crypto_only``
-    — un digest qui tire un dimanche pouvait faire acheter une action, alors
-    que la même décision un dimanche via la passe naturelle ou forcée est
-    refusée ``market_closed``. Même fonction pure (``coach_trader.
-    crypto_only_at``) que les deux autres chemins."""
+def test_maybe_fire_passes_the_real_now_iso_to_the_runner(sources, alice):
+    """``_execute_coach`` ne transmettait jamais l'HORODATAGE RÉEL du digest à
+    l'exécuteur (avant LOT 6, il ne passait rien du tout côté univers). C'est
+    désormais CE ``now_iso`` — pas un ``crypto_only`` calculé à part — que
+    ``coach_trader.gate_decision`` relit via ``tradable_now`` pour juger,
+    symbole par symbole, ce qui s'échange."""
     _arm_two_factors(sources)
     runner = _Exec()
 
@@ -2403,19 +2404,8 @@ def test_maybe_fire_computes_crypto_only_true_on_a_sunday(sources, alice):
                                  fetch_state=_radar_state(),
                                  coach_book=COACH_BOOK, execute_actions=runner)
     assert out["fired"] is True
-    assert runner.calls[0]["crypto_only"] is True
-
-
-def test_maybe_fire_computes_crypto_only_false_on_a_weekday(sources, alice):
-    _arm_two_factors(sources)
-    runner = _Exec()
-
-    out = convergence.maybe_fire(now=NOW, llm=_with_block(),
-                                 notifier=_notifier([]), tg_cfg=TG,
-                                 fetch_state=_radar_state(),
-                                 coach_book=COACH_BOOK, execute_actions=runner)
-    assert out["fired"] is True
-    assert runner.calls[0]["crypto_only"] is False
+    assert runner.calls[0]["now_iso"] == SUNDAY.isoformat()
+    assert "crypto_only" not in runner.calls[0]
 
 
 def test_maybe_fire_llm_en_panne_aucune_action_et_le_digest_part(sources, alice):

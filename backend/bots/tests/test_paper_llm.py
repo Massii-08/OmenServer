@@ -1212,11 +1212,12 @@ def test_le_prompt_de_tri_dit_que_la_liste_vide_est_legitime():
     assert "timidité" in prompt          # ... mais que ce doit être un CHOIX
 
 
-def test_le_prompt_de_tri_annonce_le_week_end_ferme():
-    ouvert = llm.build_coach_screen_prompt(SCREEN_CTX)
-    ferme = llm.build_coach_screen_prompt(dict(SCREEN_CTX, crypto_only=True))
-    assert "ferm" in ferme.lower() and "crypto" in ferme.lower()
-    assert "ferm" not in ouvert.lower()
+def test_le_prompt_de_tri_explique_le_champ_tradable():
+    """LOT 8 : plus de bandeau conditionnel « week-end fermé » — chaque
+    candidat porte son propre ``tradable``, et le prompt explique la règle une
+    fois pour toutes."""
+    prompt = llm.build_coach_screen_prompt(SCREEN_CTX).lower()
+    assert "tradable" in prompt and "market_closed" in prompt
 
 
 def test_le_prompt_de_tri_ne_leve_jamais():
@@ -1248,3 +1249,55 @@ def test_pas_de_section_dossiers_quand_le_tri_n_a_rien_retenu():
     assert "DOSSIERS" not in llm.build_coach_trader_prompt(SCREEN_CTX)
     assert "DOSSIERS" not in llm.build_coach_trader_prompt(
         dict(SCREEN_CTX, dossiers=[]))
+
+
+# --- Le prompt du GARDIEN — gestion focalisée d'UNE position (LOT 8) ------ #
+
+GUARDIAN_CTX = {
+    "symbol": "NESN.SW",
+    "side": "long",
+    "qty": 20,
+    "avg_price": 92.4,
+    "current_price": 98.5,
+    "pnl_pct": 6.6,
+    "stop_loss": 90.0,
+    "target": 110.0,
+    "dist_stop_pct": 8.6,
+    "dist_target_pct": 11.7,
+    "technical": {"sma200": 88.0, "rsi14": 61.2, "atr14": 1.8},
+    "thesis": "reprise des volumes en Europe",
+    "trigger": "move",
+}
+
+
+def test_le_prompt_gardien_porte_le_symbole_et_le_marker():
+    from backend.bots.paper import coach_trader
+    prompt = llm.build_coach_guardian_prompt(GUARDIAN_CTX)
+    assert "NESN.SW" in prompt
+    assert coach_trader.ACTIONS_MARKER in prompt
+
+
+def test_le_prompt_gardien_ne_propose_aucune_ouverture():
+    """Le gardien ne gère QUE la ligne qui l'a déclenché — jamais buy/short."""
+    from backend.bots.paper import coach_trader
+    prompt = llm.build_coach_guardian_prompt(GUARDIAN_CTX)
+    kinds = " | ".join(coach_trader.GUARDIAN_ALLOWED_ACTIONS)
+    assert kinds in prompt
+    assert "buy" not in prompt.lower()
+
+
+def test_le_prompt_gardien_change_de_texte_selon_le_declencheur():
+    move = llm.build_coach_guardian_prompt(dict(GUARDIAN_CTX, trigger="move"))
+    stop = llm.build_coach_guardian_prompt(dict(GUARDIAN_CTX, trigger="stop"))
+    target = llm.build_coach_guardian_prompt(dict(GUARDIAN_CTX, trigger="target"))
+    assert len({move, stop, target}) == 3
+
+
+def test_le_prompt_gardien_dit_que_ne_rien_faire_exige_une_note():
+    prompt = llm.build_coach_guardian_prompt(GUARDIAN_CTX).lower()
+    assert "note" in prompt and "obligatoire" in prompt
+
+
+def test_le_prompt_gardien_ne_leve_jamais():
+    for junk in (None, {}, [], "pas un dict", 0):
+        assert isinstance(llm.build_coach_guardian_prompt(junk), str)
