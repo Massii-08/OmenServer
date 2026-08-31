@@ -278,6 +278,63 @@ def _pos_side(pos: Dict[str, Any]) -> str:
     return (_text(pos.get("side")) or "long").lower()
 
 
+# Longueur d'une ligne de THÈME rendue au modèle. Assez pour reconnaître un
+# catalyseur (« blocage d'Ormuz », « tarifs sur l'acier »), trop court pour
+# recopier la thèse entière : ce bloc doit rester PETIT, il est réinjecté dans
+# TROIS prompts à chaque passe.
+MAX_THEME_LEN = 140
+
+
+def deployment_view(portfolio: Any) -> Dict[str, Any]:
+    """Le DÉPLOIEMENT du livre, en trois chiffres lisibles (PUR — LOT 9).
+
+    Né d'un vécu : le coach tenait UNE ligne et attendait, passe après passe,
+    « une clôture sous la SMA50 » — une embuscade purement MENTALE, re-jugée
+    passivement à chaque réveil. Le mandat lui demande désormais d'être
+    DÉPLOYÉ ; encore faut-il qu'il SACHE où il en est. Un modèle ne compte pas
+    ses lignes de façon fiable dans un JSON de contexte : on lui donne le
+    chiffre.
+
+    Rend ``{"cash_pct", "n_positions", "themes_ouverts"}``.
+
+    ``cash_pct`` suit la convention du GARDE-FOU (:func:`_equity_chf`, prix de
+    revient, les deux sens en valeur absolue) et non celle de l'affichage : le
+    prompt lui dit « si ton cash dépasse 50 % de l'équité, justifie-toi », et
+    c'est cette équité-là qui le REFUSERA ensuite. Deux chiffres différents
+    rendraient la consigne inapplicable.
+
+    ``themes_ouverts`` n'est PAS une taxonomie. On ne classe pas
+    automatiquement un thème (« carburant/Iran » ne se déduit d'aucun champ
+    persisté, et une classification inventée mentirait) : on rend les THÈSES
+    ouvertes, une par ligne, tronquées. C'est le modèle qui juge si son
+    prochain pari est le MÊME catalyseur ou un pari indépendant — exactement
+    le jugement qu'il faisait déjà correctement en refusant UAL et LUV quand
+    il tenait DAL.
+
+    **NE LÈVE JAMAIS** : un portefeuille abîmé rend la vue neutre (0/0/[]),
+    ce que le bloc de prompt sait afficher sans mentir.
+    """
+    book = portfolio if isinstance(portfolio, dict) else {}
+    positions = _dicts(book.get("positions"))
+    equity = _equity_chf(book.get("cash_chf"), positions)
+    cash = _val(book.get("cash_chf")) or 0.0
+
+    themes: List[str] = []
+    for pos in positions:
+        symbol = _symbol(pos.get("symbol")) or "?"
+        thesis = _text(pos.get("thesis")) or "(sans thèse écrite)"
+        line = "%s (%s) — %s" % (symbol, _pos_side(pos), thesis)
+        if len(line) > MAX_THEME_LEN:
+            line = line[:MAX_THEME_LEN - 1].rstrip() + "…"
+        themes.append(line)
+
+    return {
+        "cash_pct": round(cash / equity * 100.0, 1) if equity > 0 else 0.0,
+        "n_positions": len(positions),
+        "themes_ouverts": themes,
+    }
+
+
 def _held(positions: List[Dict[str, Any]], symbol: str, side: str) -> float:
     """Quantité détenue sur ce symbole DANS CE SENS, toutes lignes confondues.
 

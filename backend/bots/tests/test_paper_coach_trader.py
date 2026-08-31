@@ -1670,3 +1670,61 @@ def test_arming_one_slot_does_not_disarm_the_others():
     _run_hook(now=WED_1545, pass_=_Spy())
     _run_hook(now=WED_1835, pass_=_Spy())
     assert set(coach_trader.load_state()["slots"]) == {"15:40", "18:30"}
+
+
+# --------------------------------------------------------------------------- #
+# LOT 9 — le RÉGIME DÉPLOYÉ : le déploiement CHIFFRÉ du livre (PUR)
+# --------------------------------------------------------------------------- #
+
+def test_deployment_view_livre_vide_est_100pct_cash():
+    view = coach_trader.deployment_view(
+        {"cash_chf": 10000.0, "positions": [], "initial_capital": 10000.0})
+    assert view["cash_pct"] == 100.0
+    assert view["n_positions"] == 0
+    assert view["themes_ouverts"] == []
+
+
+def test_deployment_view_compte_les_lignes_et_rend_les_theses():
+    view = coach_trader.deployment_view({
+        "cash_chf": 6000.0,
+        "positions": [
+            {"symbol": "DAL", "side": "short", "qty": 100, "avg_price": 40.0,
+             "thesis": "hausse du kérosène après le blocage d'Ormuz"},
+            {"symbol": "NESN.SW", "side": "long", "qty": 10, "avg_price": 100.0,
+             "thesis": "défensive sur repli du marché"},
+        ],
+    })
+    assert view["n_positions"] == 2
+    # Convention du GARDE-FOU (``_equity_chf``) : les deux sens comptent en
+    # valeur ABSOLUE — 6000 + 4000 (short) + 1000 (long) = 11000 d'équité,
+    # dont 6000 dorment en trésorerie.
+    # arrondi à la décimale : ce chiffre se LIT dans un prompt.
+    assert view["cash_pct"] == 54.5
+    assert view["themes_ouverts"] == [
+        "DAL (short) — hausse du kérosène après le blocage d'Ormuz",
+        "NESN.SW (long) — défensive sur repli du marché",
+    ]
+
+
+def test_deployment_view_tronque_une_these_fleuve():
+    longue = "a" * 400
+    view = coach_trader.deployment_view(
+        {"cash_chf": 1000.0,
+         "positions": [{"symbol": "X", "side": "long", "qty": 1,
+                        "avg_price": 10.0, "thesis": longue}]})
+    theme = view["themes_ouverts"][0]
+    assert len(theme) <= 140
+    assert theme.startswith("X (long) — aaa")
+
+
+def test_deployment_view_ne_leve_jamais_sur_une_entree_abimee():
+    view = coach_trader.deployment_view({"cash_chf": "?", "positions": "nope"})
+    assert view == {"cash_pct": 0.0, "n_positions": 0, "themes_ouverts": []}
+
+
+def test_deployment_view_ligne_sans_these_reste_nommee():
+    view = coach_trader.deployment_view(
+        {"cash_chf": 500.0,
+         "positions": [{"symbol": "AAPL", "side": "long", "qty": 5,
+                        "avg_price": 100.0}]})
+    assert view["themes_ouverts"] == ["AAPL (long) — (sans thèse écrite)"]

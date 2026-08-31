@@ -1001,11 +1001,12 @@ def test_build_coach_trader_prompt_reprend_les_trois_interdits():
     assert "invente" in prompt.lower()                   # rien hors contexte
 
 
-def test_coach_book_of_porte_desormais_cinq_cles_dont_candidates():
+def test_coach_book_of_porte_desormais_six_cles_dont_candidates_et_deploiement():
     book = llm._coach_book_of(CTX)
     assert set(book) == {"cash_chf", "equity_chf", "positions", "open_orders",
-                         "candidates"}
+                         "candidates", "deployment"}
     assert book["candidates"] == []                 # absent du contexte CTX
+    assert book["deployment"] == {}                 # idem (LOT 9)
 
 
 def test_coach_book_of_porte_les_candidats_fournis_par_le_contexte():
@@ -1310,3 +1311,63 @@ def test_le_prompt_gardien_dit_que_ne_rien_faire_exige_une_note():
 def test_le_prompt_gardien_ne_leve_jamais():
     for junk in (None, {}, [], "pas un dict", 0):
         assert isinstance(llm.build_coach_guardian_prompt(junk), str)
+
+
+# =========================================================================== #
+# LOT 9 — le RÉGIME DÉPLOYÉ (bloc partagé : les TROIS chemins en héritent)
+# =========================================================================== #
+
+def test_coach_actions_block_enonce_le_regime_deploye():
+    """« On ne peut pas rester à attendre » : le mandat vise 3 à 5 lignes sur
+    des THÈMES différents, et l'attente du parfait est nommée comme une FAUTE."""
+    block = llm.coach_actions_block(BOOK)
+    low = block.lower()
+    assert "régime déployé" in low
+    assert "3 à 5 positions" in low
+    assert "thèmes différents" in low
+    # La doctrine du propriétaire, mot pour mot.
+    assert "n'attends pas le parfait, ce sera déjà trop tard" in low
+    # Le même catalyseur ne se joue qu'une fois — mais un thème DISTINCT, si.
+    assert "une fois" in low and "indépendant" in low
+    # L'inaction se paie.
+    assert "crédibilité" in low
+
+
+def test_coach_actions_block_pose_le_seuil_de_50pct_de_tresorerie():
+    low = llm.coach_actions_block(BOOK).lower()
+    assert "50 %" in low
+    assert "tradable" in low or "thèse valable" in low
+
+
+def test_coach_actions_block_affiche_le_deploiement_chiffre():
+    """Quand le livre porte sa vue de déploiement, le bloc la RESTITUE : un
+    modèle ne recompte pas ses lignes de façon fiable dans un JSON."""
+    book = dict(BOOK)
+    book["deployment"] = {"cash_pct": 82.4, "n_positions": 1,
+                          "themes_ouverts": ["DAL (short) — kérosène / Ormuz"]}
+    block = llm.coach_actions_block(book)
+    assert "82,4 %" in block or "82.4" in block
+    assert "DAL (short) — kérosène / Ormuz" in block
+
+
+def test_coach_actions_block_sans_deploiement_garde_la_section():
+    """La CONSIGNE ne dépend pas du chiffre : un livre sans vue de déploiement
+    reçoit quand même le mandat (sinon il disparaîtrait en silence)."""
+    low = llm.coach_actions_block(BOOK).lower()
+    assert "régime déployé" in low
+
+
+def test_les_deux_prompts_coach_heritent_du_regime_deploye():
+    """Créneau (passe quotidienne) ET digest : la section vit dans le bloc
+    PARTAGÉ, elle ne peut pas exister d'un côté seulement."""
+    from backend.bots.paper import convergence
+    creneau = llm.build_coach_trader_prompt({
+        "cash_chf": 6200.0, "equity_chf": 10450.0,
+        "positions": BOOK["positions"], "open_orders": BOOK["open_orders"],
+        "deployment": {"cash_pct": 82.4, "n_positions": 1,
+                       "themes_ouverts": ["DAL (short) — kérosène"]},
+    })
+    assert "RÉGIME DÉPLOYÉ" in creneau
+    assert "82,4 %" in creneau
+    digest = convergence._coach_actions_block(BOOK)
+    assert "RÉGIME DÉPLOYÉ" in digest

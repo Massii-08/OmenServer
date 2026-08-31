@@ -2235,6 +2235,10 @@ def _coach_pass_context(portfolio: models.Portfolio,
         "agenda": [],
         "candidates": [],
         "verdicts": [],
+        # LOT 9 — le DÉPLOIEMENT chiffré. Déterministe, minuscule, et calculé
+        # sur la MÊME convention d'équité que le garde-fou qui refusera
+        # ensuite (cf. ``coach_trader.deployment_view``).
+        "deployment": coach_trader.deployment_view(portfolio.to_dict()),
     }
     try:
         context["market_mood"] = mood.get() or {}
@@ -2436,6 +2440,10 @@ def coach_book() -> Dict[str, Any]:
             # fusionné, source (a).
             "candidates": _coach_candidates(_open_radar_hypotheses(), _now_iso(),
                                             positions=portfolio.positions),
+            # LOT 9 — le digest hérite du même chiffre que la passe : le
+            # mandat déployé vit dans le bloc PARTAGÉ, il ne peut pas être
+            # renseigné d'un seul côté.
+            "deployment": coach_trader.deployment_view(portfolio.to_dict()),
         }
     except Exception as e:                  # noqa: BLE001 — jamais fatal
         logger.warning("paper coach: livre indisponible pour le digest (%s)",

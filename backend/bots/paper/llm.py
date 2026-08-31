@@ -877,7 +877,35 @@ def _coach_book_of(context: Any) -> Dict[str, Any]:
         "positions": ctx.get("positions") or [],
         "open_orders": ctx.get("open_orders") or [],
         "candidates": ctx.get("candidates") or [],
+        # LOT 9 — le déploiement CHIFFRÉ (``coach_trader.deployment_view``).
+        # Il traverse le book parce que le mandat « sois DÉPLOYÉ » vit dans le
+        # bloc PARTAGÉ : le poser ailleurs le ferait exister d'un seul côté.
+        "deployment": ctx.get("deployment") or {},
     }
+
+
+def _deployment_lines(view: Any) -> list:
+    """La ligne CHIFFRÉE du déploiement, ou rien (PUR — LOT 9).
+
+    Absente quand la vue manque : la CONSIGNE (« sois déployé ») reste dans le
+    bloc de toute façon — c'est le chiffre qui est facultatif, jamais le
+    mandat. Un modèle ne recompte pas ses lignes de façon fiable dans un JSON
+    de contexte ; quand on peut le lui donner, on le lui donne.
+    """
+    if not isinstance(view, dict) or not view:
+        return []
+    n = view.get("n_positions")
+    themes = view.get("themes_ouverts")
+    line = ("TON DÉPLOIEMENT À CETTE SECONDE : %s de ton équité dort en "
+            "trésorerie, %s ligne(s) ouverte(s)."
+            % (_pct(view.get("cash_pct")), n if isinstance(n, int) else "?"))
+    if isinstance(themes, list) and themes:
+        line += (" Thèmes DÉJÀ engagés — n'en rejoue AUCUN, cherche ailleurs : "
+                 + " | ".join(str(t) for t in themes))
+    else:
+        line += (" Aucun thème engagé : tout l'univers t'est ouvert, et une "
+                 "passe de plus sans rien armer se verra.")
+    return [line]
 
 
 def coach_actions_block(book: Any) -> str:
@@ -1005,6 +1033,22 @@ def coach_actions_block(book: Any) -> str:
         "caractères et un stop du BON CÔTÉ du prix — sous lui pour un achat, "
         "au-dessus pour une vente à découvert — sans quoi elle est refusée."
         % (sorties, entrees, coach_trader.MIN_THESIS_LEN),
+        # LOT 9 — « on ne peut pas rester à attendre » (directive de Massii,
+        # née d'un vécu : UNE ligne tenue, et des passes entières à guetter
+        # « une clôture sous la SMA50 » sans jamais rien armer). Le mandat ne
+        # dit plus seulement ce qui est INTERDIT, il dit ce qui est ATTENDU.
+        "RÉGIME DÉPLOYÉ : vise 3 à 5 positions OUVERTES sur des THÈMES "
+        "DIFFÉRENTS. Le même catalyseur ne se joue qu'UNE fois (ta règle "
+        "anti-corrélation est juste) — mais chaque THÈME distinct à "
+        "conviction se joue : carburant/Iran, tarifs, semi-conducteurs, "
+        "l'Europe, la crypto sont des paris INDÉPENDANTS. Si ton cash "
+        "dépasse 50 % de l'équité ALORS QU'il existe des candidats "
+        "tradables à thèse valable, tu DOIS expliquer pourquoi tu n'es pas "
+        "déployé — l'attente du parfait est une faute (doctrine du "
+        "propriétaire : n'attends pas le parfait, ce sera déjà trop tard). "
+        "L'inaction se paie en crédibilité : ton taux de déploiement est "
+        "archivé et comparé.",
+    ] + _deployment_lines(book.get("deployment")) + [
         "TU ES NOTÉ, ET LA NOTE EST PUBLIQUE. Chaque décision est archivée puis "
         "comparée : le REGISTRE garde tes ordres acceptés ET tes REFUS avec "
         "leur motif ; un score de DISCIPLINE mesure le respect de ta propre "

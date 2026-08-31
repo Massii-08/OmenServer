@@ -6237,8 +6237,8 @@ def test_the_daily_pass_never_raises(tmp_path, monkeypatch):
 
 def test_coach_book_rend_les_cinq_cles_sur_un_compte_neuf(tmp_path, monkeypatch):
     """La forme EXACTE que ``llm.coach_actions_block`` consomme, sur un compte
-    tout neuf — et rien ne lève. ``candidates`` (LOT 4bis) rejoint les quatre
-    clés historiques."""
+    tout neuf — et rien ne lève. ``candidates`` (LOT 4bis) puis ``deployment``
+    (LOT 9) rejoignent les quatre clés historiques."""
     c, market = make_client(tmp_path, monkeypatch)
     # LOT 8b : le pool européen permanent est TOUJOURS candidat -- vider le
     # faux marché isole ici la forme des 5 clés de la question du contenu de
@@ -6246,7 +6246,11 @@ def test_coach_book_rend_les_cinq_cles_sur_un_compte_neuf(tmp_path, monkeypatch)
     market.prices.clear()
     book = pr.coach_book()
     assert set(book) == {"cash_chf", "equity_chf", "positions", "open_orders",
-                         "candidates"}
+                         "candidates", "deployment"}
+    # LOT 9 — un compte neuf est à 100 % en trésorerie : c'est EXACTEMENT le
+    # cas que le mandat déployé vise, et le chiffre doit lui arriver.
+    assert book["deployment"] == {"cash_pct": 100.0, "n_positions": 0,
+                                  "themes_ouverts": []}
     assert book["cash_chf"] == 10000.0
     assert book["equity_chf"] == 10000.0
     assert book["positions"] == []
@@ -7630,3 +7634,28 @@ def test_guardian_pass_records_a_failure_when_the_model_does_not_answer(
     # ferait retenter toutes les 5 minutes (même doctrine que ``maybe_run``).
     state = pr.coach_trader.load_guardian_state()
     assert state["NESN.SW"]["calls_today"] == 1
+
+
+# --- 6ter) LOT 9 : le DÉPLOIEMENT chiffré arrive au prompt -----------------
+
+def test_contexte_de_passe_porte_le_deploiement_chiffre(tmp_path, monkeypatch):
+    """« On ne peut pas rester à attendre » : le contexte de la passe doit
+    porter cash_pct/n_positions/themes_ouverts, sans quoi le mandat déployé
+    demanderait au modèle de compter lui-même."""
+    make_client(tmp_path, monkeypatch)
+    portfolio = pr._ensure_coach_account()
+    ctx = pr._coach_pass_context(portfolio, "2026-08-31T15:00:00+00:00")
+    assert ctx["deployment"]["cash_pct"] == 100.0
+    assert ctx["deployment"]["n_positions"] == 0
+    assert ctx["deployment"]["themes_ouverts"] == []
+
+
+def test_contexte_de_passe_nomme_les_themes_deja_engages(tmp_path, monkeypatch):
+    make_client(tmp_path, monkeypatch)
+    portfolio = pr._ensure_coach_account()
+    portfolio.positions.append(pr.models.Position(
+        symbol="DAL", qty=100, avg_price=40.0, currency="USD", fx_rate=1.0,
+        side="short", thesis="kérosène après le blocage d'Ormuz"))
+    ctx = pr._coach_pass_context(portfolio, "2026-08-31T15:00:00+00:00")
+    assert ctx["deployment"]["themes_ouverts"] == [
+        "DAL (short) — kérosène après le blocage d'Ormuz"]
