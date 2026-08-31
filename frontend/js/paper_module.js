@@ -3862,6 +3862,11 @@ const PaperModule = {
             // Un ordre LIMITE de VENTE, c'est l'objectif de la ligne rendu
             // exécutable : on le dit, sinon la table ne montre qu'un prix.
             const isTarget = (String(o && o.kind) === 'limit' && String(o && o.side) === 'sell');
+            // LOT 9 — une EMBUSCADE : une ENTRÉE armée sur un niveau, que le
+            // moteur exécutera tout seul quand le cours le franchira, nuit
+            // comprise. Le stop de PROTECTION d'une ligne, lui, ne vit jamais
+            // ici (il est sur la position) : le sens suffit à les distinguer.
+            const isAmbush = this._ctIsAmbush(o);
             return '<tr>' +
                 '<td style="' + td + 'font-weight:600;">' + esc(String((o && o.symbol) || '')) + '</td>' +
                 '<td style="' + td + '">' + esc(this._sideLabel(o && o.side)) + '</td>' +
@@ -3869,18 +3874,59 @@ const PaperModule = {
                   (isTarget
                     ? ' <span class="badge online">' + esc(Lang.t('paper.ct_order_target')) +
                       '</span>' : '') +
+                  (isAmbush
+                    ? ' <span class="badge warn">' + esc(Lang.t('paper.ct_order_ambush')) +
+                      '</span>' : '') +
                 '</td>' +
                 '<td style="' + td + this._mono + '">' +
                   esc(this._num(this._n(o && o.qty), 0)) + '</td>' +
                 '<td style="' + td + this._mono + '">' +
                   esc(this._num(this._n(this._pickField(o, ['limit_price', 'stop_price'])), 2)) +
                 '</td>' +
+                '<td style="' + td + 'font-size:12px;color:var(--text-muted);">' +
+                  this._ctAmbushPlan(o) + '</td>' +
             '</tr>';
         }).join('');
         return this._card(head + this._table([
             Lang.t('paper.col_symbol'), Lang.t('paper.col_side'), Lang.t('paper.col_kind'),
-            Lang.t('paper.col_qty'), Lang.t('paper.col_price'),
+            Lang.t('paper.col_qty'), Lang.t('paper.col_price'), Lang.t('paper.ct_col_plan'),
         ], body));
+    },
+
+    // Une EMBUSCADE = un ordre à SEUIL dont le sens OUVRE une ligne. Le même
+    // Le meme kind 'stop' porte par un sell/cover serait une SORTIE — le
+    // mandat du coach ne sait pas en armer, mais l'écran ne doit pas mentir
+    // si un jour il en existe une.
+    _ctIsAmbush(o) {
+        const kind = String((o && o.kind) || '').toLowerCase();
+        const side = String((o && o.side) || '').toLowerCase();
+        return kind === 'stop' && (side === 'buy' || side === 'short');
+    },
+
+    // Le PLAN complet d'une embuscade, en une ligne : le niveau qui la
+    // déclenche, le stop et l'objectif qui l'attendent de l'autre côté, et sa
+    // date de péremption. Sans ça, la table ne montrerait qu'un prix nu — et
+    // c'est justement le plan qui distingue un piège armé d'un pari en l'air.
+    _ctAmbushPlan(o) {
+        if (!this._ctIsAmbush(o)) return '';
+        const bits = [];
+        const trig = this._n(o && o.stop_price);
+        const stop = this._n(o && o.stop_loss);
+        const target = this._n(o && o.target);
+        if (trig !== null) {
+            bits.push(Lang.t('paper.ct_ambush_trigger') + ' ' + this._num(trig, 2));
+        }
+        if (stop !== null) {
+            bits.push(Lang.t('paper.ct_ambush_stop') + ' ' + this._num(stop, 2));
+        }
+        if (target !== null) {
+            bits.push(Lang.t('paper.ct_ambush_target') + ' ' + this._num(target, 2));
+        }
+        const expires = String((o && o.expires_at) || '').slice(0, 10);
+        if (expires) {
+            bits.push(Lang.t('paper.ct_ambush_expires') + ' ' + expires);
+        }
+        return esc(bits.join(' · '));
     },
 
     // --- Le registre : ce qu'il a fait ET ce qu'on lui a refusé -------------

@@ -7875,3 +7875,18 @@ def test_retirer_une_embuscade_ne_touche_PAS_l_objectif_d_une_ligne(
         [{"action": "cancel_pending", "symbol": "NESN.SW"}], source="daily")
     assert rows[0]["reason"] == "no_pending"
     assert len(coach_portfolio()["open_orders"]) == 1
+
+
+def test_l_api_expose_le_PLAN_de_l_embuscade(tmp_path, monkeypatch):
+    """L'écran affiche sens, niveau, stop, objectif et échéance : si l'API ne
+    les livrait pas, la carte « ordres en attente » montrerait un prix nu."""
+    c, _ = make_client(tmp_path, monkeypatch)
+    pr.execute_coach_actions([coach_ambush()], source="daily")
+    orders = c.get("/api/paper/coach-trader").json()["portfolio"]["open_orders"]
+    assert len(orders) == 1
+    armed = orders[0]
+    for field in ("side", "kind", "stop_price", "stop_loss", "target",
+                  "expires_at", "source"):
+        assert field in armed, field
+    assert armed["kind"] == "stop" and armed["stop_price"] == 110.0
+    assert armed["target"] == 130.0 and armed["expires_at"]
