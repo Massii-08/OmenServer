@@ -78,6 +78,25 @@ def _buy(**over):
 # Constantes — le contrat que les tâches 2 à 4 consomment
 # --------------------------------------------------------------------------- #
 
+def test_tradable_now_treats_a_naive_timestamp_as_local_rome(tmp_path=None):
+    """VECU (31/08 14:00) : le coach a shorte UAL a 14:00 heure de Rome, NYSE
+    fermee — le naif etait relu comme UTC puis reconverti (+2 h fantomes).
+    Convention maison (LOT 4) : un horodatage NAIF est DEJA en heure locale."""
+    assert coach_trader.tradable_now("UAL", "2026-08-31T14:00:30") is False
+    assert coach_trader.tradable_now("UAL", "2026-08-31T16:00:00") is True
+    assert coach_trader.tradable_now("UAL", "2026-08-31T21:56:00") is False
+    assert coach_trader.tradable_now("NESN.SW", "2026-08-31T10:00:00") is True
+    assert coach_trader.tradable_now("NESN.SW", "2026-08-31T14:05:00") is True
+    assert coach_trader.tradable_now("NESN.SW", "2026-08-31T17:30:00") is False
+
+
+def test_tradable_now_converts_an_aware_timestamp_properly():
+    """Un horodatage AWARE, lui, se convertit : 12:00 UTC = 14:00 Rome (ferme
+    pour les US), 14:00 UTC = 16:00 Rome (ouvert)."""
+    assert coach_trader.tradable_now("UAL", "2026-08-31T12:00:00+00:00") is False
+    assert coach_trader.tradable_now("UAL", "2026-08-31T14:00:00+00:00") is True
+
+
 def test_constants_are_the_announced_contract():
     assert coach_trader.COACH_USERNAME == "coach"
     assert coach_trader.COACH_CAPITAL == 10000.0
@@ -774,8 +793,13 @@ def test_pass_due_when_the_last_run_is_unreadable(last):
     assert coach_trader.pass_due(FRIDAY_ON_TIME, last) is True
 
 
-def test_pass_due_accepts_a_naive_now_as_utc():
-    assert coach_trader.pass_due(datetime(2026, 8, 28, 15, 0), None) is True
+def test_pass_due_accepts_a_naive_now_as_local_rome():
+    """Convention maison depuis le 31/08 : un naif est DEJA de l'heure locale
+    (l'ancienne tolerance naif=UTC a fait shorter UAL a 14:00, NYSE fermee).
+    pass_due garde son seuil legacy >=17h locale (l'ecran s'en sert) :
+    15:00 locale -> pas due ; 18:00 locale -> due."""
+    assert coach_trader.pass_due(datetime(2026, 8, 28, 15, 0), None) is False
+    assert coach_trader.pass_due(datetime(2026, 8, 28, 18, 0), None) is True
     assert coach_trader.pass_due(datetime(2026, 8, 28, 14, 59), None) is False
 
 

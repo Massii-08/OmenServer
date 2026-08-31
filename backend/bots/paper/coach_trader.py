@@ -820,7 +820,35 @@ def _aware_utc(now: Any) -> datetime:
 
 
 def _local(now: Any) -> datetime:
+    """L'instant en heure de Rome — convention MAISON (LOT 4) : un horodatage
+    NAÏF est DÉJÀ de l'heure locale (tout le simulateur parle en naïf local),
+    seul un horodatage AWARE se convertit. VÉCU (31/08 14:00) : relire le naïf
+    comme de l'UTC ajoutait +2 h fantômes → le coach a shorté UAL à 14:00,
+    NYSE fermée, sur le cours figé de vendredi."""
+    if isinstance(now, datetime) and now.tzinfo is None:
+        return now.replace(tzinfo=ZoneInfo(LOCAL_TZ))
+    if isinstance(now, str):
+        parsed = _parse_iso_naive_as_local(now)
+        if parsed is not None:
+            return parsed.replace(tzinfo=ZoneInfo(LOCAL_TZ))
     return _aware_utc(now).astimezone(ZoneInfo(LOCAL_TZ))
+
+
+def _parse_iso_naive_as_local(value: str) -> Optional[datetime]:
+    """Chaîne ISO NAÏVE -> datetime naïf (déjà local) ; aware/illisible -> None
+    (l'appelant retombe sur la conversion _aware_utc)."""
+    raw = value.strip()
+    if not raw:
+        return None
+    if raw[-1] in ("Z", "z"):
+        return None
+    try:
+        parsed = datetime.fromisoformat(raw)
+    except ValueError:
+        return None
+    if parsed.tzinfo is not None:
+        return None
+    return parsed
 
 
 def _parse_iso(value: Any) -> Optional[datetime]:
