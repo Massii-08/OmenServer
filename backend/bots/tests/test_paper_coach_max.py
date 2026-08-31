@@ -96,7 +96,9 @@ def test_the_action_contract_now_carries_both_directions():
     assert coach_trader.ENTRY_ACTIONS == ("buy", "short")
     assert coach_trader.EXIT_ACTIONS == ("sell", "reduce", "cover")
     assert coach_trader.ACTION_KINDS == ("buy", "short", "sell", "reduce",
-                                         "cover", "adjust_stop")
+                                         "cover", "adjust_stop",
+                                         # LOT 9 — retirer une EMBUSCADE armée.
+                                         "cancel_pending")
 
 
 def test_the_new_reject_codes_are_declared():

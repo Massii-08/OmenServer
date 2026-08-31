@@ -922,6 +922,20 @@ def run_tick(portfolio: models.Portfolio, now_iso: str,
     for order in list(portfolio.open_orders):
         if order.status != "open":
             continue
+        # LOT 9 — la PÉREMPTION d'une embuscade, avant même de chercher un
+        # cours : un piège armé il y a trois semaines s'est armé sur un marché
+        # qui n'existe plus. Seuls les ordres qui PORTENT une date sont
+        # concernés (les objectifs limite d'une ligne ouverte n'en ont pas :
+        # ils vivent aussi longtemps que la position).
+        if coach_trader.is_expired(order.to_dict(), now_iso):
+            order.status = "cancelled"
+            cancelled.append({"order_id": order.id, "symbol": order.symbol,
+                              "reason": "expired",
+                              "trigger": order.stop_price,
+                              "source": order.source})
+            portfolio.open_orders = [o for o in portfolio.open_orders
+                                     if o is not order]
+            continue
         candles = candles_for(order.symbol)
         if not candles:
             continue
@@ -949,6 +963,13 @@ def run_tick(portfolio: models.Portfolio, now_iso: str,
                 order.status = "filled"
                 fill["order_id"] = order.id
                 _attach_trade_extras(portfolio, fill, username)
+                # LOT 9 — une EMBUSCADE qui part ouvre une ligne : son
+                # objectif doit devenir exécutable À CET INSTANT, comme pour
+                # une entrée directe. Personne n'est là pour le poser après
+                # coup — le piège peut partir la nuit.
+                if order.kind == "stop":
+                    _append_target_order(portfolio, order, order.target,
+                                         order.qty, now_iso)
                 filled.append(fill)
             portfolio.open_orders = [o for o in portfolio.open_orders if o is not order]
             break
@@ -1567,6 +1588,33 @@ def _coach_reject_detail(code: str, decision: Dict[str, Any],
             floor = equity * coach_trader.MIN_CASH_PCT / 100.0
             return ("resterait %.2f CHF, sous le plancher de %.0f%% (%.2f CHF)"
                     % (left, coach_trader.MIN_CASH_PCT, floor))
+        if code == "bad_kind":
+            return ("forme d'ordre inconnue : %s (seuls « market » et « stop » "
+                    "existent, et un « stop » n'arme qu'une ENTRÉE)"
+                    % (str(decision.get("kind") or "") or "(absente)"))
+        if code == "bad_trigger":
+            trig = _num(decision.get("trigger"))
+            if trig is None:
+                return "embuscade sans niveau de déclenchement"
+            sens = ("au-dessus" if str(decision.get("action") or "").lower()
+                    == "buy" else "en dessous")
+            return ("niveau %.2f du mauvais côté du cours %.2f — une embuscade "
+                    "s'arme %s, sinon elle part au premier passage"
+                    % (trig, quote["price"] if quote else 0.0, sens))
+        if code == "too_many_pending":
+            return ("%d embuscades déjà armées (plafond %d) — retires-en une "
+                    "avant d'en poser une autre"
+                    % (len(coach_trader.pending_ambushes(portfolio.to_dict())),
+                       coach_trader.MAX_PENDING))
+        if code == "pending_risk_high":
+            armed = coach_trader.pending_ambushes(portfolio.to_dict())
+            deja = sum(abs(float(o.get("risk_chf") or 0.0)) for o in armed)
+            return ("%.2f CHF de risque déjà armé sur %d embuscade(s) — si "
+                    "elles partaient toutes, le cumul dépasserait le plafond "
+                    "de %.0f%% de l'équité"
+                    % (deja, len(armed), coach_trader.MAX_PENDING_RISK_PCT))
+        if code == "no_pending":
+            return "aucune embuscade armée sur %s" % symbol
         if code == "no_position":
             return "aucune position sur %s" % symbol
         if code == "qty_over_position":
@@ -1613,6 +1661,46 @@ def _push_coach_ledger(entries: List[Dict[str, Any]]) -> None:
         store.save_ledger(coach_trader.COACH_USERNAME, rows)
     except (ValueError, OSError) as e:
         logger.warning("paper coach: registre non persisté: %s", e)
+
+
+def _append_target_order(portfolio: models.Portfolio, order: models.Order,
+                         target: Optional[float], qty: int,
+                         now_iso: str) -> None:
+    """Rend l'OBJECTIF exécutable, en posant l'ordre limite du RETOUR.
+
+    ``fills.check_protective_stops`` ne connaît QUE ``stop_loss`` : un
+    ``target`` posé sur une Position n'est JAMAIS exécuté mécaniquement. C'est
+    cet ordre limite en attente qui rend l'objectif réel — et c'est la PREMIÈRE
+    boucle de :func:`run_tick` qui le déclenchera. Si le stop part d'abord, la
+    position n'existe plus : l'ordre échouera proprement en ``cancelled`` au
+    tick suivant (comportement déjà géré par ``run_tick``).
+
+    ⚠️ Le sens du RETOUR dépend de celui de l'aller (LOT 5) : l'objectif d'une
+    vente à découvert se prend en RACHETANT sous le prix. Poser un ``sell`` de
+    plus doublerait l'exposition au lieu de la fermer — et il serait refusé,
+    faute de ligne longue à vendre.
+
+    LOT 9 — appelé depuis DEUX endroits : l'entrée directe du coach, et le
+    tick quand une EMBUSCADE part (des heures plus tard, sans personne). Un
+    piège dont l'objectif ne serait pas posé au moment du déclenchement
+    laisserait une ligne sans sortie planifiée.
+    """
+    if order.side not in ("buy", "short") or target is None or target <= 0:
+        return
+    portfolio.open_orders.append(models.Order(
+        id=uuid.uuid4().hex,
+        symbol=order.symbol,
+        side=("sell" if order.side == "buy" else "cover"),
+        kind="limit",
+        qty=qty,
+        limit_price=target,
+        created_at=now_iso,
+        status="open",
+        thesis=order.thesis,
+        currency=order.currency,
+        fee_profile=portfolio.fee_profile,
+        source=order.source,
+    ))
 
 
 def _coach_execute_one(portfolio: models.Portfolio, action: Dict[str, Any],
@@ -1671,6 +1759,18 @@ def _coach_execute_one(portfolio: models.Portfolio, action: Dict[str, Any],
     if plan.get("side") == "adjust_stop":
         return (_coach_move_stop(portfolio, symbol, plan, source, now_iso), None)
 
+    # LOT 9 — retirer une EMBUSCADE armée. Comme ``adjust_stop`` : rien ne
+    # s'échange, aucune trésorerie ne bouge, c'est une consigne au carnet.
+    if plan.get("side") == "cancel_pending":
+        return (_coach_cancel_ambush(portfolio, symbol, source, now_iso), None)
+
+    # LOT 9 — ARMER une embuscade : on n'exécute RIEN maintenant, on POSE un
+    # ordre que le tick déclenchera au franchissement du niveau. C'est la
+    # réponse à « on ne peut pas rester à attendre » : le coach cesse de
+    # re-juger passivement le même niveau à chaque passe.
+    if plan.get("kind") == "stop":
+        return (_coach_arm_ambush(portfolio, plan, quote, source, now_iso), None)
+
     order = models.Order(
         id=uuid.uuid4().hex,
         symbol=plan.get("symbol") or symbol,
@@ -1727,26 +1827,93 @@ def _coach_execute_one(portfolio: models.Portfolio, action: Dict[str, Any],
     # d'une vente à découvert se prend en RACHETANT sous le prix. Poser un
     # ``sell`` de plus doublerait l'exposition au lieu de la fermer — et il
     # serait refusé, faute de ligne longue à vendre.
-    target = _num(plan.get("target"))
-    if order.side in ("buy", "short") and target is not None and target > 0:
-        portfolio.open_orders.append(models.Order(
-            id=uuid.uuid4().hex,
-            symbol=order.symbol,
-            side=("sell" if order.side == "buy" else "cover"),
-            kind="limit",
-            qty=qty,
-            limit_price=target,
-            created_at=now_iso,
-            status="open",
-            thesis=order.thesis,
-            currency=order.currency,
-            fee_profile=portfolio.fee_profile,
-        ))
+    _append_target_order(portfolio, order, _num(plan.get("target")), qty, now_iso)
 
     entry = coach_trader.ledger_entry(
         now_iso, source, kind, order.symbol, True,
         detail="%d x %.2f %s" % (qty, price, order.currency))
     return entry, _coach_journal_entry(order, fill, source)
+
+
+def _coach_arm_ambush(portfolio: models.Portfolio, plan: Dict[str, Any],
+                      quote: Dict[str, Any], source: str,
+                      now_iso: str) -> Dict[str, Any]:
+    """ARME une embuscade — l'entrée déclenchée par NIVEAU. MUTE ``portfolio``.
+
+    Le garde-fou a DÉJÀ tout tranché À L'ARMEMENT (:func:`coach_trader.
+    gate_decision`) : le niveau est du bon côté du cours, le stop protège
+    l'entrée qui aura lieu AU TRIGGER, le risque tient sous le plafond, la
+    taille aussi, le cap de pièges n'est pas dépassé. Il ne reste qu'à écrire
+    l'ordre là où le moteur le relira — dans ``open_orders``, sous la forme
+    que ``fills.try_fill`` connaît DÉJÀ (``kind="stop"`` + ``stop_price``) :
+    le STOP-ENTRY n'a pas été inventé ici, il existait dans le moteur depuis
+    le premier lot, c'est le MANDAT qui ne savait pas s'en servir.
+
+    Rien n'est payé, rien n'est vendu : un piège armé n'immobilise aucune
+    trésorerie tant qu'il n'est pas parti (c'est le moteur d'ordres qui aura
+    le dernier mot le jour où il partira — trésorerie insuffisante ->
+    ``OrderError`` -> annulation propre par le tick).
+    """
+    trigger = _num(plan.get("trigger"))
+    stop_loss = _num(plan.get("stop_loss"))
+    qty = int(plan.get("qty") or 0)
+    fx_rate = float(quote["fx_rate"])
+    symbol = plan.get("symbol") or ""
+    order = models.Order(
+        id=uuid.uuid4().hex,
+        symbol=symbol,
+        side=plan.get("side") or "buy",
+        kind="stop",
+        qty=qty,
+        stop_price=trigger,
+        created_at=now_iso,
+        status="open",
+        thesis=str(plan.get("thesis") or ""),
+        stop_loss=stop_loss,
+        target=plan.get("target"),
+        # Le risque PLANIFIÉ se mesure trigger -> stop, jamais cours -> stop :
+        # c'est à 110 que l'entrée aura lieu. Il est figé ICI, avec le taux de
+        # change DU MOMENT — c'est lui que le garde-fou relira pour juger le
+        # risque CUMULÉ des pièges armés (l'ordre persisté ne porte pas son fx).
+        risk_chf=planned_risk_chf(trigger, stop_loss, qty, fx_rate),
+        currency=quote["currency"],
+        fee_profile=portfolio.fee_profile,
+        setup=str(plan.get("setup") or ""),
+        emotion=str(plan.get("emotion") or ""),
+        expires_at=coach_trader.market_days_after(now_iso),
+        source=source,
+    )
+    portfolio.open_orders.append(order)
+    sens = "au-dessus de" if order.side == "buy" else "sous"
+    return coach_trader.ledger_entry(
+        now_iso, source, "arm_ambush", symbol, True,
+        detail=("embuscade armée : %d x %s si le cours passe %s %.2f %s "
+                "(stop %s, échéance %s)"
+                % (qty, symbol, sens, trigger or 0.0, order.currency,
+                   ("%.2f" % stop_loss) if stop_loss is not None else "?",
+                   (order.expires_at or "?")[:10])))
+
+
+def _coach_cancel_ambush(portfolio: models.Portfolio, symbol: str,
+                         source: str, now_iso: str) -> Dict[str, Any]:
+    """Retire les EMBUSCADES armées sur ce symbole. MUTE ``portfolio``.
+
+    Le garde-fou a déjà vérifié qu'il y en a au moins une (``no_pending``
+    sinon) : un « annulé » au registre pour un geste qui n'a rien fait serait
+    une trace mensongère. On ne touche JAMAIS aux ordres limite d'objectif —
+    ce ne sont pas des embuscades, et les retirer laisserait une position
+    ouverte sans sortie planifiée, en silence.
+    """
+    doomed = [o for o in portfolio.open_orders
+              if o.kind == "stop" and o.side in coach_trader.ENTRY_ACTIONS
+              and o.symbol == symbol and o.status == "open"]
+    for order in doomed:
+        order.status = "cancelled"
+    portfolio.open_orders = [o for o in portfolio.open_orders
+                             if o not in doomed]
+    return coach_trader.ledger_entry(
+        now_iso, source, "cancel_pending", symbol, True,
+        detail="%d embuscade(s) retirée(s) sur %s" % (len(doomed), symbol))
 
 
 def _coach_move_stop(portfolio: models.Portfolio, symbol: str,
@@ -1941,10 +2108,61 @@ def tick_coach_account(now_iso: Optional[str] = None) -> Dict[str, Any]:
     def fetch_candles(symbol: str) -> List[Dict[str, Any]]:
         return quotes.get_candles(symbol, TICK_RANGE, TICK_INTERVAL)
 
+    # LOT 9 — la photo des EMBUSCADES ARMÉES *avant* le tick. Sans elle, on ne
+    # saurait plus, après coup, qu'un fill vient d'un piège : l'ordre a été
+    # retiré de ``open_orders`` en s'exécutant. On ne pollue pas pour autant le
+    # contrat de ``run_tick`` (partagé avec les humains) — le croisement se
+    # fait ici, par ``order_id``.
+    armed = {o.id: o for o in portfolio.open_orders
+             if o.kind == "stop" and o.side in coach_trader.ENTRY_ACTIONS}
+
     result = run_tick(portfolio, now, fetch_candles, quotes.fx_to_chf, username)
     _save(username, portfolio)
+    _push_coach_ledger(_ambush_ledger_rows(armed, result, now))
     _sync_coach(username, portfolio.to_dict())
     return result
+
+
+def _ambush_ledger_rows(armed: Dict[str, models.Order],
+                        result: Dict[str, List[Dict[str, Any]]],
+                        now_iso: str) -> List[Dict[str, Any]]:
+    """Les lignes de registre que le TICK doit archiver (LOT 9).
+
+    Personne n'est là quand un piège part ou périme — la nuit, le week-end.
+    Le registre est la SEULE trace, et il crédite la PASSE QUI L'AVAIT ARMÉ
+    (``order.source``) : c'est bien cette décision-là qui a produit
+    l'exécution, des heures ou des jours plus tard. Inventer une source
+    (« daily ») falsifierait la trace ; en créer une nouvelle ferait mentir
+    ``coach_trader.SOURCES``.
+
+    Best-effort de forme : un piège dont on ne retrouve pas l'origine sort
+    sous sa source vide plutôt que de faire échouer le tick.
+    """
+    rows: List[Dict[str, Any]] = []
+    for fill in result.get("fills") or []:
+        order = armed.get(fill.get("order_id"))
+        if order is None:
+            continue
+        rows.append(coach_trader.ledger_entry(
+            now_iso, order.source, "ambush_filled", order.symbol, True,
+            detail=("embuscade déclenchée : %d x %s à %.2f %s (niveau %s)"
+                    % (order.qty, order.symbol,
+                       float(fill.get("price") or 0.0), order.currency,
+                       ("%.2f" % order.stop_price)
+                       if order.stop_price is not None else "?"))))
+    for row in result.get("cancelled") or []:
+        order = armed.get(row.get("order_id"))
+        if order is None or row.get("reason") != "expired":
+            continue
+        rows.append(coach_trader.ledger_entry(
+            now_iso, order.source, "ambush_expired", order.symbol, False,
+            reason="expired",
+            detail=("embuscade périmée sans être touchée : niveau %s jamais "
+                    "franchi en %d jours de marché"
+                    % (("%.2f" % order.stop_price)
+                       if order.stop_price is not None else "?",
+                       coach_trader.AMBUSH_MARKET_DAYS))))
+    return rows
 
 
 def _snapshot_usernames() -> List[str]:

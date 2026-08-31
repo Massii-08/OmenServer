@@ -102,7 +102,8 @@ def test_constants_are_the_announced_contract():
     assert coach_trader.COACH_CAPITAL == 10000.0
     assert coach_trader.ACTIONS_MARKER == "COACH_ACTIONS"
     assert coach_trader.ACTION_KINDS == ("buy", "short", "sell", "reduce",
-                                         "cover", "adjust_stop")
+                                         "cover", "adjust_stop",
+                                         "cancel_pending")
     assert coach_trader.LOCAL_TZ == "Europe/Rome"
     assert coach_trader.STATE_NAME == "coach_trader.state.json"
     assert coach_trader.MAX_LEDGER == 200
@@ -124,9 +125,13 @@ def test_every_reject_code_is_declared():
         "wrong_side", "stop_widen", "market_closed",
         # LOT 8 — hors du périmètre du gardien.
         "out_of_scope",
+        # LOT 9 — les EMBUSCADES : forme de l'ordre, niveau d'armement, cap,
+        # risque cumulé des pièges, annulation d'un piège inexistant.
+        "bad_kind", "bad_trigger", "too_many_pending", "pending_risk_high",
+        "no_pending",
     }
     assert set(coach_trader.REJECT_CODES) == expected
-    assert len(coach_trader.REJECT_CODES) == 18
+    assert len(coach_trader.REJECT_CODES) == 23
 
 
 def test_coach_username_survives_the_store_allowlist():
@@ -314,6 +319,9 @@ def test_gate_accepts_a_nominal_buy():
     assert out["reason"] is None
     assert out["order"] == {
         "symbol": "NESN.SW", "side": "buy", "kind": "market", "qty": 20,
+        # LOT 9 — la forme de l'ordre voyage désormais dans le plan :
+        # ``market`` (immédiat) ou ``stop`` (EMBUSCADE armée sur ``trigger``).
+        "trigger": None,
         "thesis": THESIS, "stop_loss": 95.0, "target": 130.0,
         "setup": "breakout", "emotion": "calme",
     }
@@ -1728,3 +1736,292 @@ def test_deployment_view_ligne_sans_these_reste_nommee():
          "positions": [{"symbol": "AAPL", "side": "long", "qty": 5,
                         "avg_price": 100.0}]})
     assert view["themes_ouverts"] == ["AAPL (long) — (sans thèse écrite)"]
+
+
+# =========================================================================== #
+# LOT 9 — LES ORDRES D'EMBUSCADE : l'entrée déclenchée par NIVEAU.
+#
+# Le vrai « ne plus attendre » : au lieu de guetter passivement « une clôture
+# sous la SMA50 » à chaque passe, le coach ARME un ordre. Le moteur exécute à
+# la minute où le niveau casse, nuit comprise.
+#
+# Le gate valide le plan COMPLET À L'ARMEMENT — un piège mal armé est refusé
+# comme un ordre direct.
+# =========================================================================== #
+
+def _piege(**over):
+    """Une embuscade LONGUE : « achète si ça casse 110 par le haut »."""
+    base = {"action": "buy", "symbol": "NESN.SW", "qty": 20, "kind": "stop",
+            "trigger": 110.0, "stop": 104.0, "target": 130.0,
+            "thesis": THESIS, "setup": "breakout"}
+    base.update(over)
+    return base
+
+
+def _armee(symbol="AAPL", side="buy", trigger=110.0, qty=10,
+           risk_chf=50.0, stop_loss=104.0):
+    """Une embuscade DÉJÀ armée, telle qu'elle vit dans ``open_orders``."""
+    return {"id": symbol.lower(), "symbol": symbol, "side": side,
+            "kind": "stop", "qty": qty, "stop_price": trigger,
+            "status": "open", "stop_loss": stop_loss, "risk_chf": risk_chf,
+            "expires_at": "2026-09-07T12:00:00+00:00", "source": "daily"}
+
+
+def test_les_nouvelles_constantes_des_embuscades():
+    assert coach_trader.MAX_PENDING == 4
+    assert coach_trader.MAX_PENDING_RISK_PCT == 4.0
+    assert coach_trader.AMBUSH_MARKET_DAYS == 5
+    assert "cancel_pending" in coach_trader.ACTION_KINDS
+
+
+def test_les_cinq_codes_de_refus_des_embuscades_sont_declares():
+    for code in ("bad_kind", "bad_trigger", "too_many_pending",
+                 "pending_risk_high", "no_pending"):
+        assert code in coach_trader.REJECT_CODES
+
+
+# --- armement : le cas nominal -------------------------------------------- #
+
+def test_une_embuscade_longue_bien_armee_passe():
+    verdict = coach_trader.gate_decision(_piege(), _pf(), _quote(100.0))
+    assert verdict["accepted"] is True
+    order = verdict["order"]
+    assert order["kind"] == "stop"
+    assert order["trigger"] == 110.0
+    assert order["side"] == "buy"
+    assert order["stop_loss"] == 104.0
+
+
+def test_une_embuscade_courte_bien_armee_passe():
+    """« Shorte si ça casse 90 par le bas » — stop AU-DESSUS du trigger."""
+    piege = _piege(action="short", trigger=90.0, stop=96.0, target=70.0)
+    verdict = coach_trader.gate_decision(piege, _pf(), _quote(100.0))
+    assert verdict["accepted"] is True
+    assert verdict["order"]["side"] == "short"
+    assert verdict["order"]["trigger"] == 90.0
+
+
+def test_un_ordre_direct_reste_au_marche_et_sans_trigger():
+    order = coach_trader.gate_decision(_buy(), _pf(), _quote(100.0))["order"]
+    assert order["kind"] == "market"
+    assert order["trigger"] is None
+
+
+# --- armement : chaque refus ---------------------------------------------- #
+
+def test_un_kind_invente_est_refuse_jamais_degrade_en_marche():
+    """Doctrine du module : on REJETTE, on ne rogne pas en silence. Servir un
+    ordre au marché à qui a demandé une limite serait exactement ça."""
+    verdict = coach_trader.gate_decision(_piege(kind="limit"), _pf(),
+                                         _quote(100.0))
+    assert verdict == {"accepted": False, "reason": "bad_kind", "order": None}
+
+
+def test_une_sortie_ne_s_arme_pas():
+    decision = {"action": "sell", "symbol": "NESN.SW", "qty": 5, "kind": "stop",
+                "trigger": 90.0}
+    verdict = coach_trader.gate_decision(decision, _pf(
+        positions=[_pos("NESN.SW", qty=10, avg_price=100.0)]), _quote(100.0))
+    assert verdict["reason"] == "bad_kind"
+
+
+def test_une_embuscade_sans_trigger_est_refusee():
+    verdict = coach_trader.gate_decision(_piege(trigger=None), _pf(),
+                                         _quote(100.0))
+    assert verdict["reason"] == "bad_trigger"
+
+
+def test_une_embuscade_longue_armee_SOUS_le_cours_est_refusee():
+    """Un piège du mauvais côté partirait au premier tick : ce n'est pas une
+    embuscade, c'est un ordre au marché déguisé."""
+    verdict = coach_trader.gate_decision(_piege(trigger=95.0), _pf(),
+                                         _quote(100.0))
+    assert verdict["reason"] == "bad_trigger"
+
+
+def test_une_embuscade_courte_armee_AU_DESSUS_du_cours_est_refusee():
+    piege = _piege(action="short", trigger=105.0, stop=112.0)
+    verdict = coach_trader.gate_decision(piege, _pf(), _quote(100.0))
+    assert verdict["reason"] == "bad_trigger"
+
+
+def test_une_embuscade_sans_these_est_refusee():
+    verdict = coach_trader.gate_decision(_piege(thesis="court"), _pf(),
+                                         _quote(100.0))
+    assert verdict["reason"] == "no_thesis"
+
+
+def test_le_stop_d_une_embuscade_s_evalue_contre_le_TRIGGER_pas_le_cours():
+    """Stop à 106 : sous le cours (100 ? non, au-dessus) — mais surtout SOUS le
+    trigger de 110, donc il protège bien l'entrée qui aura lieu à 110."""
+    verdict = coach_trader.gate_decision(_piege(stop=106.0), _pf(),
+                                         _quote(100.0))
+    assert verdict["accepted"] is True
+
+
+def test_un_stop_au_dessus_du_trigger_d_une_embuscade_longue_est_refuse():
+    verdict = coach_trader.gate_decision(_piege(stop=112.0), _pf(),
+                                         _quote(100.0))
+    assert verdict["reason"] == "no_stop"
+
+
+def test_le_risque_d_une_embuscade_se_calcule_sur_trigger_moins_stop():
+    """20 x (110 - 104) = 120 CHF, soit 1,2 % — ça passe. Mesuré contre le
+    COURS (100) il n'aurait valu que 0,8 % : la mesure serait FAUSSE, et le
+    piège partirait à 110 avec un risque non contrôlé."""
+    assert coach_trader.gate_decision(_piege(), _pf(), _quote(100.0))["accepted"]
+    # 20 x (110 - 99) = 220 CHF = 2,2 % > 2 % -> refusé.
+    verdict = coach_trader.gate_decision(_piege(stop=99.0), _pf(), _quote(100.0))
+    assert verdict["reason"] == "risk_high"
+
+
+def test_la_taille_d_une_embuscade_se_mesure_au_TRIGGER():
+    """8 x 110 = 880 CHF = 8,8 % < plancher de 10 % -> trop petit."""
+    verdict = coach_trader.gate_decision(_piege(qty=8, stop=107.0), _pf(),
+                                         _quote(100.0))
+    assert verdict["reason"] == "too_small"
+
+
+def test_une_embuscade_qui_depasserait_la_concentration_est_refusee():
+    verdict = coach_trader.gate_decision(_piege(qty=30, stop=109.0), _pf(),
+                                         _quote(100.0))
+    assert verdict["reason"] == "oversize"
+
+
+# --- les garde-fous PROPRES aux embuscades -------------------------------- #
+
+def test_le_cinquieme_piege_est_refuse():
+    pf = _pf()
+    pf["open_orders"] = [_armee("A"), _armee("B"), _armee("C"), _armee("D")]
+    verdict = coach_trader.gate_decision(_piege(), pf, _quote(100.0))
+    assert verdict["reason"] == "too_many_pending"
+
+
+def test_quatre_pieges_armes_laissent_passer_le_quatrieme():
+    pf = _pf()
+    pf["open_orders"] = [_armee("A"), _armee("B"), _armee("C")]
+    assert coach_trader.gate_decision(_piege(), pf, _quote(100.0))["accepted"]
+
+
+def test_un_ordre_LIMITE_en_attente_n_est_pas_une_embuscade():
+    """Les objectifs posés par le coach vivent aussi dans ``open_orders`` — les
+    compter comme des pièges armés ferait sauter le cap au bout de 4 gains."""
+    pf = _pf()
+    pf["open_orders"] = [
+        {"id": str(i), "symbol": "X%d" % i, "side": "sell", "kind": "limit",
+         "qty": 1, "limit_price": 100.0, "status": "open"} for i in range(6)]
+    assert coach_trader.gate_decision(_piege(), pf, _quote(100.0))["accepted"]
+
+
+def test_le_risque_des_pieges_armes_est_CUMULE():
+    """Si les pièges partaient tous, le livre doit rester dans les règles :
+    3 x 150 CHF déjà armés + 120 CHF de plus = 570 CHF > 4 % de 10 000."""
+    pf = _pf()
+    pf["open_orders"] = [_armee("A", risk_chf=150.0), _armee("B", risk_chf=150.0),
+                         _armee("C", risk_chf=150.0)]
+    verdict = coach_trader.gate_decision(_piege(), pf, _quote(100.0))
+    assert verdict["reason"] == "pending_risk_high"
+
+
+def test_le_risque_cumule_ne_penalise_PAS_un_ordre_direct():
+    """Un ordre au marché est jugé sur SON risque (``risk_high``) : le coach ne
+    doit pas être empêché d'agir MAINTENANT parce qu'il a des pièges armés."""
+    pf = _pf()
+    pf["open_orders"] = [_armee("A", risk_chf=190.0), _armee("B", risk_chf=190.0)]
+    assert coach_trader.gate_decision(_buy(), pf, _quote(100.0))["accepted"]
+
+
+def test_les_pieges_armes_comptent_comme_des_FRONTS_ouverts():
+    """4 lignes tenues + 2 pièges armés = 6 fronts : le 7ᵉ est refusé."""
+    pf = _pf(positions=[_pos("P%d" % i, qty=1, avg_price=1.0) for i in range(4)])
+    pf["open_orders"] = [_armee("A"), _armee("B")]
+    verdict = coach_trader.gate_decision(_piege(), pf, _quote(100.0))
+    assert verdict["reason"] == "too_many_positions"
+
+
+def test_re_armer_le_MEME_symbole_ne_cree_pas_un_front_de_plus():
+    pf = _pf(positions=[_pos("P%d" % i, qty=1, avg_price=1.0) for i in range(5)])
+    pf["open_orders"] = [_armee("NESN.SW")]
+    assert coach_trader.gate_decision(_piege(), pf, _quote(100.0))["accepted"]
+
+
+def test_une_embuscade_s_arme_MARCHE_FERME():
+    """C'est tout l'intérêt : le piège est une consigne au CARNET, il n'exécute
+    rien maintenant. L'interdire reviendrait à ne pouvoir armer qu'aux heures
+    où l'on pourrait déjà agir directement."""
+    verdict = coach_trader.gate_decision(_piege(), _pf(), _quote(100.0),
+                                         now=SUNDAY)
+    assert verdict["accepted"] is True
+
+
+def test_un_ordre_direct_reste_refuse_marche_ferme():
+    verdict = coach_trader.gate_decision(_buy(), _pf(), _quote(100.0),
+                                         now=SUNDAY)
+    assert verdict["reason"] == "market_closed"
+
+
+# --- retirer une embuscade ------------------------------------------------ #
+
+def test_annuler_une_embuscade_existante_passe():
+    pf = _pf()
+    pf["open_orders"] = [_armee("NESN.SW")]
+    verdict = coach_trader.gate_decision(
+        {"action": "cancel_pending", "symbol": "NESN.SW"}, pf, _quote(100.0))
+    assert verdict["accepted"] is True
+    assert verdict["order"]["side"] == "cancel_pending"
+    assert verdict["order"]["qty"] == 0
+
+
+def test_annuler_une_embuscade_qui_n_existe_pas_est_refuse():
+    verdict = coach_trader.gate_decision(
+        {"action": "cancel_pending", "symbol": "NESN.SW"}, _pf(), _quote(100.0))
+    assert verdict["reason"] == "no_pending"
+
+
+def test_annuler_ne_vise_pas_un_ordre_LIMITE_d_objectif():
+    pf = _pf()
+    pf["open_orders"] = [{"id": "t", "symbol": "NESN.SW", "side": "sell",
+                          "kind": "limit", "qty": 1, "limit_price": 130.0,
+                          "status": "open"}]
+    verdict = coach_trader.gate_decision(
+        {"action": "cancel_pending", "symbol": "NESN.SW"}, pf, _quote(100.0))
+    assert verdict["reason"] == "no_pending"
+
+
+def test_annuler_une_embuscade_marche_FERME_reste_permis():
+    pf = _pf()
+    pf["open_orders"] = [_armee("NESN.SW")]
+    verdict = coach_trader.gate_decision(
+        {"action": "cancel_pending", "symbol": "NESN.SW"}, pf, _quote(100.0),
+        now=SUNDAY)
+    assert verdict["accepted"] is True
+
+
+# --- la péremption -------------------------------------------------------- #
+
+def test_cinq_jours_de_marche_sautent_le_week_end():
+    """Lundi 31/08 + 5 jours de marché = lundi 07/09 (et non samedi 05/09)."""
+    fin = coach_trader.market_days_after("2026-08-31T15:00:00+00:00", 5)
+    assert fin.startswith("2026-09-07")
+
+
+def test_la_peremption_part_d_un_vendredi_sans_compter_le_week_end():
+    fin = coach_trader.market_days_after("2026-08-28T15:00:00+00:00", 5)
+    assert fin.startswith("2026-09-04")
+
+
+def test_une_date_illisible_ne_leve_pas():
+    assert coach_trader.market_days_after("n'importe quoi", 5) == ""
+    assert coach_trader.market_days_after(None, 5) == ""
+
+
+def test_une_embuscade_est_perimee_apres_sa_date():
+    armee = _armee("A")
+    armee["expires_at"] = "2026-09-01T12:00:00+00:00"
+    assert coach_trader.is_expired(armee, "2026-09-02T09:00:00+00:00") is True
+    assert coach_trader.is_expired(armee, "2026-08-31T09:00:00+00:00") is False
+
+
+def test_un_ordre_sans_date_de_peremption_ne_perime_jamais():
+    assert coach_trader.is_expired({"symbol": "A"}, "2030-01-01T00:00:00+00:00") \
+        is False

@@ -1049,6 +1049,38 @@ def coach_actions_block(book: Any) -> str:
         "L'inaction se paie en crédibilité : ton taux de déploiement est "
         "archivé et comparé.",
     ] + _deployment_lines(book.get("deployment")) + [
+        # LOT 9 — le vrai « ne plus attendre ». Le coach écrivait « j'attends
+        # une clôture sous la SMA50 pour ouvrir un short » : une embuscade
+        # MENTALE, re-jugée passivement à chaque passe, que rien n'exécutait.
+        # Le moteur savait faire le stop-entry depuis le premier lot ; c'est
+        # le MANDAT qui ne savait pas s'en servir.
+        "TES NIVEAUX D'ATTENTE DEVIENNENT DES ORDRES. Quand ta thèse est "
+        "prête mais que le cours n'y est pas encore, n'attends PLUS la "
+        "prochaine passe pour la re-regarder : ARME UNE EMBUSCADE. Tu "
+        'ajoutes ``"kind": "stop"`` et ``"trigger": <prix>`` à ton ``buy`` '
+        "ou à ton ``short``, et le moteur exécutera à la minute où le niveau "
+        "casse, NUIT COMPRISE — tu n'as pas besoin d'être réveillé. Un "
+        "achat s'arme AU-DESSUS du cours (tu achètes la cassure), une vente "
+        "à découvert EN DESSOUS (tu vends la rupture du support) : un niveau "
+        "du mauvais côté partirait au premier passage — ce ne serait pas une "
+        "embuscade, mais un ordre au marché déguisé, et il est refusé "
+        "(``bad_trigger``).",
+        "Un piège s'arme MARCHÉ FERMÉ (c'est tout son intérêt), et son plan "
+        "est jugé ENTIÈREMENT au moment où tu l'armes : thèse, stop et "
+        "taille sont mesurés contre le TRIGGER, pas contre le cours "
+        "d'aujourd'hui — ton stop doit donc être SOUS TON TRIGGER pour un "
+        "achat, au-dessus de ton trigger pour une vente à découvert, et "
+        "c'est la distance trigger-stop qui consomme ton risque. Un piège "
+        "mal armé est refusé exactement comme un ordre direct. Bornes "
+        "propres aux embuscades : au plus %d armées à la fois "
+        "(``too_many_pending``), leur risque CUMULÉ ne dépasse pas %s de ton "
+        "équité (``pending_risk_high`` — si elles partaient toutes la même "
+        "nuit, ton livre doit tenir), et chacune EXPIRE d'elle-même après "
+        "%d jours de marché : un piège qui dort trois semaines s'est armé "
+        "sur un marché qui n'existe plus. Pour en retirer une avant terme : "
+        '``{"action": "cancel_pending", "symbol": "..."}``.'
+        % (coach_trader.MAX_PENDING, _pct(coach_trader.MAX_PENDING_RISK_PCT),
+           coach_trader.AMBUSH_MARKET_DAYS),
         "TU ES NOTÉ, ET LA NOTE EST PUBLIQUE. Chaque décision est archivée puis "
         "comparée : le REGISTRE garde tes ordres acceptés ET tes REFUS avec "
         "leur motif ; un score de DISCIPLINE mesure le respect de ta propre "
@@ -1077,7 +1109,12 @@ def coach_actions_block(book: Any) -> str:
         "convertis) ; ``thesis`` tient en une phrase ; ``setup`` est "
         "facultatif et vaut l'un de : %s. Un ``sell`` ou un ``cover`` SANS "
         "``qty`` veut dire « solder la ligne entière » ; un ``adjust_stop`` "
-        "ne prend que ``symbol`` et ``stop`` (rien ne s'échange). ``note`` "
+        "ne prend que ``symbol`` et ``stop`` (rien ne s'échange). ``kind`` "
+        "est FACULTATIF et vaut « market » (par défaut, exécution "
+        "immédiate) ou « stop » — dans ce dernier cas ``trigger`` devient "
+        "OBLIGATOIRE et porte le prix d'armement de l'EMBUSCADE, dans la "
+        "devise du titre lui aussi ; ``cancel_pending`` ne prend que "
+        "``symbol``. ``note`` "
         "est un champ de TÊTE, à côté de ``actions`` (pas dedans) : "
         "FACULTATIF et bienvenu en une phrase de lecture de marché quand tu "
         "agis, OBLIGATOIRE quand tu n'agis pas (cf. ci-dessus)."
@@ -1085,7 +1122,10 @@ def coach_actions_block(book: Any) -> str:
         "```%s\n"
         '{"actions": [{"action": "buy", "symbol": "NESN.SW", "qty": 12, '
         '"stop": 92.5, "target": 118.0, "thesis": "une phrase courte", '
-        '"setup": "news"}], "note": "une phrase de lecture de marché"}\n'
+        '"setup": "news"}, {"action": "short", "symbol": "DAL", '
+        '"qty": 40, "kind": "stop", "trigger": 38.5, "stop": 41.2, '
+        '"target": 32.0, "thesis": "rupture du support sur le kerosene"}], '
+        '"note": "une phrase de lecture de marché"}\n'
         "```" % coach_trader.ACTIONS_MARKER,
     ])
 

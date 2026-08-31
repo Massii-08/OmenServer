@@ -7659,3 +7659,219 @@ def test_contexte_de_passe_nomme_les_themes_deja_engages(tmp_path, monkeypatch):
     ctx = pr._coach_pass_context(portfolio, "2026-08-31T15:00:00+00:00")
     assert ctx["deployment"]["themes_ouverts"] == [
         "DAL (short) — kérosène après le blocage d'Ormuz"]
+
+
+# =========================================================================== #
+# LOT 9 — LES EMBUSCADES, bout en bout : armement -> exécution par le tick,
+# expiration, annulation. Le vrai « ne plus attendre » : le coach ne guette
+# plus un niveau de passe en passe, il ARME un ordre que le moteur exécutera
+# à la minute où le niveau casse, nuit comprise.
+# =========================================================================== #
+
+def coach_ambush(**over):
+    """Une embuscade LONGUE armée à 110 sur NESN.SW (cours 100)."""
+    base = {"action": "buy", "symbol": "NESN.SW", "qty": 15, "kind": "stop",
+            "trigger": 110.0, "stop": 104.0, "target": 130.0,
+            "thesis": COACH_THESIS, "setup": "breakout"}
+    base.update(over)
+    return base
+
+
+def coach_ambushes():
+    return [o for o in coach_portfolio()["open_orders"] if o["kind"] == "stop"]
+
+
+def test_une_embuscade_armee_n_execute_RIEN_tout_de_suite(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+    rows = pr.execute_coach_actions([coach_ambush()], source="daily")
+
+    assert rows[0]["accepted"] is True
+    book = coach_portfolio()
+    assert book["positions"] == []                  # rien n'est ouvert
+    assert book["cash_chf"] == 10000.0              # rien n'est payé
+    armed = coach_ambushes()
+    assert len(armed) == 1
+    assert armed[0]["side"] == "buy" and armed[0]["stop_price"] == 110.0
+    assert armed[0]["status"] == "open"
+
+
+def test_l_embuscade_armee_porte_TOUT_le_plan(tmp_path, monkeypatch):
+    """Le piège n'est pas qu'un niveau : il emporte la thèse, le stop de
+    protection et l'objectif — sinon la position qui en naîtra serait nue."""
+    c, _ = make_client(tmp_path, monkeypatch)
+    pr.execute_coach_actions([coach_ambush()], source="daily")
+    armed = coach_ambushes()[0]
+    assert armed["thesis"] == COACH_THESIS
+    assert armed["stop_loss"] == 104.0
+    assert armed["target"] == 130.0
+    assert armed["risk_chf"] == 90.0                # (110 - 104) x 15
+    assert armed["source"] == "daily"
+    assert armed["expires_at"]                      # elle a une péremption
+
+
+def test_l_armement_est_trace_au_registre_avec_son_niveau(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+    pr.execute_coach_actions([coach_ambush()], source="daily")
+    row = coach_ledger()[0]
+    assert row["accepted"] is True and row["symbol"] == "NESN.SW"
+    assert "110" in (row["detail"] or "")
+
+
+def test_un_piege_mal_arme_est_refuse_avec_un_detail_lisible(tmp_path, monkeypatch):
+    """Un piège armé SOUS le cours partirait au premier tick."""
+    c, _ = make_client(tmp_path, monkeypatch)
+    rows = pr.execute_coach_actions([coach_ambush(trigger=95.0)], source="daily")
+    assert rows[0]["accepted"] is False
+    assert rows[0]["reason"] == "bad_trigger"
+    assert "95" in (rows[0]["detail"] or "")
+    assert coach_ambushes() == []
+
+
+def test_le_cinquieme_piege_est_refuse_avec_son_detail(tmp_path, monkeypatch):
+    c, market = make_client(tmp_path, monkeypatch)
+    for extra in ("AAA.SW", "BBB.SW", "CCC.SW", "DDD.SW"):
+        market.prices[extra] = (100.0, "CHF", extra)
+    for symbol in ("NESN.SW", "AAA.SW", "BBB.SW", "CCC.SW"):
+        rows = pr.execute_coach_actions(
+            [coach_ambush(symbol=symbol, qty=12, trigger=110.0, stop=107.0)],
+            source="daily")
+        assert rows[0]["accepted"] is True, (symbol, rows[0])
+    rows = pr.execute_coach_actions(
+        [coach_ambush(symbol="DDD.SW", qty=12, trigger=110.0, stop=107.0)],
+        source="daily")
+    assert rows[0]["reason"] == "too_many_pending"
+    assert "4" in (rows[0]["detail"] or "")
+
+
+def test_l_embuscade_part_quand_le_niveau_CASSE(tmp_path, monkeypatch):
+    """La preuve que le piège est RÉEL : le tick l'exécute sans personne."""
+    c, market = make_client(tmp_path, monkeypatch)
+    pr.execute_coach_actions([coach_ambush()], source="daily")
+    market.candles["NESN.SW"] = [
+        {"ts": _ts(11), "open": 108.0, "high": 114.0, "low": 107.0,
+         "close": 113.0}]
+
+    result = pr.tick_coach_account()
+    assert len(result["fills"]) == 1
+    book = coach_portfolio()
+    assert len(book["positions"]) == 1
+    position = book["positions"][0]
+    assert position["qty"] == 15
+    assert position["avg_price"] == 110.0           # exécuté AU TRIGGER
+    assert position["stop_loss"] == 104.0           # le plan a suivi
+    assert position["thesis"] == COACH_THESIS
+
+
+def test_l_embuscade_dort_tant_que_le_niveau_TIENT(tmp_path, monkeypatch):
+    c, market = make_client(tmp_path, monkeypatch)
+    pr.execute_coach_actions([coach_ambush()], source="daily")
+    market.candles["NESN.SW"] = [
+        {"ts": _ts(11), "open": 101.0, "high": 105.0, "low": 99.0, "close": 103.0}]
+
+    result = pr.tick_coach_account()
+    assert result["fills"] == []
+    assert coach_portfolio()["positions"] == []
+    assert len(coach_ambushes()) == 1               # toujours armée
+
+
+def test_une_embuscade_qui_part_pose_son_OBJECTIF(tmp_path, monkeypatch):
+    """Même geste qu'une entrée directe : sans cet ordre limite, l'objectif du
+    piège ne serait jamais exécuté (``check_protective_stops`` ignore
+    ``target``)."""
+    c, market = make_client(tmp_path, monkeypatch)
+    pr.execute_coach_actions([coach_ambush()], source="daily")
+    market.candles["NESN.SW"] = [
+        {"ts": _ts(11), "open": 108.0, "high": 114.0, "low": 107.0,
+         "close": 113.0}]
+    pr.tick_coach_account()
+
+    orders = coach_portfolio()["open_orders"]
+    assert len(orders) == 1
+    assert orders[0]["kind"] == "limit" and orders[0]["side"] == "sell"
+    assert orders[0]["limit_price"] == 130.0
+
+
+def test_une_embuscade_COURTE_qui_part_pose_un_rachat(tmp_path, monkeypatch):
+    c, market = make_client(tmp_path, monkeypatch)
+    pr.execute_coach_actions(
+        [coach_ambush(action="short", trigger=90.0, stop=96.0, target=70.0)],
+        source="daily")
+    market.candles["NESN.SW"] = [
+        {"ts": _ts(11), "open": 92.0, "high": 93.0, "low": 88.0, "close": 89.0}]
+    pr.tick_coach_account()
+
+    book = coach_portfolio()
+    assert book["positions"][0]["side"] == "short"
+    assert book["open_orders"][0]["side"] == "cover"
+    assert book["open_orders"][0]["limit_price"] == 70.0
+
+
+def test_l_execution_d_une_embuscade_est_tracee_au_registre(tmp_path, monkeypatch):
+    """Personne n'est là quand le piège part : le registre est la SEULE trace,
+    et il crédite la passe qui l'avait armé."""
+    c, market = make_client(tmp_path, monkeypatch)
+    pr.execute_coach_actions([coach_ambush()], source="daily")
+    market.candles["NESN.SW"] = [
+        {"ts": _ts(11), "open": 108.0, "high": 114.0, "low": 107.0,
+         "close": 113.0}]
+    pr.tick_coach_account()
+
+    row = coach_ledger()[0]
+    assert row["action"] == "ambush_filled" and row["accepted"] is True
+    assert row["symbol"] == "NESN.SW" and row["source"] == "daily"
+    assert "110" in (row["detail"] or "")
+
+
+def test_une_embuscade_perimee_est_NETTOYEE_par_le_tick(tmp_path, monkeypatch):
+    c, market = make_client(tmp_path, monkeypatch)
+    pr.execute_coach_actions([coach_ambush()], source="daily")
+    market.candles["NESN.SW"] = [
+        {"ts": _ts(11), "open": 101.0, "high": 105.0, "low": 99.0, "close": 103.0}]
+
+    result = pr.tick_coach_account(now_iso="2026-12-31T12:00:00+00:00")
+    assert coach_ambushes() == []
+    assert any(row["reason"] == "expired" for row in result["cancelled"])
+    row = coach_ledger()[0]
+    assert row["action"] == "ambush_expired" and row["accepted"] is False
+    assert row["reason"] == "expired"
+
+
+def test_un_ordre_LIMITE_d_objectif_ne_perime_JAMAIS(tmp_path, monkeypatch):
+    """L'objectif d'une position ouverte n'a pas de date : il vit aussi
+    longtemps que la ligne."""
+    c, market = make_client(tmp_path, monkeypatch)
+    pr.execute_coach_actions([coach_action()], source="daily")
+    market.candles["NESN.SW"] = [
+        {"ts": _ts(11), "open": 101.0, "high": 105.0, "low": 99.0, "close": 103.0}]
+
+    pr.tick_coach_account(now_iso="2027-12-31T12:00:00+00:00")
+    assert len(coach_portfolio()["open_orders"]) == 1
+
+
+def test_le_coach_peut_RETIRER_une_embuscade(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+    pr.execute_coach_actions([coach_ambush()], source="daily")
+    rows = pr.execute_coach_actions(
+        [{"action": "cancel_pending", "symbol": "NESN.SW"}], source="daily")
+
+    assert rows[0]["accepted"] is True
+    assert rows[0]["action"] == "cancel_pending"
+    assert coach_ambushes() == []
+
+
+def test_retirer_une_embuscade_absente_est_refuse(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+    rows = pr.execute_coach_actions(
+        [{"action": "cancel_pending", "symbol": "NESN.SW"}], source="daily")
+    assert rows[0]["reason"] == "no_pending"
+    assert "NESN.SW" in (rows[0]["detail"] or "")
+
+
+def test_retirer_une_embuscade_ne_touche_PAS_l_objectif_d_une_ligne(
+        tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+    pr.execute_coach_actions([coach_action()], source="daily")   # pose un limit
+    rows = pr.execute_coach_actions(
+        [{"action": "cancel_pending", "symbol": "NESN.SW"}], source="daily")
+    assert rows[0]["reason"] == "no_pending"
+    assert len(coach_portfolio()["open_orders"]) == 1

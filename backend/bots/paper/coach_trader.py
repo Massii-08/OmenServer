@@ -41,7 +41,7 @@ paquet (``newswatch._discover_portfolios``, ``weekly._AUX_SUFFIXES``,
 """
 import json
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from zoneinfo import ZoneInfo
@@ -64,7 +64,14 @@ ACTIONS_MARKER = "COACH_ACTIONS"
 # tuple. Une famille se nomme, elle ne se déduit pas d'une position.
 ENTRY_ACTIONS = ("buy", "short")            # ouvrent ou renforcent une ligne
 EXIT_ACTIONS = ("sell", "reduce", "cover")  # réduisent l'exposition
-ACTION_KINDS = ENTRY_ACTIONS + EXIT_ACTIONS + ("adjust_stop",)
+ACTION_KINDS = ENTRY_ACTIONS + EXIT_ACTIONS + ("adjust_stop", "cancel_pending")
+
+# LOT 9 — LES EMBUSCADES. Une ENTRÉE peut désormais être ARMÉE sur un niveau
+# (``kind="stop"`` + ``trigger``) au lieu de partir au marché : le moteur
+# exécute à la minute où le cours franchit le seuil, nuit comprise. C'est le
+# vrai « ne plus attendre » — le coach guettait « une clôture sous la SMA50 »
+# à chaque passe, une embuscade purement MENTALE que rien n'exécutait.
+ORDER_PLANS = ("market", "stop")   # les deux formes qu'une entrée peut prendre
 
 # Le sens de position que chaque action manipule. ``reduce`` est ABSENT
 # volontairement : il dit « allège » sans dire dans quel sens, et c'est la
@@ -92,6 +99,17 @@ MAX_POSITION_PCT = 30.0   # concentration max d'une ligne (valeur PROJETÉE)
 MAX_POSITIONS = 6         # nombre de fronts ouverts simultanément
 MAX_CRYPTO = 2            # dont au plus deux cryptos
 MIN_CASH_PCT = 5.0        # trésorerie plancher : on ne se met jamais à sec
+
+# --- Embuscades (LOT 9) --------------------------------------------------- #
+MAX_PENDING = 4           # pièges armés simultanément, au plus
+# Le risque CUMULÉ des pièges armés, en % de l'équité. Deux trades pleins.
+# Pourquoi un plafond distinct, plus serré que le cumul toléré sur les lignes
+# ouvertes : une embuscade part SANS que personne regarde. Quatre pièges à
+# 2 % chacun qui se déclenchent sur le MÊME choc de marché coûteraient 8 % du
+# livre en une nuit, et le coach n'aurait rien vu venir. Il doit choisir.
+MAX_PENDING_RISK_PCT = 4.0
+# Un piège qui dort trois semaines s'est armé sur un marché qui n'existe plus.
+AMBUSH_MARKET_DAYS = 5
 
 RUN_AFTER_HOUR = 17       # ancienne passe unique : jamais avant 17 h LOCALES
 
@@ -164,6 +182,10 @@ REJECT_CODES = (
     "too_many_positions", "too_many_crypto", "cash_floor",
     "no_position", "qty_over_position",
     "wrong_side", "stop_widen", "market_closed", "out_of_scope",
+    # LOT 9 — les embuscades : forme de l'ordre, niveau d'armement, cap,
+    # risque cumulé des pièges, et l'annulation d'un piège inexistant.
+    "bad_kind", "bad_trigger", "too_many_pending", "pending_risk_high",
+    "no_pending",
 )
 
 # D'où vient une décision : du digest quotidien, de la passe planifiée (créneau),
@@ -335,6 +357,93 @@ def deployment_view(portfolio: Any) -> Dict[str, Any]:
     }
 
 
+def pending_ambushes(portfolio: Any) -> List[Dict[str, Any]]:
+    """Les EMBUSCADES ARMÉES d'un livre (PUR — LOT 9).
+
+    Une embuscade est un ordre ``open`` de forme ``kind="stop"`` sur un
+    ``side`` d'ENTRÉE (``buy``/``short``). Le filtre est strict des DEUX côtés :
+
+    - un ordre LIMITE en attente n'en est pas une (le coach en pose un à chaque
+      objectif — les compter ferait sauter le cap au bout de quatre gains) ;
+    - un ``stop`` de PROTECTION non plus : il vit sur la Position
+      (``stop_loss``), jamais dans ``open_orders``.
+    """
+    book = portfolio if isinstance(portfolio, dict) else {}
+    out = []
+    for order in _dicts(book.get("open_orders")):
+        if _text(order.get("status") or "open").lower() != "open":
+            continue
+        if _text(order.get("kind")).lower() != "stop":
+            continue
+        if _text(order.get("side")).lower() not in ENTRY_ACTIONS:
+            continue
+        out.append(order)
+    return out
+
+
+def _pending_risk_chf(ambushes: List[Dict[str, Any]]) -> float:
+    """Somme des pertes PLANIFIÉES des pièges armés, déjà en CHF.
+
+    On lit ``risk_chf``, calculé À L'ARMEMENT avec le taux de change du
+    moment : l'ordre persisté ne porte pas son ``fx_rate``, et le recalculer
+    ici avec un taux d'aujourd'hui serait faux. Un piège sans ``risk_chf``
+    compte pour 0 — il n'y en a pas (le router le pose systématiquement), et
+    inventer un chiffre serait pire que de l'ignorer.
+    """
+    total = 0.0
+    for order in ambushes:
+        total += abs(_val(order.get("risk_chf")) or 0.0)
+    return total
+
+
+def market_days_after(moment: Any, days: int = AMBUSH_MARKET_DAYS) -> str:
+    """L'horodatage ISO de ``moment`` + ``days`` JOURS DE MARCHÉ (PUR).
+
+    « Jour de marché » = jour de semaine : on saute samedi et dimanche. C'est
+    volontairement une règle UNIQUE, y compris pour les cryptos qui cotent le
+    week-end — deux calendriers de péremption pour une même liste d'ordres
+    seraient une source de bug silencieux, et l'écart (deux jours) n'a aucune
+    conséquence sur un piège dont la durée de vie est de toute façon un ordre
+    de grandeur, pas une minute.
+
+    Date illisible -> chaîne VIDE : un ordre sans péremption ne périme jamais
+    (cf. :func:`is_expired`), ce qui est le comportement d'AVANT ce lot.
+    """
+    start = _parse_iso(moment) if isinstance(moment, str) else None
+    if start is None and isinstance(moment, datetime):
+        start = moment if moment.tzinfo else moment.replace(tzinfo=timezone.utc)
+    if start is None:
+        return ""
+    try:
+        left = max(0, int(days))
+    except (TypeError, ValueError):
+        left = AMBUSH_MARKET_DAYS
+    current = start
+    while left > 0:
+        current = current + timedelta(days=1)
+        if current.weekday() < 5:
+            left -= 1
+    return current.isoformat()
+
+
+def is_expired(order: Any, now: Any) -> bool:
+    """Ce piège a-t-il dépassé sa date ? (PUR)
+
+    Sans ``expires_at``, JAMAIS — c'est le cas de tous les ordres d'avant ce
+    lot et de ceux d'un humain, qu'on ne doit pas se mettre à annuler.
+    """
+    row = order if isinstance(order, dict) else {}
+    limit = _parse_iso(row.get("expires_at"))
+    if limit is None:
+        return False
+    moment = _parse_iso(now) if isinstance(now, str) else None
+    if moment is None and isinstance(now, datetime):
+        moment = now if now.tzinfo else now.replace(tzinfo=timezone.utc)
+    if moment is None:
+        return False
+    return moment > limit
+
+
 def _held(positions: List[Dict[str, Any]], symbol: str, side: str) -> float:
     """Quantité détenue sur ce symbole DANS CE SENS, toutes lignes confondues.
 
@@ -455,13 +564,34 @@ def gate_decision(decision: Any, portfolio: Any, quote: Any,
         return _reject("no_symbol")
 
     positions = _dicts(portfolio.get("positions"))
+    ambushes = pending_ambushes(portfolio)
 
-    # Marché fermé : seule une consigne au CARNET (déplacer un stop) garde un
-    # sens, puisqu'elle n'agira qu'à la réouverture. ``now`` absent -> aucun
+    # LOT 9 — la FORME de l'ordre, lue avant tout le reste : c'est elle qui
+    # décide si la décision est une exécution (soumise à l'heure de marché) ou
+    # une consigne au CARNET (qui n'agira que plus tard).
+    plan_kind = _text(decision.get("kind")).lower() or "market"
+    if plan_kind not in ORDER_PLANS:
+        # On REJETTE, on ne rogne pas : servir un ordre au marché à qui a
+        # demandé une limite serait exactement la dégradation silencieuse que
+        # ce module s'interdit (cf. tête de fichier).
+        return _reject("bad_kind")
+    if plan_kind == "stop" and action not in ENTRY_ACTIONS:
+        # Une SORTIE ne s'arme pas dans ce lot : le stop de PROTECTION d'une
+        # ligne vit sur la position elle-même, pas dans le carnet.
+        return _reject("bad_kind")
+
+    # Marché fermé : seules les consignes au CARNET gardent un sens, puisqu'elles
+    # n'agiront qu'à la réouverture — déplacer un stop, retirer une embuscade,
+    # et ARMER une embuscade (c'est tout son intérêt : le piège ne s'exécute
+    # pas maintenant ; l'interdire reviendrait à ne pouvoir l'armer qu'aux
+    # heures où l'on pourrait déjà agir directement). ``now`` absent -> aucun
     # contrôle (cf. docstring) : sans horloge, rien à juger.
-    if now is not None and action != "adjust_stop" \
-            and not tradable_now(symbol, now):
+    if now is not None and action not in ("adjust_stop", "cancel_pending") \
+            and plan_kind != "stop" and not tradable_now(symbol, now):
         return _reject("market_closed")
+
+    if action == "cancel_pending":
+        return _gate_cancel_pending(symbol, ambushes)
 
     if action == "adjust_stop":
         return _gate_adjust_stop(symbol, decision, positions, quote)
@@ -520,15 +650,35 @@ def gate_decision(decision: Any, portfolio: Any, quote: Any,
     if len(thesis) < MIN_THESIS_LEN:
         return _reject("no_thesis")
 
+    # LOT 9 — le NIVEAU DE RÉFÉRENCE de tous les contrôles qui suivent. Pour un
+    # ordre au marché c'est le cours ; pour une EMBUSCADE c'est le TRIGGER,
+    # parce que c'est là que l'entrée aura lieu. Mesurer le risque d'un piège
+    # armé à 110 contre un cours de 100 donnerait un chiffre FAUX — et le
+    # piège partirait à 110 avec un risque jamais contrôlé.
+    trigger = None
+    if plan_kind == "stop":
+        trigger = _val(decision.get("trigger"))
+        if trigger is None or trigger <= 0:
+            return _reject("bad_trigger")
+        # Un piège du mauvais côté du cours partirait au premier tick : ce
+        # n'est pas une embuscade, c'est un ordre au marché déguisé.
+        armable = trigger > price if wanted == "long" else trigger < price
+        if not armable:
+            return _reject("bad_trigger")
+        if len(ambushes) >= MAX_PENDING:
+            return _reject("too_many_pending")
+
+    entry = trigger if trigger is not None else price
+
     stop = _val(decision.get("stop"))
-    if stop is None or not _stop_protects(wanted, stop, price):
+    if stop is None or not _stop_protects(wanted, stop, entry):
         # Un « stop » au-dessus du prix d'entrée d'un long ne protège rien :
         # c'est l'absence de stop, pas un stop large. Le miroir vaut pour un
         # short, dont l'invalidation est AU-DESSUS.
         return _reject("no_stop")
 
     equity = _equity_chf(portfolio.get("cash_chf"), positions)
-    level_chf = price * fx
+    level_chf = entry * fx
     stop_chf = stop * fx
     value_chf = qty * level_chf
 
@@ -546,7 +696,16 @@ def gate_decision(decision: Any, portfolio: Any, quote: Any,
 
     # Renforcer une ligne existante n'ouvre pas un front NOUVEAU — le plafond
     # compte les fronts à surveiller, pas les ordres.
-    if len(positions) >= MAX_POSITIONS and held <= 0:
+    #
+    # LOT 9 — les EMBUSCADES ARMÉES sont des fronts PROJETÉS : si les quatre
+    # pièges partaient tous, le livre doit rester dans les règles. Sans ça, le
+    # sur-armement serait invisible — on tiendrait 6 lignes après avoir armé
+    # 4 pièges sur un livre qui n'en tolère que 6 au total.
+    fronts = {_symbol(p.get("symbol")) for p in positions}
+    fronts |= {_symbol(a.get("symbol")) for a in ambushes}
+    fronts.add(symbol)
+    fronts.discard("")
+    if len(fronts) > MAX_POSITIONS:
         return _reject("too_many_positions")
 
     crypto = _crypto_symbols(positions)
@@ -570,7 +729,24 @@ def gate_decision(decision: Any, portfolio: Any, quote: Any,
         if cash - value_chf < equity * MIN_CASH_PCT / 100.0:
             return _reject("cash_floor")
 
-    return _accept(symbol, action, qty, decision)
+    # LOT 9 — le risque CUMULÉ des pièges, en tout dernier (le contrôle le plus
+    # fin). Il ne s'applique QU'À une embuscade : un ordre au MARCHÉ est jugé
+    # sur SON risque (``risk_high``) et ne doit pas être empêché parce que des
+    # pièges dorment — le mandat déployé demande d'agir, pas de s'auto-bloquer.
+    #
+    # ⚠️ Le plancher de trésorerie, lui, n'est PAS projeté sur les pièges
+    # armés : l'ordre persisté ne porte pas son taux de change, et le
+    # recalculer avec un taux d'aujourd'hui serait faux. Le MOTEUR d'ordres a
+    # le dernier mot au moment du fill (trésorerie réellement insuffisante ->
+    # ``OrderError`` -> le piège est annulé proprement par le tick), exactement
+    # la doctrine déjà retenue pour les frais plus haut.
+    if plan_kind == "stop":
+        cumul = _pending_risk_chf(ambushes) + abs(level_chf - stop_chf) * qty
+        if cumul > equity * MAX_PENDING_RISK_PCT / 100.0:
+            return _reject("pending_risk_high")
+
+    return _accept(symbol, action, qty, decision, kind=plan_kind,
+                   trigger=trigger)
 
 
 def _stop_protects(side: str, stop: float, price: float) -> bool:
@@ -623,8 +799,25 @@ def _gate_adjust_stop(symbol: str, decision: Dict[str, Any],
     return _accept(symbol, "adjust_stop", 0, decision)
 
 
+def _gate_cancel_pending(symbol: str,
+                        ambushes: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Retirer une EMBUSCADE armée (PUR — LOT 9).
+
+    Rien ne s'échange : c'est une consigne au carnet, permise marché fermé.
+    Le seul contrôle est l'EXISTENCE du piège — annuler dans le vide donnerait
+    une ligne de registre « accepté » pour un geste qui n'a rien fait, et le
+    registre doit dire la vérité. Un ordre LIMITE d'objectif n'est pas visé :
+    il n'est pas une embuscade (cf. :func:`pending_ambushes`), et le retirer
+    laisserait une position ouverte sans son objectif, en silence.
+    """
+    if not any(_symbol(a.get("symbol")) == symbol for a in ambushes):
+        return _reject("no_pending")
+    return _accept(symbol, "cancel_pending", 0, {})
+
+
 def _accept(symbol: str, side: str, qty: int,
-            decision: Dict[str, Any]) -> Dict[str, Any]:
+            decision: Dict[str, Any], kind: str = "market",
+            trigger: Optional[float] = None) -> Dict[str, Any]:
     """L'ordre normalisé, prêt pour le moteur d'ordres du simulateur.
 
     ``side`` est un sens du MOTEUR (``models.ORDER_SIDES``), pas le nom de
@@ -649,7 +842,11 @@ def _accept(symbol: str, side: str, qty: int,
         "order": {
             "symbol": symbol,
             "side": side,
-            "kind": "market",
+            # LOT 9 — ``market`` (exécution immédiate) ou ``stop`` (EMBUSCADE
+            # armée sur ``trigger``, exécutée par le tick quand le niveau
+            # casse). ``trigger`` vaut ``None`` pour tout le reste.
+            "kind": kind,
+            "trigger": trigger,
             "qty": int(qty),
             "thesis": _text(decision.get("thesis")),
             "stop_loss": _val(decision.get("stop")),

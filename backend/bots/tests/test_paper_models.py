@@ -261,3 +261,28 @@ def test_forced_warnings_tolerates_wrong_types():
     assert Order.from_dict({"id": "x", "symbol": "AAPL",
                             "forced_warnings": ["no_stop", 4, None, "oversize"]}) \
         .forced_warnings == ["no_stop", "oversize"]
+
+
+# --------------------------------------------------------------------------- #
+# LOT 9 — les EMBUSCADES : un ordre d'entrée armé sur un niveau porte deux
+# choses de plus que les autres, sa DATE DE PÉREMPTION et son ORIGINE.
+# --------------------------------------------------------------------------- #
+def test_order_porte_une_date_de_peremption_et_une_origine():
+    order = Order.from_dict({
+        "id": "a1", "symbol": "DAL", "side": "short", "kind": "stop",
+        "qty": 100, "stop_price": 38.5,
+        "expires_at": "2026-09-07T15:00:00+00:00", "source": "daily",
+    })
+    assert order.kind == "stop"
+    assert order.stop_price == 38.5
+    assert order.expires_at == "2026-09-07T15:00:00+00:00"
+    assert order.source == "daily"
+    assert order.to_dict()["expires_at"] == "2026-09-07T15:00:00+00:00"
+
+
+def test_order_sans_peremption_reste_lisible():
+    """Les ordres d'AVANT ce lot (et ceux d'un humain) n'ont pas ces champs :
+    un portefeuille déjà sur disque doit survivre à l'ajout."""
+    order = Order.from_dict({"id": "a1", "symbol": "AAPL"})
+    assert order.expires_at == ""
+    assert order.source == ""

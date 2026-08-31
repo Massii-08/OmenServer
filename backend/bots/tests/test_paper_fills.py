@@ -169,3 +169,47 @@ def test_position_side_defaults_to_long_and_unknown_side_raises():
     assert check_protective_stops({}, 95.0, candle(100, 101, 94, 96)) == 95.0
     with pytest.raises(ValueError):
         check_protective_stops({"side": "sideways"}, 95.0, candle(100, 101, 94, 96))
+
+
+# --------------------------------------------------------------------------- #
+# LOT 9 — LES EMBUSCADES : l'entrée déclenchée par niveau.
+#
+# ⚠️ Aucun code nouveau n'est testé ici : le STOP-ENTRY existait DÉJÀ dans ce
+# moteur, sous la forme ``{"kind": "stop", "side": "buy"|"short",
+# "stop_price": <trigger>}``. Ce qui manquait était plus haut — le MANDAT du
+# coach ne savait pas armer un tel ordre. Ces tests ÉPINGLENT le contrat sur
+# lequel les embuscades reposent, sous leur nom d'usage, pour qu'une refonte
+# du moteur ne le casse plus en silence.
+# --------------------------------------------------------------------------- #
+def test_embuscade_longue_part_quand_le_cours_DEPASSE_le_trigger():
+    """« Achète si ça casse 110 par le haut. »"""
+    piege = order("stop", "buy", stop_price=110.0)
+    assert try_fill(piege, candle(105, 112, 104, 111)) == 110.0
+
+
+def test_embuscade_longue_dort_tant_que_le_niveau_tient():
+    piege = order("stop", "buy", stop_price=110.0)
+    assert try_fill(piege, candle(105, 109.9, 104, 106)) is None
+
+
+def test_embuscade_courte_part_quand_le_cours_CASSE_le_trigger():
+    """« Shorte si ça casse 90 par le bas » — le miroir exact."""
+    piege = order("stop", "short", stop_price=90.0)
+    assert try_fill(piege, candle(95, 96, 88, 89)) == 90.0
+
+
+def test_embuscade_courte_dort_tant_que_le_support_tient():
+    piege = order("stop", "short", stop_price=90.0)
+    assert try_fill(piege, candle(95, 96, 90.1, 92)) is None
+
+
+def test_embuscade_longue_sur_un_gap_haussier_paie_l_OUVERTURE():
+    """La règle de gap, côté ENTRÉE : un titre qui ouvre à 118 sur un piège
+    armé à 110 ne s'achète pas à 110 — le prix fantôme n'a jamais existé."""
+    piege = order("stop", "buy", stop_price=110.0)
+    assert try_fill(piege, candle(118, 120, 117, 119)) == 118.0
+
+
+def test_embuscade_courte_sur_un_gap_baissier_vend_a_L_OUVERTURE():
+    piege = order("stop", "short", stop_price=90.0)
+    assert try_fill(piege, candle(82, 83, 80, 81)) == 82.0

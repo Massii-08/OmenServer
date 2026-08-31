@@ -11,7 +11,7 @@ import subprocess
 
 import pytest
 
-from backend.bots.paper import llm
+from backend.bots.paper import coach_trader, llm
 
 
 class FakeProc(object):
@@ -1371,3 +1371,44 @@ def test_les_deux_prompts_coach_heritent_du_regime_deploye():
     assert "82,4 %" in creneau
     digest = convergence._coach_actions_block(BOOK)
     assert "RÉGIME DÉPLOYÉ" in digest
+
+
+# =========================================================================== #
+# LOT 9 — LES EMBUSCADES dans le prompt : « tes niveaux d'attente deviennent
+# des ORDRES ».
+# =========================================================================== #
+
+def test_coach_actions_block_apprend_a_ARMER_une_embuscade():
+    block = llm.coach_actions_block(BOOK)
+    low = block.lower()
+    assert "embuscade" in low
+    assert '"kind": "stop"' in block and "trigger" in low
+    # Le point qui change tout : ça s'exécute sans lui, la nuit comprise.
+    assert "nuit comprise" in low
+    assert "niveaux d'attente" in low or "au lieu d'attendre" in low
+
+
+def test_coach_actions_block_donne_les_bornes_des_embuscades():
+    block = llm.coach_actions_block(BOOK)
+    assert str(coach_trader.MAX_PENDING) in block
+    assert str(coach_trader.AMBUSH_MARKET_DAYS) in block
+    assert "4 %" in block                     # le risque cumulé des pièges
+
+
+def test_coach_actions_block_dit_que_le_stop_se_juge_contre_le_TRIGGER():
+    low = llm.coach_actions_block(BOOK).lower()
+    assert "trigger" in low and "stop" in low
+    assert "sous ton trigger" in low or "au-dessus de ton trigger" in low
+
+
+def test_coach_actions_block_apprend_a_RETIRER_une_embuscade():
+    block = llm.coach_actions_block(BOOK)
+    assert "cancel_pending" in block
+
+
+def test_le_prompt_du_creneau_herite_des_embuscades():
+    prompt = llm.build_coach_trader_prompt({
+        "cash_chf": 6200.0, "equity_chf": 10450.0,
+        "positions": BOOK["positions"], "open_orders": BOOK["open_orders"],
+    })
+    assert "embuscade" in prompt.lower()
