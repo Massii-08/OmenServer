@@ -3780,6 +3780,19 @@ const PaperModule = {
         '</div>';
     },
 
+    // Le symbole du coach s'ouvre comme partout ailleurs dans le module : le
+    // même chip « paper-graph-chip » -> data-paper-act -> openTrade (LOT 10,
+    // « je peux pas ouvrir les titres qu'il a placés »). Jamais un second
+    // mécanisme : la clé de tooltip est celle déjà traduite pour conv-trade.
+    _ctSymChip(sym) {
+        const s = String(sym || '');
+        if (!s) return '';
+        return '<button class="btn btn-ghost btn-sm paper-graph-chip" ' +
+                'data-paper-act="ct-trade" data-sym="' + esc(s) + '" ' +
+                'title="' + esc(Lang.t('paper.conv_trade_hint')) + '">' +
+            esc(s) + '</button>';
+    },
+
     _ctPositionsCard() {
         const view = this._ctPositionsView();
         const rows = view || this._ctList(this._ctPortfolio().positions);
@@ -3810,7 +3823,7 @@ const PaperModule = {
                     ? '<span class="badge warn">' + esc(Lang.t('paper.badge_short')) + '</span>'
                     : esc(this._sideLabel(side))) +
                 '</td>' +
-                '<td style="' + td + 'font-weight:600;">' + esc(sym) + '</td>' +
+                '<td style="' + td + '">' + this._ctSymChip(sym) + '</td>' +
                 '<td style="' + td + this._mono + '">' +
                   esc(this._num(this._n(pos && pos.qty), 0)) + '</td>' +
                 '<td style="' + td + this._mono + '">' +
@@ -3868,7 +3881,7 @@ const PaperModule = {
             // ici (il est sur la position) : le sens suffit à les distinguer.
             const isAmbush = this._ctIsAmbush(o);
             return '<tr>' +
-                '<td style="' + td + 'font-weight:600;">' + esc(String((o && o.symbol) || '')) + '</td>' +
+                '<td style="' + td + '">' + this._ctSymChip(o && o.symbol) + '</td>' +
                 '<td style="' + td + '">' + esc(this._sideLabel(o && o.side)) + '</td>' +
                 '<td style="' + td + '">' + esc(this._kindLabel(o && o.kind)) +
                   (isTarget
@@ -3973,8 +3986,7 @@ const PaperModule = {
               (action
                 ? '<span style="font-size:14px;font-weight:600;">' +
                   esc(this._label('paper.ct_act_' + action, action)) + '</span>' : '') +
-              (sym
-                ? '<span style="' + this._mono + 'font-size:14px;">' + esc(sym) + '</span>' : '') +
+              this._ctSymChip(sym) +
               '<span style="margin-left:auto;font-size:12px;color:var(--text-dim);' +
                    this._mono + '">' + esc(this._dateTime(e.ts)) + '</span>' +
             '</div>' +
@@ -10688,6 +10700,7 @@ const PaperModule = {
         if (act === 'conv-close') { this.closeConvergence(); return; }
         if (act === 'conv-trade') { this.openTrade(el.getAttribute('data-sym')); return; }
         if (act === 'cal-trade') { this.openTrade(el.getAttribute('data-sym')); return; }
+        if (act === 'ct-trade') { this.openTrade(el.getAttribute('data-sym')); return; }
         if (act === 'ego-scroll') { this.scrollToEgo(); return; }
         if (act === 'ego-open') { this.openGraph(el.getAttribute('data-sym')); return; }
         if (act === 'graph-open') { this.openGraph(el.getAttribute('data-sym')); return; }
