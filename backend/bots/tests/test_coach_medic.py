@@ -29,6 +29,23 @@ def _row(action, accepted, reason=None):
            "accepted": accepted, "reason": reason, "symbol": "", "detail": None}
 
 
+def test_detect_llm_failure_sorts_by_timestamp_never_trusts_file_order():
+    """VECU (31/08 19h-20h) : la ligne du digest de 17:00 s'etait inseree
+    APRES celles de 20:03 — les 2 echecs 17:13/18:33 n'etaient pas en tete de
+    fichier, la panne est restee invisible. On trie par ts, toujours."""
+    rows = [
+        {"ts": "2026-08-31T17:00:00", "source": "digest", "action": "parse",
+         "accepted": False, "reason": "no_block"},
+        {"ts": "2026-08-31T18:33:00", "source": "daily", "action": "pass",
+         "accepted": False, "reason": "llm_failed"},
+        {"ts": "2026-08-31T17:13:00", "source": "daily", "action": "pass",
+         "accepted": False, "reason": "llm_failed"},
+    ]
+    failure = coach_medic.detect_llm_failure(rows)
+    assert failure is not None
+    assert "llm_failed" in failure.detail
+
+
 def test_detect_llm_failure_none_when_ledger_is_healthy():
     rows = [_row("hold", True), _row("buy", True)]
     assert medic.detect_llm_failure(rows) is None

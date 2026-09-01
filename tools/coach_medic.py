@@ -99,6 +99,10 @@ def detect_llm_failure(ledger_rows):
     ligne en échec n'est pas une panne — le modèle a pu simplement hoqueter
     une fois."""
     rows = [r for r in (ledger_rows or []) if isinstance(r, dict)]
+    # VECU (31/08) : l'ordre du fichier N'EST PAS fiable (une ligne de digest
+    # de 17:00 s'etait inseree apres celles de 20:03 — la panne 17:13/18:33
+    # est restee invisible aux ticks de 19h-20h). On trie par ts, toujours.
+    rows.sort(key=lambda r: str(r.get("ts") or ""), reverse=True)
     if len(rows) < 2:
         return None
     if not (_is_llm_failure_row(rows[0]) and _is_llm_failure_row(rows[1])):
