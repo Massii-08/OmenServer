@@ -41,7 +41,7 @@ def test_detect_llm_failure_sorts_by_timestamp_never_trusts_file_order():
         {"ts": "2026-08-31T17:13:00", "source": "daily", "action": "pass",
          "accepted": False, "reason": "llm_failed"},
     ]
-    failure = coach_medic.detect_llm_failure(rows)
+    failure = medic.detect_llm_failure(rows)
     assert failure is not None
     assert "llm_failed" in failure.detail
 
