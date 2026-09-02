@@ -417,10 +417,11 @@ def test_a_us_stock_passes_on_a_tuesday_afternoon():
 # --------------------------------------------------------------------------- #
 
 def test_the_budget_block_is_the_documented_contract():
-    assert coach_trader.WEEKDAY_SLOTS == ("09:10", "11:30", "14:00", "15:40",
-                                          "17:00", "18:30", "20:00", "21:40")
+    # REGIME SEPTEMBRE (03/09) : 3 creneaux — le x20 d'aout est fini et la
+    # soiree du 02/09 (6 passes affamees) a montre le plafond du compte partage.
+    assert coach_trader.WEEKDAY_SLOTS == ("09:10", "15:40", "21:40")
     assert coach_trader.WEEKEND_SLOTS == ("11:00", "18:00")
-    assert coach_trader.PASSES_PER_DAY == 8
+    assert coach_trader.PASSES_PER_DAY == 3
     assert coach_trader.MAX_FOCUS == 4
     assert coach_trader.LLM_CALLS_PER_PASS == 2
 
@@ -431,14 +432,11 @@ def test_slots_of_the_day_depend_on_the_weekday():
 
 
 def test_due_slot_is_the_latest_one_reached():
-    """Les 8 créneaux du mois x20 : chacun est reconnu à son heure."""
+    """Les 3 créneaux du régime septembre : chacun est reconnu à son heure
+    (WED_1135/WED_1405 tombent DANS le créneau 09:10 non consommé — la
+    fenêtre d'un créneau court jusqu'au suivant)."""
     assert coach_trader.due_slot(WED_0915, {}) == "09:10"
-    assert coach_trader.due_slot(WED_1135, {}) == "11:30"
-    assert coach_trader.due_slot(WED_1405, {}) == "14:00"
     assert coach_trader.due_slot(WED_1545, {}) == "15:40"
-    assert coach_trader.due_slot(WED_1705, {}) == "17:00"
-    assert coach_trader.due_slot(WED_1835, {}) == "18:30"
-    assert coach_trader.due_slot(WED_2005, {}) == "20:00"
     assert coach_trader.due_slot(WED_2145, {}) == "21:40"
 
 
@@ -461,15 +459,15 @@ def test_a_missed_slot_is_not_caught_up_afterwards():
     de la séance US », pas « la première passe de l'après-midi ». Une machine
     qui vient de tourner à 17h00 ne repaie pas un appel cinq minutes plus tard
     pour une lecture dont le moment est déjà passé."""
-    state = {"slots": {"17:00": "2026-08-26T17:01:00"}}
-    assert coach_trader.due_slot(WED_1705, state) is None
+    state = {"slots": {"15:40": "2026-08-26T15:41:00"}}
+    assert coach_trader.due_slot(WED_1545, state) is None
 
 
 def test_the_next_slot_still_runs_after_one_was_missed():
-    """Sauter 18h30 (jamais marqué) ne condamne pas la journée : 20h00 tourne
+    """Sauter 15h40 (jamais marqué) ne condamne pas la journée : 21h40 tourne
     normalement dès qu'on l'atteint."""
-    state = {"slots": {"17:00": "2026-08-26T17:01:00"}}
-    assert coach_trader.due_slot(WED_2005, state) == "20:00"
+    state = {"slots": {"09:10": "2026-08-26T09:11:00"}}
+    assert coach_trader.due_slot(WED_2145, state) == "21:40"
 
 
 def test_the_weekend_stays_crypto_only_via_tradable_now():

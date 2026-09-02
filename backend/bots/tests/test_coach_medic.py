@@ -29,6 +29,39 @@ def _row(action, accepted, reason=None):
            "accepted": accepted, "reason": reason, "symbol": "", "detail": None}
 
 
+def test_detect_llm_failure_ignores_interleaved_digest_noise():
+    """VECU (02/09 16:19->00:08, 6 echecs, 17 ticks cron, ZERO detection) :
+    les digests en panne loggent reason=no_block et s'intercalent entre les
+    passes llm_failed — la fenetre « 2 dernieres lignes » n'etait jamais
+    2 echecs consecutifs. La detection ne regarde QUE les lignes de PASSE
+    (action=pass) : les 2 plus recentes en llm_failed = panne. Lignes REELLES
+    du registre de prod, verbatim."""
+    rows = [
+        {"ts": "2026-09-03T00:08:50", "source": "daily", "action": "pass",
+         "accepted": False, "reason": "llm_failed"},
+        {"ts": "2026-09-02T22:19:05.868465", "source": "digest",
+         "action": "parse", "accepted": False, "reason": "no_block"},
+        {"ts": "2026-09-02T21:44:05", "source": "daily", "action": "pass",
+         "accepted": False, "reason": "llm_failed"},
+    ]
+    failure = medic.detect_llm_failure(rows)
+    assert failure is not None
+
+
+def test_detect_llm_failure_quiet_digest_alone_is_not_a_fault():
+    """Un no_block un jour calme est LEGITIME — et une passe reussie entre
+    deux echecs coupe la serie."""
+    rows = [
+        {"ts": "2026-09-02T20:00:00", "source": "digest", "action": "parse",
+         "accepted": False, "reason": "no_block"},
+        {"ts": "2026-09-02T18:00:00", "source": "daily", "action": "pass",
+         "accepted": True, "reason": None},
+        {"ts": "2026-09-02T17:00:00", "source": "daily", "action": "pass",
+         "accepted": False, "reason": "llm_failed"},
+    ]
+    assert medic.detect_llm_failure(rows) is None
+
+
 def test_detect_llm_failure_sorts_by_timestamp_never_trusts_file_order():
     """VECU (31/08 19h-20h) : la ligne du digest de 17:00 s'etait inseree
     APRES celles de 20:03 — les 2 echecs 17:13/18:33 n'etaient pas en tete de

@@ -1557,9 +1557,9 @@ def test_maybe_run_never_raises_even_when_everything_burns():
     assert out["reason"] == "error"
     # LOT 5 : le creneau retenu voyage avec le resultat -- savoir LEQUEL a
     # tourne est la premiere chose qu'on regarde quand la cadence surprend.
-    # LOT 8 : FRIDAY_ON_TIME (17h00 Rome) tombe maintenant PILE sur le
-    # creneau "17:00" du nouveau planning a 8 creneaux.
-    assert out["slot"] == "17:00"
+    # REGIME SEPTEMBRE : 17h00 Rome tombe dans la fenetre du creneau 15:40
+    # (non consomme dans ce test) — c'est LUI qui est retenu.
+    assert out["slot"] == "15:40"
 
 
 @pytest.mark.real_coach_trader
@@ -1598,8 +1598,8 @@ def test_the_guardian_never_runs_the_same_cycle_as_a_slot_pass():
     """Le verrou : une passe créneau vient DÉJÀ de relire tout le livre, le
     gardien serait redondant dans le même cycle de 5 minutes."""
     guardian = _Spy()
-    out = _run_hook(now=WED_1705, guardian=guardian)
-    assert out["slot"] == "17:00"
+    out = _run_hook(now=WED_1545, guardian=guardian)
+    assert out["slot"] == "15:40"
     assert out["passed"] is True
     assert guardian.calls == []
     assert out["guarded"] is False
@@ -1632,16 +1632,17 @@ SUNDAY_1805 = datetime(2026, 8, 30, 16, 5, 0, tzinfo=timezone.utc)  # 18:05 Rome
 
 @pytest.mark.real_coach_trader
 def test_the_hook_runs_eight_passes_on_a_weekday():
-    """La cadence du mois x20 : huit créneaux, et chacun tourne UNE fois."""
+    """Régime septembre : TROIS créneaux, chacun tourne UNE fois — les
+    moments intermédiaires (11:35, 14:05…) ne re-déclenchent pas un créneau
+    déjà consommé."""
     pass_ = _Spy()
     slots = []
     for moment in (WED_0915, WED_1135, WED_1405, WED_1545,
                   WED_1705, WED_1835, WED_2005, WED_2145):
         out = _run_hook(now=moment, pass_=pass_)
-        slots.append(out["slot"])
+        slots.append(out.get("slot"))
     assert len(pass_.calls) == coach_trader.PASSES_PER_DAY
-    assert slots == ["09:10", "11:30", "14:00", "15:40",
-                     "17:00", "18:30", "20:00", "21:40"]
+    assert [s for s in slots if s] == ["09:10", "15:40", "21:40"]
 
 
 @pytest.mark.real_coach_trader
@@ -1673,11 +1674,11 @@ def test_the_weekend_still_runs_its_two_slots():
 
 @pytest.mark.real_coach_trader
 def test_arming_one_slot_does_not_disarm_the_others():
-    """Le créneau de 18h30 ne doit pas effacer la trace de celui de 15h40 :
+    """Le créneau de 21h40 ne doit pas effacer la trace de celui de 15h40 :
     sinon l'état repartirait à zéro et 15h40 pourrait re-tourner."""
     _run_hook(now=WED_1545, pass_=_Spy())
-    _run_hook(now=WED_1835, pass_=_Spy())
-    assert set(coach_trader.load_state()["slots"]) == {"15:40", "18:30"}
+    _run_hook(now=WED_2145, pass_=_Spy())
+    assert set(coach_trader.load_state()["slots"]) == {"15:40", "21:40"}
 
 
 # --------------------------------------------------------------------------- #

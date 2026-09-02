@@ -99,14 +99,35 @@ def detect_llm_failure(ledger_rows):
     ligne en échec n'est pas une panne — le modèle a pu simplement hoqueter
     une fois."""
     rows = [r for r in (ledger_rows or []) if isinstance(r, dict)]
-    # VECU (31/08) : l'ordre du fichier N'EST PAS fiable (une ligne de digest
-    # de 17:00 s'etait inseree apres celles de 20:03 — la panne 17:13/18:33
-    # est restee invisible aux ticks de 19h-20h). On trie par ts, toujours.
+    # VECU (31/08) : l'ordre du fichier N'EST PAS fiable — tri par ts, toujours.
+    # VECU (02/09, 6 echecs / 17 ticks cron / ZERO detection) : les digests en
+    # panne loggent reason=no_block et S'INTERCALENT entre les passes ratees —
+    # la fenetre « 2 dernieres lignes toutes sources » n'etait jamais 2 echecs
+    # consecutifs. Le signal fiable est la PASSE PLANIFIEE : on ne regarde que
+    # les lignes action=="pass", et les 2 plus recentes en llm_failed = panne.
+    # (Un no_block un jour calme est legitime : il ne pese pas.)
     rows.sort(key=lambda r: str(r.get("ts") or ""), reverse=True)
-    if len(rows) < 2:
+    # On MARCHE du plus recent vers le passe : les echecs (llm_failed /
+    # parse_failed) se comptent, les no_block sont NEUTRES (un digest sans
+    # bloc un jour calme est legitime — il ne compte ni ne coupe), et le
+    # premier SUCCES (accepted True — une passe reussie loggue hold/note/
+    # ordre, jamais action="pass") COUPE la serie. 2 echecs avant le premier
+    # succes = panne. VECU 02/09 : 6 echecs / 17 ticks cron / zero detection,
+    # les no_block intercales masquaient la serie.
+    failures = []
+    for row in rows:
+        if _is_llm_failure_row(row):
+            failures.append(row)
+            if len(failures) >= 2:
+                break
+            continue
+        if row.get("action") == "parse" and row.get("reason") == "no_block":
+            continue
+        if row.get("accepted") is True:
+            break
+    if len(failures) < 2:
         return None
-    if not (_is_llm_failure_row(rows[0]) and _is_llm_failure_row(rows[1])):
-        return None
+    rows = failures
     extract = "%s|%s" % (rows[0].get("reason") or rows[0].get("action"),
                          rows[1].get("reason") or rows[1].get("action"))
     return Failure(FAIL_LLM, _sig(FAIL_LLM, extract),

@@ -148,8 +148,14 @@ RUN_AFTER_HOUR = 17       # ancienne passe unique : jamais avant 17 h LOCALES
 #   20:00 — après-midi américaine.
 #   21:40 — dernière heure américaine : c'est là que les séances se décident.
 # --------------------------------------------------------------------------- #
-WEEKDAY_SLOTS = ("09:10", "11:30", "14:00", "15:40",
-                 "17:00", "18:30", "20:00", "21:40")
+WEEKDAY_SLOTS = ("09:10", "15:40", "21:40")
+# REGIME SEPTEMBRE (03/09) : le x20 d'aout est fini — le compte Max est
+# PARTAGE entre le coach et les sessions de developpement, et la soiree du
+# 02/09 (6 passes affamees de 16h a minuit) a montre le plafond. 3 creneaux :
+# matin EU, ouverture US, derniere heure US. Les convergences, le gardien
+# (declenche sur mouvement reel) et les embuscades mecaniques couvrent le
+# reste. Remonter = restaurer le tuple du regime x20 ci-dessous :
+#   ("09:10", "11:30", "14:00", "15:40", "17:00", "18:30", "20:00", "21:40")
 WEEKEND_SLOTS = ("11:00", "18:00")   # crypto UNIQUEMENT (cf. :func:`tradable_now`)
 PASSES_PER_DAY = len(WEEKDAY_SLOTS)
 MAX_FOCUS = 4                       # dossiers instruits par créneau, au plus
