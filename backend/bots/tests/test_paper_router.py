@@ -19,7 +19,7 @@ from fastapi.testclient import TestClient
 
 from backend.auth.utils import get_current_user
 from backend.bots import paper_router as pr
-from backend.bots.paper import coach, fees, mood, quotes, store
+from backend.bots.paper import coach, discovery, fees, mood, quotes, store
 
 # Les VRAIES fonctions du balayage frais, capturées AVANT que ``make_client`` ne
 # les neutralise (même patron que ``_REAL_COLLECT_SOCIAL`` côté radar) : les
@@ -173,6 +173,13 @@ def make_client(tmp_path, monkeypatch, role="admin"):
     # depuis un test qui se croit hors ligne. Les tests dédiés réinstallent la
     # vraie fonction avec le PONT doublé (cf. ``_agenda_double``).
     monkeypatch.setattr(pr, "_agenda_macro", lambda: {})
+    # QUATRIÈME et CINQUIÈME portes réseau (LOT 11) : la 5e source des
+    # candidats du coach (tendance Yahoo) et l'enrichissement RSS d'un dossier
+    # « tendance » sans presse mémorisée. Même doctrine que les trois portes
+    # ci-dessus — neutralisées par défaut, les tests dédiés réinstallent leur
+    # propre doublure.
+    monkeypatch.setattr(discovery, "discovery_candidates", lambda *a, **kw: [])
+    monkeypatch.setattr(pr, "_coach_discovery_news", lambda symbol: [])
 
     app = FastAPI()
     app.include_router(pr.router)
@@ -6499,19 +6506,20 @@ def test_coach_candidate_symbols_dedupes_across_all_four_sources(tmp_path, monke
 def test_coach_candidate_symbols_caps_the_fusion_at_max_coach_candidates(
         tmp_path, monkeypatch):
     """Le plafond porte sur le TOTAL fusionné, pas sur chaque source prise
-    séparément : 2 positions + 5 radar + 3 watchlist + 5 pool = 15, coupé à
-    :data:`pr.MAX_COACH_CANDIDATES` (14) -- le DERNIER membre du pool tombe."""
+    séparément : 2 positions + 5 radar + 5 watchlist + 5 pool = 17, coupé à
+    :data:`pr.MAX_COACH_CANDIDATES` (16, LOT 11 -- monté de 14 pour laisser
+    de la place à la découverte) -- le DERNIER membre du pool tombe."""
     c, _ = make_client(tmp_path, monkeypatch)
-    assert pr.MAX_COACH_CANDIDATES == 14
+    assert pr.MAX_COACH_CANDIDATES == 16
     positions = [pr.models.Position(symbol="POS1.SW"),
                 pr.models.Position(symbol="POS2.SW")]
     hyps = [_open_hyp(["RAD%d" % i for i in range(1, 6)], "h1")]
-    _seed_watchlist([{"symbol": "WL%d" % i} for i in range(1, 4)])
+    _seed_watchlist([{"symbol": "WL%d" % i} for i in range(1, 6)])
 
     symbols = pr._coach_candidate_symbols(hyps, positions=positions)
     assert symbols == ["POS1.SW", "POS2.SW",
                        "RAD1", "RAD2", "RAD3", "RAD4", "RAD5",
-                       "WL1", "WL2", "WL3",
+                       "WL1", "WL2", "WL3", "WL4", "WL5",
                        "NESN.SW", "NOVN.SW", "RO.SW", "UBSG.SW"]  # MC.PA coupé
     assert len(symbols) == pr.MAX_COACH_CANDIDATES
 
@@ -7890,3 +7898,290 @@ def test_l_api_expose_le_PLAN_de_l_embuscade(tmp_path, monkeypatch):
         assert field in armed, field
     assert armed["kind"] == "stop" and armed["stop_price"] == 110.0
     assert armed["target"] == 130.0 and armed["expires_at"]
+
+
+# =========================================================================== #
+#  LOT 11 -- la DÉCOUVERTE : une 5e source, les titres qui BOUGENT aujourd'hui
+#
+#  Retour utilisateur (03/09) : les quatre sources existantes (positions,
+#  radar, watchlist, pool européen) gravitent vers les GRANDS NOMS par
+#  construction. ``discovery.discovery_candidates`` (module dédié, testé à
+#  part dans ``test_paper_discovery.py``) apporte le flux ``trending`` Yahoo.
+#  Ici on ne teste QUE le CÂBLAGE : ordre, dédoublonnage, plafond, provenance.
+# =========================================================================== #
+
+class _DiscoverySpy(object):
+    """Remplace ``discovery.discovery_candidates`` -- capture les arguments
+    ET rend jusqu'à ``cap`` lignes de ``rows`` (même contrat que le vrai)."""
+
+    def __init__(self, rows):
+        self.rows = list(rows)
+        self.calls = []
+
+    def __call__(self, existing_symbols, now, quote=None, cap=4):
+        self.calls.append({"existing": list(existing_symbols or []),
+                           "now": now, "cap": cap})
+        return list(self.rows)[:cap]
+
+
+def test_coach_candidate_symbols_appends_discovery_as_the_fifth_source(
+        tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+    spy = _DiscoverySpy([{"symbol": "CHPT", "source": discovery.CANDIDATE_SOURCE_DISCOVERY}])
+    monkeypatch.setattr(discovery, "discovery_candidates", spy)
+
+    symbols = pr._coach_candidate_symbols([], positions=[])
+    # (a) position -> (b) radar -> (c) watchlist -> (d) pool européen ->
+    # (e) découverte, dans cet ordre -- la découverte suit TOUJOURS le pool.
+    assert symbols == pr._coach_europe_pool() + ["CHPT"]
+    assert len(spy.calls) == 1
+
+
+def test_discovery_candidates_already_present_are_never_duplicated(
+        tmp_path, monkeypatch):
+    """Un titre que la découverte ressort alors qu'il est DÉJÀ dans l'univers
+    (une autre source l'a déjà apporté) ne compte pas deux fois -- défense en
+    profondeur même si ``discovery.discovery_candidates`` s'en charge déjà
+    normalement (testé à part)."""
+    c, _ = make_client(tmp_path, monkeypatch)
+    spy = _DiscoverySpy([{"symbol": "NESN.SW", "source": "tendance"},
+                        {"symbol": "CHPT", "source": "tendance"}])
+    monkeypatch.setattr(discovery, "discovery_candidates", spy)
+    positions = [pr.models.Position(symbol="NESN.SW")]
+
+    symbols = pr._coach_candidate_symbols([], positions=positions)
+    assert symbols.count("NESN.SW") == 1
+    assert "CHPT" in symbols
+
+
+def test_discovery_receives_the_symbols_already_retained_as_existing(
+        tmp_path, monkeypatch):
+    """``existing_symbols`` porte TOUT ce que les quatre premières sources ont
+    déjà retenu -- la découverte doit savoir ce qu'il ne faut PAS reproposer."""
+    c, _ = make_client(tmp_path, monkeypatch)
+    spy = _DiscoverySpy([])
+    monkeypatch.setattr(discovery, "discovery_candidates", spy)
+    positions = [pr.models.Position(symbol="POS1.SW")]
+    hyps = [_open_hyp(["RAD1"], "h1")]
+    _seed_watchlist([{"symbol": "WL1"}])
+
+    pr._coach_candidate_symbols(hyps, positions=positions)
+    existing = set(spy.calls[0]["existing"])
+    assert {"POS1.SW", "RAD1", "WL1"} <= existing
+    assert existing >= set(pr._coach_europe_pool())
+
+
+def test_discovery_is_capped_by_the_room_left_under_the_total_ceiling(
+        tmp_path, monkeypatch):
+    """Le TOTAL (quatre sources + découverte) ne dépasse jamais
+    :data:`pr.MAX_COACH_CANDIDATES` -- la découverte ne reçoit QUE la place
+    restante, jamais son propre cap par défaut aveuglément."""
+    c, _ = make_client(tmp_path, monkeypatch)
+    assert pr.MAX_COACH_CANDIDATES == 16
+    spy = _DiscoverySpy([{"symbol": "T%d" % i, "source": "tendance"}
+                        for i in range(10)])
+    monkeypatch.setattr(discovery, "discovery_candidates", spy)
+    # 3 positions + 4 radar + 3 watchlist + 5 pool (ENTIER, rien coupé) = 15
+    # -- il ne reste qu'UNE place pour la découverte.
+    positions = [pr.models.Position(symbol="POS%d.SW" % i) for i in range(3)]
+    hyps = [_open_hyp(["RAD%d" % i for i in range(1, 5)], "h1")]
+    _seed_watchlist([{"symbol": "WL%d" % i} for i in range(1, 4)])
+
+    symbols = pr._coach_candidate_symbols(hyps, positions=positions)
+    assert len(symbols) == pr.MAX_COACH_CANDIDATES
+    assert spy.calls[0]["cap"] == 1
+    assert symbols[-1] == "T0"
+
+
+def test_discovery_is_never_called_once_the_ceiling_is_already_reached(
+        tmp_path, monkeypatch):
+    """Aucune place restante -> aucune raison d'appeler la découverte (elle
+    ferait du réseau pour rien)."""
+    c, _ = make_client(tmp_path, monkeypatch)
+    spy = _DiscoverySpy([{"symbol": "CHPT", "source": "tendance"}])
+    monkeypatch.setattr(discovery, "discovery_candidates", spy)
+    hyps = [_open_hyp(["T%d" % i for i in range(20)], "h1")]
+
+    symbols = pr._coach_candidate_symbols(hyps)
+    assert len(symbols) == pr.MAX_COACH_CANDIDATES
+    assert spy.calls == []
+
+
+def test_discovery_failure_is_absorbed_like_the_other_three_sources(
+        tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+
+    def boom(*a, **kw):
+        raise RuntimeError("Yahoo down")
+    monkeypatch.setattr(discovery, "discovery_candidates", boom)
+
+    symbols = pr._coach_candidate_symbols([], positions=[])
+    assert symbols == pr._coach_europe_pool()
+
+
+def test_coach_candidates_tags_a_discovery_row_with_the_trend_source(
+        tmp_path, monkeypatch):
+    """La ligne découverte traverse le MÊME pipeline de cotation que les
+    quatre autres sources (``_coach_quote``/``_coach_technical``/
+    ``tradable_now``) -- rien de spécial à coder côté ``_coach_candidates``."""
+    c, market = make_client(tmp_path, monkeypatch)
+    market.prices["CHPT"] = (12.0, "USD", "ChargePoint")
+    spy = _DiscoverySpy([{"symbol": "CHPT", "source": "tendance"}])
+    monkeypatch.setattr(discovery, "discovery_candidates", spy)
+
+    candidates = pr._coach_candidates([], FIXED_NOW, positions=[])
+    row = next(r for r in candidates if r["symbol"] == "CHPT")
+    assert row["source"] == pr.CANDIDATE_SOURCE_DISCOVERY == "tendance"
+    assert row["price_chf"] > 0
+
+
+# --- le prompt de tri : la provenance "tendance" + la phrase de prudence ---
+
+def test_coach_candidates_source_field_reaches_the_screen_prompt(
+        tmp_path, monkeypatch):
+    """Bout en bout minimal : un candidat de découverte porte bien
+    ``source == "tendance"`` dans le contexte que le prompt de tri sérialise
+    (le contenu exact du prompt est épinglé côté ``test_paper_llm.py``)."""
+    c, market = make_client(tmp_path, monkeypatch)
+    market.prices["CHPT"] = (12.0, "USD", "ChargePoint")
+    monkeypatch.setattr(discovery, "discovery_candidates",
+                        _DiscoverySpy([{"symbol": "CHPT", "source": "tendance"}]))
+    portfolio = pr._ensure_coach_account()
+    context = pr._coach_pass_context(portfolio, FIXED_NOW)
+    row = next(r for r in context["candidates"] if r["symbol"] == "CHPT")
+    assert row["source"] == "tendance"
+
+
+# =========================================================================== #
+#  LOT 11 -- le dossier d'un élu « tendance » : un enrichissement RSS
+#  best-effort, UN SEUL appel réseau, jamais bloquant.
+# =========================================================================== #
+
+class _FakeRssModule(object):
+    """Un ``newswatch`` minimal pour ``_coach_discovery_news`` -- expose
+    exactement les quatre fonctions PURES qu'il réutilise (les VRAIES, posées
+    en attribut d'INSTANCE pour ne pas se faire lier comme des méthodes)."""
+
+    def __init__(self, xml_by_symbol=None, boom=False):
+        from backend.bots.paper import newswatch as _real_newswatch
+        self.xml_by_symbol = dict(xml_by_symbol or {})
+        self.boom = boom
+        self.fetch_calls = []
+        self.parse_rss = _real_newswatch.parse_rss
+        self.classify = _real_newswatch.classify
+        self.is_advice = _real_newswatch.is_advice
+        self.NEUTRAL_SENTIMENT = _real_newswatch.NEUTRAL_SENTIMENT
+
+    def _rss_url(self, symbol):
+        return "http://fake.rss/%s" % symbol
+
+    def _fetch_rss(self, url):
+        self.fetch_calls.append(url)
+        if self.boom:
+            raise IOError("flux RSS injoignable")
+        symbol = url.rsplit("/", 1)[-1]
+        return self.xml_by_symbol.get(symbol, "")
+
+
+def _rss_xml(*titles):
+    items = "".join(
+        "<item><title>%s</title><link>http://x/%d</link>"
+        "<pubDate>Mon, 01 Sep 2026 08:00:00 GMT</pubDate></item>" % (t, i)
+        for i, t in enumerate(titles))
+    return "<rss><channel>%s</channel></rss>" % items
+
+
+def test_coach_discovery_news_parses_the_fetched_feed(tmp_path, monkeypatch):
+    module = _FakeRssModule({"CHPT": _rss_xml("ChargePoint beats estimates")})
+    monkeypatch.setattr(pr, "_newswatch", lambda: module)
+
+    titles = pr._coach_discovery_news("CHPT")
+    assert titles == [{"title": "ChargePoint beats estimates",
+                       "sentiment": "pos", "ts": None}]
+    assert module.fetch_calls == ["http://fake.rss/CHPT"]
+
+
+def test_coach_discovery_news_makes_at_most_one_network_call(tmp_path, monkeypatch):
+    module = _FakeRssModule({"CHPT": _rss_xml("A", "B", "C")})
+    monkeypatch.setattr(pr, "_newswatch", lambda: module)
+
+    pr._coach_discovery_news("CHPT")
+    assert len(module.fetch_calls) == 1
+
+
+def test_coach_discovery_news_survives_a_network_failure(tmp_path, monkeypatch):
+    module = _FakeRssModule(boom=True)
+    monkeypatch.setattr(pr, "_newswatch", lambda: module)
+    assert pr._coach_discovery_news("CHPT") == []
+
+
+def test_coach_discovery_news_survives_a_missing_module(tmp_path, monkeypatch):
+    def absent():
+        raise ImportError("newswatch non déployé")
+    monkeypatch.setattr(pr, "_newswatch", absent)
+    assert pr._coach_discovery_news("CHPT") == []
+
+
+def test_coach_discovery_news_drops_advice_titles(tmp_path, monkeypatch):
+    module = _FakeRssModule({"CHPT": _rss_xml("3 actions à acheter maintenant",
+                                              "ChargePoint wins contract")})
+    monkeypatch.setattr(pr, "_newswatch", lambda: module)
+    titles = pr._coach_discovery_news("CHPT")
+    assert [t["title"] for t in titles] == ["ChargePoint wins contract"]
+
+
+def test_coach_discovery_news_caps_at_dossier_news_per_symbol(tmp_path, monkeypatch):
+    module = _FakeRssModule({"CHPT": _rss_xml(*["Titre %d" % i for i in range(20)])})
+    monkeypatch.setattr(pr, "_newswatch", lambda: module)
+    titles = pr._coach_discovery_news("CHPT")
+    assert len(titles) == pr.DOSSIER_NEWS_PER_SYMBOL
+
+
+def test_coach_dossier_enriches_only_a_discovery_symbol_with_empty_news(
+        tmp_path, monkeypatch):
+    """Le coup d'œil RSS ne se déclenche QUE pour un élu (a) sourcé
+    ``tendance`` ET (b) absent de la presse déjà mémorisée -- jamais pour les
+    quatre autres sources, jamais quand la mémoire a déjà de quoi le nourrir."""
+    c, market = make_client(tmp_path, monkeypatch)
+    calls = []
+    monkeypatch.setattr(pr, "_coach_discovery_news",
+                        lambda symbol: calls.append(symbol) or
+                        [{"title": "Titre neuf", "sentiment": "pos", "ts": None}])
+
+    candidates = [{"symbol": "CHPT", "source": "tendance"},
+                 {"symbol": "NESN.SW", "source": pr.CANDIDATE_SOURCE_POSITION},
+                 {"symbol": "AAPL", "source": "tendance"}]
+    # AAPL a déjà de la presse mémorisée -> pas d'enrichissement pour lui.
+    news = [{"symbol": "AAPL", "title": "Apple reports Q3", "sentiment": "pos",
+            "ts": "2026-09-01T00:00:00"}]
+    monkeypatch.setattr(pr, "_recent_news", lambda username: news)
+    monkeypatch.setattr(pr, "_backfill_digest", lambda symbols: {})
+    monkeypatch.setattr(pr, "_whale_moves", lambda: [])
+
+    dossiers = pr._coach_dossiers(["CHPT", "NESN.SW", "AAPL"],
+                                  pr.coach_trader.COACH_USERNAME,
+                                  candidates=candidates)
+    assert calls == ["CHPT"]                        # ni NESN.SW, ni AAPL
+    by_symbol = {d["symbol"]: d for d in dossiers}
+    assert by_symbol["CHPT"]["news"] == [
+        {"title": "Titre neuf", "sentiment": "pos", "ts": None}]
+    assert by_symbol["AAPL"]["news"][0]["title"] == "Apple reports Q3"
+
+
+def test_run_coach_daily_pass_threads_candidates_into_the_dossiers(
+        tmp_path, monkeypatch):
+    """Bout en bout : la passe quotidienne passe bien ``context["candidates"]``
+    à ``_coach_dossiers`` (sans quoi la provenance ne serait jamais visible à
+    l'étape du dossier)."""
+    c, market = make_client(tmp_path, monkeypatch)
+    market.prices["CHPT"] = (12.0, "USD", "ChargePoint")
+    market.candles["CHPT"] = _serie()
+    monkeypatch.setattr(discovery, "discovery_candidates",
+                        _DiscoverySpy([{"symbol": "CHPT", "source": "tendance"}]))
+    seen = []
+    monkeypatch.setattr(pr, "_coach_discovery_news",
+                        lambda symbol: seen.append(symbol) or [])
+    speaker = _Speaker(_focus_answer(["CHPT"]), _actions_answer([]))
+
+    pr.run_coach_daily_pass(FIXED_NOW, claude=speaker)
+    assert seen == ["CHPT"]

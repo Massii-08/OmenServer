@@ -42,10 +42,10 @@ from pydantic import BaseModel
 
 from backend.auth.models import User
 from backend.auth.permissions import require_role
-from backend.bots.paper import (alerts, board, coach, coach_trader, entities,
-                                fees, fills, graph, idea_journal, llm, models,
-                                mood, price_alerts, quotes, replay, risk,
-                                store, ta, tradestats)
+from backend.bots.paper import (alerts, board, coach, coach_trader, discovery,
+                                entities, fees, fills, graph, idea_journal, llm,
+                                models, mood, price_alerts, quotes, replay,
+                                risk, store, ta, tradestats)
 
 logger = logging.getLogger("omenserver")
 
@@ -1202,19 +1202,18 @@ COACH_DISPLAY = "Coach"
 COACH_HOLD_DETAIL = "aucune action : le coach a choisi de ne rien changer"
 
 # Le nombre de tickers DISTINCTS que le coach reçoit COTÉS (LOT 4bis, étendu
-# LOT 8b) — le plafond du TOTAL fusionné de :func:`_coach_candidate_entries`,
-# pas de chaque source prise seule. Monté de 10 à 14 avec la fusion à quatre
-# sources : de la place pour couvrir positions + radar + watchlist + le pool
-# européen permanent SANS que la dernière source évince systématiquement les
-# précédentes.
-MAX_COACH_CANDIDATES = 14
+# LOT 8b, étendu LOT 11) — le plafond du TOTAL fusionné de
+# :func:`_coach_candidate_entries`, pas de chaque source prise seule. Monté de
+# 14 à 16 avec la CINQUIÈME source (la découverte) : deux places de plus pour
+# qu'elle ait une chance d'exister sans jamais évincer les quatre premières.
+MAX_COACH_CANDIDATES = 16
 
 # LOT 8b — mesuré en prod le 31/08 : aux créneaux du matin européen (Lot 8),
 # l'univers du coach (jusqu'ici les seuls tickers des hypothèses radar
 # ouvertes) ne laissait plus, une fois filtré par ``coach_trader.
 # tradable_now``, que NOVN.SW et ROG.SW sur 26 candidats — le radar
 # hypothèse sur des news dominées US (24 tickers US sur 26 ce jour-là).
-# ``_coach_candidate_entries`` fusionne désormais QUATRE sources, dans cet
+# ``_coach_candidate_entries`` fusionne CINQ sources (LOT 11 : +1), dans cet
 # ORDRE DE PRIORITÉ (la première apparition d'un symbole GAGNE) :
 #   (a) les positions OUVERTES du coach — il doit toujours voir ce qu'il
 #       détient, quoi qu'il arrive ailleurs ;
@@ -1225,9 +1224,16 @@ MAX_COACH_CANDIDATES = 14
 #       tickers européens de ``entities._COMPANIES``, TOUJOURS candidats,
 #       hypothèse ou pas. C'est lui qui rend les créneaux du matin européen
 #       enfin utiles : même un livre neuf, un radar muet et une watchlist
-#       vide laissent au coach un univers suisse/européen à examiner.
-# Chaque candidat garde son marquage ``tradable`` (LOT 8) — le pool ne
-# change rien à CETTE règle, il change seulement d'où vient l'univers.
+#       vide laissent au coach un univers suisse/européen à examiner ;
+#   (e) la DÉCOUVERTE (LOT 11, :mod:`backend.bots.paper.discovery`) — le flux
+#       ``trending`` Yahoo, filtré (absent des quatre sources précédentes,
+#       tradable, cotable). Retour utilisateur du 03/09 : les quatre sources
+#       ci-dessus gravitent vers les GRANDS NOMS par construction (la table
+#       ``entities``, le backfill, le pool EU le sont tous) — la découverte
+#       apporte les titres qui BOUGENT aujourd'hui, connus ou non.
+# Chaque candidat garde son marquage ``tradable`` (LOT 8) — le pool ni la
+# découverte ne changent rien à CETTE règle, ils changent seulement d'où
+# vient l'univers.
 
 # Le SEUL compte réel dont la watchlist alimente le coach (LOT 8b, source
 # (c) ci-dessus). Le coach est un compte UNIQUE, pas un assistant par
@@ -1236,14 +1242,18 @@ MAX_COACH_CANDIDATES = 14
 # une en usage réel.
 COACH_WATCHLIST_OWNER = "Massii08"
 
-# Les quatre provenances possibles d'un candidat (LOT 8b, point 2) : le
-# prompt de tri (``llm.build_coach_screen_prompt``) les explique une fois
-# pour toutes, EXACTEMENT ces quatre chaînes — le coach sait alors POURQUOI
-# un titre est sous ses yeux et peut le dire dans ses notes.
+# Les CINQ provenances possibles d'un candidat (LOT 8b, point 2 ; LOT 11 :
+# +``CANDIDATE_SOURCE_DISCOVERY``) : le prompt de tri (``llm.
+# build_coach_screen_prompt``) les explique une fois pour toutes, EXACTEMENT
+# ces cinq chaînes — le coach sait alors POURQUOI un titre est sous ses yeux
+# et peut le dire dans ses notes.
 CANDIDATE_SOURCE_POSITION = "position"
 CANDIDATE_SOURCE_RADAR = "radar"
 CANDIDATE_SOURCE_WATCHLIST = "watchlist"
 CANDIDATE_SOURCE_EUROPE_POOL = "europe_pool"
+# Source unique de vérité : la chaîne vit dans ``discovery.py`` (module qui
+# ne connaît PAS ``paper_router``, pour éviter tout import circulaire).
+CANDIDATE_SOURCE_DISCOVERY = discovery.CANDIDATE_SOURCE_DISCOVERY
 
 
 def _num(value: Any) -> Optional[float]:
@@ -1338,12 +1348,14 @@ def _coach_europe_pool() -> List[str]:
            if coach_trader.market_of(symbol) == "europe"]
 
 
-def _coach_candidate_entries(hypotheses: Any,
-                             positions: Any = None) -> List[Tuple[str, str]]:
-    """La fusion ORDONNÉE des QUATRE sources de l'univers du coach (LOT 8b),
-    en paires ``(symbole canonique, source)`` — PUR hormis la lecture
-    best-effort de la watchlist. Voir le bloc de constantes juste au-dessus
-    de :data:`MAX_COACH_CANDIDATES` pour l'ordre de priorité et sa raison.
+def _coach_candidate_entries(hypotheses: Any, positions: Any = None,
+                             now: Any = None) -> List[Tuple[str, str]]:
+    """La fusion ORDONNÉE des CINQ sources de l'univers du coach (LOT 8b,
+    LOT 11), en paires ``(symbole canonique, source)`` — PUR hormis la
+    lecture best-effort de la watchlist ET la découverte (réseau + cache,
+    best-effort STRICT elle aussi). Voir le bloc de constantes juste
+    au-dessus de :data:`MAX_COACH_CANDIDATES` pour l'ordre de priorité et sa
+    raison.
 
     Dédoublonnée par symbole : la PREMIÈRE apparition gagne, aussi bien la
     valeur que sa ``source`` — une position déjà détenue qui se trouve AUSSI
@@ -1387,6 +1399,30 @@ def _coach_candidate_entries(hypotheses: Any,
         entries.append((symbol, source))
         if len(entries) >= MAX_COACH_CANDIDATES:
             break
+
+    # LOT 11 — (e) la découverte, SEULEMENT s'il reste de la place : inutile
+    # de faire du réseau pour un candidat qui serait de toute façon coupé.
+    room = MAX_COACH_CANDIDATES - len(entries)
+    if room > 0:
+        try:
+            discovered = discovery.discovery_candidates(
+                list(seen_symbols), now, cap=min(discovery.DEFAULT_CAP, room))
+        except Exception as e:                  # noqa: BLE001 — best-effort
+            logger.warning("paper coach: découverte indisponible (%s)",
+                           type(e).__name__)
+            discovered = []
+        for candidate in discovered or []:
+            if not isinstance(candidate, dict):
+                continue
+            symbol = quotes.canonical(candidate.get("symbol")) \
+                if isinstance(candidate.get("symbol"), str) else ""
+            if not symbol or symbol in seen_symbols:
+                continue                          # défense en profondeur
+            seen_symbols.add(symbol)
+            entries.append((symbol, CANDIDATE_SOURCE_DISCOVERY))
+            if len(entries) >= MAX_COACH_CANDIDATES:
+                break
+
     return entries
 
 
@@ -1426,7 +1462,7 @@ def _coach_candidates(hypotheses: Any, now: Any = None,
     symbole qui plante N'EMPÊCHE PAS les suivants d'être cotés.
     """
     out: List[Dict[str, Any]] = []
-    for symbol, source in _coach_candidate_entries(hypotheses, positions):
+    for symbol, source in _coach_candidate_entries(hypotheses, positions, now):
         try:
             quote = _coach_quote(symbol)
         except Exception as e:                  # noqa: BLE001 — jamais fatal
@@ -2487,10 +2523,46 @@ def _coach_pass_context(portfolio: models.Portfolio,
     return context
 
 
+def _coach_discovery_news(symbol: str) -> List[Dict[str, Any]]:
+    """Un coup d'œil RSS best-effort pour un élu « tendance » (LOT 11) qui
+    n'a AUCUNE presse déjà mémorisée : un titre neuf est, par construction,
+    absent de la veille (personne ne le suivait avant qu'il ne se mette à
+    bouger). Sans ce coup d'œil, son dossier serait vide de tout contexte de
+    presse alors que ``_coach_dossier`` en porte pour les quatre autres
+    sources.
+
+    UN SEUL appel réseau (le même flux RSS per-symbole que la veille,
+    ``newswatch._fetch_rss``/``_rss_url``), JAMAIS bloquant : toute panne
+    (module absent, réseau, XML illisible) rend ``[]``, exactement comme
+    ``_coach_technical``/``_coach_quote`` pour leurs propres pannes.
+    """
+    try:
+        module = _newswatch()
+    except ImportError:
+        return []
+    try:
+        xml_text = module._fetch_rss(module._rss_url(symbol))
+    except Exception as e:                      # noqa: BLE001 — best-effort
+        logger.warning("paper coach: presse tendance indisponible pour %s (%s)",
+                       symbol, type(e).__name__)
+        return []
+    titles: List[Dict[str, Any]] = []
+    for item in module.parse_rss(xml_text):
+        title = item.get("title") or ""
+        if module.is_advice(title):
+            continue                              # jamais relayé, cf. newswatch
+        sentiment = module.classify(title) or module.NEUTRAL_SENTIMENT
+        titles.append({"title": title, "sentiment": sentiment, "ts": None})
+        if len(titles) >= DOSSIER_NEWS_PER_SYMBOL:
+            break
+    return titles
+
+
 def _coach_dossier(symbol: str, username: str,
                    news: List[Dict[str, Any]],
                    history: Dict[str, List[str]],
-                   moves: List[Dict[str, Any]]) -> Dict[str, Any]:
+                   moves: List[Dict[str, Any]],
+                   source: Optional[str] = None) -> Dict[str, Any]:
     """TOUT ce que la mémoire sait d'UN titre (LOT 5, second temps).
 
     Le tri (premier temps) voit beaucoup de titres et peu de choses ; le
@@ -2500,6 +2572,11 @@ def _coach_dossier(symbol: str, username: str,
 
     Les trois sources collectives (presse, historique, gérants) sont relues UNE
     FOIS pour les trois dossiers et filtrées ici — pas un balayage par titre.
+
+    ``source`` (LOT 11) : quand c'est ``CANDIDATE_SOURCE_DISCOVERY`` ET que
+    la mémoire n'a AUCUNE presse pour ce titre, un coup d'œil RSS ponctuel
+    (:func:`_coach_discovery_news`) comble le trou — les quatre autres
+    sources n'en ont pas besoin, elles sont suivies depuis plus longtemps.
     """
     titles = []
     for event in news:
@@ -2512,6 +2589,14 @@ def _coach_dossier(symbol: str, username: str,
                        "ts": event.get("ts")})
         if len(titles) >= DOSSIER_NEWS_PER_SYMBOL:
             break
+
+    if not titles and source == CANDIDATE_SOURCE_DISCOVERY:
+        try:
+            titles = _coach_discovery_news(symbol)
+        except Exception as e:                  # noqa: BLE001 — best-effort
+            logger.warning("paper coach: presse tendance indisponible pour %s (%s)",
+                           symbol, type(e).__name__)
+            titles = []
 
     whales = [move for move in moves
               if str((move or {}).get("symbol") or "").upper() == symbol]
@@ -2559,13 +2644,20 @@ def _coach_symbol_memory(symbol: str, username: str) -> List[Dict[str, Any]]:
     return out
 
 
-def _coach_dossiers(symbols: List[str],
-                    username: str) -> List[Dict[str, Any]]:
+def _coach_dossiers(symbols: List[str], username: str,
+                    candidates: Any = None) -> List[Dict[str, Any]]:
     """Les dossiers complets des titres retenus par le tri (best-effort).
 
     Les sources collectives sont relues UNE SEULE FOIS ici, puis distribuées
     par :func:`_coach_dossier` — un balayage par titre coûterait trois fois le
     même travail.
+
+    ``candidates`` (LOT 11, facultatif) : la liste déjà cotée du tri
+    (``context["candidates"]``, chaque ligne porte ``symbol``/``source``) —
+    elle fait connaître à chaque dossier SA provenance, seule façon pour un
+    élu ``CANDIDATE_SOURCE_DISCOVERY`` de déclencher son coup d'œil RSS
+    (:func:`_coach_discovery_news`). Absente ou illisible -> aucune source
+    connue, comportement identique à avant LOT 11.
     """
     wanted = [s for s in (symbols or []) if s][:coach_trader.MAX_FOCUS]
     if not wanted:
@@ -2582,11 +2674,16 @@ def _coach_dossiers(symbols: List[str],
         moves = _whale_moves()
     except Exception:                           # noqa: BLE001 — best-effort
         moves = []
+    source_by_symbol: Dict[str, str] = {}
+    for row in candidates or []:
+        if isinstance(row, dict) and isinstance(row.get("symbol"), str):
+            source_by_symbol[row["symbol"]] = row.get("source")
 
     out: List[Dict[str, Any]] = []
     for symbol in wanted:
         try:
-            out.append(_coach_dossier(symbol, username, news, history, moves))
+            out.append(_coach_dossier(symbol, username, news, history, moves,
+                                      source=source_by_symbol.get(symbol)))
         except Exception as e:                  # noqa: BLE001 — un titre n'en casse pas d'autre
             logger.warning("paper coach: dossier illisible pour %s (%s)",
                            symbol, type(e).__name__)
@@ -2766,7 +2863,8 @@ def run_coach_daily_pass(now_iso: Optional[str] = None,
 
     # --- SECOND TEMPS : les dossiers ----------------------------------- #
     try:
-        context["dossiers"] = _coach_dossiers(focus, coach_trader.COACH_USERNAME)
+        context["dossiers"] = _coach_dossiers(focus, coach_trader.COACH_USERNAME,
+                                              context.get("candidates"))
     except Exception as e:                  # noqa: BLE001 — best-effort
         logger.warning("paper coach: dossiers indisponibles (%s)",
                        type(e).__name__)

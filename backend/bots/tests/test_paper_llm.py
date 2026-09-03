@@ -1222,12 +1222,23 @@ def test_le_prompt_de_tri_explique_le_champ_tradable():
 
 
 def test_le_prompt_de_tri_explique_le_champ_source():
-    """LOT 8b : chaque candidat porte sa provenance, et le prompt explique la
-    règle une fois pour toutes (même patron que ``tradable`` juste au-dessus)."""
+    """LOT 8b (+ LOT 11 : ``tendance``) : chaque candidat porte sa
+    provenance, et le prompt explique la règle une fois pour toutes (même
+    patron que ``tradable`` juste au-dessus)."""
     prompt = llm.build_coach_screen_prompt(SCREEN_CTX).lower()
     assert "source" in prompt
-    for mot in ("position", "radar", "watchlist", "europe_pool"):
+    for mot in ("position", "radar", "watchlist", "europe_pool", "tendance"):
         assert mot in prompt, mot
+
+
+def test_le_prompt_de_tri_met_en_garde_sur_un_titre_de_tendance(monkeypatch):
+    """LOT 11 : un titre de tendance sans historique dans la mémoire du coach
+    doit se jouer petit (entrée de fourchette), jamais pleine taille -- la
+    tendance du jour n'est pas une thèse à elle seule."""
+    prompt = llm.build_coach_screen_prompt(SCREEN_CTX).lower()
+    assert "10-15" in prompt or "10 à 15" in prompt
+    assert "projecteur" in prompt and "pas une thèse" in prompt
+    assert "entrée" in prompt
 
 
 def test_le_prompt_de_tri_ne_leve_jamais():
