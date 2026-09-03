@@ -37,7 +37,11 @@ from typing import Any, Callable, Dict, List, Optional
 from backend.bots.paper import coach_trader, models
 
 DEFAULT_MODEL = "claude-sonnet-5"
-DEFAULT_TIMEOUT = 120
+DEFAULT_TIMEOUT = 300   # VECU (02-03/09) : le contexte du coach a grossi
+# (4 sources de candidats + technique + mandat = 33K chars) jusqu'a ce que
+# ses reponses depassent 120 s — 36 h de « sans reponse » en apparence
+# aleatoire. Un appel PLANIFIE n'a pas besoin d'etre rapide, il a besoin
+# d'ABOUTIR ; le polling frontend des jobs va jusqu'a 5 min, coherent.
 
 # Position morale du coach (§2 de la spec). Ce bloc préfixe LES TROIS prompts —
 # c'est la seule garantie que le ton et les interdits ne divergent pas d'un

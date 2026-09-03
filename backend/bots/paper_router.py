@@ -2744,9 +2744,10 @@ def run_coach_daily_pass(now_iso: Optional[str] = None,
     speak = claude if claude is not None else llm._claude_text
 
     # --- PREMIER TEMPS : le tri ---------------------------------------- #
-    answer = _coach_speak(speak, screen_builder, context, now)
+    answer, speak_err = _coach_speak(speak, screen_builder, context, now)
     if answer is None:
-        return {"ledger": _coach_llm_failure(now, "tri sans réponse")}
+        return {"ledger": _coach_llm_failure(
+            now, "tri sans réponse — %s" % (speak_err or "?"))}
 
     screened = coach_trader.parse_focus(answer)
     if screened.get("error") == "parse_failed":
@@ -2773,9 +2774,10 @@ def run_coach_daily_pass(now_iso: Optional[str] = None,
     context["focus"] = list(focus)
     context["focus_note"] = screened.get("note")
 
-    answer = _coach_speak(speak, builder, context, now)
+    answer, speak_err = _coach_speak(speak, builder, context, now)
     if answer is None:
-        return {"ledger": _coach_llm_failure(now, "décision sans réponse")}
+        return {"ledger": _coach_llm_failure(
+            now, "décision sans réponse — %s" % (speak_err or "?"))}
 
     parsed = coach_trader.parse_actions(answer)
     error = parsed.get("error")
@@ -2867,7 +2869,7 @@ def run_coach_guardian_pass(now_iso: Optional[str] = None,
 
         context = _coach_guardian_dossier(position, price, quote["fx_rate"],
                                           decision["trigger"])
-        answer = _coach_speak(speak, builder, context, now)
+        answer, _g_err = _coach_speak(speak, builder, context, now)
         if answer is None:
             rows = execute_coach_actions([], source=coach_trader.GUARDIAN_SOURCE,
                                          now_iso=now, parse_error="llm_failed")
@@ -2905,8 +2907,12 @@ def _coach_speak(speak: Callable[[str], str], builder: Callable[[Any], str],
         answer = speak(builder(context))
     except Exception as e:                  # noqa: BLE001 — modèle en panne
         logger.warning("paper coach: passe sans réponse (%s)", type(e).__name__)
-        return None
-    return answer if str(answer or "").strip() else None
+        # VECU (02-03/09) : « sans réponse » a caché un TIMEOUT pendant 36 h.
+        # Le registre doit porter la VRAIE raison — c'est elle qu'on lit.
+        return None, "%s: %s" % (type(e).__name__, str(e)[:140])
+    if str(answer or "").strip():
+        return answer, None
+    return None, "réponse vide"
 
 
 def _coach_context(portfolio: models.Portfolio, profile: Dict[str, Any],
