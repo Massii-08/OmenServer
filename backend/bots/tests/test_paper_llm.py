@@ -1004,9 +1004,10 @@ def test_build_coach_trader_prompt_reprend_les_trois_interdits():
 def test_coach_book_of_porte_desormais_six_cles_dont_candidates_et_deploiement():
     book = llm._coach_book_of(CTX)
     assert set(book) == {"cash_chf", "equity_chf", "positions", "open_orders",
-                         "candidates", "deployment"}
+                         "candidates", "deployment", "fees"}
     assert book["candidates"] == []                 # absent du contexte CTX
     assert book["deployment"] == {}                 # idem (LOT 9)
+    assert book["fees"] == {}                       # idem (LOT 12)
 
 
 def test_coach_book_of_porte_les_candidats_fournis_par_le_contexte():
@@ -1382,6 +1383,52 @@ def test_les_deux_prompts_coach_heritent_du_regime_deploye():
     assert "82,4 %" in creneau
     digest = convergence._coach_actions_block(BOOK)
     assert "RÉGIME DÉPLOYÉ" in digest
+
+
+# =========================================================================== #
+# LOT 12 — la conscience des frais dans le prompt
+# =========================================================================== #
+
+FEES_VIEW = {"round_trip_pct": 1.15, "fees_paid_7d_chf": 122.0,
+            "gross_pnl_7d_chf": 17.0, "net_pnl_7d_chf": -105.0}
+
+
+def test_coach_actions_block_affiche_le_bloc_frais_chiffre():
+    """Le coach doit VOIR ce que les frais lui coûtent : le coût d'un
+    aller-retour, la consigne (3x/2x/verrouiller un gain), et le bilan
+    chiffré de la semaine."""
+    book = dict(BOOK)
+    book["fees"] = FEES_VIEW
+    block = llm.coach_actions_block(book)
+    low = block.lower()
+    assert "frais" in low
+    assert "1,15 %" in block
+    assert "122" in block and "17" in block
+    assert "3x" in low or "3 x" in low or "3×" in low
+    assert "bruit" in low
+    assert "courtier" in low
+
+
+def test_coach_actions_block_sans_frais_garde_le_reste_du_bloc():
+    """Sans vue de frais (livre en panne), le reste du bloc d'actions
+    survit — même doctrine que ``_deployment_lines``."""
+    block = llm.coach_actions_block(BOOK)
+    assert block   # pas d'exception, pas de bloc vide
+    assert "frais" not in block.lower()
+
+
+def test_les_deux_prompts_coach_heritent_de_la_conscience_des_frais():
+    """Créneau (passe quotidienne) ET digest : la section vit dans le bloc
+    PARTAGÉ, elle ne peut pas exister d'un côté seulement."""
+    from backend.bots.paper import convergence
+    book = dict(BOOK)
+    book["fees"] = FEES_VIEW
+    creneau = llm.build_coach_trader_prompt(book)
+    assert "FRAIS" in creneau
+    assert "122" in creneau
+    digest = convergence._coach_actions_block(book)
+    assert "FRAIS" in digest
+    assert "122" in digest
 
 
 # =========================================================================== #

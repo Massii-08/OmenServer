@@ -916,6 +916,32 @@ def _deployment_lines(view: Any) -> list:
     return [line]
 
 
+def _fees_lines(view: Any) -> list:
+    """La ligne CHIFFRÉE des frais, ou rien (PUR — LOT 12).
+
+    Née d'un vécu (05-06/09) : 5 trades clos, -105 CHF réalisés DONT 122 CHF
+    de frais (sans eux : +17). La discipline de risque était intacte —
+    c'est L'ÉCONOMIE du style qui casse, des stops resserrés « à 1 ATR » qui
+    se font toucher par le bruit et repaient le courtier à chaque sortie.
+    Absente quand la vue manque : même doctrine que :func:`_deployment_lines`.
+    """
+    if not isinstance(view, dict) or not view:
+        return []
+    return [
+        "FRAIS : chaque aller-retour te coûte ~%s (mêmes frais que ton "
+        "propriétaire — c'est la règle). Vise au moins 3x ce coût, ne "
+        "resserre JAMAIS un stop dans le bruit (moins de 2x les frais, ou "
+        "0,5 ATR si le titre en réclame plus) sauf pour verrouiller un gain "
+        "déjà acquis, et préfère un trade qui court à trois qui grignotent. "
+        "Cette semaine : %s CHF de frais pour %s CHF de brut (%s CHF net) — "
+        "tu as travaillé pour ton courtier."
+        % (_pct(view.get("round_trip_pct")),
+           "%.2f" % (view.get("fees_paid_7d_chf") or 0.0),
+           "%.2f" % (view.get("gross_pnl_7d_chf") or 0.0),
+           "%.2f" % (view.get("net_pnl_7d_chf") or 0.0))
+    ]
+
+
 def coach_actions_block(book: Any) -> str:
     """Le bloc de clôture qui transforme un avis en DÉCISION (PUR).
 
@@ -1056,7 +1082,7 @@ def coach_actions_block(book: Any) -> str:
         "propriétaire : n'attends pas le parfait, ce sera déjà trop tard). "
         "L'inaction se paie en crédibilité : ton taux de déploiement est "
         "archivé et comparé.",
-    ] + _deployment_lines(book.get("deployment")) + [
+    ] + _deployment_lines(book.get("deployment")) + _fees_lines(book.get("fees")) + [
         # LOT 9 — le vrai « ne plus attendre ». Le coach écrivait « j'attends
         # une clôture sous la SMA50 pour ouvrir un short » : une embuscade
         # MENTALE, re-jugée passivement à chaque passe, que rien n'exécutait.
