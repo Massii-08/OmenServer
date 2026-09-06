@@ -141,6 +141,32 @@ def test_build_context_defaults_radar_to_empty_dict():
 
 
 # --------------------------------------------------------------------------- #
+# PUR — LOT 12 : la conscience des frais dans le bilan hebdo
+# --------------------------------------------------------------------------- #
+
+def _portfolio_with_fees():
+    pf = _portfolio()
+    pf["trades"][0]["fees_chf"] = 3.0
+    pf["trades"][0]["stamp_duty_chf"] = 1.5
+    # pnl_chf reste 30.0 : DÉJÀ net des frais (même doctrine que _close_leg).
+    return pf
+
+
+def test_build_context_carries_the_fees_summary_of_the_week():
+    ctx = weekly.build_context(_portfolio_with_fees(), SUNDAY_ON_TIME)
+    assert ctx["fees_paid_chf"] == 4.5
+    assert ctx["net_pnl_chf"] == 30.0
+    assert ctx["gross_pnl_chf"] == 34.5
+
+
+def test_build_context_fees_summary_is_zero_without_trades():
+    ctx = weekly.build_context({"initial_capital": 10000.0}, SUNDAY_ON_TIME)
+    assert ctx["fees_paid_chf"] == 0.0
+    assert ctx["gross_pnl_chf"] == 0.0
+    assert ctx["net_pnl_chf"] == 0.0
+
+
+# --------------------------------------------------------------------------- #
 # PUR — fallback_report / with_header
 # --------------------------------------------------------------------------- #
 
@@ -150,6 +176,21 @@ def test_fallback_report_lists_the_trades_and_the_discipline_score():
     assert weekly.HEADER in text
     assert "AAPL" in text
     assert weekly.FALLBACK_TAIL in text
+
+
+def test_fallback_report_shows_the_fees_line_of_the_week():
+    """LOT 12 : le bilan hebdo doit dire ce que les frais ont coûté, pas
+    seulement le P&L net qui les cache déjà."""
+    ctx = weekly.build_context(_portfolio_with_fees(), SUNDAY_ON_TIME)
+    text = weekly.fallback_report(ctx)
+    assert "4.50 CHF" in text or "4,50 CHF" in text
+    assert "34.50 CHF" in text or "34,50 CHF" in text
+
+
+def test_fallback_report_fees_line_is_zero_without_trades():
+    ctx = weekly.build_context({"initial_capital": 10000.0}, SUNDAY_ON_TIME)
+    text = weekly.fallback_report(ctx)
+    assert "0.00 CHF" in text
 
 
 def test_fallback_report_says_no_trades_explicitly():

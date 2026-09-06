@@ -188,8 +188,11 @@ def build_context(portfolio: Optional[Dict[str, Any]], now: Any,
     orders = _dicts(portfolio.get("open_orders"))
     capital = portfolio.get("initial_capital")
 
+    week = closed_this_week(trades, now)
+    fees_summary = _fees_summary(week)
+
     return {
-        "closed_this_week": closed_this_week(trades, now),
+        "closed_this_week": week,
         "stats": risk.portfolio_stats(trades, initial_capital=capital),
         "discipline": tradestats.discipline_score(trades, capital),
         "open_positions": _dicts(portfolio.get("positions")),
@@ -197,7 +200,30 @@ def build_context(portfolio: Optional[Dict[str, Any]], now: Any,
         "radar": radar_stats or {},
         "cash_chf": portfolio.get("cash_chf"),
         "initial_capital_chf": capital,
+        # LOT 12 — la saignée des frais de la semaine (PUR, dérivée des
+        # trades DÉJÀ dans ``closed_this_week`` — rien stocké en double).
+        "fees_paid_chf": fees_summary["fees_paid_chf"],
+        "gross_pnl_chf": fees_summary["gross_pnl_chf"],
+        "net_pnl_chf": fees_summary["net_pnl_chf"],
     }
+
+
+def _fees_summary(trades: List[Dict[str, Any]]) -> Dict[str, float]:
+    """Frais payés / P&L brut / P&L net de la semaine (PUR — LOT 12).
+
+    Chaque ``Trade`` porte déjà ses frais AGRÉGÉS aller+retour (``fees_chf``
+    + ``stamp_duty_chf``, cf. ``paper_router._close_leg``) et son ``pnl_chf``
+    NET — le brut se DÉDUIT, il ne se stocke jamais en double.
+    """
+    fees_paid = 0.0
+    net = 0.0
+    for trade in trades:
+        fees_paid += float(trade.get("fees_chf") or 0.0) \
+            + float(trade.get("stamp_duty_chf") or 0.0)
+        net += float(trade.get("pnl_chf") or 0.0)
+    return {"fees_paid_chf": round(fees_paid, 2),
+            "gross_pnl_chf": round(net + fees_paid, 2),
+            "net_pnl_chf": round(net, 2)}
 
 
 def fallback_report(context: Optional[Dict[str, Any]]) -> str:
@@ -228,6 +254,12 @@ def fallback_report(context: Optional[Dict[str, Any]]) -> str:
     score = discipline.get("score")
     lines.append("Score de discipline : %s." % (score if score is not None else "n/d (moins de 5 trades)"))
     lines.append("Positions encore ouvertes : %d." % len(positions))
+    # LOT 12 — la saignée des frais de la semaine, TOUJOURS affichée (même à
+    # 0 CHF) : le P&L net seul la cache déjà.
+    lines.append("Frais payés cette semaine : %.2f CHF (brut %.2f CHF, net %.2f CHF)."
+                 % (float(ctx.get("fees_paid_chf") or 0.0),
+                    float(ctx.get("gross_pnl_chf") or 0.0),
+                    float(ctx.get("net_pnl_chf") or 0.0)))
     lines.append("")
     lines.append(FALLBACK_TAIL)
     return "\n".join(lines)
