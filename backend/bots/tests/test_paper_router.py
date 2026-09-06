@@ -5716,6 +5716,26 @@ def test_reward_risk_below_1_is_recorded_on_the_coach_order(tmp_path, monkeypatc
         ["reward_risk_below_1"]
 
 
+def test_the_gate_accepts_without_atr_context_at_two_times_the_fees(tmp_path, monkeypatch):
+    """Sans bougies (donc sans ATR), un stop à 2,4 % passe : au-dessus du
+    plancher de 2x frais (~2,3 % pour Yuh/NESN.SW à ce notional)."""
+    c, _ = make_client(tmp_path, monkeypatch)
+    accepted = pr.execute_coach_actions([coach_action(stop=97.6)], source="daily")
+    assert accepted[0]["accepted"] is True
+
+
+def test_the_gate_receives_the_atr_context_and_widens_the_noise_floor(tmp_path, monkeypatch):
+    """LOT 12 : le MÊME stop à 2,4 % (accepté sans ATR, cf. le test jumeau)
+    est REFUSÉ une fois l'ATR mocké à 5 % du cours (plancher 0,5x = 2,5 %) —
+    preuve que ``_coach_execute_one`` transmet le contexte technique à
+    ``gate_decision``, pas seulement au prompt."""
+    c, _ = make_client(tmp_path, monkeypatch)
+    monkeypatch.setattr(pr, "_coach_technical", lambda symbol: {"atr14_pct": 5.0})
+    rejected = pr.execute_coach_actions([coach_action(stop=97.6)], source="daily")
+    assert rejected[0]["accepted"] is False
+    assert rejected[0]["reason"] == "stop_in_noise"
+
+
 def test_the_coach_can_sell_what_he_holds(tmp_path, monkeypatch):
     c, _ = make_client(tmp_path, monkeypatch)
     seed_coach_position(qty=10)
@@ -6246,16 +6266,16 @@ def test_the_daily_pass_never_raises(tmp_path, monkeypatch):
 
 def test_coach_book_rend_les_cinq_cles_sur_un_compte_neuf(tmp_path, monkeypatch):
     """La forme EXACTE que ``llm.coach_actions_block`` consomme, sur un compte
-    tout neuf — et rien ne lève. ``candidates`` (LOT 4bis) puis ``deployment``
-    (LOT 9) rejoignent les quatre clés historiques."""
+    tout neuf — et rien ne lève. ``candidates`` (LOT 4bis), ``deployment``
+    (LOT 9) puis ``fees`` (LOT 12) rejoignent les quatre clés historiques."""
     c, market = make_client(tmp_path, monkeypatch)
     # LOT 8b : le pool européen permanent est TOUJOURS candidat -- vider le
-    # faux marché isole ici la forme des 5 clés de la question du contenu de
+    # faux marché isole ici la forme des clés de la question du contenu de
     # ``candidates`` (déjà couverte par les tests dédiés du pool).
     market.prices.clear()
     book = pr.coach_book()
     assert set(book) == {"cash_chf", "equity_chf", "positions", "open_orders",
-                         "candidates", "deployment"}
+                         "candidates", "deployment", "fees"}
     # LOT 9 — un compte neuf est à 100 % en trésorerie : c'est EXACTEMENT le
     # cas que le mandat déployé vise, et le chiffre doit lui arriver.
     assert book["deployment"] == {"cash_pct": 100.0, "n_positions": 0,
@@ -6265,6 +6285,10 @@ def test_coach_book_rend_les_cinq_cles_sur_un_compte_neuf(tmp_path, monkeypatch)
     assert book["positions"] == []
     assert book["open_orders"] == []
     assert book["candidates"] == []
+    # LOT 12 — un compte neuf n'a encore payé aucun frais.
+    assert book["fees"]["fees_paid_7d_chf"] == 0.0
+    assert book["fees"]["gross_pnl_7d_chf"] == 0.0
+    assert book["fees"]["net_pnl_7d_chf"] == 0.0
 
 
 def test_coach_book_a_la_MEME_forme_que_celui_de_la_passe_quotidienne(
@@ -7669,6 +7693,29 @@ def test_contexte_de_passe_nomme_les_themes_deja_engages(tmp_path, monkeypatch):
     ctx = pr._coach_pass_context(portfolio, "2026-08-31T15:00:00+00:00")
     assert ctx["deployment"]["themes_ouverts"] == [
         "DAL (short) — kérosène après le blocage d'Ormuz"]
+
+
+# --- 6quater) LOT 12 : la saignée des frais arrive au prompt --------------
+
+def test_contexte_de_passe_porte_les_quatre_champs_de_frais(tmp_path, monkeypatch):
+    """Le coach doit VOIR ce que les frais lui coûtent — pas le déduire d'une
+    lecture de registre."""
+    make_client(tmp_path, monkeypatch)
+    portfolio = pr._ensure_coach_account()
+    ctx = pr._coach_pass_context(portfolio, "2026-08-31T15:00:00+00:00")
+    assert set(ctx["fees"]) == {"fees_paid_7d_chf", "gross_pnl_7d_chf",
+                                "net_pnl_7d_chf", "round_trip_pct"}
+    assert ctx["fees"] == pr.coach_trader.fees_view(
+        portfolio.to_dict(), "2026-08-31T15:00:00+00:00")
+
+
+def test_coach_book_of_digest_carries_the_fees_view_too(tmp_path, monkeypatch):
+    """Le digest hérite du même chiffre que la passe : le bloc PARTAGÉ ne
+    peut pas être renseigné d'un seul côté (même doctrine que ``deployment``)."""
+    make_client(tmp_path, monkeypatch)
+    book = pr.coach_book()
+    assert set(book["fees"]) == {"fees_paid_7d_chf", "gross_pnl_7d_chf",
+                                 "net_pnl_7d_chf", "round_trip_pct"}
 
 
 # =========================================================================== #

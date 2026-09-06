@@ -885,6 +885,10 @@ def _coach_book_of(context: Any) -> Dict[str, Any]:
         # Il traverse le book parce que le mandat « sois DÉPLOYÉ » vit dans le
         # bloc PARTAGÉ : le poser ailleurs le ferait exister d'un seul côté.
         "deployment": ctx.get("deployment") or {},
+        # LOT 12 — la saignée des frais (``coach_trader.fees_view``), même
+        # geste que ``deployment`` : le mandat « conscient des frais » vit
+        # dans le bloc PARTAGÉ.
+        "fees": ctx.get("fees") or {},
     }
 
 

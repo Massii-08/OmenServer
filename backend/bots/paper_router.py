@@ -1774,8 +1774,14 @@ def _coach_execute_one(portfolio: models.Portfolio, action: Dict[str, Any],
             now_iso, source, kind, symbol, False, reason="no_quote",
             detail="aucun cours exploitable pour %s" % symbol), None)
 
+    # LOT 12 — le contexte technique (ATR) élargit le plancher de bruit d'un
+    # stop au-delà du seul seuil de frais quand le titre en réclame un plus
+    # large (cf. ``coach_trader._noise_floor_pct``). Best-effort, même
+    # doctrine que ``_coach_quote`` : une panne de bougies rend ``None``.
+    technical = _coach_technical(symbol) if symbol else None
     verdict = coach_trader.gate_decision(decision, portfolio.to_dict(),
-                                         quote or {}, now=now_iso)
+                                         quote or {}, now=now_iso,
+                                         technical=technical)
     if not verdict.get("accepted"):
         code = str(verdict.get("reason") or "")
         return (coach_trader.ledger_entry(
@@ -2493,6 +2499,9 @@ def _coach_pass_context(portfolio: models.Portfolio,
         # sur la MÊME convention d'équité que le garde-fou qui refusera
         # ensuite (cf. ``coach_trader.deployment_view``).
         "deployment": coach_trader.deployment_view(portfolio.to_dict()),
+        # LOT 12 — la saignée des frais. Déterministe, minuscule, et calculée
+        # depuis les trades clos (cf. ``coach_trader.fees_view``).
+        "fees": coach_trader.fees_view(portfolio.to_dict(), now_iso),
     }
     try:
         context["market_mood"] = mood.get() or {}
@@ -2759,6 +2768,8 @@ def coach_book() -> Dict[str, Any]:
             # mandat déployé vit dans le bloc PARTAGÉ, il ne peut pas être
             # renseigné d'un seul côté.
             "deployment": coach_trader.deployment_view(portfolio.to_dict()),
+            # LOT 12 — même geste pour la saignée des frais.
+            "fees": coach_trader.fees_view(portfolio.to_dict(), _now_iso()),
         }
     except Exception as e:                  # noqa: BLE001 — jamais fatal
         logger.warning("paper coach: livre indisponible pour le digest (%s)",
