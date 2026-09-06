@@ -370,6 +370,73 @@ def deployment_view(portfolio: Any) -> Dict[str, Any]:
     }
 
 
+# LOT 12 — la fenêtre glissante sur laquelle la saignée des frais est
+# additionnée. Même durée que ``weekly.LOOKBACK_DAYS`` (dupliquée : ce module
+# ne doit pas dépendre de ``weekly`` pour un simple entier).
+FEES_WINDOW_DAYS = 7
+
+
+def fees_view(portfolio: Any, now: Any = None) -> Dict[str, Any]:
+    """Ce que les frais ont réellement coûté sur les 7 derniers jours (PUR —
+    LOT 12).
+
+    Né d'un vécu (05-06/09) : 5 trades clos, -105 CHF réalisés DONT 122 CHF
+    de frais (sans eux : +17). La discipline de risque était intacte — c'est
+    L'ÉCONOMIE du style, des stops resserrés « à 1 ATR » qui se font toucher
+    par le bruit et repaient le courtier à chaque sortie, qui casse le
+    compte. Le coach doit VOIR ce chiffre, pas le déduire d'une lecture de
+    registre.
+
+    Additionne, sur les trades dont ``exit_at`` tombe dans les
+    :data:`FEES_WINDOW_DAYS` derniers jours CALENDAIRES (pas de marché — un
+    trade clos vendredi soir compte encore le lundi suivant), directement
+    depuis ce que ``paper_router._close_leg`` a déjà écrit sur chaque
+    ``Trade`` — rien n'est stocké en double, même doctrine que
+    ``tradestats`` :
+      - ``fees_paid_7d_chf``  = ``fees_chf`` + ``stamp_duty_chf`` (l'aller-
+        retour complet, déjà agrégé par ``_close_leg``) ;
+      - ``net_pnl_7d_chf``    = somme des ``pnl_chf`` (déjà NET de frais) ;
+      - ``gross_pnl_7d_chf``  = net + frais — ce qu'aurait rendu le même
+        trade sans le courtier.
+
+    ``round_trip_pct`` : le coût d'un aller-retour au profil RÉEL du
+    portefeuille (``fee_profile``, « yuh » par défaut — le MÊME profil que
+    son propriétaire, c'est la règle), mesuré à la plus PETITE position que
+    le mandat autorise (:data:`MIN_POSITION_PCT` de l'équité) — c'est là que
+    le poids relatif des frais est le plus lourd, donc le chiffre le plus
+    honnête à montrer. Aucun symbole précis pour ce chiffre générique ->
+    taux de timbre ÉTRANGER (le plus pénalisant, cf. ``fees.round_trip_pct``).
+
+    **NE LÈVE JAMAIS** : un portefeuille abîmé rend une vue neutre (tout à
+    zéro), même doctrine que :func:`deployment_view`.
+    """
+    book = portfolio if isinstance(portfolio, dict) else {}
+    trades = _dicts(book.get("trades"))
+    moment = _aware_utc(now)
+    cutoff = moment - timedelta(days=FEES_WINDOW_DAYS)
+
+    fees_paid = 0.0
+    net_pnl = 0.0
+    for trade in trades:
+        exit_at = _parse_iso(trade.get("exit_at"))
+        if exit_at is None or exit_at < cutoff:
+            continue
+        fees_paid += (_val(trade.get("fees_chf")) or 0.0) \
+            + (_val(trade.get("stamp_duty_chf")) or 0.0)
+        net_pnl += _val(trade.get("pnl_chf")) or 0.0
+
+    equity = _equity_chf(book.get("cash_chf"), _dicts(book.get("positions")))
+    notional = equity * MIN_POSITION_PCT / 100.0
+    round_trip = _round_trip_pct(book.get("fee_profile"), notional, "")
+
+    return {
+        "fees_paid_7d_chf": round(fees_paid, 2),
+        "gross_pnl_7d_chf": round(net_pnl + fees_paid, 2),
+        "net_pnl_7d_chf": round(net_pnl, 2),
+        "round_trip_pct": round_trip,
+    }
+
+
 def pending_ambushes(portfolio: Any) -> List[Dict[str, Any]]:
     """Les EMBUSCADES ARMÉES d'un livre (PUR — LOT 9).
 

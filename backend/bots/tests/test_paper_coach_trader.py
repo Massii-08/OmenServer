@@ -19,7 +19,7 @@ from datetime import datetime, timezone
 
 import pytest
 
-from backend.bots.paper import coach_trader, models, quotes, risk, store
+from backend.bots.paper import coach_trader, fees, models, quotes, risk, store
 
 # Vendredi 28/08/2026 17:00 Rome (CEST) — jour de semaine, après l'heure.
 FRIDAY_ON_TIME = datetime(2026, 8, 28, 15, 0, 0, tzinfo=timezone.utc)
@@ -48,14 +48,18 @@ def _isolate_data_dir(tmp_path, monkeypatch):
 # Fabriques
 # --------------------------------------------------------------------------- #
 
-def _pf(cash=10000.0, positions=None, capital=10000.0):
-    return {
+def _pf(cash=10000.0, positions=None, capital=10000.0, trades=None,
+       fee_profile=None):
+    pf = {
         "cash_chf": cash,
         "positions": list(positions or []),
         "open_orders": [],
-        "trades": [],
+        "trades": list(trades or []),
         "initial_capital": capital,
     }
+    if fee_profile is not None:
+        pf["fee_profile"] = fee_profile
+    return pf
 
 
 def _pos(symbol, qty=1, avg_price=1.0, fx_rate=1.0, side="long"):
@@ -1853,6 +1857,79 @@ def test_deployment_view_ligne_sans_these_reste_nommee():
          "positions": [{"symbol": "AAPL", "side": "long", "qty": 5,
                         "avg_price": 100.0}]})
     assert view["themes_ouverts"] == ["AAPL (long) — (sans thèse écrite)"]
+
+
+# --------------------------------------------------------------------------- #
+# LOT 12 — fees_view : la saignée des frais, chiffrée sur 7 jours (PUR)
+# --------------------------------------------------------------------------- #
+
+def test_fees_view_sums_only_trades_closed_within_the_last_seven_days():
+    now = "2026-09-06T12:00:00Z"
+    pf = _pf(trades=[
+        {"exit_at": "2026-09-05T10:00:00Z", "fees_chf": 10.0,
+         "stamp_duty_chf": 2.0, "pnl_chf": -5.0},
+        # 17 jours plus tôt : hors fenêtre, ignoré.
+        {"exit_at": "2026-08-20T10:00:00Z", "fees_chf": 999.0,
+         "stamp_duty_chf": 999.0, "pnl_chf": 999.0},
+    ])
+    view = coach_trader.fees_view(pf, now=now)
+    assert view["fees_paid_7d_chf"] == 12.0
+    assert view["net_pnl_7d_chf"] == -5.0
+    assert view["gross_pnl_7d_chf"] == 7.0
+
+
+def test_fees_view_sums_across_several_trades_in_the_window():
+    now = "2026-09-06T12:00:00Z"
+    pf = _pf(trades=[
+        {"exit_at": "2026-09-05T10:00:00Z", "fees_chf": 10.0,
+         "stamp_duty_chf": 2.0, "pnl_chf": -5.0},
+        {"exit_at": "2026-09-01T10:00:00Z", "fees_chf": 20.0,
+         "stamp_duty_chf": 3.0, "pnl_chf": 8.0},
+    ])
+    view = coach_trader.fees_view(pf, now=now)
+    assert view["fees_paid_7d_chf"] == 35.0
+    assert view["net_pnl_7d_chf"] == 3.0
+    assert view["gross_pnl_7d_chf"] == 38.0
+
+
+def test_fees_view_is_zero_without_any_trade():
+    view = coach_trader.fees_view(_pf(), now="2026-09-06T12:00:00Z")
+    assert view["fees_paid_7d_chf"] == 0.0
+    assert view["gross_pnl_7d_chf"] == 0.0
+    assert view["net_pnl_7d_chf"] == 0.0
+
+
+def test_fees_view_round_trip_pct_uses_the_portfolio_fee_profile():
+    """À la plus petite position autorisée (10 % de l'équité) : c'est là que
+    le poids relatif des frais est le plus lourd, donc le chiffre le plus
+    honnête à montrer. Aucun symbole précis pour ce chiffre générique -> taux
+    de timbre ÉTRANGER (le plus pénalisant)."""
+    pf = _pf(cash=10000.0, fee_profile="yuh")
+    view = coach_trader.fees_view(pf, now="2026-09-06T12:00:00Z")
+    expected = fees.round_trip_pct(
+        "yuh", 10000.0 * coach_trader.MIN_POSITION_PCT / 100.0)
+    assert view["round_trip_pct"] == expected
+
+
+def test_fees_view_defaults_to_yuh_without_a_declared_profile():
+    pf = _pf(cash=10000.0)
+    assert "fee_profile" not in pf
+    view = coach_trader.fees_view(pf, now="2026-09-06T12:00:00Z")
+    assert view["round_trip_pct"] == fees.round_trip_pct(
+        "yuh", 10000.0 * coach_trader.MIN_POSITION_PCT / 100.0)
+
+
+def test_fees_view_never_raises_on_a_battered_portfolio():
+    view = coach_trader.fees_view({"cash_chf": "?", "trades": "nope"},
+                                  now="2026-09-06T12:00:00Z")
+    assert view == {"fees_paid_7d_chf": 0.0, "gross_pnl_7d_chf": 0.0,
+                    "net_pnl_7d_chf": 0.0, "round_trip_pct": 0.0}
+
+
+def test_fees_view_exposes_exactly_four_keys():
+    view = coach_trader.fees_view(_pf(), now="2026-09-06T12:00:00Z")
+    assert set(view) == {"fees_paid_7d_chf", "gross_pnl_7d_chf",
+                         "net_pnl_7d_chf", "round_trip_pct"}
 
 
 # =========================================================================== #
