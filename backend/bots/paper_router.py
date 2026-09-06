@@ -487,6 +487,17 @@ def _fees_for(profile: str, notional_chf: float, symbol: str) -> Dict[str, float
         return fees.compute_fees(models.DEFAULT_FEE_PROFILE, notional_chf, symbol)
 
 
+def _fees_for_profile_round_trip(profile: str, notional_chf: float,
+                                 symbol: str) -> float:
+    """``fees.round_trip_pct`` ; un profil inconnu retombe sur le défaut,
+    même doctrine que :func:`_fees_for` — un détail de refus (LOT 12) ne doit
+    jamais planter sur un vieux profil corrompu."""
+    try:
+        return fees.round_trip_pct(profile, notional_chf, symbol)
+    except ValueError:
+        return fees.round_trip_pct(models.DEFAULT_FEE_PROFILE, notional_chf, symbol)
+
+
 def execute_order(portfolio: models.Portfolio, order: models.Order,
                   price: float, fx_rate: float, now_iso: str,
                   exit_reason: str = "manual",
@@ -1655,6 +1666,26 @@ def _coach_reject_detail(code: str, decision: Dict[str, Any],
             return "aucune position sur %s" % symbol
         if code == "qty_over_position":
             return "%d demandés, %d détenus" % (int(qty or 0), int(held_qty))
+        if code == "fee_ratio":
+            target = _num(decision.get("target"))
+            price_raw = float(quote["price"]) if quote else None
+            if target is None or not price_raw:
+                return "objectif absent ou cours indisponible"
+            distance = abs(target - price_raw) / price_raw * 100.0
+            rt = _fees_for_profile_round_trip(
+                portfolio.fee_profile, value or 0.0, symbol)
+            return ("objectif %.2f à %.1f%% de l'entrée %.2f — sous le "
+                    "plancher de 3x le coût d'un aller-retour (%.1f%%)"
+                    % (target, distance, price_raw, 3.0 * rt))
+        if code == "stop_in_noise":
+            stop = _num(decision.get("stop"))
+            price_raw = float(quote["price"]) if quote else None
+            if stop is None or not price_raw:
+                return "stop absent ou cours indisponible"
+            distance = abs(price_raw - stop) / price_raw * 100.0
+            return ("stop %.2f à %.1f%% du cours %.2f — trop proche pour ne "
+                    "pas se faire toucher par le bruit ordinaire du titre"
+                    % (stop, distance, price_raw))
     except Exception as e:                  # noqa: BLE001 — jamais fatal
         logger.warning("paper coach: détail de refus illisible (%s)",
                        type(e).__name__)

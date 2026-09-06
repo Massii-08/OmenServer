@@ -5736,6 +5736,23 @@ def test_the_gate_receives_the_atr_context_and_widens_the_noise_floor(tmp_path, 
     assert rejected[0]["reason"] == "stop_in_noise"
 
 
+def test_the_fee_ratio_refusal_names_the_distance_and_the_floor(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+    rows = pr.execute_coach_actions([coach_action(target=102.0)], source="daily")
+    assert rows[0]["reason"] == "fee_ratio"
+    detail = rows[0]["detail"] or ""
+    assert "102" in detail
+
+
+def test_the_stop_in_noise_refusal_names_the_distance(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+    rows = pr.execute_coach_actions([coach_action(stop=99.0, target=140.0)],
+                                    source="daily")
+    assert rows[0]["reason"] == "stop_in_noise"
+    detail = rows[0]["detail"] or ""
+    assert "99" in detail
+
+
 def test_the_coach_can_sell_what_he_holds(tmp_path, monkeypatch):
     c, _ = make_client(tmp_path, monkeypatch)
     seed_coach_position(qty=10)
