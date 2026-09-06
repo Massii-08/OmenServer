@@ -5705,11 +5705,13 @@ def test_a_clean_entry_records_no_forced_warning(tmp_path, monkeypatch):
 
 
 def test_reward_risk_below_1_is_recorded_on_the_coach_order(tmp_path, monkeypatch):
-    """Objectif trop proche de l'entrée (100.5 pour un stop à 90, entrée 100) :
-    le gain visé est bien plus petit que le risque accepté -- CONSIGNÉ, même
-    geste que ``oversize``."""
+    """Objectif trop proche de l'entrée (105 pour un stop à 90, entrée 100) :
+    le gain visé (5 %) est bien plus petit que le risque accepté (10 %) --
+    CONSIGNÉ, même geste que ``oversize``. Assez loin (5 % > 3x le coût d'un
+    aller-retour Yuh, ~1,15 %) pour ne pas se faire intercepter par
+    ``fee_ratio`` (LOT 12) avant d'atteindre cet avertissement SOUPLE."""
     c, _ = make_client(tmp_path, monkeypatch)
-    pr.execute_coach_actions([coach_action(target=100.5)], source="daily")
+    pr.execute_coach_actions([coach_action(target=105.0)], source="daily")
     assert coach_portfolio()["positions"][0]["forced_warnings"] == \
         ["reward_risk_below_1"]
 

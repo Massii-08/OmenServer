@@ -46,7 +46,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 from zoneinfo import ZoneInfo
 
-from backend.bots.paper import models, quotes, risk
+from backend.bots.paper import fees, models, quotes, risk
 
 # Nom de compte RÉSERVÉ : aucun utilisateur authentifié ne s'appelle ainsi, et
 # le nom passe l'allowlist de ``store`` (pas de point) — le coach est un compte
@@ -192,6 +192,13 @@ REJECT_CODES = (
     # risque cumulé des pièges, et l'annulation d'un piège inexistant.
     "bad_kind", "bad_trigger", "too_many_pending", "pending_risk_high",
     "no_pending",
+    # LOT 12 — la conscience des frais :
+    #   ``fee_ratio``     — l'objectif visé ne rapporte pas au moins 3x le
+    #                       coût d'un aller-retour au profil du portefeuille.
+    #   ``stop_in_noise`` — un stop (initial ou resserré) tombe sous le
+    #                       plancher de bruit et ne verrouille pas un gain
+    #                       déjà acquis.
+    "fee_ratio", "stop_in_noise",
 )
 
 # D'où vient une décision : du digest quotidien, de la passe planifiée (créneau),
@@ -499,11 +506,82 @@ def _crypto_symbols(positions: List[Dict[str, Any]]) -> set:
 
 
 # --------------------------------------------------------------------------- #
+# LOT 12 — la conscience des frais. Vécu (05-06/09) : 5 trades clos, -105 CHF
+# réalisés DONT 122 CHF de frais (sans eux : +17). La discipline de risque
+# était intacte — c'est l'ÉCONOMIE du style qui casse : des stops resserrés
+# « à 1 ATR » se font toucher par le bruit ordinaire du titre, et chaque
+# sortie repaie le courtier. Ces deux helpers PURS nourrissent les deux
+# nouveaux garde-fous (``fee_ratio``/``stop_in_noise``) — jamais un barème
+# réinventé, toujours ``fees.round_trip_pct``.
+# --------------------------------------------------------------------------- #
+
+def _round_trip_pct(profile: Any, notional_chf: float, symbol: str) -> float:
+    """``fees.round_trip_pct`` mais TOLÉRANT à un profil illisible — le
+    mandat ne doit jamais planter sur une chaîne corrompue, il retombe sur
+    :data:`models.DEFAULT_FEE_PROFILE` (« yuh », le profil réel du coach)."""
+    key = _text(profile) or models.DEFAULT_FEE_PROFILE
+    try:
+        return fees.round_trip_pct(key, notional_chf, symbol)
+    except ValueError:
+        return fees.round_trip_pct(models.DEFAULT_FEE_PROFILE, notional_chf, symbol)
+
+
+def _atr_pct(technical: Any) -> Optional[float]:
+    """``atr14_pct`` d'un contexte technique (``ta.technical_summary``), ou
+    ``None`` si absent/illisible — jamais deviné."""
+    if not isinstance(technical, dict):
+        return None
+    return _val(technical.get("atr14_pct"))
+
+
+def _noise_floor_pct(round_trip: float, atr_pct: Optional[float]) -> float:
+    """Le plancher de distance stop↔cours en dessous duquel resserrer revient
+    à se faire toucher par le bruit ordinaire du titre plutôt que par une
+    vraie invalidation de thèse.
+
+    ``2 x round_trip`` seul si le contexte technique ne porte pas d'ATR ;
+    sinon le PLUS LARGE des deux avec ``0,5 x atr14_pct`` — l'ATR mesure le
+    bruit RÉEL du titre, les frais mesurent le prix d'un aller-retour raté,
+    et le stop doit survivre au plus exigeant des deux.
+    """
+    floor = 2.0 * round_trip
+    if atr_pct is not None:
+        floor = max(floor, 0.5 * atr_pct)
+    return floor
+
+
+def _locked_gain_pct(side: str, avg_price: Optional[float],
+                     current_price: Optional[float]) -> float:
+    """Le gain flottant DÉJÀ ACQUIS, en % du prix de revient — ``0.0`` si
+    inconnu (jamais deviné) : sans prix de revient ou sans cours, il n'y a
+    rien à verrouiller, donc pas d'exception au plancher de bruit."""
+    if avg_price is None or avg_price <= 0 or current_price is None:
+        return 0.0
+    if side == "short":
+        return (avg_price - current_price) / avg_price * 100.0
+    return (current_price - avg_price) / avg_price * 100.0
+
+
+def _stop_in_noise(distance_pct: float, round_trip: float,
+                   atr_pct: Optional[float], locked_gain_pct: float) -> bool:
+    """Vrai si ce stop tombe dans le bruit ET ne verrouille pas un gain déjà
+    ACQUIS d'au moins 3x le coût d'un aller-retour.
+
+    C'est l'exception qui rend tenable « laisse courir les gagnants » : un
+    stop remonté APRÈS un gain suffisant protège du RÉALISÉ, il n'a plus
+    besoin de respirer le bruit ordinaire du titre.
+    """
+    if locked_gain_pct >= 3.0 * round_trip:
+        return False
+    return distance_pct < _noise_floor_pct(round_trip, atr_pct)
+
+
+# --------------------------------------------------------------------------- #
 # PUR — le garde-fou
 # --------------------------------------------------------------------------- #
 
 def gate_decision(decision: Any, portfolio: Any, quote: Any,
-                  now: Any = None) -> Dict[str, Any]:
+                  now: Any = None, technical: Any = None) -> Dict[str, Any]:
     """Une décision du modèle passe-t-elle le mandat ? (PUR)
 
     **On REJETTE, on ne rogne JAMAIS en silence** (cf. tête de fichier) : le
@@ -533,6 +611,13 @@ def gate_decision(decision: Any, portfolio: Any, quote: Any,
     contrôle — un appelant qui ne s'occupe pas des horaires de marché continue
     de voir un marché ouvert.
 
+    ``technical`` (LOT 12) : le résumé technique du titre (``ta.
+    technical_summary``, ou tout dict qui porte au moins ``atr14_pct``), ou
+    ``None``. Sert UNIQUEMENT à élargir le plancher de bruit d'un stop
+    (:func:`_noise_floor_pct`) au-delà du seuil de frais quand l'ATR du titre
+    est plus large — ``None`` (par défaut) retombe sur le seuil de frais
+    seul, jamais une exception.
+
     Ordre des contrôles — le PREMIER échec gagne, et cet ordre est DÉTERMINISTE
     (épinglé par les tests) parce qu'il décide ce que l'utilisateur lira quand
     deux règles sont violées à la fois : on nomme d'abord le problème le plus
@@ -546,7 +631,8 @@ def gate_decision(decision: Any, portfolio: Any, quote: Any,
          ferme le marché pour tout le monde, il n'y a pas à examiner un ordre
          qui ne partira pas.
       4. ``adjust_stop`` prend sa propre porte (:func:`_gate_adjust_stop`) —
-         il n'échange rien, ni quantité ni taille ne le concernent.
+         il n'échange rien, ni quantité ni taille ne le concernent, mais LOT 12
+         y ajoute son propre ``stop_in_noise`` (cf. la porte elle-même).
       5. ``bad_qty`` — sauf pour ``sell``/``cover`` sans quantité : « tout
          solder ».
       6. ``no_quote`` — sans prix ni taux valides, aucun contrôle de taille
@@ -555,7 +641,9 @@ def gate_decision(decision: Any, portfolio: Any, quote: Any,
          ``qty_over_position``.
       8. ENTRÉE (``buy``/``short``) : ``wrong_side``, ``no_thesis``,
          ``no_stop``, ``risk_high``, ``too_small``, ``oversize``,
-         ``too_many_positions``, ``too_many_crypto``, ``cash_floor``.
+         ``too_many_positions``, ``too_many_crypto``, ``cash_floor``,
+         puis (LOT 12, les contrôles les plus fins, en tout dernier)
+         ``fee_ratio`` et ``stop_in_noise``.
     """
     decision = decision if isinstance(decision, dict) else {}
     portfolio = portfolio if isinstance(portfolio, dict) else {}
@@ -600,7 +688,8 @@ def gate_decision(decision: Any, portfolio: Any, quote: Any,
         return _gate_cancel_pending(symbol, ambushes)
 
     if action == "adjust_stop":
-        return _gate_adjust_stop(symbol, decision, positions, quote)
+        return _gate_adjust_stop(symbol, decision, positions, quote,
+                                 portfolio, technical)
 
     qty_raw = decision.get("qty")
     qty = _as_qty(qty_raw)
@@ -751,6 +840,26 @@ def gate_decision(decision: Any, portfolio: Any, quote: Any,
         if cumul > equity * MAX_PENDING_RISK_PCT / 100.0:
             return _reject("pending_risk_high")
 
+    # LOT 12 — les DEUX contrôles les plus fins, en tout dernier : un ordre
+    # qui a déjà passé taille et risque peut encore être structurellement
+    # perdant une fois les frais comptés.
+    round_trip = _round_trip_pct(portfolio.get("fee_profile"), value_chf, symbol)
+
+    target = _val(decision.get("target"))
+    if target is not None and target > 0:
+        # Un objectif qui ne rapporte pas au moins 3x le coût d'un
+        # aller-retour ne couvre même pas le risque de se faire sortir une
+        # fois et repayer le courtier une seconde.
+        if abs(target - entry) / entry * 100.0 < 3.0 * round_trip:
+            return _reject("fee_ratio")
+
+    # Le stop INITIAL d'une entrée n'a encore verrouillé aucun gain (la ligne
+    # n'existe pas encore) : l'exception de :func:`_stop_in_noise` ne joue
+    # donc jamais ici, seul le plancher de bruit compte.
+    distance_pct = abs(entry - stop) / entry * 100.0
+    if _stop_in_noise(distance_pct, round_trip, _atr_pct(technical), 0.0):
+        return _reject("stop_in_noise")
+
     return _accept(symbol, action, qty, decision, kind=plan_kind,
                    trigger=trigger)
 
@@ -768,7 +877,8 @@ def _stop_protects(side: str, stop: float, price: float) -> bool:
 
 def _gate_adjust_stop(symbol: str, decision: Dict[str, Any],
                       positions: List[Dict[str, Any]],
-                      quote: Dict[str, Any]) -> Dict[str, Any]:
+                      quote: Dict[str, Any], portfolio: Dict[str, Any],
+                      technical: Any = None) -> Dict[str, Any]:
     """Déplacer le stop d'une ligne ouverte — il ne peut QUE se resserrer.
 
     C'est ce qui rend tenable la consigne « laisse courir les gagnants » : sans
@@ -782,6 +892,13 @@ def _gate_adjust_stop(symbol: str, decision: Dict[str, Any],
     l'infini, tout niveau la rapproche.
 
     Aucune quantité n'est demandée : rien ne s'échange.
+
+    LOT 12 — resserrer dans le BRUIT ordinaire du titre revient à se faire
+    sortir puis repayer le courtier : le NOUVEAU stop est aussi jugé contre
+    :func:`_stop_in_noise`, SAUF s'il verrouille un gain flottant déjà égal à
+    3x le coût d'un aller-retour (il protège alors du RÉALISÉ, pas du bruit).
+    Best-effort : sans cours ou sans taux de change exploitables, ce contrôle
+    est simplement SAUTÉ (impossible à juger), jamais deviné.
     """
     line = _line_of(positions, symbol)
     if line is None:
@@ -801,6 +918,19 @@ def _gate_adjust_stop(symbol: str, decision: Dict[str, Any],
         tighter = stop > current if side == "long" else stop < current
         if not tighter:
             return _reject("stop_widen")
+
+    if price is not None and price > 0:
+        fx = _val(quote.get("fx_rate"))
+        if fx is not None and fx > 0:
+            qty_held = abs(_val(line.get("qty")) or 0.0)
+            round_trip = _round_trip_pct(portfolio.get("fee_profile"),
+                                         qty_held * price * fx, symbol)
+            locked_gain = _locked_gain_pct(side, _val(line.get("avg_price")),
+                                           price)
+            distance_pct = abs(price - stop) / price * 100.0
+            if _stop_in_noise(distance_pct, round_trip, _atr_pct(technical),
+                              locked_gain):
+                return _reject("stop_in_noise")
 
     return _accept(symbol, "adjust_stop", 0, decision)
 

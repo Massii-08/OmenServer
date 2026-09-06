@@ -129,9 +129,11 @@ def test_every_reject_code_is_declared():
         # risque cumulé des pièges, annulation d'un piège inexistant.
         "bad_kind", "bad_trigger", "too_many_pending", "pending_risk_high",
         "no_pending",
+        # LOT 12 — la conscience des frais.
+        "fee_ratio", "stop_in_noise",
     }
     assert set(coach_trader.REJECT_CODES) == expected
-    assert len(coach_trader.REJECT_CODES) == 23
+    assert len(coach_trader.REJECT_CODES) == 25
 
 
 def test_coach_username_survives_the_store_allowlist():
@@ -261,7 +263,7 @@ def test_gate_rejects_a_seventh_front():
 
 def test_reinforcing_an_existing_line_is_not_a_new_front():
     held = [_pos("SYM%d" % i) for i in range(5)] + [_pos("NESN.SW", qty=1, avg_price=1.0)]
-    out = coach_trader.gate_decision(_buy(symbol="NESN.SW", qty=20, stop=99.0),
+    out = coach_trader.gate_decision(_buy(symbol="NESN.SW", qty=20, stop=95.0),
                                      _pf(positions=held), _quote(100.0))
     assert out["accepted"] is True
 
@@ -275,7 +277,7 @@ def test_gate_rejects_a_third_crypto():
 
 def test_two_cryptos_still_pass():
     held = [_pos("BTC-USD")]
-    out = coach_trader.gate_decision(_buy(symbol="ETH-USD", qty=20, stop=99.0),
+    out = coach_trader.gate_decision(_buy(symbol="ETH-USD", qty=20, stop=95.0),
                                      _pf(positions=held), _quote(100.0))
     assert out["accepted"] is True
 
@@ -307,6 +309,120 @@ def test_a_short_line_is_not_a_sellable_position():
     out = coach_trader.gate_decision({"action": "sell", "symbol": "NESN.SW", "qty": 1},
                                      pf, _quote(100.0))
     assert out["reason"] == "no_position"
+
+
+# --------------------------------------------------------------------------- #
+# gate_decision — LOT 12 : la conscience des frais
+#
+# Profil par défaut du portefeuille de test = Yuh (``models.DEFAULT_FEE_
+# PROFILE``). Avec qty=20, price=100 (notional 2000 CHF, bien au-dessus du
+# plancher de courtage de 1 CHF), ``round_trip_pct`` vaut EXACTEMENT 1,15 %
+# sur un titre suisse (NESN.SW) quel que soit le prix exact utilisé tant que
+# le notional reste assez grand — le modèle Yuh est un pourcentage pur au-
+# dessus du plancher. Plancher de bruit sans ATR = 2 x 1,15 = 2,3 % ;
+# plancher fee_ratio = 3 x 1,15 = 3,45 %.
+# --------------------------------------------------------------------------- #
+
+def test_gate_rejects_an_entry_whose_target_does_not_clear_three_times_the_fees():
+    """Objectif à 2 % de l'entrée — sous le plancher de 3,45 %."""
+    out = coach_trader.gate_decision(_buy(qty=20, stop=95.0, target=102.0),
+                                     _pf(), _quote(100.0))
+    assert out["accepted"] is False
+    assert out["reason"] == "fee_ratio"
+    assert out["order"] is None
+
+
+def test_gate_accepts_an_entry_whose_target_clears_three_times_the_fees():
+    """Objectif à 4 % de l'entrée — au-dessus du plancher de 3,45 %."""
+    out = coach_trader.gate_decision(_buy(qty=20, stop=95.0, target=104.0),
+                                     _pf(), _quote(100.0))
+    assert out["accepted"] is True
+
+
+def test_gate_ignores_fee_ratio_when_no_target_is_given():
+    """Sans objectif, rien à mesurer — le mandat n'exige pas de ``target``,
+    ``fee_ratio`` ne se prononce donc pas."""
+    decision = _buy(qty=20, stop=90.0)
+    decision.pop("target")
+    out = coach_trader.gate_decision(decision, _pf(), _quote(100.0))
+    assert out["accepted"] is True
+
+
+def test_gate_rejects_an_initial_stop_stuck_in_the_noise():
+    """Stop à 1 % de l'entrée, sous le plancher de 2,3 % — refusé même si le
+    reste de l'ordre est sain (objectif large)."""
+    out = coach_trader.gate_decision(
+        _buy(qty=20, stop=99.0, target=140.0), _pf(), _quote(100.0))
+    assert out["accepted"] is False
+    assert out["reason"] == "stop_in_noise"
+
+
+def test_gate_accepts_an_initial_stop_wide_enough():
+    """Stop à 5 % de l'entrée — au-dessus du plancher de 2,3 %."""
+    out = coach_trader.gate_decision(
+        _buy(qty=20, stop=95.0, target=140.0), _pf(), _quote(100.0))
+    assert out["accepted"] is True
+
+
+def test_gate_uses_two_times_fees_only_when_no_atr_is_available():
+    """Sans contexte technique (pas d'ATR) : le plancher est 2x les frais,
+    RIEN d'autre — un stop à 2 % (sous 2,3 %) est refusé."""
+    out = coach_trader.gate_decision(
+        _buy(qty=20, stop=98.0, target=140.0), _pf(), _quote(100.0))
+    assert out["accepted"] is False
+    assert out["reason"] == "stop_in_noise"
+
+
+def test_gate_rejects_an_adjust_stop_tightened_into_the_noise():
+    """``adjust_stop`` : resserrer à 0,5 % du cours, sous le plancher de
+    2,3 %, sans qu'aucun gain ne soit déjà acquis (cours == prix de revient)."""
+    pf = _pf(positions=[_pos("NESN.SW", qty=20, avg_price=100.0)])
+    out = coach_trader.gate_decision(
+        {"action": "adjust_stop", "symbol": "NESN.SW", "stop": 99.5},
+        pf, _quote(100.0))
+    assert out["accepted"] is False
+    assert out["reason"] == "stop_in_noise"
+
+
+def test_gate_accepts_an_adjust_stop_that_locks_in_a_gain_past_three_times_the_fees():
+    """Le cours a grimpé de 10 % (>> 3 x 1,15 %) : resserrer le stop tout
+    près du cours protège un gain DÉJÀ ACQUIS, pas du bruit — l'exception
+    du LOT 12 s'applique malgré une distance de moins de 1 %."""
+    pf = _pf(positions=[_pos("NESN.SW", qty=20, avg_price=100.0)])
+    out = coach_trader.gate_decision(
+        {"action": "adjust_stop", "symbol": "NESN.SW", "stop": 109.0},
+        pf, _quote(110.0))
+    assert out["accepted"] is True
+
+
+def test_gate_accepts_an_adjust_stop_far_enough_without_a_gain():
+    """Sans gain acquis (cours == prix de revient), un stop à 3 % passe
+    quand même — il est simplement au-dessus du plancher de bruit."""
+    pf = _pf(positions=[_pos("NESN.SW", qty=20, avg_price=100.0)])
+    out = coach_trader.gate_decision(
+        {"action": "adjust_stop", "symbol": "NESN.SW", "stop": 97.0},
+        pf, _quote(100.0))
+    assert out["accepted"] is True
+
+
+def test_gate_widens_the_noise_floor_with_a_large_atr():
+    """Un ATR large (5 % du cours -> plancher 0,5x = 2,5 %) est PLUS EXIGEANT
+    que le plancher de frais seul (2,3 %) : un stop à 2,4 % passerait sur les
+    frais seuls, il est refusé une fois l'ATR pris en compte."""
+    technical = {"atr14_pct": 5.0}
+    out = coach_trader.gate_decision(
+        _buy(qty=20, stop=97.6, target=140.0), _pf(), _quote(100.0),
+        technical=technical)
+    assert out["accepted"] is False
+    assert out["reason"] == "stop_in_noise"
+
+
+def test_gate_accepts_a_stop_beyond_half_the_atr():
+    technical = {"atr14_pct": 5.0}
+    out = coach_trader.gate_decision(
+        _buy(qty=20, stop=94.0, target=140.0), _pf(), _quote(100.0),
+        technical=technical)
+    assert out["accepted"] is True
 
 
 # --------------------------------------------------------------------------- #
@@ -395,7 +511,7 @@ def test_an_exit_ignores_the_position_count_and_the_cash_floor():
 def test_the_gate_converts_with_the_rate_given_by_the_caller():
     """La conversion CHF est la responsabilité de l'APPELANT (même doctrine que
     ``risk.preorder_warnings``) : 20 x 100 USD x 0,90 = 1800 CHF, pas 2000."""
-    out = coach_trader.gate_decision(_buy(qty=20, stop=99.0), _pf(),
+    out = coach_trader.gate_decision(_buy(qty=20, stop=95.0), _pf(),
                                      _quote(100.0, currency="USD", fx_rate=0.90))
     assert out["accepted"] is True
     # Le MÊME ordre à un taux qui le fait passer sous les 10 % est refusé.
@@ -412,7 +528,7 @@ def test_the_gate_never_touches_the_network(monkeypatch):
 
     monkeypatch.setattr(quotes, "_fetch_json", _boom, raising=False)
     assert quotes.kind_from_symbol("BTC-USD") == "crypto"
-    out = coach_trader.gate_decision(_buy(symbol="BTC-USD", qty=20, stop=99.0),
+    out = coach_trader.gate_decision(_buy(symbol="BTC-USD", qty=20, stop=95.0),
                                      _pf(), _quote(100.0))
     assert out["accepted"] is True
 
@@ -425,7 +541,7 @@ def test_the_gate_survives_a_battered_portfolio():
         {"symbol": None, "qty": 3},
         "junk", None, 42,
     ]}
-    out = coach_trader.gate_decision(_buy(qty=20, stop=99.0), pf, _quote(100.0))
+    out = coach_trader.gate_decision(_buy(qty=20, stop=95.0), pf, _quote(100.0))
     assert out["accepted"] is True
 
 
