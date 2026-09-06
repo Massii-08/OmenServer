@@ -8,6 +8,7 @@ from backend.bots.paper.fees import (
     compute_fees,
     is_swiss_security,
     list_profiles,
+    round_trip_pct,
     stamp_duty_rate,
 )
 
@@ -151,3 +152,52 @@ def test_catalogue_exposes_the_three_profiles():
     assert ids == sorted(FEE_PROFILES)
     assert {p["id"]: p["stamp_duty"] for p in list_profiles()} == {
         "ibkr": False, "swissquote": True, "yuh": True}
+
+
+# --------------------------------------------------------------------------- #
+# round_trip_pct — LOT 12 : la conscience des frais
+# --------------------------------------------------------------------------- #
+def test_round_trip_pct_yuh_foreign_matches_two_legs_of_compute_fees():
+    """Yuh, titre ETRANGER : 2 x (0,5 % + 0,15 % timbre) = 1,3 % — pas de
+    barème invente, on relit juste compute_fees des deux cotes."""
+    leg = compute_fees("yuh", 1000.0, "AAPL")
+    expected = round(leg["total_chf"] * 2.0 / 1000.0 * 100.0, 4)
+    assert round_trip_pct("yuh", 1000.0, "AAPL") == expected
+    assert round_trip_pct("yuh", 1000.0, "AAPL") == pytest.approx(1.3)
+
+
+def test_round_trip_pct_yuh_swiss_is_cheaper_than_foreign():
+    """Le timbre suisse (0,075 %) coute moins cher que l'etranger (0,15 %) :
+    NESN.SW doit couter moins que AAPL a montant egal."""
+    swiss = round_trip_pct("yuh", 1000.0, "NESN.SW")
+    foreign = round_trip_pct("yuh", 1000.0, "AAPL")
+    assert swiss < foreign
+    assert swiss == pytest.approx(1.15)
+
+
+def test_round_trip_pct_defaults_to_foreign_stamp_duty_without_symbol():
+    """Sans symbole (contexte generique) : taux le plus penalisant (etranger),
+    doctrine du plancher conservateur du reste du module."""
+    assert round_trip_pct("yuh", 1000.0) == round_trip_pct("yuh", 1000.0, "AAPL")
+
+
+def test_round_trip_pct_zero_notional_costs_nothing():
+    assert round_trip_pct("yuh", 0.0, "AAPL") == 0.0
+
+
+def test_round_trip_pct_negative_notional_mirrors_the_positive_one():
+    """Même doctrine que ``compute_fees`` : un montant négatif ne produit
+    jamais un pourcentage négatif ni un pourcentage nul — il compte comme sa
+    valeur absolue."""
+    assert round_trip_pct("yuh", -1000.0, "AAPL") == round_trip_pct("yuh", 1000.0, "AAPL")
+
+
+def test_round_trip_pct_unknown_profile_raises():
+    with pytest.raises(ValueError):
+        round_trip_pct("degiro", 1000.0, "AAPL")
+
+
+def test_round_trip_pct_ibkr_no_stamp_duty_is_cheapest():
+    """IBKR (etranger, pas de timbre) : 2 x 0,05 % = 0,1 % pour un montant
+    assez grand pour depasser le plancher de 1,50 CHF."""
+    assert round_trip_pct("ibkr", 100000.0, "AAPL") == pytest.approx(0.1)

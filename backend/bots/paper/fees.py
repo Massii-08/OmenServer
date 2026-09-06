@@ -126,6 +126,33 @@ def compute_fees(profile: str, amount_chf: float, symbol: str) -> Dict[str, floa
     }
 
 
+def round_trip_pct(profile: str, notional_chf: float,
+                   symbol: Optional[str] = None) -> float:
+    """Coût d'un ALLER-RETOUR (achat PUIS vente) sur ce profil, en % du
+    montant — LOT 12 : la conscience des frais.
+
+    Réutilise ``compute_fees`` DEUX FOIS (une jambe à l'entrée, une jambe à
+    la sortie, même montant approximé pour les deux) — aucun barème n'est
+    réinventé ici. ``symbol`` absent -> taux de timbre ÉTRANGER (le plus
+    pénalisant, 0,15 % au lieu de 0,075 %) : c'est la doctrine déjà retenue
+    ailleurs dans ce module (cf. ``gate_decision`` côté ``coach_trader`` :
+    mieux vaut un plancher un peu large qu'un chiffre optimiste inventé).
+
+    Un montant nul ou négatif ne coûte RIEN (même doctrine que
+    :func:`compute_fees`). Profil inconnu -> ``ValueError``, comme
+    :func:`compute_fees` : un profil mal orthographié ne doit pas
+    silencieusement rendre le trading gratuit.
+    """
+    amount = abs(float(notional_chf)) if notional_chf is not None else 0.0
+    # ``compute_fees`` valide le profil AVANT de regarder le montant (il lève
+    # même à 0.0) : un seul appel suffit à la fois pour la validation et pour
+    # le chiffre.
+    leg = compute_fees(profile, amount, symbol or "")
+    if amount <= 0.0:
+        return 0.0
+    return round(leg["total_chf"] * 2.0 / amount * 100.0, 4)
+
+
 def list_profiles() -> List[Dict[str, Any]]:
     """Catalogue public des profils (pour le sélecteur du dashboard)."""
     return [
