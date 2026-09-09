@@ -151,6 +151,8 @@ from backend.bots.harvester_router import router as harvester_router
 from backend.bots.oracle_router import router as oracle_router
 from backend.bots.market_router import router as market_router
 from backend.bots.paper_router import router as paper_router
+from backend.bots.paper_tv_router import router as paper_tv_router
+from backend.bots.paper_ws import router as paper_ws_router
 from backend.bots.whales_router import router as whales_router
 from backend.webserver.router import router as webserver_router
 from backend.network.router import router as network_router
@@ -187,6 +189,8 @@ app.include_router(harvester_router)
 app.include_router(oracle_router)
 app.include_router(market_router)
 app.include_router(paper_router)
+app.include_router(paper_tv_router)
+app.include_router(paper_ws_router)
 app.include_router(whales_router)
 app.include_router(webserver_router)
 app.include_router(network_router)
