@@ -437,12 +437,21 @@
    * Ni ``preventDefault`` ni ``stopPropagation`` : on observe, TradingView
    * garde son comportement.
    */
+  /* Vu à la vérification : sur le canvas de TradingView, le vrai ``click`` de
+     la souris n'arrive JAMAIS (la page le consomme), seul un événement
+     synthétique passait. On écoute donc aussi le ``mousedown`` en capture, et
+     on dédoublonne les deux (600 ms) pour qu'un clic ne pose qu'un dialogue. */
+  var lastAltFireMs = 0;
+
   function onAltClick(event) {
     if (!event || event.altKey !== true) { return; }
     if (event.button !== undefined && event.button !== null && event.button !== 0) {
       return;
     }
     if (insidePanel(event.target)) { return; }
+    var nowMs = Date.now();
+    if (nowMs - lastAltFireMs < 600) { return; }
+    lastAltFireMs = nowMs;
     var x = Number(event.clientX);
     var y = Number(event.clientY);
     if (!isFinite(x) || !isFinite(y)) { return; }
@@ -705,6 +714,7 @@
     /* En CAPTURE : TradingView arrête volontiers les clics du graphique avant
        qu'ils ne remontent jusqu'au document. */
     try {
+      document.addEventListener('mousedown', onAltClick, true);
       document.addEventListener('click', onAltClick, true);
     } catch (e) {
       debug('écoute du Alt+clic impossible', e);
