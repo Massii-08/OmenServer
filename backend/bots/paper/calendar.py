@@ -114,6 +114,21 @@ KIND_BC = "bc"
 KIND_HYPOTHESIS = "hypothesis"
 KIND_CATALYST = "catalyst"
 
+# Deux genres ajoutés par l'extension TradingView (LOT C, spec §5.5) :
+#
+# * ``macro``  — le calendrier économique de TradingView (``paper/tvcalendar``),
+#   lu depuis son CACHE disque : la vue reste locale, donc instantanée, et un
+#   TradingView muet la rétrécit sans jamais la casser ;
+# * ``crypto`` — l'agenda crypto CALCULÉ par ``paper/btc`` (funding, expirations
+#   Deribit, fermeture CME…), importé PARESSEUSEMENT : module absent -> rien.
+#
+# Ils n'entrent que dans ``calendar_view`` (la vue), jamais dans ``upcoming``.
+# C'est délibéré : ``upcoming`` sert aussi le JUGE (``run_verdicts``), et juger
+# « le PPI américain a-t-il tenu ses promesses » n'a aucun sens — un chiffre
+# macro n'a ni symbole à coter ni thèse à noter.
+KIND_MACRO = "macro"
+KIND_CRYPTO = "crypto"
+
 # Plafond de longueur d'un libellé. Une thèse de radar peut faire trois lignes ;
 # rangée telle quelle dans une liste, elle en devient illisible et gonfle le
 # JSON servi à chaque rafraîchissement du tableau de bord.
@@ -663,6 +678,64 @@ def normalize_catalysts(events: Any, now: Any = None,
     return out
 
 
+def _timed_label(row: Dict[str, Any]) -> str:
+    """``"12:15 · EU · ECB Interest Rate Decision"`` (PUR).
+
+    Les entrées du calendrier sont datées au JOUR (c'est la forme stable que
+    la vue et le juge partagent depuis l'origine), mais un rendez-vous macro ou
+    crypto ne se lit pas sans son heure : « le PPI à 12:30 » et « la conférence
+    de presse à 12:45 » sont deux rendez-vous, pas un. L'heure vit donc dans le
+    libellé — et comme le dédoublonnage de ces deux genres se fait par
+    ``(kind, date, label)``, elle les distingue aussi.
+    """
+    label = _label(row.get("label"))
+    hour = _text(row.get("time_utc"))
+    return "%s · %s" % (hour, label) if hour and label else label
+
+
+def normalize_macro(rows: Any) -> List[Dict[str, Any]]:
+    """Calendrier économique TradingView -> entrées ``macro`` (PUR).
+
+    ``tvcalendar.parse_events`` rend ``{id, date, time_utc, kind, label,
+    country, importance, source}`` ; on n'en garde que ce que la forme COMMUNE
+    d'une entrée accepte. **La date vient du champ ``date``**, jamais d'un
+    calcul — c'est la règle §4.2 de la spec, et elle est la raison d'être de ce
+    normaliseur (le reste du module n'a pas à savoir d'où vient la ligne).
+    """
+    out: List[Dict[str, Any]] = []
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        day = _day_of(row.get("date"))
+        label = _timed_label(row)
+        if not day or not label:
+            continue                            # ni quand, ni quoi
+        ident = _text(row.get("id")) or _short_hash("%s|%s" % (day, label))
+        out.append(_entry(KIND_MACRO, day, label, "macro:" + ident))
+    return out
+
+
+def normalize_crypto(rows: Any) -> List[Dict[str, Any]]:
+    """Agenda crypto calculé (``btc.crypto_agenda``) -> entrées ``crypto`` (PUR).
+
+    ``{date, time_utc, kind: "crypto", label}`` en entrée. Aucun identifiant
+    n'accompagne ces lignes (elles sont CALCULÉES, pas collectées) : la clé de
+    source est donc une empreinte de ``date|libellé``, stable d'un passage à
+    l'autre tant que le calcul l'est.
+    """
+    out: List[Dict[str, Any]] = []
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        day = _day_of(row.get("date"))
+        label = _timed_label(row)
+        if not day or not label:
+            continue
+        out.append(_entry(KIND_CRYPTO, day, label,
+                          "crypto:" + _short_hash("%s|%s" % (day, label))))
+    return out
+
+
 # --------------------------------------------------------------------------- #
 # PUR — assemblage : dédup, fenêtrage, tri
 # --------------------------------------------------------------------------- #
@@ -688,6 +761,14 @@ def _dedup_key(entry: Dict[str, Any]) -> Tuple[str, str, str]:
     day = str(entry.get("date") or "")
     if kind == KIND_CATALYST and entry.get("symbol"):
         return (kind, day, str(entry.get("symbol")))
+    if kind in (KIND_MACRO, KIND_CRYPTO):
+        # ``(kind, date, label)`` — le LIBELLÉ (heure comprise, cf.
+        # ``_timed_label``) est la vraie identité de ces deux genres : le
+        # calendrier économique répète le même rendez-vous d'un rafraîchissement
+        # à l'autre sous des identifiants différents, et l'agenda crypto est
+        # recalculé à chaque lecture. Dédoublonner par ``source_id`` les
+        # laisserait donc s'empiler.
+        return (kind, day, str(entry.get("label") or ""))
     return (kind, day, str(entry.get("source_id") or ""))
 
 
@@ -993,6 +1074,57 @@ def _fetch_events() -> List[Dict[str, Any]]:
     return out
 
 
+def _fetch_macro(now_dt: datetime, horizon_days: int) -> List[Dict[str, Any]]:
+    """Le calendrier économique TradingView, depuis son CACHE DISQUE.
+
+    AUCUN réseau : ``tvcalendar`` remplit son cache depuis le cycle du guetteur
+    (une fois par heure) et depuis ``GET /api/paper/tvcalendar``. La vue, elle,
+    ne fait que lire — un agenda ne doit pas dépendre d'un appel sortant pour
+    s'afficher. Module absent ou cache vide -> ``[]``.
+    """
+    try:
+        from backend.bots.paper import tvcalendar
+        rows = tvcalendar.cached_items(now=now_dt, days=horizon_days)
+    except Exception as exc:                      # noqa: BLE001
+        logger.warning("paper calendar: calendrier TV indisponible (%s)",
+                       type(exc).__name__)
+        return []
+    return [row for row in (rows or []) if isinstance(row, dict)]
+
+
+# Horizon de l'agenda crypto DANS LA VUE. Sept jours, et pas les 90 de
+# l'horizon général : ces rendez-vous sont des règles de marché qui se répètent
+# (trois financements par jour, une ouverture américaine par jour ouvré), donc
+# leur nombre croît linéairement avec la fenêtre. À 30 jours ils noieraient les
+# rendez-vous qui, eux, n'arrivent qu'une fois — et pousseraient les plus
+# lointains hors du plafond ``MAX_ENTRIES``. Sept jours est aussi le défaut de
+# ``btc.crypto_agenda`` : on ne le contredit pas.
+CRYPTO_HORIZON_D = 7
+
+
+def _fetch_crypto(now_dt: datetime, horizon_days: int) -> List[Dict[str, Any]]:
+    """L'agenda crypto CALCULÉ (``btc.crypto_agenda``), import PARESSEUX.
+
+    Le module ``btc`` peut ne pas exister (déploiement partiel) ou lever :
+    l'agenda rétrécit, il ne tombe pas — même règle que les trois sources
+    historiques.
+    """
+    try:
+        span = min(int(horizon_days), CRYPTO_HORIZON_D)
+    except (TypeError, ValueError):
+        span = CRYPTO_HORIZON_D
+    if span <= 0:
+        return []
+    try:
+        from backend.bots.paper import btc
+        rows = btc.crypto_agenda(now_dt, days=span)
+    except Exception as exc:                      # noqa: BLE001
+        logger.warning("paper calendar: agenda crypto indisponible (%s)",
+                       type(exc).__name__)
+        return []
+    return [row for row in (rows or []) if isinstance(row, dict)]
+
+
 # --------------------------------------------------------------------------- #
 # API PUBLIQUE
 # --------------------------------------------------------------------------- #
@@ -1160,7 +1292,9 @@ def calendar_view(now: Any = None,
                   horizon_days: int = DEFAULT_HORIZON_D,
                   back_days: int = VIEW_BACK_D,
                   verdicts: Optional[Dict[str, Dict[str, Any]]] = None,
-                  max_entries: int = MAX_ENTRIES) -> List[Dict[str, Any]]:
+                  max_entries: int = MAX_ENTRIES,
+                  macro_events: Any = None,
+                  crypto_events: Any = None) -> List[Dict[str, Any]]:
     """CONTRAT PUBLIC (le router) : le calendrier AVEC son verdict fusionné.
 
     Retourne les entrées d'``upcoming`` — même forme, mêmes clés — enrichies
@@ -1175,10 +1309,40 @@ def calendar_view(now: Any = None,
     passé au juge). La fenêtre remonte de ``back_days`` jours : un rendez-vous
     récent SANS son verdict n'aurait aucun intérêt, c'est le verdict qu'on vient
     lire.
+
+    **Extension TradingView (LOT C)** : la vue porte EN PLUS les rendez-vous
+    ``macro`` (calendrier économique TradingView, lu dans son cache disque) et
+    ``crypto`` (agenda calculé par ``btc``), triés et dédoublonnés avec les
+    autres par ``assemble`` — l'UI existante les affiche sans changement, son
+    badge se lit sur ``kind``. Les deux sources suivent la convention d'injection
+    du module : ``None`` = « va chercher, best-effort », une liste = « sers-toi
+    de ça » (c'est ce que font les tests). Elles n'entrent PAS dans
+    ``upcoming`` — cf. le commentaire de ``KIND_MACRO``.
     """
+    now_dt = _now_dt(now)
     rows = upcoming(now=now, bc_events=bc_events, hypotheses=hypotheses,
                     events=events, horizon_days=horizon_days,
                     back_days=back_days, max_entries=max_entries)
+
+    extra: List[Dict[str, Any]] = []
+    rows_macro = (macro_events if macro_events is not None
+                  else _fetch_macro(now_dt, horizon_days))
+    rows_crypto = (crypto_events if crypto_events is not None
+                   else _fetch_crypto(now_dt, horizon_days))
+    for producer in (lambda: normalize_macro(rows_macro),
+                     lambda: normalize_crypto(rows_crypto)):
+        try:
+            extra.extend(producer())
+        except Exception as exc:                  # noqa: BLE001 — best-effort
+            logger.warning("paper calendar: source datée illisible (%s)",
+                           type(exc).__name__)
+    if extra:
+        # Un SEUL assemblage sur l'union : le tri, le fenêtrage et le plafond
+        # doivent être ceux du calendrier entier, pas d'un morceau collé à la
+        # fin. ``assemble`` est idempotent sur des entrées déjà assemblées.
+        rows = assemble(list(rows) + extra, now_dt, horizon_days=horizon_days,
+                        back_days=back_days, max_entries=max_entries)
+
     table = verdicts if verdicts is not None else load_verdicts()
     out: List[Dict[str, Any]] = []
     for entry in rows:

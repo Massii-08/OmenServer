@@ -2134,7 +2134,8 @@ def _default_seen_state() -> Dict[str, Any]:
             "x_cycle": 0, "x_tiers": {}, "x_fails": {},
             "x_candidates": {}, "x_cand_cycle": 0, "x_pending_seen": [],
             "bc_cycle": 0, "pressefi_cycle": 0, "bsky_cycle": 0,
-            "reddit_cycle": 0, "reddit_group_cycle": 0, "reddit_trends": {}}
+            "reddit_cycle": 0, "reddit_group_cycle": 0, "reddit_trends": {},
+            "tv_news": {}}
 
 
 def _load_seen_state(path: Path) -> Dict[str, Any]:
@@ -2180,6 +2181,15 @@ def _load_seen_state(path: Path) -> Dict[str, Any]:
 
     Idem, enfin, pour "calendar_cycle" (27/08) : la cadence du VERDICT du jour J
     (cf. ``calendar_cycle_due``).
+
+    Idem, enfin bis, pour "tv_news" (09/09, extension TradingView) : le
+    sous-état du volet TradingView — ``{"last_fetch": {tv_symbol: iso},
+    "seen_ids": [...], "errors": int, "last_error": iso, "requests": int}``.
+    C'est UNE clé et pas quatre : la cadence par symbole, la fenêtre de
+    déduplication et les compteurs d'anomalie appartiennent au même volet, et
+    les ranger ensemble évite d'avoir à penser à quatre entrées d'allowlist le
+    jour où le volet gagne un compteur de plus. Absente -> dict vide, donc un
+    premier passage qui interroge tout de suite.
 
     ⚠️ Ce retour est une ALLOWLIST : toute clé absente de la liste ci-dessous
     est SILENCIEUSEMENT perdue à la relecture, même si le cycle vient de
@@ -2241,6 +2251,7 @@ def _load_seen_state(path: Path) -> Dict[str, Any]:
         "reddit_group_cycle": _counter("reddit_group_cycle"),
         "reddit_trends": _dict("reddit_trends"),
         "calendar_cycle": _counter("calendar_cycle"),
+        "tv_news": _dict("tv_news"),
     }
 
 
@@ -3880,6 +3891,175 @@ def _run_bsky_volet(state: Dict[str, Any], now_dt: datetime,
         state["seeded"]["bsky"] = True
 
 
+# =========================================================================== #
+#  Volet TradingView (LOT C, 09/09) — le flux du titre, et l'agenda macro
+#
+#  Deux branchements, tous deux best-effort STRICT (un try isolé chacun, comme
+#  la sauvegarde nocturne et les verdicts du calendrier) :
+#
+#    * ``_run_tvnews_volet``     — les dépêches TradingView des titres
+#      détenus ∪ suivis ∪ EN FOCUS, versées dans le flux d'événements de chaque
+#      compte, exactement à la place des dépêches RSS ;
+#    * ``_run_tvcalendar_volet`` — le calendrier économique (cache 1 h) et le
+#      push ``calendar_soon`` des rendez-vous à moins de 30 minutes.
+#
+#  ⚠️ **GATE : le volet TradingView est INERTE tant que personne n'utilise
+#  l'extension.** Le signal est l'existence de ``data/paper_trading/
+#  focus.state.json``, qui naît au premier ``POST /api/paper/focus`` — donc à
+#  la première seconde où un panneau TradingView parle à cet Omen. C'est le bon
+#  défaut à trois titres : ces 60 requêtes par cycle servent le panneau (un
+#  Omen sans panneau n'en a aucun usage), un déploiement où personne n'a
+#  installé l'extension ne doit pas se mettre à sortir vers un service tiers
+#  sans que quiconque l'ait demandé, et le repli RSS Yahoo — lui — continue
+#  exactement comme avant, sans rien perdre. Le jour où on veut le volet
+#  inconditionnel, c'est ``_tv_enabled`` qu'on change, à un seul endroit.
+# =========================================================================== #
+
+def _tv_enabled() -> bool:
+    """L'extension TradingView a-t-elle déjà parlé à cet Omen ? (cf. le GATE
+    ci-dessus.) Erreur de lecture -> ``False`` : on n'ouvre pas une porte
+    réseau sur un doute."""
+    try:
+        from backend.bots.paper import focus as focus_mod
+        return focus_mod.state_path().is_file()
+    except Exception:             # noqa: BLE001 — module absent, disque muet
+        return False
+
+
+class _TvHttpClient(object):
+    """Adaptateur ``.get(url, headers=...)`` par-dessus la session partagée.
+
+    ``tvnews``/``tvcalendar`` ne connaissent qu'un contrat minimal (« un objet
+    qui sait ``get(url, headers=...)`` ») : c'est ce qui les rend testables
+    hors ligne. Cet adaptateur est le SEUL endroit du volet qui sait quel
+    client HTTP le dépôt utilise réellement.
+    """
+
+    def get(self, url, headers=None):
+        return _get_session().get(url, headers=dict(headers or {}), timeout=15.0)
+
+
+def _focus_map(now_dt: datetime) -> Dict[str, str]:
+    """``{username: symbole}`` des titres REGARDÉS — best-effort ({} en panne)."""
+    try:
+        from backend.bots.paper import focus as focus_mod
+        rows = focus_mod.all_active(now_dt)
+    except Exception as exc:      # noqa: BLE001 — module absent, état illisible
+        logger.warning("paper newswatch: focus illisible (%s)", type(exc).__name__)
+        return {}
+    return {str(u): str(s) for u, s in (rows or {}).items() if u and s}
+
+
+def _run_tvnews_volet(state: Dict[str, Any],
+                      portfolios: List[Tuple[str, Dict[str, Any]]],
+                      now_dt: datetime,
+                      counters: Dict[str, Any],
+                      focus_map: Optional[Dict[str, str]] = None,
+                      client: Any = None,
+                      tv_run: Optional[Callable[..., Any]] = None,
+                      emit: Optional[Callable[..., Any]] = None
+                      ) -> Dict[str, List[Dict[str, Any]]]:
+    """Un passage du volet TradingView -> ``{username: [événements neufs]}``.
+
+    Le sous-état vit sous la clé ``tv_news`` de l'état GLOBAL (cadence par
+    symbole, fenêtre de déduplication, compteurs d'anomalie) — inscrite dans
+    l'allowlist de ``_load_seen_state``, sans quoi elle serait relue à zéro à
+    chaque passage et la cadence n'existerait plus (le piège documenté en tête
+    de cette fonction-là).
+
+    Les événements sont distribués aux comptes dont le SYMBOLE fait partie de
+    l'univers (positions ∪ watchlist ∪ focus) : une dépêche sur AAPL n'entre
+    pas dans le carnet de quelqu'un qui n'a jamais entendu parler d'AAPL.
+
+    ``counters["fetched"]`` compte les requêtes TradingView comme il compte les
+    flux RSS : c'est le même cycle, et cacher ces appels rendrait le compteur
+    faux.
+    """
+    if not _tv_enabled():
+        return {}
+    try:
+        from backend.bots.paper import tvnews
+    except Exception as exc:      # noqa: BLE001 — module absent
+        logger.warning("paper newswatch: tvnews indisponible (%s)",
+                       type(exc).__name__)
+        return {}
+
+    universe: Dict[str, List[str]] = {}
+    held = set()
+    for username, portfolio in portfolios:
+        symbols = _merged_symbols(portfolio, username)
+        universe[username] = list(symbols)
+        for symbol in _position_symbols(portfolio):
+            held.add(str(symbol).upper())
+
+    focus_rows = focus_map if focus_map is not None else _focus_map(now_dt)
+    for username, symbol in focus_rows.items():
+        bucket = universe.setdefault(username, [])
+        if symbol.upper() not in {s.upper() for s in bucket}:
+            bucket.append(symbol)
+    if not universe:
+        return {}
+
+    sub_state = state.get("tv_news")
+    if not isinstance(sub_state, dict):
+        sub_state = {}
+    state["tv_news"] = sub_state
+
+    runner = tv_run if tv_run is not None else tvnews.run
+    events = runner(universe, focus_rows,
+                    client if client is not None else _TvHttpClient(),
+                    sub_state, now_dt, held=held, emit=emit) or []
+
+    counters["fetched"] += int(sub_state.get("requests") or 0)
+
+    by_user: Dict[str, List[Dict[str, Any]]] = {}
+    owners = {username: {s.upper() for s in symbols}
+              for username, symbols in universe.items()}
+    for event in events:
+        if not isinstance(event, dict):
+            continue
+        symbol = str(event.get("symbol") or "").upper()
+        if not symbol:
+            continue
+        for username, symbols in owners.items():
+            if symbol in symbols:
+                by_user.setdefault(username, []).append(event)
+    return by_user
+
+
+def _run_tvcalendar_volet(now_dt: datetime,
+                          counters: Dict[str, Any],
+                          client: Any = None,
+                          emit: Optional[Callable[..., Any]] = None) -> int:
+    """Rafraîchit le calendrier économique (cache 1 h) et pousse les
+    rendez-vous imminents -> le nombre de ``calendar_soon`` poussés.
+
+    Best-effort STRICT : ce volet n'écrit que son propre cache, il ne touche à
+    AUCUN état de veille. Une panne le rend muet, elle ne fait rien perdre.
+    """
+    if not _tv_enabled():
+        return 0
+    try:
+        from backend.bots.paper import tvcalendar
+    except Exception as exc:      # noqa: BLE001 — module absent
+        logger.warning("paper newswatch: tvcalendar indisponible (%s)",
+                       type(exc).__name__)
+        return 0
+    try:
+        tvcalendar.refresh(client if client is not None else _TvHttpClient(),
+                           now=now_dt)
+        state = tvcalendar.load_state()
+        pushed = tvcalendar.notify_soon(state, now=now_dt, emit=emit)
+        if pushed:
+            tvcalendar.save_state(state)
+        return len(pushed)
+    except Exception as exc:      # noqa: BLE001 — jamais fatal pour le cycle
+        logger.warning("paper newswatch: calendrier TV en panne (%s)",
+                       type(exc).__name__)
+        counters["errors"] = int(counters.get("errors") or 0) + 1
+        return 0
+
+
 def run_once(now: Optional[datetime] = None,
             fetch: Optional[Callable[[str], str]] = None,
             notifier: Optional[Callable[[str, Dict[str, Any]], bool]] = None,
@@ -3901,7 +4081,10 @@ def run_once(now: Optional[datetime] = None,
             backup_check: Optional[Callable[..., Any]] = None,
             weekly_check: Optional[Callable[..., Any]] = None,
             coach_check: Optional[Callable[..., Any]] = None,
-            alert_quote: Optional[Callable[[str], Any]] = None) -> Dict[str, Any]:
+            alert_quote: Optional[Callable[[str], Any]] = None,
+            tv_client: Any = None,
+            tv_run: Optional[Callable[..., Any]] = None,
+            tv_emit: Optional[Callable[..., Any]] = None) -> Dict[str, Any]:
     """Un cycle de veille news, DIX volets :
 
     1. **politique GLOBAL** (toujours, même sans portefeuille) ;
@@ -3919,7 +4102,14 @@ def run_once(now: Optional[datetime] = None,
     8. **comptes X influents** (26/08 — un cycle sur deux) — plus, depuis W2a,
        la **file de probation** des comptes découverts par ``@mention`` ;
     9. **tendances Reddit** (26/08 — un cycle sur trois, ne notifie jamais) ;
-    10. **par utilisateur, par symbole** détenu ∪ suivi (RSS Yahoo).
+    10. **par utilisateur, par symbole** détenu ∪ suivi (RSS Yahoo) — et, depuis
+        le 09/09, ∪ le titre EN FOCUS dans TradingView.
+
+    Plus, depuis l'extension TradingView du 09/09, un ONZIÈME volet qui ne
+    notifie jamais lui non plus : **TradingView** (``_run_tvnews_volet`` +
+    ``_run_tvcalendar_volet``). Il est INERTE tant que personne n'a utilisé
+    l'extension — cf. le GATE documenté au-dessus de ``_tv_enabled``. ``tv_client``,
+    ``tv_run`` et ``tv_emit`` l'injectent de bout en bout (tests hors ligne).
 
     Retourne ``{users, symbols, fetched, notified, errors, convergence_fired}``
     — les volets globaux contribuent à fetched/notified/errors mais jamais à
@@ -4363,6 +4553,31 @@ def run_once(now: Optional[datetime] = None,
         counters["verdicts"] = _run_calendar_verdicts(now_dt, counters,
                                                       judge=judge)
 
+    # ----------------------------------------------------------------- #
+    # Volet 1octies -- TRADINGVIEW (LOT C, 09/09), deux morceaux.
+    #
+    # AVANT la sauvegarde de l'état global : le sous-état ``tv_news`` (cadence
+    # par symbole, déduplication) vit dedans, il doit partir sur le disque avec
+    # le reste du cycle. Les événements, eux, attendent le volet 2 : ils
+    # s'écrivent dans l'état de CHAQUE compte concerné, exactement à la place
+    # des dépêches RSS.
+    #
+    # Try isolé — un service tiers ne fait jamais perdre un cycle de veille.
+    # ----------------------------------------------------------------- #
+    focus_rows = _focus_map(now_dt)
+    tv_events_by_user: Dict[str, List[Dict[str, Any]]] = {}
+    try:
+        tv_events_by_user = _run_tvnews_volet(
+            gov_state, portfolios, now_dt, counters, focus_map=focus_rows,
+            client=tv_client, tv_run=tv_run, emit=tv_emit)
+        gov_changed = True
+    except Exception as exc:      # noqa: BLE001 — jamais fatal
+        logger.warning("paper newswatch: volet TradingView en panne (%s)",
+                       type(exc).__name__)
+        counters["errors"] += 1
+
+    _run_tvcalendar_volet(now_dt, counters, client=tv_client, emit=tv_emit)
+
     if gov_changed:
         gov_state["events"] = gov_events[:_MAX_EVENTS]
         _purge_old_seen(gov_state, now_dt)
@@ -4375,11 +4590,27 @@ def run_once(now: Optional[datetime] = None,
     for username, portfolio in portfolios:
         counters["users"] += 1
         symbols = _merged_symbols(portfolio, username)
+        # Le titre REGARDÉ dans TradingView rejoint le scan RSS (spec §7,
+        # levier n°3 : « le titre affiché est scanné à 60 s pendant 10 minutes
+        # renouvelables »). Sans focus posé, cette ligne ne change rien —
+        # ``_focus_map`` rend un dictionnaire vide.
+        focus_symbol = focus_rows.get(username)
+        if focus_symbol and focus_symbol.upper() not in {s.upper() for s in symbols}:
+            symbols = list(symbols) + [focus_symbol]
         state = _load_seen(username)
         seen = state["seen"]
         seeded = state["seeded"]
         events = state["events"]
         changed = False
+
+        # Les dépêches TradingView collectées plus haut, versées EN TÊTE du
+        # flux de ce compte : même forme, même fichier, même consommateurs
+        # (toile, convergence, calendrier, fiche du titre). Aucune notification
+        # — ce volet ne parle pas, il nourrit (cf. ``tvnews.to_events``).
+        tv_events = tv_events_by_user.get(username) or []
+        if tv_events:
+            events[0:0] = tv_events
+            changed = True
 
         for symbol in symbols:
             counters["symbols"] += 1
@@ -4683,6 +4914,23 @@ def _run_price_alerts_volet(now_dt: datetime, cfg: Dict[str, Any],
 
             message = price_alerts.format_trigger_message(
                 username, symbol, row.get("op"), row.get("price"), current_price)
+
+            # Push WebSocket (LOT C) — le panneau TradingView doit voir
+            # l'alerte serveur en même temps que le téléphone, et AVANT
+            # l'envoi Telegram : un canal en panne ne doit pas priver l'autre.
+            # Best-effort ABSOLU : ``paper_ws.emit`` ne lève jamais et ne fait
+            # rien sans boucle enregistrée ; l'import est PARESSEUX pour que le
+            # guetteur reste utilisable sans le module (déploiement partiel).
+            try:
+                from backend.bots import paper_ws
+                paper_ws.emit(username, "alert", symbol,
+                              {"id": row.get("id"), "op": row.get("op"),
+                               "price": row.get("price"),
+                               "current_price": current_price,
+                               "message": message})
+            except Exception:     # noqa: BLE001 — un push perdu n'est rien
+                logger.debug("paper newswatch: push WS d'alerte impossible")
+
             try:
                 ok = notify_fn(message, cfg)
             except Exception as exc:  # noqa: BLE001
