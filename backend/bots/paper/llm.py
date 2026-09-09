@@ -1622,3 +1622,68 @@ def suggest_ideas(context: Optional[Dict[str, Any]], lang: str = "fr",
     """
     return _claude_text(build_ideas_prompt(context, lang, risk_level, journal),
                         model=model, timeout=timeout, run=run)
+
+
+# --------------------------------------------------------------------------- #
+# BILAN DE SESSION DE SCALPING (LOT D — extension TradingView, spec §5.4)
+#
+# Le post-mortem automatique est DÉSACTIVÉ pour les scalps : à trois minutes
+# par trade, le plafond de six appels par jour serait brûlé en une heure. Ce
+# bilan le remplace — un seul appel pour toute la session, plafonné à trois par
+# jour côté ``paper.scalps``.
+#
+# D'où un mandat volontairement plus étroit que les six autres prompts :
+# COACH DE DISCIPLINE, pas analyste. Le contexte (``scalps.session_context``)
+# est entièrement déterministe — statistiques du jour et de la semaine, biais
+# détectés par des règles pures, score de discipline, les derniers scalps — et
+# c'est la SEULE matière autorisée. 120 mots : ça se lit entre deux scalps, pas
+# le dimanche soir.
+# --------------------------------------------------------------------------- #
+def build_scalp_review_prompt(context: Optional[Dict[str, Any]],
+                              lang: str = "fr") -> str:
+    """Prompt du bilan d'une session de scalping (LOT D).
+
+    ``context`` vient de ``paper.scalps.session_context`` : rien d'autre n'est
+    fourni au modèle, donc rien d'autre ne peut être cité. Les deux consignes
+    qui écrasent le prompt système (la langue et la longueur) le disent
+    EXPLICITEMENT — sans quoi le « réponse en français, 150-400 mots » d'en
+    haut l'emporterait.
+    """
+    return "\n\n".join([
+        SYSTEM_PROMPT,
+        _lang_line(lang),
+        "Bilan d'une SESSION DE SCALPING (trades de trois à quatre minutes "
+        "exécutés au prix live). Ton rôle ici est celui d'un coach de "
+        "DISCIPLINE, pas d'un analyste : rien sur la direction du marché, "
+        "rien sur les titres à prendre — seulement la façon de trader de la "
+        "session qui vient de se dérouler.",
+        _block("SESSION", context or {}),
+        "``today`` et ``week`` sont les compteurs (nombre de scalps, "
+        "gagnants, P&L net en francs, frais, durée moyenne en secondes) ; "
+        "``biases`` sont les biais détectés par des règles DÉTERMINISTES "
+        "(``revenge_trade`` : rouvert moins de 10 min après un perdant ; "
+        "``overtrading`` : plus de 6 scalps dans l'heure ; ``fee_bleed`` : "
+        "les frais mangent plus de la moitié du brut gagné ; "
+        "``let_losers_run`` : les perdants sont tenus bien plus longtemps que "
+        "les gagnants) ; ``discipline.score`` part de 100 et perd 10 points "
+        "par biais, 20 de plus si la perte du jour touche −2 % de l'équité.",
+        "Écris trois choses, dans cet ordre, sans titres ni listes à puces : "
+        "ce que les chiffres disent de la session ; LE biais qui a le plus "
+        "coûté aujourd'hui (choisis-en un parmi ceux fournis, ou dis "
+        "qu'aucun ne ressort) ; UNE consigne précise pour la prochaine "
+        "session.",
+        "Contraintes dures pour CETTE réponse, elles remplacent celles du "
+        "cadre ci-dessus : 120 mots MAXIMUM ; tu ne cites que des chiffres "
+        "présents dans le bloc SESSION, aucun autre ; si la session est vide "
+        "(aucun scalp), dis-le en une phrase et arrête-toi là.",
+    ])
+
+
+def write_scalp_review(context: Optional[Dict[str, Any]] = None,
+                       lang: str = "fr",
+                       model: str = DEFAULT_MODEL, timeout: int = DEFAULT_TIMEOUT,
+                       run: Callable = subprocess.run) -> str:
+    """Bilan rédigé d'une session de scalping (LOT D) — destiné au panneau de
+    l'extension ET au carnet ``Journal.md``, comme les six autres."""
+    return _claude_text(build_scalp_review_prompt(context, lang),
+                        model=model, timeout=timeout, run=run)
