@@ -147,11 +147,16 @@ def test_totals_are_rounded_to_the_centime():
     assert fees["total_chf"] == 8.02              # somme des composantes affichées
 
 
-def test_catalogue_exposes_the_three_profiles():
+def test_catalogue_exposes_every_profile():
+    """Les trois courtiers historiques, plus les quatre profils de SCALP
+    ajoutes par l'extension TradingView (spec §6.4) — aucun de ces quatre-la
+    n'est un courtier SUISSE, donc aucun ne paie le droit de timbre."""
     ids = [p["id"] for p in list_profiles()]
     assert ids == sorted(FEE_PROFILES)
     assert {p["id"]: p["stamp_duty"] for p in list_profiles()} == {
-        "ibkr": False, "swissquote": True, "yuh": True}
+        "ibkr": False, "swissquote": True, "yuh": True,
+        "custom": False, "kraken_futures": False, "kraken_spot": False,
+        "tv_paper": False}
 
 
 # --------------------------------------------------------------------------- #
