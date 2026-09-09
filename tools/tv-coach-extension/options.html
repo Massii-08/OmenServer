@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <title>OmenServer Coach</title>
+  <style>
+    /* Tokens Ion / Givre, comme panel.css (page d'extension : autonome). */
+    :root {
+      --bg: #050810;
+      --elev-1: #0A101E;
+      --elev-3: #131C33;
+      --border: #1C2947;
+      --text: #EDF2FA;
+      --muted: #8FA3C4;
+      --accent: #00FFB0;
+      --accent-dim: rgba(0, 255, 176, 0.14);
+      --warning: #FBBF24;
+    }
+    @media (prefers-color-scheme: light) {
+      :root {
+        --bg: #EBF0FA;
+        --elev-1: #F7FAFF;
+        --elev-3: #E3EAF6;
+        --border: #CBD7EB;
+        --text: #0C1526;
+        --muted: #46597E;
+        --accent: #00885C;
+        --accent-dim: rgba(0, 136, 92, 0.11);
+        --warning: #92400E;
+      }
+    }
+    body {
+      margin: 0;
+      padding: 24px;
+      background: var(--bg);
+      color: var(--text);
+      font: 13px/1.5 'Geist', system-ui, -apple-system, 'Segoe UI', sans-serif;
+      font-variant-numeric: tabular-nums;
+    }
+    main { max-width: 520px; margin: 0 auto; }
+    h1 { font-size: 18px; margin: 0 0 4px; }
+    p.sub { color: var(--muted); margin: 0 0 18px; }
+    .card {
+      background: var(--elev-1);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 16px;
+    }
+    label.field { display: block; margin: 12px 0; }
+    label.field > span { display: block; color: var(--muted); margin-bottom: 4px; }
+    input[type="text"], input[type="number"], select, textarea {
+      width: 100%;
+      box-sizing: border-box;
+      font: inherit;
+      padding: 8px 10px;
+      border-radius: 8px;
+      border: 1px solid var(--border);
+      background: var(--elev-3);
+      color: var(--text);
+    }
+    textarea { min-height: 68px; resize: vertical; }
+    label.check { display: flex; align-items: center; gap: 8px; margin: 12px 0; }
+    button {
+      font: inherit;
+      font-weight: 600;
+      padding: 9px 16px;
+      border-radius: 8px;
+      border: 1px solid var(--accent);
+      background: var(--accent-dim);
+      color: var(--accent);
+      cursor: pointer;
+    }
+    .banner {
+      margin: 0 0 16px;
+      padding: 10px 12px;
+      border-radius: 8px;
+      border-left: 3px solid var(--warning);
+      background: var(--elev-3);
+      color: var(--text);
+    }
+    .hint { color: var(--muted); margin: 4px 0 0; }
+    .status { margin-left: 12px; color: var(--accent); }
+    [hidden] { display: none !important; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1 id="title">Options du coach</h1>
+    <p class="sub" id="subtitle">OmenServer Coach — TradingView</p>
+
+    <div class="banner" id="fee-banner" hidden></div>
+
+    <div class="card">
+      <label class="field">
+        <span id="l-fee">Profil de frais</span>
+        <select id="fee_profile">
+          <option value="">—</option>
+          <option value="tv_paper">TradingView papier</option>
+          <option value="kraken_spot">Kraken spot</option>
+          <option value="kraken_futures">Kraken futures</option>
+          <option value="yuh">Yuh</option>
+          <option value="swissquote">Swissquote</option>
+          <option value="ibkr">Interactive Brokers</option>
+          <option value="custom">Personnalisé</option>
+        </select>
+        <p class="hint" id="h-fee"></p>
+      </label>
+
+      <label class="field" id="custom-wrap" hidden>
+        <span id="l-custom">Frais personnalisés (% par côté)</span>
+        <input type="number" id="custom_pct" step="0.001" min="0" max="5">
+      </label>
+
+      <label class="field">
+        <span id="l-risk">Risque par trade (%)</span>
+        <input type="number" id="risk_pct" step="0.1" min="0.1" max="10">
+      </label>
+
+      <label class="field">
+        <span id="l-lang">Langue</span>
+        <select id="lang">
+          <option value="fr">Français</option>
+          <option value="it">Italiano</option>
+          <option value="en">English</option>
+        </select>
+      </label>
+
+      <label class="check">
+        <input type="checkbox" id="scalp_auto">
+        <span id="l-scalp">Mode scalp automatique sous 5 min</span>
+      </label>
+
+      <label class="field">
+        <span id="l-base">URL de l’Omen</span>
+        <input type="text" id="api_base" placeholder="https://omenserver.org">
+      </label>
+
+      <label class="field">
+        <span id="l-token">Token (collage manuel)</span>
+        <textarea id="token" spellcheck="false"></textarea>
+        <p class="hint" id="h-token"></p>
+      </label>
+
+      <div>
+        <button type="button" id="save">Enregistrer</button>
+        <span class="status" id="status"></span>
+      </div>
+    </div>
+  </main>
+
+  <script src="lib/i18n.js"></script>
+  <script src="options.js"></script>
+</body>
+</html>

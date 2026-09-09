@@ -1,0 +1,51 @@
+{
+  "manifest_version": 3,
+  "name": "OmenServer Coach",
+  "version": "0.1.0",
+  "description": "Le coach OmenServer dans TradingView : fiche du titre, alertes live, ticket, mode scalp, dessin des paris du coach.",
+  "permissions": ["storage", "notifications", "alarms"],
+  "host_permissions": [
+    "https://omenserver.org/*",
+    "http://localhost:8000/*",
+    "wss://fstream.binance.com/*"
+  ],
+  "background": {
+    "service_worker": "sw.js"
+  },
+  "options_page": "options.html",
+  "content_scripts": [
+    {
+      "matches": ["*://*.tradingview.com/chart/*"],
+      "js": ["bridge.js"],
+      "world": "MAIN",
+      "run_at": "document_idle"
+    },
+    {
+      "matches": ["*://*.tradingview.com/chart/*"],
+      "js": [
+        "lib/i18n.js",
+        "lib/symbols.js",
+        "lib/alerts.js",
+        "lib/api.js",
+        "lib/bars.js",
+        "lib/guards.js",
+        "lib/ledger.js",
+        "lib/draw.js",
+        "content.js"
+      ],
+      "css": ["panel.css"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": ["https://omenserver.org/*", "http://localhost:8000/*"],
+      "js": ["content-omen.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["panel.css"],
+      "matches": ["*://*.tradingview.com/*"]
+    }
+  ]
+}

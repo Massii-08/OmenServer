@@ -1,0 +1,372 @@
+/*
+ * panel.css — l'habillage du panneau « omen-coach ».
+ *
+ * Deux vies : injecté dans la PAGE par le manifeste (il n'y stylise que
+ * ``#omen-coach``, l'élément hôte) et chargé DANS le shadow root par
+ * ``content.js`` (``<link>`` vers la ressource web-accessible) — sans quoi les
+ * règles ne franchiraient pas la frontière du shadow DOM.
+ *
+ * Tokens repris de ``frontend/css/style.css`` : Ion (sombre) par défaut,
+ * « Givre » (clair) sous ``prefers-color-scheme: light``. Chiffres en
+ * ``tabular-nums`` : une colonne de prix ne doit pas danser à chaque tick.
+ * Aucun emoji : du texte et des glyphes.
+ */
+
+/* L'hôte, vu depuis la page. */
+#omen-coach {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  z-index: 2147483000;
+}
+
+:host {
+  all: initial;
+  display: block;
+  --omen-bg: #050810;
+  --omen-elev-1: #0A101E;
+  --omen-elev-2: #0E1526;
+  --omen-elev-3: #131C33;
+  --omen-border: #1C2947;
+  --omen-text: #EDF2FA;
+  --omen-muted: #8FA3C4;
+  --omen-accent: #00FFB0;
+  --omen-accent-dim: rgba(0, 255, 176, 0.14);
+  --omen-danger: #F87171;
+  --omen-warning: #FBBF24;
+  --omen-info: #00D2FF;
+  --omen-radius: 12px;
+  --omen-radius-sm: 8px;
+
+  font-family: 'Geist', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--omen-text);
+}
+
+@media (prefers-color-scheme: light) {
+  :host {
+    --omen-bg: #EBF0FA;
+    --omen-elev-1: #F7FAFF;
+    --omen-elev-2: #FFFFFF;
+    --omen-elev-3: #E3EAF6;
+    --omen-border: #CBD7EB;
+    --omen-text: #0C1526;
+    --omen-muted: #46597E;
+    --omen-accent: #00885C;
+    --omen-accent-dim: rgba(0, 136, 92, 0.11);
+    --omen-danger: #B91C1C;
+    --omen-warning: #92400E;
+    --omen-info: #0077A8;
+  }
+}
+
+.omen-wrap {
+  width: 320px;
+  max-height: 70vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--omen-elev-1);
+  border: 1px solid var(--omen-border);
+  border-radius: var(--omen-radius);
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.35);
+  overflow: hidden;
+  font-variant-numeric: tabular-nums;
+}
+
+.omen-wrap.omen-collapsed {
+  width: auto;
+  background: transparent;
+  border: 0;
+  box-shadow: none;
+}
+
+/* --- en-tête --------------------------------------------------------- */
+
+.omen-head {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px 12px;
+  background: var(--omen-elev-2);
+  border-bottom: 1px solid var(--omen-border);
+  cursor: move;
+  user-select: none;
+}
+
+.omen-title {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.omen-sym {
+  font-weight: 600;
+  font-size: 13px;
+  letter-spacing: 0.02em;
+}
+
+.omen-mode {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--omen-accent);
+  border: 1px solid var(--omen-accent);
+  border-radius: 999px;
+  padding: 1px 8px;
+}
+
+.omen-live {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.omen-price {
+  font-size: 18px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.omen-bidask {
+  font-size: 11px;
+  color: var(--omen-muted);
+}
+
+.omen-head-actions {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+/* --- corps ----------------------------------------------------------- */
+
+.omen-body {
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 8px 12px 12px;
+  scrollbar-width: thin;
+}
+
+.omen-section {
+  border-top: 1px solid var(--omen-border);
+  padding: 8px 0 4px;
+}
+
+.omen-section:first-child {
+  border-top: 0;
+}
+
+.omen-section h3 {
+  margin: 0 0 6px;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--omen-muted);
+}
+
+.omen-section h4 {
+  margin: 8px 0 4px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--omen-muted);
+}
+
+.omen-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 2px 0;
+}
+
+.omen-k { color: var(--omen-muted); }
+.omen-v { font-variant-numeric: tabular-nums; }
+.omen-pos .omen-v { color: var(--omen-accent); }
+.omen-neg .omen-v { color: var(--omen-danger); }
+
+.omen-list {
+  margin: 0;
+  padding-left: 14px;
+}
+
+.omen-list li {
+  margin: 2px 0;
+}
+
+.omen-empty,
+.omen-note,
+.omen-stamp {
+  margin: 4px 0;
+  color: var(--omen-muted);
+}
+
+.omen-answer {
+  margin: 6px 0;
+  padding: 8px;
+  background: var(--omen-elev-3);
+  border-radius: var(--omen-radius-sm);
+  white-space: pre-wrap;
+}
+
+.omen-dim { color: var(--omen-muted); }
+
+/* --- pastilles ------------------------------------------------------- */
+
+.omen-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 6px 0;
+}
+
+.omen-chip {
+  font-size: 10px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--omen-border);
+  background: var(--omen-elev-3);
+  color: var(--omen-muted);
+}
+
+.omen-chip b {
+  color: var(--omen-text);
+  font-weight: 600;
+}
+
+/* --- boutons --------------------------------------------------------- */
+
+.omen-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 8px 0 4px;
+}
+
+.omen-btn {
+  font: inherit;
+  font-weight: 600;
+  font-size: 11px;
+  padding: 6px 10px;
+  border-radius: var(--omen-radius-sm);
+  border: 1px solid var(--omen-border);
+  background: var(--omen-elev-3);
+  color: var(--omen-text);
+  cursor: pointer;
+}
+
+.omen-btn:hover {
+  border-color: var(--omen-accent);
+  color: var(--omen-accent);
+}
+
+.omen-btn.omen-primary {
+  border-color: var(--omen-accent);
+  background: var(--omen-accent-dim);
+  color: var(--omen-accent);
+}
+
+.omen-btn.omen-danger {
+  border-color: var(--omen-danger);
+  color: var(--omen-danger);
+}
+
+.omen-btn.omen-ghost {
+  background: transparent;
+  color: var(--omen-muted);
+}
+
+.omen-fab {
+  font: 600 12px/1.2 system-ui, sans-serif;
+  padding: 10px 14px;
+  border-radius: 999px;
+  border: 1px solid var(--omen-accent);
+  background: var(--omen-elev-1);
+  color: var(--omen-accent);
+  cursor: pointer;
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.35);
+}
+
+/* --- champs ---------------------------------------------------------- */
+
+.omen-field {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 4px 0;
+}
+
+.omen-field span {
+  color: var(--omen-muted);
+}
+
+.omen-field input {
+  font: inherit;
+  font-variant-numeric: tabular-nums;
+  width: 120px;
+  padding: 4px 6px;
+  border-radius: var(--omen-radius-sm);
+  border: 1px solid var(--omen-border);
+  background: var(--omen-elev-3);
+  color: var(--omen-text);
+}
+
+/* --- bandeaux, garde-fous, toasts ------------------------------------ */
+
+.omen-banner {
+  margin: 6px 0;
+  padding: 6px 8px;
+  border-radius: var(--omen-radius-sm);
+  border-left: 3px solid var(--omen-info);
+  background: var(--omen-elev-3);
+}
+
+.omen-banner.omen-warn {
+  border-left-color: var(--omen-warning);
+}
+
+.omen-guard-band {
+  border-radius: var(--omen-radius-sm);
+  border: 1px solid var(--omen-border);
+  overflow: hidden;
+}
+
+.omen-guard {
+  padding: 5px 8px;
+  border-left: 3px solid var(--omen-accent);
+  background: var(--omen-elev-3);
+}
+
+.omen-guard.omen-amber { border-left-color: var(--omen-warning); }
+.omen-guard.omen-red { border-left-color: var(--omen-danger); }
+.omen-guard.omen-ok { border-left-color: var(--omen-accent); }
+
+.omen-warn {
+  margin: 4px 0;
+  color: var(--omen-warning);
+}
+
+.omen-warn.omen-red { color: var(--omen-danger); }
+
+.omen-toasts {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 12px;
+  border-top: 1px solid var(--omen-border);
+  background: var(--omen-elev-2);
+}
+
+.omen-toast {
+  padding: 6px 8px;
+  border-radius: var(--omen-radius-sm);
+  border-left: 3px solid var(--omen-accent);
+  background: var(--omen-elev-3);
+}
+
+.omen-toast.omen-alert { border-left-color: var(--omen-warning); }
+.omen-toast.omen-warn { border-left-color: var(--omen-warning); }
+.omen-toast.omen-ok { border-left-color: var(--omen-accent); }
