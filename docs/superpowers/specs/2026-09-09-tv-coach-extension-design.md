@@ -160,7 +160,7 @@ Fiche du titre (§5.1) · pré-check · ticket · conseil sur clic · dessin des
 
 | Code | Condition (défaut) | Niveau |
 |---|---|---|
-| `event_risk` | événement macro haute importance dans les 15 min avant ou 5 min après | rouge |
+| `event_risk` | événement macro haute importance qui tombe dans les 15 prochaines minutes, ou qui est passé depuis moins de 5 minutes (fenêtre `[now − 5 min, now + 15 min]`) | rouge |
 | `funding_soon` | règlement du funding dans < 5 min (perp BTC affiché) | ambre |
 | `flash_news` | news TradingView sur le titre publiée depuis < 2 min | ambre |
 | `vol_spike` | ATR(1 min, 14) > 2 × sa médiane sur 4 h | ambre |

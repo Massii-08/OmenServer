@@ -118,7 +118,8 @@ _HISTORY_ITEM_KEYS = ("id", "src", "title", "symbol", "ts", "sentiment", "link")
 
 FACTOR_CODES = ("fresh_hyps", "gov", "held_catalyst", "held_risk",
                 "whale_filing", "whale_sold_watched", "cross_source",
-                "crowd_buzz", "event_flop", "event_confirmed")
+                "crowd_buzz", "event_flop", "event_confirmed",
+                "funding_extreme", "oi_buildup")
 
 FACTOR_LABELS = {
     "fresh_hyps": "plusieurs hypothèses fraîches du radar",
@@ -134,7 +135,22 @@ FACTOR_LABELS = {
                   "détiens ou qu'on t'a conseillé à l'achat",
     "event_confirmed": "le rendez-vous attendu s'est CONFIRMÉ sur un titre que "
                        "tu suis",
+    # --- volet Bitcoin (spec §9.2, ``paper/btc.py``) ------------------------ #
+    # Deux facteurs DÉTERMINISTES, mesurés sur des sources publiques : ils
+    # comptent comme un facteur parmi les deux exigés, et ils ne tirent JAMAIS
+    # seuls (ils ne sont PAS dans ``THREAT_FACTORS`` — un funding tendu n'est
+    # pas une menace sur le compte, c'est un état du marché).
+    "funding_extreme": "le funding du perpétuel BTC est EXTRÊME deux "
+                       "règlements de suite",
+    "oi_buildup": "l'intérêt ouvert BTC gonfle alors que le prix ne bouge pas",
 }
+
+# Les items du volet BTC portent ce ``src`` et ce symbole. Le ``src`` est ce que
+# lisent l'empreinte (``fingerprint``) et les lignes du prompt (``_item_line``) ;
+# un item sans lui tomberait dans l'empreinte sous la clé « ? » et sortirait du
+# digest sans titre.
+BTC_SRC = "btc"
+BTC_ITEM_SYMBOL = "BTC-USD"
 
 # --- le verdict du jour J (27/08) ------------------------------------------ #
 #
@@ -648,13 +664,42 @@ def _calendar_items(calendar_verdicts: Any, watched: set, held: set
     return flops, confirmed
 
 
+def _btc_items(btc_factors: Any, code: str) -> List[Dict[str, Any]]:
+    """Les items d'un facteur BTC, remis à la forme d'item COMMUNE (PUR).
+
+    ``btc.factors`` rend ses items sous SA forme (``{id, kind, text}``) — celle
+    que l'extension affiche telle quelle. Ici, un item doit porter ``src`` et
+    ``title`` : c'est ce que lisent ``fingerprint`` et ``_item_line``. On
+    TRADUIT donc au lieu de recopier ; un item sans identifiant est écarté (sans
+    id, il ne pourrait ni entrer dans l'empreinte ni être compté comme un signal
+    indépendant).
+
+    Un volet malformé (absent, mal typé, tronqué) rend une liste vide : le
+    facteur reste FAUX. Le volet Bitcoin est une source comme une autre, et une
+    source cassée n'allume rien.
+    """
+    if not isinstance(btc_factors, dict):
+        return []
+    out: List[Dict[str, Any]] = []
+    for item in _dicts(btc_factors.get(code)):
+        ident = _text(item.get("id"))
+        if not ident:
+            continue
+        out.append({"id": ident, "src": BTC_SRC,
+                    "title": _text(item.get("text")),
+                    "symbol": BTC_ITEM_SYMBOL, "ts": "",
+                    "sentiment": "", "link": ""})
+    return out
+
+
 def collect_factors(now: Any, hypotheses: Any, news_events: Any,
                     filing_events: Any, watched_symbols: Any,
                     held_symbols: Any = None,
                     whale_moves: Any = None,
                     reddit_trends: Any = None,
-                    calendar_verdicts: Any = None) -> Dict[str, Any]:
-    """Les huit facteurs et les items qui les portent (PUR).
+                    calendar_verdicts: Any = None,
+                    btc_factors: Any = None) -> Dict[str, Any]:
+    """Les facteurs de ``FACTOR_CODES`` et les items qui les portent (PUR).
 
     Rend ``{"factors": {code: bool, ...}, "items": [...]}``. Chaque item porte
     un ``src`` (``hyp``/``news``/``gov``/``filing``) et un ``id`` STABLE : c'est
@@ -702,6 +747,19 @@ def collect_factors(now: Any, hypotheses: Any, news_events: Any,
     dans ``cross_source``, et pour une raison plus forte encore que la foule :
     un verdict est DÉRIVÉ des hypothèses et des dépêches que ce même calcul
     compte déjà. L'y ajouter ferait croiser une information avec elle-même.
+
+    ``btc_factors`` = le volet Bitcoin DÉJÀ calculé (``btc.factors`` :
+    ``{code: [{id, kind, text}]}``) — les facteurs ``funding_extreme`` et
+    ``oi_buildup``, cf. ``_btc_items``. Optionnel et fusionné tel quel : le
+    seuil de funding et celui de l'intérêt ouvert vivent dans ``btc.py``, avec
+    les séries qui les nourrissent, et cette fonction pure n'a pas à les
+    connaître. Absent -> les deux facteurs sont FAUX, exactement comme avant
+    (les appelants historiques ne changent pas d'une ligne).
+
+    ⚠️ Ces deux codes ne sont PAS dans ``THREAT_FACTORS`` et n'y entreront pas :
+    un funding tendu ou un carnet qui gonfle est un ÉTAT DE MARCHÉ, pas une
+    mauvaise nouvelle sur un titre qu'on détient. Ils comptent comme un facteur
+    parmi les deux exigés, ils ne réveillent personne à eux seuls.
     """
     now_dt = _parse_dt(now) or _now()
     cutoff = now_dt - timedelta(hours=WINDOW_H)
@@ -797,6 +855,12 @@ def collect_factors(now: Any, hypotheses: Any, news_events: Any,
         "crowd_buzz": _crowd_items(reddit_trends, watched),
         "event_flop": event_flops,
         "event_confirmed": event_confirmed,
+        # Volet Bitcoin : DÉJÀ calculé par ``btc.factors`` (déterministe, hors
+        # ligne, sur des séries que ce module ne connaît pas). On le fusionne,
+        # on ne le recalcule pas — deux formules pour un même seuil divergent au
+        # premier ajustement.
+        "funding_extreme": _btc_items(btc_factors, "funding_extreme"),
+        "oi_buildup": _btc_items(btc_factors, "oi_buildup"),
     }
     factors = {code: bool(by_factor[code]) for code in FACTOR_CODES}
 
@@ -2152,6 +2216,25 @@ def maybe_fire(now: Any = None,
         message = with_header(parsed["text"])
 
         sent = _send(notifier, message, cfg)
+
+        # Push WebSocket (LOT C) — le panneau TradingView reçoit le digest en
+        # même temps que le téléphone, et une MENACE (``THREAT_FACTORS``, qui
+        # tire seule) part sous son propre type pour que le panneau puisse la
+        # traiter différemment d'un digest d'opportunité. ``username=None`` :
+        # une convergence ne s'adresse à personne en particulier.
+        #
+        # Best-effort ABSOLU, import PARESSEUX : ``paper_ws.emit`` ne lève
+        # jamais et ne fait rien sans boucle enregistrée. Placé APRÈS l'envoi
+        # et AVANT l'armement de l'état, comme le veut le plan (§3 Task 8).
+        try:
+            from backend.bots import paper_ws
+            active = active_factors(flags)
+            threatened = any(code in THREAT_FACTORS for code in active)
+            paper_ws.emit(None, "threat" if threatened else "digest", None,
+                          {"factors": active, "n_items": len(items),
+                           "digest": message, "llm": used_llm, "ts": now_iso})
+        except Exception:      # noqa: BLE001 — un push perdu n'est rien
+            logger.debug("paper convergence: push WS impossible")
 
         state["last_fired"] = now_iso
         state["last_fingerprint"] = fp

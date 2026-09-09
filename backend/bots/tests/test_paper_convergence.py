@@ -1110,11 +1110,20 @@ def test_les_volets_monde_n_ajoutent_aucun_facteur_au_contrat():
     explicitement. Le test épingle donc les huit codes historiques EN TÊTE et
     laisse la liste s'allonger par la FIN — ce qui garde l'ordre des items
     stable pour tout ce qui existait avant.
+
+    Les deux codes du volet BITCOIN ajoutés le 09/09 (``funding_extreme``,
+    ``oi_buildup``, spec §9.2) entrent par la même porte, et pour la même
+    raison : ils ne viennent pas d'un volet de veille qui élargirait la
+    matière, mais d'une MESURE déterministe demandée explicitement (D7). Ils
+    s'ajoutent APRÈS les dix codes précédents — l'ordre de tout ce qui existait
+    reste intact — et ils ne sont pas des facteurs de MENACE (test dédié dans
+    ``test_tvcoach_btc.py``).
     """
     assert convergence.FACTOR_CODES[:8] == (
         "fresh_hyps", "gov", "held_catalyst", "held_risk", "whale_filing",
         "whale_sold_watched", "cross_source", "crowd_buzz")
-    assert convergence.FACTOR_CODES[8:] == ("event_flop", "event_confirmed")
+    assert convergence.FACTOR_CODES[8:10] == ("event_flop", "event_confirmed")
+    assert convergence.FACTOR_CODES[10:] == ("funding_extreme", "oi_buildup")
 
 
 # =========================================================================== #
