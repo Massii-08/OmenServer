@@ -278,6 +278,59 @@ test('l’état des garde-fous se construit même sans fiche ni modules scalp', 
   assert.ok(Array.isArray(guardState.calendar));
 });
 
+test('bridge : le symbole d’une rangée de watchlist, du qualifié au texte', () => {
+  const row = (attributes, text) => ({
+    getAttribute: (name) => (Object.prototype.hasOwnProperty.call(attributes, name)
+      ? attributes[name] : null),
+    textContent: text === undefined ? '' : text
+  });
+  assert.strictEqual(
+    bridge.symbolFromRow(row({ 'data-symbol-full': 'NASDAQ:AAPL',
+                               'data-symbol-short': 'AAPL' })), 'NASDAQ:AAPL');
+  assert.strictEqual(bridge.symbolFromRow(row({ 'data-symbol-short': 'AAPL' })), 'AAPL');
+  /* Dernier recours : le premier mot du texte, et seulement s'il ressemble à
+     un symbole. Le texte RÉEL d'une rangée (relevé sur la page le 09/09) est
+     du charabia collé — il doit être écarté, pas importé. */
+  assert.strictEqual(bridge.symbolFromRow(row({}, 'NESN  78.20  +1,2 %')), 'NESN');
+  assert.strictEqual(bridge.symbolFromRow(row({}, 'SP:SPX 7,636.36')), 'SP:SPX');
+  assert.strictEqual(bridge.symbolFromRow(row({}, '   ')), '');
+  assert.strictEqual(bridge.symbolFromRow(row({}, '78.20')), '',
+                     'un prix n’est pas un symbole');
+  assert.strictEqual(
+    bridge.symbolFromRow(row({}, 'SSPXDMarket closed7,636.36−37.16−0.48%')), '',
+    'le texte collé d’une rangée réelle ne doit rien produire');
+  assert.strictEqual(bridge.symbolFromRow(null), '');
+  /* Un getAttribute qui lève ne casse pas la lecture. */
+  assert.strictEqual(bridge.symbolFromRow({
+    getAttribute: () => { throw new Error('nœud mort'); }, textContent: 'TSLA'
+  }), 'TSLA');
+});
+
+test('bridge : pane et watchlist ont chacun leur constante de sélecteurs', () => {
+  assert.ok(Array.isArray(bridge.PANE_SELECTORS));
+  assert.ok(bridge.PANE_SELECTORS.length >= 3);
+  assert.ok(Array.isArray(bridge.WATCHLIST_SELECTORS));
+  assert.ok(bridge.WATCHLIST_SELECTORS.length >= 3);
+  /* Aucun sélecteur de watchlist ne ratisse tout le document : un
+     ``[data-symbol-full]`` nu importerait les pastilles du graphique. */
+  for (const selector of bridge.WATCHLIST_SELECTORS) {
+    assert.ok(selector.indexOf(' ') !== -1,
+              'sélecteur trop large : ' + selector);
+  }
+  assert.strictEqual(typeof bridge.WATCHLIST_MAX_ROWS, 'number');
+});
+
+test('Alt+clic sans lib/price_axis.js : le prix live sert de repli', () => {
+  /* Ce test doit rester AVANT le chargement de lib/price_axis.js. */
+  sendFromBridge({ type: 'tv:alt_click', y: 300, top: 100, height: 400,
+                   range_from: 78000, range_to: 80000, last_price: 78500 });
+  assert.ok(coach.state.alert_draft, 'aucun brouillon d’alerte');
+  assert.strictEqual(coach.state.alert_draft.price, 78500,
+                     'sans le module d’échelle, on retombe sur le prix connu');
+  assert.strictEqual(coach.state.alert_draft.op, 'above');
+  coach.state.alert_draft = null;
+});
+
 /* --------------------------------------------------------------------- *
  * Avec les modules du lot ext-scalp : cycle complet d'un scalp.
  * Ces ``require`` arrivent VOLONTAIREMENT après les tests ci-dessus, qui
@@ -337,4 +390,156 @@ test('mode scalp de bout en bout : barres, garde-fous, ledger, file locale',
   assert.ok(coach.state.scalp.result, 'aucun résultat de scalp');
   assert.ok(coach.state.scalp.result.pnl_net > 0, 'P&L attendu positif');
   assert.strictEqual(coach.state.scalp.queued, 1, 'le scalp n’est pas en file');
+});
+
+/* --------------------------------------------------------------------- *
+ * Lot ext-F : Alt+clic, watchlist, note rapide, bilan automatique.
+ * Les modules du lot sont chargés ICI : les tests plus haut prouvent que le
+ * panneau tient debout SANS eux.
+ * --------------------------------------------------------------------- */
+
+test('Alt+clic : l’ordonnée devient un prix et la condition se choisit seule',
+     () => {
+  require('../lib/price_axis.js');
+  require('../lib/watchlist.js');
+  require('../lib/note.js');
+  require('../lib/idle.js');
+
+  /* Le dernier tick du test de scalp a posé le prix à 106. */
+  assert.strictEqual(coach.state.price, 106);
+
+  /* Pane de 400 px à 100 px du haut, plage 100 -> 110 : y = 300 est au
+     milieu, donc 105 — soit SOUS le cours : « en dessous ». */
+  sendFromBridge({ type: 'tv:alt_click', y: 300, top: 100, height: 400,
+                   range_from: 100, range_to: 110, last_price: 106 });
+  assert.ok(coach.state.alert_draft, 'aucun brouillon d’alerte');
+  assert.strictEqual(coach.state.alert_draft.price, 105);
+  assert.strictEqual(coach.state.alert_draft.op, 'below');
+
+  /* Au-dessus du cours, la condition bascule. */
+  sendFromBridge({ type: 'tv:alt_click', y: 140, top: 100, height: 400,
+                   range_from: 100, range_to: 110, last_price: 106 });
+  assert.strictEqual(coach.state.alert_draft.price, 109);
+  assert.strictEqual(coach.state.alert_draft.op, 'above');
+});
+
+test('le brouillon d’alerte s’affiche avec ses deux conditions', () => {
+  coach.render();
+  const html = shadow().innerHTML;
+  assert.ok(html.indexOf('data-omen-act="alert-create"') !== -1, 'bouton Créer absent');
+  assert.ok(html.indexOf('data-omen-act="alert-above"') !== -1, 'bouton Au-dessus absent');
+  assert.ok(html.indexOf('data-omen-act="alert-below"') !== -1, 'bouton En dessous absent');
+  assert.ok(html.indexOf('data-omen-field="alert_price"') !== -1, 'prix non éditable');
+  assert.ok(html.indexOf('Nouvelle alerte') !== -1);
+});
+
+test('alerte sur un titre non suivi : refusée en local, sans appel', async () => {
+  coach.state.symbol = null;
+  coach.createAlert();
+  await settled();
+  assert.strictEqual(coach.state.alert_draft.status,
+                     'Titre non suivi : alerte impossible.');
+  coach.state.symbol = 'BTC-USD';
+  coach.state.alert_draft = null;
+  coach.render();
+});
+
+test('un changement de titre jette le brouillon d’alerte', async () => {
+  sendFromBridge({ type: 'tv:alt_click', y: 300, top: 100, height: 400,
+                   range_from: 100, range_to: 110, last_price: 106 });
+  assert.ok(coach.state.alert_draft);
+  sendFromBridge({ type: 'tv:symbol', tv_symbol: 'NASDAQ:AAPL', resolution: '1' });
+  await settled();
+  assert.strictEqual(coach.state.alert_draft, null);
+});
+
+test('la section Watchlist et son bouton d’import sont rendus', () => {
+  const html = shadow().innerHTML;
+  assert.ok(html.indexOf('data-omen-act="watchlist-import"') !== -1,
+            'bouton d’import absent');
+  assert.ok(html.indexOf('Importer la watchlist') !== -1);
+});
+
+test('l’import interroge le pont, et une watchlist absente rend la main',
+     async () => {
+  const before = posted.length;
+  coach.importWatchlist();
+  assert.strictEqual(coach.state.watchlist.busy, true);
+  const asked = posted.slice(before).some((m) => m.type === 'tv:watchlist_request');
+  assert.ok(asked, 'le pont n’a pas été interrogé');
+
+  sendFromBridge({ type: 'tv:watchlist', symbols: [], error: 'not_found' });
+  await settled();
+  assert.strictEqual(coach.state.watchlist.busy, false);
+  assert.strictEqual(coach.state.watchlist.status,
+                     'Watchlist TradingView introuvable sur cette page.');
+});
+
+test('watchlist lue mais Omen injoignable : import interrompu, jamais bloqué',
+     async () => {
+  coach.importWatchlist();
+  sendFromBridge({ type: 'tv:watchlist',
+                   symbols: ['NASDAQ:AAPL', 'SIX:NESN', 'WTF:XYZ'] });
+  await settled();
+  await settled();
+  assert.strictEqual(coach.state.watchlist.busy, false);
+  assert.strictEqual(coach.state.watchlist.status.indexOf('Import interrompu'), 0,
+                     'statut inattendu : ' + coach.state.watchlist.status);
+});
+
+test('le récapitulatif compte importés, ignorés et inconnus', () => {
+  const plan = { post: ['AAPL', 'NESN.SW'], skipped: ['TSLA'], unknown: ['WTF:XYZ'],
+                 capped: true, cap: 30, seen: 4 };
+  const recap = coach.watchlistRecap(plan, 2, plan.unknown, '');
+  assert.strictEqual(recap.indexOf('2 importés, 1 ignorés, 1 inconnus.'), 0, recap);
+  assert.ok(recap.indexOf('Import limité à 30 titres.') !== -1, recap);
+  assert.ok(recap.indexOf('Inconnus : WTF:XYZ') !== -1, recap);
+});
+
+test('la note rapide s’affiche, garde son texte et refuse le vide', async () => {
+  const html = shadow().innerHTML;
+  assert.ok(html.indexOf('data-omen-field="note"') !== -1, 'champ de note absent');
+  assert.ok(html.indexOf('data-omen-act="note-send"') !== -1, 'bouton Noter absent');
+  assert.ok(html.indexOf('maxlength="500"') !== -1, 'longueur non bornée');
+
+  /* Une note vide n'appelle rien : le statut reste tel quel. */
+  coach.state.note.text = '   ';
+  coach.sendNote();
+  await settled();
+  assert.strictEqual(coach.state.note.status, '');
+
+  /* Le texte survit à un repeint (toast qui expire, garde-fou qui change). */
+  coach.state.note.text = 'cassure du VWAP';
+  coach.render();
+  assert.ok(shadow().innerHTML.indexOf('cassure du VWAP') !== -1,
+            'la note a été effacée par le rendu');
+});
+
+test('Ctrl+Entrée envoie la note ; Omen injoignable -> le texte est GARDÉ',
+     async () => {
+  const textarea = {
+    getAttribute: (name) => (name === 'data-omen-field' ? 'note' : null),
+    value: 'range serré sous le VWAP'
+  };
+  let prevented = false;
+  const handlers = shadow().listeners.keydown || [];
+  assert.strictEqual(handlers.length, 1, 'aucun écouteur de touche');
+  handlers[0]({ target: textarea, key: 'Enter', ctrlKey: true,
+                preventDefault: () => { prevented = true; } });
+  assert.strictEqual(prevented, true, 'Ctrl+Entrée doit couper le saut de ligne');
+  await settled();
+  assert.strictEqual(coach.state.note.status.indexOf('Note refusée'), 0,
+                     'statut inattendu : ' + coach.state.note.status);
+  assert.strictEqual(coach.state.note.text, 'range serré sous le VWAP',
+                     'une note non partie ne doit pas être perdue');
+  coach.state.note.text = '';
+  coach.state.note.status = '';
+});
+
+test('le minuteur du bilan automatique ne part pas sans attendre', () => {
+  coach.state.scalp.open = false;
+  coach.touchIdle();
+  coach.checkIdleReview();
+  assert.notStrictEqual(coach.state.advice.status, 'pending',
+                        'un scalp qui vient de fermer ne déclenche pas de bilan');
 });

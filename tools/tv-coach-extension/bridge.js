@@ -51,6 +51,60 @@
     ]
   };
 
+  /*
+   * SÉLECTEURS DU PANE — la zone de tracé du graphique, celle dont la hauteur
+   * porte l'échelle des prix (Alt+clic, spec §8). Du plus précis au plus
+   * large ; le dernier recours est le canvas lui-même. Aucun n'est documenté
+   * par TradingView : un clic qui ne tombe dans AUCUN de ces cadres est
+   * ignoré en silence (pas d'alerte à un prix inventé).
+   *
+   * RELEVÉ SUR LA PAGE RÉELLE le 09/09 : ``.chart-markup-table.pane`` et
+   * ``.chart-gui-wrapper`` répondent (cadre 734x629), les deux
+   * ``[data-name=...]`` ne répondent pas — ils restent au cas où TradingView
+   * y revienne, leur absence ne coûte qu'un ``querySelectorAll`` vide.
+   */
+  var PANE_SELECTORS = [
+    '.chart-markup-table.pane',
+    '[data-name="pane-widget-chart"]',
+    '[data-name="pane"]',
+    '.chart-gui-wrapper',
+    '.chart-container canvas'
+  ];
+
+  /*
+   * SÉLECTEURS DE LA WATCHLIST — les lignes du panneau de droite. Les rangées
+   * portent le symbole QUALIFIÉ dans ``data-symbol-full`` (``NASDAQ:AAPL``) et
+   * sa forme courte dans ``data-symbol-short`` (``AAPL``, inutilisable seule :
+   * le mappage Yahoo exige la place). On s'en tient à des conteneurs
+   * IDENTIFIÉS comme watchlist — un ``[data-symbol-full]`` cherché dans tout
+   * le document ramasserait les pastilles du graphique, et importerait dans
+   * les favoris des titres que Massii n'a jamais mis en liste.
+   * Aucune correspondance = « watchlist introuvable », pas une erreur.
+   *
+   * RELEVÉ SUR LA PAGE RÉELLE le 09/09 : ``.widgetbar-widget-watchlist`` rend
+   * les 17 rangées de la liste par défaut, chacune portant BIEN le symbole
+   * qualifié (``SP:SPX``, ``TVC:NDQ``, ``CBOE:VIX``...) dans
+   * ``data-symbol-full`` et sa forme courte dans ``data-symbol-short``. Les
+   * sélecteurs ``[data-name="watchlist"]`` ne répondent pas aujourd'hui.
+   */
+  var WATCHLIST_SELECTORS = [
+    '[data-name="watchlists-dialog"] [data-symbol-full]',
+    '[data-name="watchlist"] [data-symbol-full]',
+    '.widgetbar-widget-watchlist [data-symbol-full]',
+    '.widgetbar-wrap [data-symbol-full]',
+    '[data-name="watchlist"] [data-symbol-short]',
+    '.widgetbar-widget-watchlist [data-symbol-short]',
+    '.widgetbar-wrap [data-symbol-short]'
+  ];
+
+  /* Au-delà, ce n'est plus une watchlist : on coupe (le panneau replafonne
+     de toute façon à 30 créations). */
+  var WATCHLIST_MAX_ROWS = 200;
+
+  /* L'hôte du panneau, en monde isolé : un Alt+clic DANS le panneau n'est
+     jamais un clic sur le graphique. */
+  var PANEL_HOST_ID = 'omen-coach';
+
   /* ------------------------------------------------------------------ */
   /* Partie PURE (testable hors navigateur)                              */
   /* ------------------------------------------------------------------ */
@@ -113,10 +167,52 @@
     return null;
   }
 
+  /**
+   * Symbole d'une rangée de watchlist : le QUALIFIÉ d'abord (``NASDAQ:AAPL``),
+   * la forme courte ensuite, le texte en dernier. Rend ``''`` quand la rangée
+   * ne dit rien d'exploitable — le panneau écartera les inconnus de toute
+   * façon, mais autant ne pas lui envoyer du vide.
+   *
+   * PUR : prend un objet porteur de ``getAttribute``/``textContent``, pas un
+   * vrai nœud (d'où sa testabilité sous Node).
+   */
+  function symbolFromRow(node) {
+    if (!node) { return ''; }
+    var attributes = ['data-symbol-full', 'data-symbol', 'data-symbol-short'];
+    for (var i = 0; i < attributes.length; i += 1) {
+      var value = null;
+      try {
+        value = typeof node.getAttribute === 'function'
+          ? node.getAttribute(attributes[i]) : null;
+      } catch (e) {
+        value = null;
+      }
+      var cleaned = String(value === null || value === undefined ? '' : value).trim();
+      if (cleaned) { return cleaned; }
+    }
+    var text = String(node.textContent === undefined || node.textContent === null
+      ? '' : node.textContent).trim();
+    /*
+     * Dernier recours, et il est STRICT. Vérifié sur la page réelle le 09/09 :
+     * une rangée rend « SSPXDMarket closed7,636.36−37.16−0.48% », dont le
+     * premier mot n'est PAS un symbole. On n'accepte donc que deux formes —
+     * qualifiée (``NASDAQ:AAPL``) ou ticker court tout en capitales — ce qui
+     * écarte d'office ce charabia comme un prix (« 78.20 »).
+     */
+    var first = text.split(/\s+/)[0] || '';
+    if (/^[A-Z0-9]{1,12}:[A-Z0-9._-]{1,12}$/.test(first)) { return first; }
+    if (/^[A-Z][A-Z0-9._-]{0,11}$/.test(first)) { return first; }
+    return '';
+  }
+
   var pure = {
     parsePrice: parsePrice,
     priceFromTitle: priceFromTitle,
+    symbolFromRow: symbolFromRow,
     BID_ASK_SELECTORS: BID_ASK_SELECTORS,
+    PANE_SELECTORS: PANE_SELECTORS,
+    WATCHLIST_SELECTORS: WATCHLIST_SELECTORS,
+    WATCHLIST_MAX_ROWS: WATCHLIST_MAX_ROWS,
     RETRY_MS: RETRY_MS,
     RETRY_MAX: RETRY_MAX,
     TICK_MS: TICK_MS
@@ -159,6 +255,15 @@
     }
   }
 
+  /**
+   * Publie un message vers ``content.js``.
+   *
+   * ATTENTION : la charge utile est APLATIE dans l'enveloppe. Les quatre clés
+   * ``omen``, ``nonce``, ``to`` et ``type`` sont donc RÉSERVÉES — une charge
+   * qui porterait un champ ``to`` (le haut d'une échelle de prix, par exemple)
+   * écraserait le destinataire et le message serait jeté en silence. D'où
+   * ``range_from``/``range_to`` dans ``tv:alt_click``.
+   */
   function post(type, payload) {
     if (!nonce) { return; }
     var message = { omen: true, nonce: nonce, to: 'content', type: type };
@@ -236,6 +341,167 @@
       ask: badgePrice(badges.buy),
       ts: nowMs
     };
+  }
+
+  /* ---- Alt+clic sur le graphique (spec §8) ---------------------------- */
+
+  function queryAll(selector) {
+    try {
+      var found = document.querySelectorAll(selector);
+      return found ? Array.prototype.slice.call(found) : [];
+    } catch (e) {
+      return [];                 /* sélecteur refusé par le navigateur */
+    }
+  }
+
+  function rectOf(node) {
+    try {
+      if (!node || typeof node.getBoundingClientRect !== 'function') { return null; }
+      var rect = node.getBoundingClientRect();
+      if (!rect || !isFinite(rect.height) || rect.height <= 0) { return null; }
+      return rect;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  function contains(rect, x, y) {
+    return x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom;
+  }
+
+  /** Le clic est-il tombé DANS le panneau du coach (shadow DOM) ? */
+  function insidePanel(target) {
+    var node = target;
+    var depth = 0;
+    while (node && depth < 12) {
+      if (node.id === PANEL_HOST_ID) { return true; }
+      node = node.parentNode;
+      depth += 1;
+    }
+    return false;
+  }
+
+  /**
+   * Le pane sous le point cliqué : d'abord en remontant depuis la cible,
+   * sinon le premier cadre du document qui CONTIENT vraiment le point. Rien
+   * qui contienne le point = rien du tout (jamais un cadre au hasard, dont la
+   * hauteur donnerait un prix inventé).
+   */
+  function paneFromPoint(target, x, y) {
+    var i;
+    for (i = 0; i < PANE_SELECTORS.length; i += 1) {
+      try {
+        if (target && typeof target.closest === 'function') {
+          var climbed = target.closest(PANE_SELECTORS[i]);
+          var climbedRect = rectOf(climbed);
+          if (climbedRect && contains(climbedRect, x, y)) {
+            return { node: climbed, rect: climbedRect };
+          }
+        }
+      } catch (e) { /* sélecteur ou closest() refusé : au suivant */ }
+    }
+    for (i = 0; i < PANE_SELECTORS.length; i += 1) {
+      var nodes = queryAll(PANE_SELECTORS[i]);
+      for (var n = 0; n < nodes.length; n += 1) {
+        var rect = rectOf(nodes[n]);
+        if (rect && contains(rect, x, y)) { return { node: nodes[n], rect: rect }; }
+      }
+    }
+    return null;
+  }
+
+  /** ``{from, to}`` de l'échelle affichée, ou ``null`` si l'API se tait. */
+  function visiblePriceRange() {
+    try {
+      if (!chart || typeof chart.getVisiblePriceRange !== 'function') { return null; }
+      var range = chart.getVisiblePriceRange();
+      if (!range) { return null; }
+      var from = Number(range.from);
+      var to = Number(range.to);
+      if (!isFinite(from) || !isFinite(to)) { return null; }
+      return { from: from, to: to };
+    } catch (e) {
+      debug('getVisiblePriceRange indisponible', e);
+      return null;
+    }
+  }
+
+  /**
+   * Alt+clic -> ``tv:alt_click`` avec la GÉOMÉTRIE du clic (ordonnée, cadre du
+   * pane, plage de prix). La conversion en prix est faite par ``content.js``
+   * avec ``lib/price_axis.js`` : les modules ``lib/*`` ne sont chargés que
+   * dans le monde ISOLÉ, et les publier dans le monde MAIN reviendrait à poser
+   * ``OmenLib`` sur le ``window`` de TradingView — la page pourrait alors
+   * décider du prix qu'on envoie au serveur.
+   *
+   * Ni ``preventDefault`` ni ``stopPropagation`` : on observe, TradingView
+   * garde son comportement.
+   */
+  function onAltClick(event) {
+    if (!event || event.altKey !== true) { return; }
+    if (event.button !== undefined && event.button !== null && event.button !== 0) {
+      return;
+    }
+    if (insidePanel(event.target)) { return; }
+    var x = Number(event.clientX);
+    var y = Number(event.clientY);
+    if (!isFinite(x) || !isFinite(y)) { return; }
+
+    var pane = paneFromPoint(event.target, x, y);
+    if (!pane) {
+      debug('Alt+clic hors de la zone du graphique : ignoré');
+      return;
+    }
+    var range = visiblePriceRange();
+    /* ``range_from``/``range_to`` et non ``from``/``to`` : ``to`` est une clé
+       RÉSERVÉE de l'enveloppe (le destinataire), cf. ``post``. */
+    post('tv:alt_click', {
+      y: y,
+      top: pane.rect.top,
+      height: pane.rect.height,
+      range_from: range ? range.from : null,
+      range_to: range ? range.to : null,
+      last_price: lastPrice
+    });
+  }
+
+  /* ---- watchlist affichée (spec §8) ----------------------------------- */
+
+  /**
+   * Les symboles de la watchlist affichée, dans l'ordre des rangées. Le
+   * PREMIER sélecteur qui rend au moins un symbole gagne : les autres sont des
+   * replis, pas des compléments (on ne mélange pas deux listes).
+   */
+  function readWatchlist() {
+    for (var i = 0; i < WATCHLIST_SELECTORS.length; i += 1) {
+      var nodes = queryAll(WATCHLIST_SELECTORS[i]);
+      if (!nodes.length) { continue; }
+      var symbols = [];
+      var seen = {};
+      for (var n = 0; n < nodes.length && symbols.length < WATCHLIST_MAX_ROWS; n += 1) {
+        var symbol = symbolFromRow(nodes[n]);
+        if (!symbol) { continue; }
+        var key = symbol.toUpperCase();
+        if (Object.prototype.hasOwnProperty.call(seen, key)) { continue; }
+        seen[key] = true;
+        symbols.push(symbol);
+      }
+      if (symbols.length) {
+        return { symbols: symbols, selector: WATCHLIST_SELECTORS[i] };
+      }
+    }
+    return null;
+  }
+
+  function postWatchlist() {
+    var found = readWatchlist();
+    if (!found) {
+      debug('watchlist introuvable (sélecteurs à revoir ?)');
+      post('tv:watchlist', { symbols: [], error: 'not_found' });
+      return;
+    }
+    debug('watchlist lue', found.symbols.length, 'symboles via', found.selector);
+    post('tv:watchlist', { symbols: found.symbols, selector: found.selector });
   }
 
   /* ---- dessin -------------------------------------------------------- */
@@ -430,11 +696,19 @@
       return;
     }
     if (data.type === 'tv:request') { postSymbol(); return; }
+    if (data.type === 'tv:watchlist_request') { postWatchlist(); return; }
   }
 
   function start() {
     chart = activeChart();
     window.addEventListener('message', onMessage, false);
+    /* En CAPTURE : TradingView arrête volontiers les clics du graphique avant
+       qu'ils ne remontent jusqu'au document. */
+    try {
+      document.addEventListener('click', onAltClick, true);
+    } catch (e) {
+      debug('écoute du Alt+clic impossible', e);
+    }
     try {
       if (chart && typeof chart.onSymbolChanged === 'function') {
         chart.onSymbolChanged().subscribe(null, function () { postSymbol(); });

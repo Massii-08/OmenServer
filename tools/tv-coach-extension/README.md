@@ -97,16 +97,41 @@ CHARGE vraiment `content.js` et `bridge.js` avec un DOM bouchon — sans objet
 | `lib/api.js` | Appels via le service worker + relève des travaux détachés (`{"job": id}` puis `GET /job/{id}` toutes les 3 s). |
 | `lib/draw.js` | Construit les commandes de dessin (niveaux, paris du coach, repères de scalp). Tout texte posé commence par `⌂ coach`. |
 | `lib/bars.js`, `lib/guards.js`, `lib/ledger.js` | Barres 1 min / ATR, garde-fous du scalp, ledger P&L (lot `ext-scalp`). |
+| `lib/price_axis.js` | L'ordonnée d'un Alt+clic → un prix (interpolation linéaire), l'arrondi d'affichage, le choix `above`/`below`. |
+| `lib/watchlist.js` | Le plan d'import « watchlist TV → favoris Omen » : à créer / déjà suivis / inconnus, plafonné à 30. |
+| `lib/note.js` | La note rapide : nettoyage, coupe à 500 caractères, charge utile de `POST /ideas/note`. |
+| `lib/idle.js` | Le minuteur du bilan automatique (20 min sans scalp), muet jusqu'au lendemain après un 429. |
 | `panel.css` | Tokens Ion (sombre) et Givre (clair), `prefers-color-scheme`, 320 px, 70 vh, chiffres tabulaires. |
+
+## Les quatre gestes du panneau
+
+| Geste | Ce qui se passe |
+|---|---|
+| **Alt+clic sur le graphique** | Le pont mesure le pane et l'échelle affichée, le panneau en tire un prix et propose une alerte : niveau **éditable**, condition (« Au-dessus » / « En dessous ») choisie selon le cours live, bouton « Créer » → `POST /alerts`. Aucun dessin n'est nécessaire : ça marche même sans être connecté à TradingView. **L'échelle logarithmique n'est pas gérée en v1** — le prix proposé s'écarte alors du niveau cliqué, d'où le champ éditable. |
+| **Importer la watchlist** | Section « Watchlist » : le pont lit les symboles du panneau de droite, le panneau les traduit en symboles Yahoo, saute ceux qui sont déjà en favoris, ignore les inconnus (nommés dans le récapitulatif) et poste les autres un par un, **30 au maximum**. Un sens unique : TradingView → Omen. |
+| **Note rapide** | Deux lignes dans la section « Le coach », 500 caractères, `Ctrl`/`Cmd`+`Entrée` pour envoyer → `POST /ideas/note`. |
+| **Bilan automatique** | En mode scalp, 20 minutes après le **dernier scalp fermé** : `POST /scalps/review` (travail détaché, comme le bouton « Bilan de session »), réponse affichée dans le panneau + notification navigateur. Le serveur plafonne à trois bilans par jour : un 429 fait taire le minuteur jusqu'au lendemain, sans réessai. |
 
 ## Ce qu'il faut savoir
 
 - **Le dessin exige d'être connecté à TradingView.** Sinon le panneau affiche
   « connecte-toi à TradingView pour le dessin » et n'essaie plus qu'une fois par
   titre. L'extension n'efface QUE les tracés qu'elle a posés.
-- **Sélecteurs bid/ask** : ils vivent dans une seule constante commentée en tête
-  de `bridge.js`. TradingView refond son interface régulièrement ; leur absence
-  n'est pas une erreur, le prix continue d'être lu dans le titre de l'onglet.
+- **Sélecteurs DOM** : les trois familles (bid/ask, pane du graphique, rangées
+  de watchlist) vivent dans trois constantes commentées en tête de `bridge.js`.
+  Le pane (`.chart-markup-table.pane`), la watchlist
+  (`.widgetbar-widget-watchlist [data-symbol-full]`) et
+  `activeChart().getVisiblePriceRange()` ont été **relevés sur la page réelle
+  le 09/09** — les autres entrées des constantes sont des replis qui ne
+  répondent pas aujourd'hui.
+  TradingView refond son interface régulièrement ; leur absence n'est pas une
+  erreur — le prix continue d'être lu dans le titre de l'onglet, un Alt+clic
+  hors du pane est ignoré, et une watchlist introuvable le dit au lieu
+  d'importer au hasard. Tout ça se trace en `console.debug('[omen-coach] …')`.
+- **Enveloppe des messages du pont** : `omen`, `nonce`, `to` et `type` sont des
+  clés RÉSERVÉES (la charge utile est aplatie dans l'enveloppe). D'où
+  `range_from` / `range_to` dans `tv:alt_click` : un champ `to` écraserait le
+  destinataire et le message serait jeté en silence.
 - **Rien n'est bloquant** : garde-fous et avertissements informent, l'humain
   décide. Le serveur reste autoritaire (il recalcule `precheck` et `scalps`).
 - **Omen injoignable** : la dernière fiche reçue reste affichée (horodatée), les

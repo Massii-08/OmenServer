@@ -28,6 +28,10 @@
   var MAX_NEWS = 5;
   var MAX_AGENDA = 3;
   var MAX_IDEAS = 3;
+  var WATCHLIST_CAP = 30;             /* = paper_router.MAX_WATCHLIST */
+  var WATCHLIST_WAIT_MS = 5000;       /* au-delà, le pont ne répondra plus */
+  var IDLE_REVIEW_MS = 1200000;       /* 20 min sans scalp -> bilan (spec §8) */
+  var NOTE_MAX = 500;                 /* = lib/note.MAX_LEN */
 
   var DEFAULT_SETTINGS = {
     token: '',
@@ -285,7 +289,11 @@
     toasts: [],
     drawing: { allowed: true, available: true, denied_for: null },
     server_ok: true,
-    degraded: []
+    degraded: [],
+    /* Alt+clic sur le graphique : la confirmation avant de poser l'alerte. */
+    alert_draft: null,
+    watchlist: { busy: false, status: '' },
+    note: { text: '', status: '' }
   };
 
   var root = null;         /* racine d'ombre (ou hôte si attachShadow absent) */
@@ -295,6 +303,8 @@
   var drawRequests = {};
   var flushing = false;
   var lastBtcWanted = null;
+  var watchlistTimer = null;
+  var idleReview = null;
 
   function t(key, values) {
     var i18n = lib('i18n');
@@ -384,6 +394,8 @@
     if (data.type === 'tv:symbol') { onSymbol(data); return; }
     if (data.type === 'tv:tick') { onTick(data); return; }
     if (data.type === 'tv:line_moved') { onLineMoved(data); return; }
+    if (data.type === 'tv:alt_click') { onAltClick(data); return; }
+    if (data.type === 'tv:watchlist') { onWatchlist(data); return; }
     if (data.type === 'draw:result') { onDrawResult(data); return; }
   }
 
@@ -425,6 +437,8 @@
       state.drawing.denied_for = null;    /* 1 seul essai de dessin PAR TITRE */
       state.ticket = null;
       state.advice = { status: 'idle', text: '', error: '' };
+      /* Une alerte se pose sur le titre où on a cliqué, jamais sur le suivant. */
+      state.alert_draft = null;
       state.brief = null;
       refreshBrief(true);
       sendFocus();
@@ -609,6 +623,310 @@
         /* 409 = le serveur l'avait déjà vue : c'est le filet, pas une panne. */
         if (error && error.status === 409) { return; }
         debug('alerts/fire refusé', error && error.message);
+      });
+  }
+
+  /* --------------------------------------------------------------- */
+  /* Alerte au clic sur le graphique (Alt+clic, spec §8)              */
+  /* --------------------------------------------------------------- */
+
+  /**
+   * Le pont (monde MAIN) envoie la GÉOMÉTRIE du clic — ordonnée, cadre du
+   * pane, plage de prix affichée — et c'est ici que ``lib/price_axis.js``
+   * la convertit en prix : les modules ``lib/*`` ne vivent que dans le monde
+   * isolé, et les publier dans le monde MAIN reviendrait à laisser la page
+   * TradingView décider du prix qu'on enverrait au serveur.
+   *
+   * Rien de tout cela n'a besoin du dessin : Alt+clic marche même sans être
+   * connecté à TradingView (``is_authenticated === false``).
+   */
+  function onAltClick(data) {
+    var axis = lib('price_axis');
+    var price = null;
+    if (axis) {
+      /* ``range_from``/``range_to`` : ``to`` est réservé à l'enveloppe du
+         message (le destinataire), cf. ``post`` dans ``bridge.js``. */
+      price = axis.priceAtY(data.y, data.top, data.height,
+                            data.range_from, data.range_to);
+    }
+    if (price === null) { price = num(data.last_price); }
+    if (price === null) { price = state.price; }
+    if (price === null) {
+      debug('Alt+clic sans prix exploitable (échelle et titre muets)');
+      return;
+    }
+    if (axis) { price = axis.roundPrice(price); }
+    state.alert_draft = {
+      price: price,
+      op: axis ? axis.opForPrice(price, state.price) : 'above',
+      status: ''
+    };
+    /* Un clic sur le graphique doit SE VOIR : le panneau se rouvre. */
+    state.collapsed = false;
+    render();
+  }
+
+  /** La liste d'alertes rendue par le serveur, filtrée sur le titre affiché. */
+  function applyAlerts(data) {
+    var rows = (data && Array.isArray(data.alerts)) ? data.alerts : null;
+    if (!rows) { refreshBrief(true); return; }
+    var alertsLib = lib('alerts');
+    state.alerts = alertsLib ? alertsLib.forSymbol(rows, state.symbol) : rows;
+  }
+
+  /**
+   * ``POST /api/paper/alerts`` — forme EXACTE lue dans ``paper_router.py``
+   * (``AlertPayload``) : ``{symbol, op: 'above'|'below', price}``, réponse
+   * ``{alert, alerts}``. Le serveur REFUSE en 400 une condition déjà vraie :
+   * le panneau prévient avant, il ne l'empêche pas.
+   */
+  function createAlert() {
+    var draft = state.alert_draft;
+    var client = apiClient();
+    if (!draft || !client) { return; }
+    if (!state.symbol) {
+      draft.status = t('alert.no_symbol');
+      render();
+      return;
+    }
+    var price = num(draft.price);
+    if (price === null || price <= 0) {
+      draft.status = t('alert.error', { error: t('alert.price') });
+      render();
+      return;
+    }
+    var condition = draft.op === 'above'
+      ? t('alerts.above', { price: fmtPrice(price) })
+      : t('alerts.below', { price: fmtPrice(price) });
+    draft.status = t('ticket.computing');
+    render();
+    client.post('/alerts', { symbol: state.symbol, op: draft.op, price: price })
+      .then(function (data) {
+        markServer(true);
+        state.alert_draft = null;
+        applyAlerts(data);
+        toast(t('alert.created', { condition: condition }), 'ok');
+        render();
+      })
+      .catch(function (error) {
+        noteError(error);
+        if (state.alert_draft !== draft) { return; }
+        draft.status = t('alert.error', { error: (error && error.detail) || '' });
+        render();
+      });
+  }
+
+  /* --------------------------------------------------------------- */
+  /* Import de la watchlist TradingView -> favoris OmenServer         */
+  /* --------------------------------------------------------------- */
+
+  function finishWatchlist(status) {
+    if (watchlistTimer !== null) { clearTimeout(watchlistTimer); watchlistTimer = null; }
+    state.watchlist.busy = false;
+    state.watchlist.status = status || '';
+    render();
+  }
+
+  /** Clic sur « Importer la watchlist » : on interroge le pont, qui lit le DOM. */
+  function importWatchlist() {
+    if (state.watchlist.busy) { return; }
+    if (!apiClient()) { return; }
+    state.watchlist.busy = true;
+    state.watchlist.status = t('watchlist.reading');
+    render();
+    postToBridge('tv:watchlist_request', {});
+    /* Le pont peut ne jamais répondre (API TradingView absente) : on ne laisse
+       pas le bouton tourner indéfiniment. */
+    watchlistTimer = setTimeout(function () {
+      watchlistTimer = null;
+      finishWatchlist(t('watchlist.not_found'));
+    }, WATCHLIST_WAIT_MS);
+  }
+
+  function watchlistRecap(plan, added, unknownList, stopped) {
+    var parts = [t('watchlist.done', {
+      added: added,
+      skipped: plan.skipped.length,
+      unknown: unknownList.length
+    })];
+    if (plan.capped) { parts.push(t('watchlist.capped', { cap: plan.cap })); }
+    if (unknownList.length) {
+      parts.push(t('watchlist.unknown_list', { list: unknownList.join(', ') }));
+    }
+    if (stopped) { parts.push(t('watchlist.failed', { error: stopped })); }
+    return parts.join(' ');
+  }
+
+  /** Les créations, UNE PAR UNE : la route pose une cotation par appel. */
+  function runWatchlistPlan(plan) {
+    var client = apiClient();
+    var total = plan.post.length;
+    var unknownList = plan.unknown.slice(0);
+    var added = 0;
+    var stopped = '';
+    var index = 0;
+
+    function step() {
+      if (index >= total || stopped) { return Promise.resolve(); }
+      var symbol = plan.post[index];
+      index += 1;
+      state.watchlist.status = t('watchlist.importing', { done: index, total: total });
+      render();
+      return client.post('/watchlist', { symbol: symbol }).then(function () {
+        markServer(true);
+        added += 1;
+        return step();
+      }).catch(function (error) {
+        /* 404 = Yahoo ne connaît pas ce titre : il rejoint les inconnus et
+           l'import CONTINUE. Tout le reste (liste pleine, 5xx, réseau muet)
+           arrête la boucle — insister ferait trente refus identiques. */
+        if (error && error.status === 404) {
+          unknownList.push(symbol);
+          return step();
+        }
+        noteError(error);
+        stopped = (error && (error.detail || error.message)) || '';
+        return Promise.resolve();
+      });
+    }
+
+    step().then(function () {
+      var recap = watchlistRecap(plan, added, unknownList, stopped);
+      finishWatchlist(recap);
+      toast(recap, stopped ? 'warn' : 'ok');
+    });
+  }
+
+  function onWatchlist(data) {
+    if (watchlistTimer !== null) { clearTimeout(watchlistTimer); watchlistTimer = null; }
+    if (!state.watchlist.busy) { return; }
+    var symbols = (data && Array.isArray(data.symbols)) ? data.symbols : [];
+    if (data && data.error === 'not_found') {
+      finishWatchlist(t('watchlist.not_found'));
+      return;
+    }
+    if (!symbols.length) { finishWatchlist(t('watchlist.empty')); return; }
+
+    var planner = lib('watchlist');
+    var client = apiClient();
+    if (!planner || !client) { finishWatchlist(t('watchlist.failed', { error: '' })); return; }
+
+    /* Les favoris DÉJÀ posés, pour ne pas reposter ce qui existe. */
+    client.get('/watchlist').then(function (existing) {
+      markServer(true);
+      var plan = planner.planImport(symbols,
+                                    (existing && existing.symbols) || [],
+                                    { cap: WATCHLIST_CAP });
+      if (!plan.post.length) {
+        var recap = watchlistRecap(plan, 0, plan.unknown, '');
+        finishWatchlist(recap);
+        toast(recap, 'info');
+        return;
+      }
+      runWatchlistPlan(plan);
+    }).catch(function (error) {
+      noteError(error);
+      finishWatchlist(t('watchlist.failed',
+                        { error: (error && (error.detail || error.message)) || '' }));
+    });
+  }
+
+  /* --------------------------------------------------------------- */
+  /* Note rapide au carnet d'idées                                    */
+  /* --------------------------------------------------------------- */
+
+  /**
+   * ``POST /api/paper/ideas/note {text, symbol?, lang?}`` -> ``{ok, entry}``.
+   * ``lib/note.js`` coupe à 500 caractères et n'envoie jamais une note vide.
+   */
+  function sendNote() {
+    var client = apiClient();
+    var noteLib = lib('note');
+    if (!client || !noteLib) { return; }
+    var payload = noteLib.build({
+      text: state.note.text,
+      symbol: state.symbol,
+      lang: state.settings.lang
+    });
+    if (!payload) { return; }
+    state.note.status = t('ticket.computing');
+    render();
+    client.post('/ideas/note', payload).then(function () {
+      markServer(true);
+      state.note.text = '';
+      state.note.status = '';
+      toast(t('note.sent'), 'ok');
+      render();
+    }).catch(function (error) {
+      noteError(error);
+      state.note.status = t('note.error',
+                            { error: (error && (error.detail || error.message)) || '' });
+      render();
+    });
+  }
+
+  /* --------------------------------------------------------------- */
+  /* Bilan automatique après 20 min sans scalp                        */
+  /* --------------------------------------------------------------- */
+
+  function idleHandle() {
+    if (idleReview !== null) { return idleReview; }
+    var mod = lib('idle');
+    if (!mod || typeof mod.createIdle !== 'function') { return null; }
+    idleReview = mod.createIdle({ idle_ms: IDLE_REVIEW_MS });
+    return idleReview;
+  }
+
+  /** Un scalp vient d'être fermé : l'horloge des 20 minutes repart de zéro. */
+  function touchIdle() {
+    var handle = idleHandle();
+    if (handle) { handle.touch(Date.now()); }
+  }
+
+  function checkIdleReview() {
+    if (state.mode !== 'scalp' || state.scalp.open) { return; }
+    if (state.advice.status === 'pending') { return; }
+    var handle = idleHandle();
+    if (!handle || !handle.due(Date.now())) { return; }
+    runAutoReview();
+  }
+
+  /**
+   * Même travail détaché que le bouton « Bilan de session » (``{"job": id}``
+   * puis ``GET /job/{id}``), plus une notification navigateur. Un 429 est le
+   * plafond de trois bilans par jour : on se TAIT jusqu'à demain, sans
+   * réessai — c'est ``lib/idle.js`` qui tient cette mémoire.
+   */
+  function runAutoReview() {
+    var client = apiClient();
+    if (!client) { return; }
+    state.advice = { status: 'pending', text: '', error: '', auto: true };
+    render();
+    client.job('/scalps/review', { lang: state.settings.lang }, { intervalMs: 3000 })
+      .then(function (result) {
+        markServer(true);
+        var text = (result && (result.answer || result.text)) || '';
+        state.advice = { status: 'done', text: text, error: '', auto: true };
+        render();
+        ext.send({ type: 'notify', title: t('coach.review'),
+                   message: text.slice(0, 300) })
+          .catch(function (error) {
+            debug('notification du bilan refusée', error && error.message);
+          });
+      })
+      .catch(function (error) {
+        var handle = idleHandle();
+        if (error && error.status === 429) {
+          if (handle) { handle.mute(Date.now()); }
+          state.advice = { status: 'idle', text: '', error: '' };
+          toast(t('review.capped'), 'warn');
+          render();
+          return;
+        }
+        noteError(error);
+        state.advice = { status: 'error', text: '', auto: true,
+                         error: (error && (error.detail || error.message)) || '' };
+        render();
       });
   }
 
@@ -956,6 +1274,9 @@
     }
     state.scalp.open = false;
     state.scalp.result = result || null;
+    /* Le compte à rebours du bilan automatique part du DERNIER scalp fermé,
+       que l'envoi au serveur réussisse ou non : le scalp a bien eu lieu. */
+    touchIdle();
 
     var payload = {};
     try {
@@ -1278,14 +1599,42 @@
     out.push('</div>');
 
     if (state.advice.status === 'pending') {
-      out.push('<p class="omen-note">' + esc(t('coach.ask_pending')) + '</p>');
+      out.push('<p class="omen-note">'
+        + esc(state.advice.auto ? t('review.auto_pending') : t('coach.ask_pending'))
+        + '</p>');
     } else if (state.advice.status === 'error') {
       out.push('<p class="omen-note omen-neg">'
         + esc(t('coach.ask_error', { error: state.advice.error })) + '</p>');
     } else if (state.advice.text) {
+      if (state.advice.auto) {
+        out.push('<p class="omen-empty">' + esc(t('review.auto_done')) + '</p>');
+      }
       out.push('<p class="omen-answer">' + esc(state.advice.text) + '</p>');
     }
+    out.push(renderNote());
     return section(t('section.coach'), out.join(''));
+  }
+
+  /**
+   * La note rapide : deux lignes, 500 caractères, Ctrl/Cmd+Entrée pour
+   * envoyer. Le texte vit dans l'état — un repeint (toast qui expire,
+   * garde-fou qui change) ne doit pas l'effacer.
+   */
+  function renderNote() {
+    var noteLib = lib('note');
+    var left = noteLib ? noteLib.remaining(state.note.text) : NOTE_MAX;
+    var out = ['<h4>' + esc(t('note.title')) + '</h4>'];
+    out.push('<textarea class="omen-textarea" rows="2" maxlength="'
+      + String(NOTE_MAX) + '" data-omen-field="note" placeholder="'
+      + esc(t('note.placeholder')) + '">' + esc(state.note.text) + '</textarea>');
+    out.push('<div class="omen-actions">');
+    out.push(button('note-send', t('note.send'), 'omen-ghost'));
+    out.push('</div>');
+    out.push('<p class="omen-empty">' + esc(t('note.hint', { left: left })) + '</p>');
+    if (state.note.status) {
+      out.push('<p class="omen-note">' + esc(state.note.status) + '</p>');
+    }
+    return out.join('');
   }
 
   function renderNews() {
@@ -1326,20 +1675,67 @@
     return section(t('section.agenda'), out.join(''));
   }
 
+  /** La confirmation d'un Alt+clic : prix ÉDITABLE, condition pré-choisie. */
+  function renderAlertDraft() {
+    var draft = state.alert_draft;
+    if (!draft) { return ''; }
+    var axis = lib('price_axis');
+    var refused = axis
+      ? axis.wouldBeRefused(draft.op, draft.price, state.price) : false;
+    var out = ['<div class="omen-draft">'];
+    out.push('<h4>' + esc(t('alert.title')) + '</h4>');
+    out.push('<label class="omen-field"><span>' + esc(t('alert.price')) + '</span>'
+      + '<input type="text" data-omen-field="alert_price" value="'
+      + esc(draft.price === null ? '' : fmtPrice(draft.price)) + '"></label>');
+    out.push('<div class="omen-actions">');
+    out.push(button('alert-above', t('alert.op_above'),
+                    draft.op === 'above' ? 'omen-primary' : 'omen-ghost'));
+    out.push(button('alert-below', t('alert.op_below'),
+                    draft.op === 'below' ? 'omen-primary' : 'omen-ghost'));
+    out.push(button('alert-create', t('alert.create'), 'omen-primary'));
+    out.push(button('alert-cancel', t('alert.cancel'), 'omen-ghost'));
+    out.push('</div>');
+    if (refused) {
+      out.push('<p class="omen-warn">' + esc(t('alert.already_true')) + '</p>');
+    }
+    if (draft.status) {
+      out.push('<p class="omen-note">' + esc(draft.status) + '</p>');
+    }
+    out.push('</div>');
+    return out.join('');
+  }
+
   function renderAlerts() {
+    var out = [renderAlertDraft()];
     if (!state.alerts.length) {
-      return section(t('section.alerts'),
-        '<p class="omen-empty">' + esc(t('alerts.none')) + '</p>');
+      out.push('<p class="omen-empty">' + esc(t('alerts.none')) + '</p>');
+    } else {
+      out.push('<ul class="omen-list">');
+      for (var i = 0; i < state.alerts.length; i += 1) {
+        var alert = state.alerts[i];
+        var done = alert.fired || alert.status === 'triggered';
+        out.push('<li class="' + (done ? 'omen-dim' : '') + '">'
+          + esc(alertCondition(alert)) + '</li>');
+      }
+      out.push('</ul>');
     }
-    var out = ['<ul class="omen-list">'];
-    for (var i = 0; i < state.alerts.length; i += 1) {
-      var alert = state.alerts[i];
-      var done = alert.fired || alert.status === 'triggered';
-      out.push('<li class="' + (done ? 'omen-dim' : '') + '">'
-        + esc(alertCondition(alert)) + '</li>');
+    if (!state.alert_draft) {
+      out.push('<p class="omen-empty">' + esc(t('alert.hint')) + '</p>');
     }
-    out.push('</ul>');
     return section(t('section.alerts'), out.join(''));
+  }
+
+  /** Import à sens unique : TradingView -> favoris OmenServer (spec §8). */
+  function renderWatchlist() {
+    var out = ['<div class="omen-actions">'];
+    out.push(button('watchlist-import', t('watchlist.import'), 'omen-ghost'));
+    out.push('</div>');
+    if (state.watchlist.status) {
+      out.push('<p class="omen-note">' + esc(state.watchlist.status) + '</p>');
+    } else {
+      out.push('<p class="omen-empty">' + esc(t('watchlist.hint')) + '</p>');
+    }
+    return section(t('section.watchlist'), out.join(''));
   }
 
   function chip(label, value) {
@@ -1534,6 +1930,7 @@
     out.push(renderNews());
     out.push(renderAgenda());
     out.push(renderAlerts());
+    out.push(renderWatchlist());
     if (state.brief_at) {
       out.push('<p class="omen-stamp">'
         + esc(t('panel.updated_at', { time: fmtTime(new Date(state.brief_at).toISOString()) }))
@@ -1638,19 +2035,57 @@
     if (action === 'draw-bets') { drawBets(); return; }
     if (action === 'draw-scalp') { drawScalpLevels(); return; }
     if (action === 'draw-clear') { clearDrawings(); return; }
+    if (action === 'alert-above' || action === 'alert-below') {
+      if (state.alert_draft) {
+        state.alert_draft.op = action === 'alert-above' ? 'above' : 'below';
+        render();
+      }
+      return;
+    }
+    if (action === 'alert-create') { createAlert(); return; }
+    if (action === 'alert-cancel') { state.alert_draft = null; render(); return; }
+    if (action === 'watchlist-import') { importWatchlist(); return; }
+    if (action === 'note-send') { sendNote(); return; }
   }
 
   function onInput(event) {
     var target = event && event.target;
     if (!target || typeof target.getAttribute !== 'function') { return; }
     var field = target.getAttribute('data-omen-field');
-    if (!field || !state.ticket) { return; }
+    if (!field) { return; }
+    if (field === 'note') {
+      /* Texte BRUT ici : ``normalize`` coupe les espaces de bord, ce qui
+         empêcherait d'écrire un mot après un espace. La coupe se fait à
+         l'envoi (``note.build``), et le navigateur borne déjà à 500. */
+      state.note.text = String(target.value === undefined ? '' : target.value);
+      return;
+    }
+    if (field === 'alert_price') {
+      /* La condition N'EST PAS recalculée : elle a pu être choisie à la main. */
+      if (state.alert_draft) { state.alert_draft.price = num(target.value); }
+      return;
+    }
+    if (!state.ticket) { return; }
     var value = num(target.value);
     if (field === 'stop') { state.ticket.stop = value; }
     else if (field === 'target') { state.ticket.target = value; }
     else if (field === 'qty') { state.ticket.qty = value; }
     schedulePrecheck();
     drawTicketLevels();
+  }
+
+  /** Ctrl/Cmd+Entrée dans la note = envoi (Entrée seule saute une ligne). */
+  function onKeyDown(event) {
+    var target = event && event.target;
+    if (!target || typeof target.getAttribute !== 'function') { return; }
+    if (target.getAttribute('data-omen-field') !== 'note') { return; }
+    var noteLib = lib('note');
+    if (!noteLib || !noteLib.isSendKey(event)) { return; }
+    try {
+      if (typeof event.preventDefault === 'function') { event.preventDefault(); }
+    } catch (e) { debug('preventDefault refusé', e); }
+    state.note.text = String(target.value === undefined ? '' : target.value);
+    sendNote();
   }
 
   /* Déplacement du panneau : la position est mémorisée dans le stockage. */
@@ -1711,6 +2146,7 @@
       root.addEventListener('click', onClick, false);
       root.addEventListener('input', onInput, false);
       root.addEventListener('change', onInput, false);
+      root.addEventListener('keydown', onKeyDown, false);
       root.addEventListener('pointerdown', onPointerDown, false);
     }
     if (typeof document.addEventListener === 'function') {
@@ -1736,6 +2172,7 @@
     for (var i = 0; i < timers.length; i += 1) { clearInterval(timers[i]); }
     timers = [];
     if (precheckTimer !== null) { clearTimeout(precheckTimer); precheckTimer = null; }
+    if (watchlistTimer !== null) { clearTimeout(watchlistTimer); watchlistTimer = null; }
   }
 
   function onRuntimeMessage(message) {
@@ -1805,7 +2242,10 @@
     every(BRIEF_REFRESH_MS, function () { refreshBrief(true); });
     every(FOCUS_MS, function () { sendFocus(); });
     every(QUEUE_FLUSH_MS, function () { flushScalpQueue(); });
-    every(1000, function () { pruneToasts(); if (state.mode === 'scalp') { refreshGuards(); } });
+    every(1000, function () {
+      pruneToasts();
+      if (state.mode === 'scalp') { refreshGuards(); checkIdleReview(); }
+    });
     debug('panneau monté');
   }
 
@@ -1820,6 +2260,12 @@
     openScalp: openScalp,
     closeScalp: closeScalp,
     refreshGuards: refreshGuards,
+    createAlert: createAlert,
+    importWatchlist: importWatchlist,
+    watchlistRecap: watchlistRecap,
+    sendNote: sendNote,
+    touchIdle: touchIdle,
+    checkIdleReview: checkIdleReview,
     state: state,
     boot: boot,
     render: render,

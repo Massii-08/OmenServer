@@ -31,6 +31,10 @@
         "lib/guards.js",
         "lib/ledger.js",
         "lib/draw.js",
+        "lib/price_axis.js",
+        "lib/watchlist.js",
+        "lib/note.js",
+        "lib/idle.js",
         "content.js"
       ],
       "css": ["panel.css"],

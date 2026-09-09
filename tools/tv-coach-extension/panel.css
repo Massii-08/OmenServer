@@ -314,6 +314,35 @@
   color: var(--omen-text);
 }
 
+/* Note rapide au carnet d'idées : deux lignes, jamais redimensionnable en
+   largeur (le panneau fait 320 px et doit le rester). */
+.omen-textarea {
+  font: inherit;
+  display: block;
+  box-sizing: border-box;
+  width: 100%;
+  margin: 4px 0;
+  padding: 6px;
+  resize: vertical;
+  border-radius: var(--omen-radius-sm);
+  border: 1px solid var(--omen-border);
+  background: var(--omen-elev-3);
+  color: var(--omen-text);
+}
+
+/* Confirmation d'une alerte posée par Alt+clic sur le graphique. */
+.omen-draft {
+  margin: 4px 0 8px;
+  padding: 6px 8px;
+  border-radius: var(--omen-radius-sm);
+  border: 1px solid var(--omen-border);
+  background: var(--omen-elev-3);
+}
+
+.omen-draft h4 {
+  margin: 0 0 4px;
+}
+
 /* --- bandeaux, garde-fous, toasts ------------------------------------ */
 
 .omen-banner {
