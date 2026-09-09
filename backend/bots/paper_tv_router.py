@@ -587,3 +587,88 @@ def paper_tv_btc(current_user: _UserE = _DependsE(
     data = btc.snapshot()
     data["agenda"] = btc.crypto_agenda()
     return data
+
+
+# --- LOT F : note rapide au journal des idées (idea_journal.py) ---
+#
+# Une seule route d'ÉCRITURE, 0 LLM, 0 réseau : ``POST /ideas/note`` range au
+# journal des idées ce que Massii vient d'observer sur le graphique (« le gap
+# de 8h30 s'est refermé », « troisième rejet sur 42 500 »). C'est le dernier
+# reste v1 côté journal : sans elle, une observation attrapée au vol se perd,
+# et le coach reproposera la même idée trois jours plus tard sans savoir
+# qu'elle a déjà été examinée.
+#
+# Le journal des IDÉES et non le carnet Markdown (``_append_journal``) : c'est
+# le journal des idées que le coach relit AVANT de proposer (``llm.write_ideas``
+# reçoit son résumé), donc c'est le seul endroit où une note peut lui revenir
+# sous les yeux au bon moment.
+#
+# Les imports du lot vivent SOUS SON ANCRE et pas en tête de fichier — même
+# raison que les cinq sections au-dessus : plusieurs lots écrivent dans ce
+# module en parallèle, et une ligne d'import partagée est exactement celle que
+# deux agents réécrivent en même temps. Les alias suffixés ``_F`` sont
+# volontairement redondants avec ceux des autres sections.
+from typing import Optional as _OptionalF                           # noqa: E402
+
+from fastapi import Depends as _DependsF                            # noqa: E402
+from fastapi import HTTPException as _HTTPExceptionF                # noqa: E402
+from pydantic import BaseModel as _BaseModelF                       # noqa: E402
+
+from backend.auth.models import User as _UserF                      # noqa: E402
+from backend.auth.permissions import require_role as _require_role_f  # noqa: E402
+from backend.bots.paper import idea_journal as _idea_journal_f      # noqa: E402
+from backend.bots.paper import quotes as _quotes_f                  # noqa: E402
+from backend.bots.paper_router import (                             # noqa: E402,F811
+    normalize_lang as _normalize_lang_f)
+
+_NOTE_ROLES = ("admin", "money", "trader")
+
+# Une note, pas un mémoire : 500 caractères. Le journal est relu ENTIER à
+# chaque demande d'idées (50 entrées), et il part dans le contexte du modèle —
+# une note de 20 000 signes y noierait les huit idées qui comptent.
+NOTE_MAX_LEN = 500
+
+
+class NotePayload(_BaseModelF):
+    """La note telle que le panneau la poste : le texte, et — si l'onglet
+    TradingView affiche un titre — le symbole qu'elle concerne."""
+    text: str = ""
+    symbol: _OptionalF[str] = None
+    lang: str = "fr"
+
+
+@router.post("/ideas/note")
+def paper_tv_idea_note(data: NotePayload,
+                       current_user: _UserF = _DependsF(
+                           _require_role_f(*_NOTE_ROLES))):
+    """Range une note rapide au journal des idées -> ``{"ok", "entry"}``.
+
+    400 sur une note VIDE (après ``strip``) : une entrée sans texte n'aurait
+    rien à redonner au coach mais mangerait quand même une des cinquante
+    places du journal.
+
+    Le symbole est CANONISÉ (``quotes.canonical``, mêmes alias que les ordres
+    et la watchlist) puis préfixé au texte entre crochets : le journal n'a pas
+    de champ ``symbol``, et c'est ``advice_from_text`` — qui cherche le ticker
+    en MOT ENTIER dans le texte — qui retrouvera la note le jour où le coach
+    parlera de ce titre. Un symbole rangé dans une clé qu'il ne lit pas serait
+    invisible.
+
+    La troncature à :data:`NOTE_MAX_LEN` porte sur le texte de l'utilisateur,
+    AVANT le préfixe : deux notes de 500 signes doivent donner deux entrées
+    comparables, que l'une porte un symbole de trois lettres et l'autre un de
+    huit.
+    """
+    username = current_user.username
+    text = str(data.text or "").strip()[:NOTE_MAX_LEN]
+    if not text:
+        raise _HTTPExceptionF(status_code=400, detail="Note vide.")
+
+    symbol = _quotes_f.canonical(data.symbol)
+    if symbol:
+        text = "[%s] %s" % (symbol, text)
+
+    entry = _idea_journal_f.append_entry(username, kind="note", text=text,
+                                         lang=_normalize_lang_f(data.lang),
+                                         now_iso=_now_iso())
+    return {"ok": True, "entry": entry}

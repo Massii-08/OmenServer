@@ -350,15 +350,32 @@ def _excursions(clean: Dict[str, Any]) -> Dict[str, Optional[float]]:
     ``0.0`` prétendrait avoir mesuré une excursion nulle alors qu'on n'a rien
     mesuré du tout (sa doctrine, reprise telle quelle).
 
-    Les échantillons ne sont PAS refiltrés sur la fenêtre entrée/sortie : c'est
-    l'extension qui échantillonne, et exactement pendant le scalp. Deux limites
-    assumées — un client bogué qui déborderait la fenêtre élargirait ses
-    propres excursions (sans toucher au P&L, lui recalculé), et ``tradestats``
-    arrondit à deux décimales, ce qui est grossier pour un mouvement de trois
-    minutes (0,004 % s'affiche 0,0).
+    **Les échantillons sont REFILTRÉS sur la fenêtre ``[entry_dt, exit_dt]``,
+    bornes incluses.** C'est l'extension qui échantillonne, et normalement
+    exactement pendant le scalp — mais « normalement » n'est pas une garantie :
+    un onglet laissé ouvert, une file locale rejouée après coupure ou un
+    client bogué peuvent poster des ticks d'AVANT l'entrée ou d'APRÈS la
+    sortie. Un seul de ces ticks, plus extrême, gonflerait un MAE ou un MFE
+    qui n'a jamais été vécu — c'est-à-dire un chiffre de discipline faux, et le
+    serveur est autoritaire sur tout le reste de la ligne (spec §5.4). Le
+    filtre est INCLUSIF aux deux bouts : le tick d'entrée et celui de sortie
+    font partie du trade.
+
+    Limite qui reste assumée : ``tradestats`` arrondit à deux décimales, ce qui
+    est grossier pour un mouvement de trois minutes (0,004 % s'affiche 0,0).
     """
+    # Les bornes ne sont lues que si elles SONT des ``datetime`` : ``settle``
+    # est aussi appelée sur des dictionnaires forgés par les tests, et une
+    # comparaison contre ``None`` lèverait là où l'ancien code rendait un
+    # chiffre. Sans bornes lisibles, on garde tous les échantillons.
+    entry_dt = clean.get("entry_dt")
+    exit_dt = clean.get("exit_dt")
+    rows = list(clean.get("samples") or [])
+    if isinstance(entry_dt, datetime) and isinstance(exit_dt, datetime):
+        rows = [(when, price) for when, price in rows
+                if isinstance(when, datetime) and entry_dt <= when <= exit_dt]
     candles = [{"open": price, "high": price, "low": price, "close": price}
-               for _, price in clean.get("samples") or []]
+               for _, price in rows]
     side = "long" if clean.get("side") == "buy" else "short"
     out = tradestats.excursions(candles, clean.get("entry_price"), side)
     return {"mae_pct": out.get("mae_pct"), "mfe_pct": out.get("mfe_pct")}
@@ -499,6 +516,10 @@ def record(username: str, row: Dict[str, Any],
     un doublon, jamais un scalp perdu.
 
     Plafond GLISSANT : au-delà de :data:`MAX_SCALPS`, les plus anciens tombent.
+
+    Un scalp RÉELLEMENT rangé pousse un ``brief_changed`` (raison ``scalp``)
+    aux panneaux ouverts, par ``store.notify_brief_changed`` — best-effort
+    absolu, cf. sa docstring.
     """
     moment = now or utc_now()
     with _LOCK:
@@ -515,7 +536,12 @@ def record(username: str, row: Dict[str, Any],
         items.append(entry)
         state["items"] = items[-MAX_SCALPS:]
         save_state(username, state)
-        return {"entry": dict(entry), "created": True}
+    # HORS du verrou et APRÈS l'écriture : un push est du réseau, il n'a rien à
+    # faire dans une section critique de disque. Un REJEU (``created: False``)
+    # ne notifie pas — rien n'a bougé au ledger, et une notification par
+    # tentative ferait clignoter le panneau à chaque reprise de file locale.
+    store.notify_brief_changed(username, "scalp")
+    return {"entry": dict(entry), "created": True}
 
 
 # --------------------------------------------------------------------------- #

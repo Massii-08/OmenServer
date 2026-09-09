@@ -309,6 +309,13 @@ const PaperModule = {
         whale_sold_watched: ['paper.conv_f_whale_sold_watched', ''],
         cross_source: ['paper.conv_f_cross_source', 'press'],
         crowd_buzz: ['paper.conv_f_crowd_buzz', 'social'],
+        // Les deux facteurs BITCOIN (btc.py) : ils viennent des dérivés du
+        // perpétuel, donc famille « crypto ». Ils ne sont JAMAIS dans
+        // _CONV_THREAT — ce sont des signaux de POSITIONNEMENT du marché, pas
+        // une mauvaise nouvelle sur un titre détenu. Sans ces deux lignes le
+        // panneau affichait leur code brut (« funding_extreme »).
+        funding_extreme: ['paper.conv_f_funding_extreme', 'crypto'],
+        oi_buildup: ['paper.conv_f_oi_buildup', 'crypto'],
     },
 
     // Les deux facteurs de MENACE DIRECTE sur le compte : ils ne portent pas une

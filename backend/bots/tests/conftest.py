@@ -1,7 +1,15 @@
 """Fixtures partagées des tests bots."""
+import subprocess
 import threading
 
 import pytest
+
+# Le VRAI ``subprocess.run``, capturé à l'import de ce fichier — c'est
+# exactement l'objet que ``llm._claude_text`` a figé dans son défaut
+# (``run: Callable = subprocess.run``, évalué à l'import du module). Le garder
+# ici permet de reconnaître « personne n'a injecté de double » même si un test
+# remplace ``subprocess.run`` de son côté.
+_REAL_SUBPROCESS_RUN = subprocess.run
 
 
 @pytest.fixture(autouse=True)
@@ -51,6 +59,11 @@ def pytest_configure(config):
         "real_ticker_check: le test vise le contrôle de cotation des tickers "
         "d'une hypothèse (radar.mark_unquoted -> quotes.get_quote) -> ne pas "
         "le neutraliser",
+    )
+    config.addinivalue_line(
+        "markers",
+        "real_llm: le test a le DROIT d'atteindre le vrai CLI Claude "
+        "(llm._claude_text sans run= injecté) -> ne pas poser le garde",
     )
 
 
@@ -149,6 +162,59 @@ def _no_coach_trader_cycle(request, monkeypatch):
             raising=False)
     except Exception:
         pass
+
+
+@pytest.fixture(autouse=True)
+def _no_real_llm_call(request, monkeypatch):
+    """Le VERROU de dernier recours contre un appel LLM réel depuis la suite.
+
+    ``llm._claude_text`` lance le CLI Claude — un sous-processus, du réseau, de
+    l'argent et plusieurs dizaines de secondes. Tous les tests qui traversent
+    le coach doublent quelque chose (``llm.ask_coach``, ``llm._claude_text``
+    lui-même, ou l'argument ``run=``), mais « tous » est une propriété qu'un
+    seul test futur suffit à casser, et la panne serait SILENCIEUSE : le test
+    passerait, juste beaucoup plus lentement, en dépensant des jetons.
+
+    Le garde reconnaît un appel non doublé par l'IDENTITÉ de ``run`` : si
+    personne n'a injecté de double, ``run`` est le vrai ``subprocess.run``
+    (c'est le défaut de ``_claude_text``) et on lève. Avec un double, on
+    délègue à l'original — les tests de ``_claude_text`` lui-même
+    (``test_paper_llm.py``) valident un VRAI comportement, pas un mannequin.
+
+    Un test qui veut vraiment le binaire s'exempte par ``@pytest.mark.real_llm``
+    (même patron que ``real_backfill`` et ``real_coach_trader`` ci-dessus).
+
+    ⚠️ **Ordre** : cette fixture autouse pose son garde AVANT le corps du test ;
+    un test qui fait ensuite son propre ``monkeypatch.setattr(llm,
+    "_claude_text", …)`` l'écrase, et c'est SON double qui compte — le garde ne
+    lui retire rien. Les deux se défont dans l'ordre inverse en fin de test
+    (même objet ``monkeypatch``), donc ``llm._claude_text`` retrouve toujours
+    l'original.
+    """
+    if request.node.get_closest_marker("real_llm"):
+        return
+    try:
+        from backend.bots.paper import llm
+    except Exception:
+        return
+    real = llm._claude_text
+
+    def _guarded(*args, **kwargs):
+        # ``run`` est le 4e paramètre de ``_claude_text``
+        # (``prompt, model, timeout, run``) : presque toujours passé par
+        # mot-clé, mais un appel positionnel doit être vu aussi.
+        if "run" in kwargs:
+            run = kwargs["run"]
+        elif len(args) > 3:
+            run = args[3]
+        else:
+            run = _REAL_SUBPROCESS_RUN
+        if run is None or run is _REAL_SUBPROCESS_RUN or run is subprocess.run:
+            raise RuntimeError("appel LLM réel interdit en test — injecte "
+                               "run= ou marque @pytest.mark.real_llm")
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(llm, "_claude_text", _guarded, raising=False)
 
 
 @pytest.fixture(autouse=True)

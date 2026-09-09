@@ -26,9 +26,15 @@ import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-# Deux genres d'entrées, et pas un de plus : ce que le coach a PROPOSÉ, et ce
-# qu'il a dit des positions déjà ouvertes.
-KINDS = ("ideas", "review")
+# Trois genres d'entrées, et pas un de plus : ce que le coach a PROPOSÉ, ce
+# qu'il a dit des positions déjà ouvertes, et la NOTE que l'utilisateur a
+# écrite lui-même depuis le panneau TradingView (``POST /ideas/note``).
+#
+# La note vit dans CE journal et pas dans le carnet Markdown : c'est ici que le
+# coach relit ce qui a déjà été pensé sur un titre avant de reproposer une
+# idée — une observation attrapée au vol (« le gap de 8h30 s'est refermé »)
+# n'a de valeur que si elle revient sous ses yeux au bon moment.
+KINDS = ("ideas", "review", "note")
 DEFAULT_KIND = "ideas"
 
 # Plafond en TÊTE : les 50 dernières entrées. Le journal sert à ne pas se

@@ -138,9 +138,46 @@ def load_portfolio(username: str) -> Optional[Dict[str, Any]]:
     return _load_json(portfolio_path(username))
 
 
+def notify_brief_changed(username: str, reason: str) -> None:
+    """Prévient les panneaux TradingView ouverts que la fiche a bougé.
+
+    Producteur du message ``brief_changed`` du WebSocket ``/ws/paper`` (spec
+    §5.3) : le panneau ne sonde plus le brief, il attend ce signal. Sans lui,
+    un ordre passé depuis le site laissait l'extension afficher un cash et des
+    positions périmés jusqu'au prochain rechargement d'onglet.
+
+    Deux précautions non négociables, et c'est tout ce que fait cette fonction :
+
+    1. **import PARESSEUX**, jamais en tête de module. ``store`` est importé
+       par tout le paquet (et par le router, et par les tests) ; ``paper_ws``
+       importe FastAPI et finirait par créer un cycle le jour où le WebSocket
+       voudra lire un portefeuille. On paie une recherche dans ``sys.modules``
+       par écriture, ce qui n'est rien à côté d'un ``os.replace``.
+       ⚠️ La forme ``import backend.bots.paper_ws as paper_ws`` est choisie à
+       dessein plutôt que ``from backend.bots import paper_ws`` : cette
+       dernière lirait l'ATTRIBUT déjà posé sur le paquet parent et ignorerait
+       un ``sys.modules["backend.bots.paper_ws"] = None`` — le neutralisant
+       dont se servent les tests (piège #69h) n'aurait alors aucun effet ;
+    2. **jamais d'exception**. Un push perdu ne doit pas faire perdre une
+       écriture de portefeuille — c'est exactement la doctrine best-effort de
+       ``emit`` lui-même, tenue une deuxième fois ici parce que l'IMPORT, lui,
+       peut échouer avant d'atteindre ``emit``.
+    """
+    try:
+        import backend.bots.paper_ws as paper_ws
+        paper_ws.emit(username, "brief_changed", None, {"reason": reason})
+    except Exception:             # noqa: BLE001 — un push n'échoue jamais fort
+        pass
+
+
 def save_portfolio(username: str, data: Dict[str, Any]) -> None:
-    """Persiste le portefeuille de façon atomique, 0o600."""
+    """Persiste le portefeuille de façon atomique, 0o600, puis PRÉVIENT.
+
+    La notification vient APRÈS l'écriture : un panneau qui recharge sa fiche
+    sur ce signal doit lire l'état neuf, jamais celui d'avant.
+    """
     _atomic_write_json(portfolio_path(username), data)
+    notify_brief_changed(username, "portfolio")
 
 
 def load_coach(username: str) -> Optional[Dict[str, Any]]:
