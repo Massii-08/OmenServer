@@ -1740,6 +1740,25 @@ def _collect_calendar_verdicts(now: Any) -> List[Dict[str, Any]]:
         return []
 
 
+def _collect_btc_factors(now_dt: Any) -> Optional[Dict[str, List[Dict[str, Any]]]]:
+    """Le volet Bitcoin (``funding_extreme``/``oi_buildup``), best-effort.
+
+    Import PARESSEUX comme ``calendar``/``newswatch`` : le module peut ne pas
+    être déployé (lot parallèle), et la convergence doit vivre sans lui.
+
+    Rend ``None`` sur TOUTE exception — import compris. Le volet Bitcoin est
+    une source comme une autre : cassée, elle n'allume rien, elle ne fait
+    tomber aucun autre facteur. C'est ``collect_factors``/``_btc_items`` qui
+    lisent ce ``None`` et laissent les deux facteurs BTC à FAUX.
+    """
+    try:
+        from backend.bots.paper import btc
+        state = btc.load_state()
+        return btc.factors(state, now_dt)
+    except Exception:      # noqa: BLE001 — module absent, état illisible
+        return None
+
+
 def _collect_positions(users: List[str]) -> Tuple[List[Dict[str, Any]], List[str]]:
     """``(positions, symboles détenus)`` de tous les comptes (best-effort).
 
@@ -2141,7 +2160,8 @@ def maybe_fire(now: Any = None,
                                 watched_symbols, held_symbols=held,
                                 whale_moves=whale_moves,
                                 reddit_trends=reddit_trends,
-                                calendar_verdicts=calendar_verdicts)
+                                calendar_verdicts=calendar_verdicts,
+                                btc_factors=_collect_btc_factors(now_dt))
     flags = collected["factors"]
     items = collected["items"]
     fp = fingerprint(items)

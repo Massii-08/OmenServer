@@ -17,6 +17,7 @@ mensuelle le dernier vendredi 25/09).
 import json
 import os
 import stat
+import sys
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -887,3 +888,64 @@ def test_route_btc_survit_a_une_source_morte(tmp_path, monkeypatch):
     body = response.json()
     assert body["mark"] is None
     assert "binance_premium" in body["degraded"]
+
+
+# =========================================================================== #
+#  Branchement maybe_fire — le volet Bitcoin comme SOURCE de collect_factors
+# =========================================================================== #
+#
+# Patron repris de ``test_paper_convergence.py`` (``test_maybe_fire_trop_peu_
+# de_facteurs``/``test_maybe_fire_sources_absentes_ne_casse_rien``) : newswatch
+# et whales sont neutralisés en cassant leur import paresseux (``None`` dans
+# ``sys.modules``), et ``store.DATA_DIR`` est isolé en ``tmp_path`` — sinon
+# ``whales.recent_filing_events`` lirait le VRAI ``data/paper_trading/`` du
+# dépôt (son ``DATA_DIR`` est une constante figée à l'import, indépendante de
+# ``store.DATA_DIR``). Seul le volet Bitcoin peut alors porter de la matière.
+
+def test_maybe_fire_branche_funding_extreme_sans_franchir_le_seuil_seul(
+        tmp_path, monkeypatch):
+    """``maybe_fire`` passe désormais par ``_collect_btc_factors`` : un état
+    BTC qui allume ``funding_extreme`` (mêmes valeurs que
+    ``test_funding_extreme_sur_deux_reglements_consecutifs``) doit se voir
+    dans les facteurs RENDUS — mais un seul facteur, même Bitcoin, ne franchit
+    pas ``MIN_FACTORS`` (cf. ``test_un_facteur_btc_SEUL_ne_declenche_jamais_
+    should_fire`` plus haut : les deux codes BTC comptent, ils ne tirent
+    jamais seuls)."""
+    monkeypatch.setattr(store, "DATA_DIR", tmp_path)
+    monkeypatch.setitem(sys.modules, "backend.bots.paper.newswatch", None)
+    monkeypatch.setitem(sys.modules, "backend.bots.paper.whales", None)
+    monkeypatch.setattr(btc, "load_state",
+                        lambda: _funding_state(0.061, 0.072))
+
+    out = convergence.maybe_fire(
+        now=NOW, llm=lambda prompt: "digest",
+        notifier=lambda text, cfg: True,
+        tg_cfg={"token": "t", "chat_id": "c"},
+        fetch_state=lambda: {"hypotheses": [], "stats": {}})
+
+    assert out["factors"]["funding_extreme"] is True
+    assert out["factors"]["oi_buildup"] is False
+    assert out["fired"] is False and out["reason"] == "too_few"
+
+
+def test_maybe_fire_avale_une_panne_de_btc_load_state(tmp_path, monkeypatch):
+    """Le volet Bitcoin est une source comme une autre : ``btc.load_state`` qui
+    lève ne doit ni faire lever ``maybe_fire`` lui-même, ni allumer
+    ``funding_extreme`` autrement qu'à FAUX."""
+    monkeypatch.setattr(store, "DATA_DIR", tmp_path)
+    monkeypatch.setitem(sys.modules, "backend.bots.paper.newswatch", None)
+    monkeypatch.setitem(sys.modules, "backend.bots.paper.whales", None)
+
+    def _boom():
+        raise RuntimeError("état BTC illisible")
+
+    monkeypatch.setattr(btc, "load_state", _boom)
+
+    out = convergence.maybe_fire(
+        now=NOW, llm=lambda prompt: "digest",
+        notifier=lambda text, cfg: True,
+        tg_cfg={"token": "t", "chat_id": "c"},
+        fetch_state=lambda: {"hypotheses": [], "stats": {}})
+
+    assert out["factors"]["funding_extreme"] is False
+    assert out["fired"] is False
