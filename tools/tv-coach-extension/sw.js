@@ -374,9 +374,13 @@ chrome.runtime.onMessage.addListener(function (message, sender, sendResponse) {
   if (message.type === 'token') {
     /* Envoyé par ``content-omen.js`` après un clic EXPLICITE de Massii. */
     var patch = { token: String(message.token || '') };
-    if (message.lang) { patch.lang = String(message.lang); }
     if (message.api_base) { patch.api_base = String(message.api_base); }
-    saveSettings(patch).then(function () {
+    settings().then(function (conf) {
+      /* La langue du site ne sert de défaut qu'à la PREMIÈRE connexion : une
+         reconnexion (jeton expiré) ne doit pas écraser celle des options. */
+      if (message.lang && !conf.token) { patch.lang = String(message.lang); }
+      return saveSettings(patch);
+    }).then(function () {
       try {
         if (omenSocket) { omenSocket.close(); }
       } catch (e) { debug('fermeture WS refusée', e); }

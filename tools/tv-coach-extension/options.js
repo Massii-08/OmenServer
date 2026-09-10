@@ -5,7 +5,8 @@
  * Le profil de frais n'a PAS de défaut caché (spec §6.4) : tant qu'il est vide,
  * un bandeau le réclame et le ticket refuse d'ouvrir un scalp. Le token peut
  * être collé ici, mais la voie normale reste le bouton « Connecter l'extension
- * coach » sur omenserver.org.
+ * coach » sur omenserver.org. Champ Token laissé vide à l'enregistrement -> le
+ * jeton déjà stocké est conservé (jamais écrasé par une valeur vide/périmée).
  */
 (function () {
   'use strict';
@@ -97,6 +98,7 @@
 
   function save() {
     var lang = byId('lang').value || 'fr';
+    var token = String(byId('token').value || '').trim();
     var patch = {
       fee_profile: byId('fee_profile').value || '',
       custom_pct: numberOrNull(byId('custom_pct').value),
@@ -104,9 +106,12 @@
         ? 1 : numberOrNull(byId('risk_pct').value),
       lang: lang,
       scalp_auto: byId('scalp_auto').checked === true,
-      api_base: String(byId('api_base').value || DEFAULTS.api_base).replace(/\/+$/, ''),
-      token: String(byId('token').value || '').trim()
+      api_base: String(byId('api_base').value || DEFAULTS.api_base).replace(/\/+$/, '')
     };
+    /* Champ vide -> on garde le jeton déjà stocké : la page peut être restée
+       ouverte avant le clic sur « Connecter » côté omenserver.org, et un champ
+       vide/périmé écraserait sinon un jeton valide (piège #69, CLAUDE.md). */
+    if (token) { patch.token = token; }
     chrome.storage.local.set(patch, function () {
       if (chrome.runtime.lastError) {
         debug('enregistrement refusé', chrome.runtime.lastError.message);
@@ -122,8 +127,24 @@
     });
   }
 
+  /* Une page d'options restée ouverte pendant qu'un token frais arrive (bouton
+     « Connecter » côté omenserver.org) ne doit pas garder un champ périmé à
+     l'écran, sinon un « Enregistrer » plus tard l'écraserait à nouveau. */
+  function watchTokenChanges() {
+    try {
+      if (!chrome || !chrome.storage || !chrome.storage.onChanged) { return; }
+      chrome.storage.onChanged.addListener(function (changes, area) {
+        if (area !== 'local' || !changes.token) { return; }
+        byId('token').value = changes.token.newValue || '';
+      });
+    } catch (e) {
+      debug('storage.onChanged indisponible', e);
+    }
+  }
+
   document.addEventListener('DOMContentLoaded', function () {
     load();
+    watchTokenChanges();
     byId('save').addEventListener('click', save, false);
     byId('fee_profile').addEventListener('change', function () {
       refreshFeeBanner(byId('lang').value);

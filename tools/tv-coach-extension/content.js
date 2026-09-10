@@ -538,6 +538,7 @@
     return client.get('/brief', { symbol: state.symbol, tv: state.tv_symbol })
       .then(function (data) {
         markServer(true);
+        setBanner('token_expired', false);
         state.brief = data || null;
         state.brief_at = Date.now();
         state.brief_symbol = state.symbol;
@@ -2225,6 +2226,14 @@
       var keys = Object.keys(changes);
       for (var i = 0; i < keys.length; i += 1) { patch[keys[i]] = changes[keys[i]].newValue; }
       applySettings(patch);
+      /* Token renouvelé depuis omenserver.org (bouton « Connecter... ») : on
+         repart tout de suite plutôt que d'attendre le refresh planifié (5 min). */
+      if (Object.prototype.hasOwnProperty.call(changes, 'token') && changes.token.newValue) {
+        setBanner('token_expired', false);
+        state.brief_at = 0;
+        refreshBrief(true);
+        sendFocus();
+      }
       render();
     });
 

@@ -29,9 +29,12 @@ l'extension dans `chrome://extensions`, puis recharge l'onglet TradingView.
    (`omen-lang`) sont copiés dans `chrome.storage.local`. Rien n'est copié sans
    ce clic.
 
-Le token vaut 24 h. Expiré, le panneau affiche « reconnecte-toi sur
-omenserver.org » : refais les trois étapes. Un collage manuel reste possible
-dans les options.
+Le token vaut 24 h. Expiré, le panneau affiche « Session expirée » : reconnecte-toi
+sur omenserver.org, PUIS re-clique « Connecter l'extension coach » (le token du
+site ne se propage pas tout seul à l'extension). Le panneau repart de lui-même —
+pas besoin de recharger l'onglet TradingView. Un collage manuel reste possible
+dans les options ; laisser le champ **Token** vide à l'enregistrement conserve
+le jeton déjà stocké (ça n'écrase rien).
 
 ## Options
 

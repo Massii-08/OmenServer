@@ -76,3 +76,16 @@ test('aucun emoji dans les chaînes du panneau', () => {
     }
   }
 });
+
+test('banner.token_expired nomme omenserver.org et le libellé exact du bouton par langue', () => {
+  const button = {
+    fr: 'Connecter l’extension coach',
+    it: 'Collega l’estensione coach',
+    en: 'Connect the coach extension'
+  };
+  for (const lang of i18n.LANGS) {
+    const text = i18n.t('banner.token_expired', lang);
+    assert.ok(text.includes('omenserver.org'), lang + ' : omenserver.org absent du bandeau');
+    assert.ok(text.includes(button[lang]), lang + ' : libellé du bouton absent du bandeau');
+  }
+});
