@@ -2295,6 +2295,22 @@ def _save_global_seen(state: Dict[str, Any]) -> None:
     _save_seen_state(_global_seen_path(), state)
 
 
+def tv_news_state() -> Dict[str, Any]:
+    """Le sous-état ``tv_news`` de l'état GLOBAL, en LECTURE SEULE.
+
+    Rendu depuis une relecture du fichier : ce que l'appelant en fait ne
+    remonte JAMAIS sur le disque — seul le cycle de veille écrit ici. C'est
+    par cette porte que ``tvnews.cached_items`` (donc la fiche du titre) lit
+    les dernières dépêches affichées par TradingView sans rien pouvoir abîmer.
+    Fichier absent ou illisible -> ``{}``, jamais d'exception.
+    """
+    try:
+        sub = _load_global_seen().get("tv_news")
+    except Exception:             # noqa: BLE001 — un cache n'est jamais fatal
+        return {}
+    return sub if isinstance(sub, dict) else {}
+
+
 def _purge_old_seen(state: Dict[str, Any], now_dt: datetime,
                     max_age_days: int = _SEEN_MAX_AGE_DAYS) -> None:
     """Purge EN PLACE les entrées "seen" plus vieilles que max_age_days (évite
@@ -3970,6 +3986,14 @@ def _run_tvnews_volet(state: Dict[str, Any],
     Les événements sont distribués aux comptes dont le SYMBOLE fait partie de
     l'univers (positions ∪ watchlist ∪ focus) : une dépêche sur AAPL n'entre
     pas dans le carnet de quelqu'un qui n'a jamais entendu parler d'AAPL.
+
+    ⚠️ Ce chemin-là ne suffit PAS à la fiche du titre (11/09) : un item vu une
+    fois pendant que personne ne regardait ce symbole n'entre dans le carnet de
+    personne, et la déduplication globale l'interdit ensuite à jamais. C'est
+    pourquoi ``tvnews.run`` tient EN PLUS un cache par symbole dans le même
+    sous-état (``items_by_symbol``), que ``tvnews.cached_items`` relit par
+    :func:`tv_news_state` — « ce que TradingView affiche », pas « ce qui est
+    neuf ». Ce cache part sur le disque avec le reste du sous-état.
 
     ``counters["fetched"]`` compte les requêtes TradingView comme il compte les
     flux RSS : c'est le même cycle, et cacher ces appels rendrait le compteur

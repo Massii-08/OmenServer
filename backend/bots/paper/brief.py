@@ -18,6 +18,7 @@ fonction à soi — c'est ce qui rend les tests 100 % hors ligne. Sans ``deps``,
 :func:`default_deps` câble les vrais modules.
 """
 import logging
+from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional
 
 from backend.bots.paper import fees, models, price_alerts, quotes, ta
@@ -121,8 +122,8 @@ NEWS_LIMIT = 10
 # Les quinze sources injectables. L'ORDRE n'a aucune importance ; le NOM, si :
 # c'est celui qui apparaît dans ``degraded``.
 DEP_NAMES = ("quote", "fx", "portfolio", "coach_positions", "ideas_for_symbol",
-             "hypotheses", "news", "calendar", "whales", "mood", "btc",
-             "alerts", "candles_1m", "candles_1d", "fees_profile")
+             "hypotheses", "news", "tv_items", "calendar", "whales", "mood",
+             "btc", "alerts", "candles_1m", "candles_1d", "fees_profile")
 
 
 def tv_to_yahoo(tv_symbol: Any) -> Optional[str]:
@@ -286,6 +287,16 @@ def _default_btc() -> Optional[Dict[str, Any]]:
     return btc_module.snapshot()
 
 
+def _default_tv_items(tv_symbol: Any) -> List[Dict[str, Any]]:
+    """Les dépêches que TradingView AFFICHE pour ce symbole (11/09).
+
+    Import PARESSEUX (``tvnews`` importe ``brief`` de son côté, paresseusement
+    lui aussi) : les deux modules se lisent, aucun ne se charge à l'import.
+    """
+    from backend.bots.paper import tvnews
+    return tvnews.cached_items(tv_symbol)
+
+
 def _default_alerts(username: str) -> List[Dict[str, Any]]:
     from backend.bots.paper import store
     return list(store.load_alerts(username) or [])
@@ -315,6 +326,7 @@ def default_deps() -> Dict[str, Callable]:
         "ideas_for_symbol": _default_ideas,
         "hypotheses": _default_hypotheses,
         "news": _default_news,
+        "tv_items": _default_tv_items,
         "calendar": _default_calendar,
         "whales": _default_whales,
         "mood": _default_mood,
@@ -471,35 +483,104 @@ def _alerts_of(alerts: Any, symbol: str) -> List[Dict[str, Any]]:
             == price_alerts.STATUS_ARMED]
 
 
-def _news_of(events: Any, symbol: str, tv_symbol: str) -> List[Dict[str, Any]]:
+def _ts_key(value: Any) -> str:
+    """Clé de tri d'un horodatage : ISO NORMALISÉ en UTC, ou la chaîne telle
+    quelle quand elle est illisible (elle passera derrière les vraies dates).
+
+    Les deux sources de la fiche n'écrivent pas exactement pareil — le cache
+    TradingView porte ``+00:00``, un événement RSS peut arriver naïf — et un
+    tri lexicographique brut mettrait ``…13:00:00+02:00`` après
+    ``…13:00:00+00:00`` alors qu'il est ANTÉRIEUR.
+    """
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    try:
+        moment = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return raw
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=timezone.utc)
+    return moment.astimezone(timezone.utc).isoformat()
+
+
+def _title_key(value: Any) -> str:
+    """Un titre réduit à sa substance : minuscules, espaces écrasés. Sert à
+    reconnaître la MÊME dépêche arrivée par deux canaux."""
+    return " ".join(str(value or "").lower().split())
+
+
+def _news_row(ts: Any, title: Any, source: Any, via: Any,
+              sentiment: Any, url: Any, lang: Any) -> Dict[str, Any]:
+    return {"ts": ts, "title": title, "source": source, "via": via,
+            "sentiment": sentiment, "url": url, "lang": lang}
+
+
+def _news_of(events: Any, symbol: str, tv_symbol: str,
+             tv_items: Any = None) -> List[Dict[str, Any]]:
     """Les dépêches du titre, mises à la forme du panneau (§5.1).
 
-    Le filtre accepte le symbole Yahoo ET, pour le volet TradingView, le
-    symbole TRADINGVIEW : ``tvnews`` conserve l'identifiant tel que le flux
-    l'écrit (``BITSTAMP:BTCUSD``), et le retraduire des deux côtés ferait
-    perdre les dépêches dont la place n'est pas celle qu'on regarde.
+    DEUX SOURCES, une seule liste. Les **événements du compte** (le carnet que
+    ``newswatch`` écrit) et le **cache TradingView** du symbole
+    (``tvnews.cached_items``). Le second a été ajouté le 11/09 : TradingView
+    affichait une dépêche française de quinze minutes sur BTC-USD et le coach
+    répondait « aucune dépêche récente », parce que l'item avait été vu UNE
+    fois pendant que Massii regardait un autre titre — la déduplication
+    globale, faite pour les alertes, l'avait interdit de séjour à jamais.
+
+    Le filtre des ÉVÉNEMENTS accepte le symbole Yahoo ET le symbole
+    TRADINGVIEW : ``tvnews`` conserve l'identifiant tel que le flux l'écrit
+    (``BITSTAMP:BTCUSD``), et le retraduire des deux côtés ferait perdre les
+    dépêches dont la place n'est pas celle qu'on regarde. Le cache, lui, est
+    DÉJÀ celui du symbole demandé : rien à filtrer.
+
+    Dédup par ``url`` puis par titre normalisé, **l'événement du compte
+    l'emportant** (c'est lui qui porte le sentiment et parfois le corps). Tri
+    par date décroissante, coupe à ``NEWS_LIMIT``.
     """
     wanted = {symbol, str(tv_symbol or "").strip().upper()}
     wanted.discard("")
-    out: List[Dict[str, Any]] = []
+
+    rows: List[Dict[str, Any]] = []
     for event in _rows(events):
         if str(event.get("symbol") or "").strip().upper() not in wanted:
             continue
         via = event.get("via") or event.get("src")
-        out.append({
-            "ts": event.get("ts"),
-            "title": event.get("title"),
+        rows.append(_news_row(
+            event.get("ts"), event.get("title"),
             # ``provider`` est le média (Reuters, CNBC…) que le volet
             # TradingView conserve ; ``src``/``via`` est le CANAL par lequel il
             # nous arrive. Les deux sont servis, jamais confondus.
-            "source": event.get("provider") or event.get("source") or via,
-            "via": via,
-            "sentiment": event.get("sentiment"),
-            "url": event.get("url") or event.get("link"),
-        })
-        if len(out) >= NEWS_LIMIT:
-            break
-    return out
+            event.get("provider") or event.get("source") or via, via,
+            event.get("sentiment"), event.get("url") or event.get("link"),
+            event.get("lang")))
+
+    for item in _rows(tv_items):
+        title = item.get("title")
+        if not title or not item.get("published"):
+            continue
+        rows.append(_news_row(item.get("published"), title,
+                              item.get("provider"), "tradingview", None,
+                              item.get("url"), item.get("lang")))
+
+    out: List[Dict[str, Any]] = []
+    seen_urls = set()
+    seen_titles = set()
+    for row in rows:                    # les événements du compte D'ABORD
+        url = str(row.get("url") or "").strip()
+        title = _title_key(row.get("title"))
+        if url and url in seen_urls:
+            continue
+        if title and title in seen_titles:
+            continue
+        if url:
+            seen_urls.add(url)
+        if title:
+            seen_titles.add(title)
+        out.append(row)
+
+    out.sort(key=lambda row: _ts_key(row.get("ts")), reverse=True)
+    return out[:NEWS_LIMIT]
 
 
 # Les familles d'entrées du calendrier qui concernent TOUT LE MONDE, quel que
@@ -613,7 +694,8 @@ def build(username: str, symbol: str, tv_symbol: str,
     appelée ainsi — ``quote(symbol)``, ``fx(currency)`` (le code devise déjà
     normalisé ; jamais appelée pour le franc), ``portfolio(username)``,
     ``coach_positions()``, ``ideas_for_symbol(username, symbol)``,
-    ``hypotheses(symbol)``, ``news(username)``, ``calendar()``,
+    ``hypotheses(symbol)``, ``news(username)``, ``tv_items(tv_symbol)``
+    (le cache TradingView du titre affiché), ``calendar()``,
     ``whales(symbol)``, ``mood()``, ``btc()``, ``alerts(username)``,
     ``candles_1m(symbol)``, ``candles_1d(symbol)``, ``fees_profile(username)``.
     Absente -> la vraie implémentation (:func:`default_deps`).
@@ -707,7 +789,8 @@ def build(username: str, symbol: str, tv_symbol: str,
         "alerts": _alerts_of(src.get("alerts", username), symbol),
         "ideas": _rows(src.get("ideas_for_symbol", username, symbol)),
         "hypotheses": _rows(src.get("hypotheses", symbol)),
-        "news": _news_of(src.get("news", username), symbol, tv_symbol),
+        "news": _news_of(src.get("news", username), symbol, tv_symbol,
+                         src.get("tv_items", tv_symbol)),
         "calendar": _calendar_of(src.get("calendar"), symbol),
         "whales": _rows(src.get("whales", symbol)),
         "mood": mood_view,

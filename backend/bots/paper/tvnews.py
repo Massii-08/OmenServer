@@ -96,6 +96,32 @@ SEEN_MAX = 2000
 # Un corps de dépêche sert de CONTEXTE, pas d'article : au-delà, on tronque.
 STORY_MAX_LEN = 1200
 
+# Le CACHE par symbole (11/09). ``seen_ids`` sert les ALERTES : un item vu une
+# fois n'est plus jamais réémis, et s'il a été vu pendant que personne ne
+# regardait ce titre, il n'entre dans le carnet de personne. La FICHE, elle,
+# doit montrer « ce que TradingView affiche », pas « ce qui est neuf » — d'où
+# ce second rangement, par symbole, jamais filtré par ``seen_ids``.
+SYMBOL_ITEMS_MAX = 15
+
+# Combien de symboles gardent leur cache. L'état global est un fichier qu'on
+# relit à chaque cycle : sans borne, il grossirait à la taille de toutes les
+# watchlists de tous les comptes.
+SYMBOL_CACHE_MAX = 60
+
+# ``yahoo_to_tv`` préfixe tout ticker américain nu en ``NASDAQ:`` — un pari, pas
+# une certitude : Suncor et Everest sont au NYSE, et TradingView répond 422.
+# On essaie alors les autres places, UNE fois, et on retient celle qui répond.
+US_FALLBACK_EXCHANGES = ("NASDAQ", "NYSE", "AMEX")
+
+# Un symbole qu'aucune place ne connaît est mis au placard 24 h : le réessayer
+# à chaque cycle coûtait 4 requêtes du budget par passage, pour rien.
+UNKNOWN_TTL_S = 86400.0
+
+# Le statut que TradingView rend pour un ``EXCHANGE:TICKER`` qu'il ne connaît
+# pas. Ce n'est PAS une panne : le compteur d'anomalies doit l'ignorer, sans
+# quoi il ne veut plus rien dire (228 « erreurs » relevées le 11/09).
+UNKNOWN_SYMBOL_STATUS = 422
+
 
 # --------------------------------------------------------------------------- #
 # PUR — petits utilitaires
@@ -389,6 +415,83 @@ def parse_items(payload: Any, tv_symbol: Any) -> List[Dict[str, Any]]:
     return out
 
 
+# --------------------------------------------------------------------------- #
+# PUR — le cache par symbole (« ce que TradingView affiche »)
+# --------------------------------------------------------------------------- #
+
+# Les seules clés gardées en cache : de quoi peindre une ligne de fiche, rien
+# de plus. Ni ``related``, ni ``story_path`` — l'état global est relu à chaque
+# cycle, chaque octet s'y paie.
+CACHE_KEYS = ("id", "title", "published", "provider", "url", "lang",
+              "symbol", "tv_symbol", "urgency")
+
+
+def cache_row(item: Any, lang: Any = None) -> Optional[Dict[str, Any]]:
+    """Un item de :func:`parse_items` -> la ligne de cache, ou ``None``.
+
+    ``lang`` est ajouté ici parce que le flux ne le porte pas : c'est nous qui
+    savons dans quelle langue on vient de le demander.
+    """
+    if not isinstance(item, dict):
+        return None
+    title = _text(item.get("title"))
+    published = _text(item.get("published"))
+    if not title or not published:
+        return None
+    return {
+        "id": _text(item.get("id")),
+        "title": title,
+        "published": published,
+        "provider": _text(item.get("provider")),
+        "url": _text(item.get("url")),
+        "lang": _text(lang) or None,
+        "symbol": item.get("symbol") or None,
+        "tv_symbol": _text(item.get("tv_symbol")) or None,
+        "urgency": _int(item.get("urgency")),
+    }
+
+
+def merge_symbol_items(existing: Any, fresh: Any,
+                       limit: int = SYMBOL_ITEMS_MAX) -> List[Dict[str, Any]]:
+    """Cache d'un symbole + lecture fraîche -> la liste gardée (PURE).
+
+    Dédup par ``id`` (à défaut l'``url``, à défaut date+titre) : **la dernière
+    ligne lue gagne**. Donc le frais écrase l'ancien, et la dernière langue de
+    :data:`LANGS` écrase la première — le français, celui que le panneau de
+    Massii affiche. Tri par ``published`` DÉCROISSANT, coupe à ``limit``.
+
+    Le tri est lexicographique et c'est volontaire : ``_iso_utc`` normalise
+    TOUT en UTC ``+00:00``, donc l'ordre des chaînes est l'ordre du temps —
+    sans reparser quinze dates à chaque cycle.
+
+    Une ligne sans titre ou sans date est jetée (même règle que
+    :func:`parse_items` : on n'affiche pas une dépêche qu'on ne sait pas dater).
+    """
+    try:
+        cap = max(0, int(limit))
+    except (TypeError, ValueError):
+        cap = SYMBOL_ITEMS_MAX
+
+    by_marker: Dict[str, Dict[str, Any]] = {}
+    for source in (existing, fresh):          # l'ordre de LECTURE
+        if not isinstance(source, (list, tuple)):
+            continue
+        for row in source:
+            if not isinstance(row, dict):
+                continue
+            title = _text(row.get("title"))
+            published = _text(row.get("published"))
+            if not title or not published:
+                continue
+            marker = (_text(row.get("id")) or _text(row.get("url"))
+                      or ("%s|%s" % (published, title)))
+            by_marker[marker] = row
+
+    out = sorted(by_marker.values(),
+                 key=lambda row: _text(row.get("published")), reverse=True)
+    return out[:cap]
+
+
 def _ast_text(node: Any, chunks: List[str]) -> None:
     """Aplatit récursivement l'arbre ``astDescription`` en morceaux de texte."""
     if isinstance(node, str):
@@ -526,59 +629,76 @@ def needs_story(item: Any, held: Any = None) -> bool:
 # I-O — le client HTTP est TOUJOURS injecté
 # --------------------------------------------------------------------------- #
 
-def _get_json(client: Any, url: str) -> Optional[Any]:
-    """``client.get(url, headers=HEADERS)`` -> JSON, ou ``None``.
+def _get_json_status(client: Any, url: str) -> Tuple[Optional[Any], int]:
+    """``client.get(url, headers=HEADERS)`` -> ``(JSON|None, statut HTTP)``.
 
     Tolère les deux formes de réponse rencontrées : un objet façon ``httpx``
     (``.status_code`` + ``.json()``/``.text``) et un simple dict déjà décodé
     (ce que rend un client de test minimal). Un statut != 200 (429 compris),
     un corps illisible ou une exception réseau rendent ``None`` — jamais une
     exception vers l'appelant.
+
+    Le STATUT est rendu parce que ``run`` en a besoin pour distinguer « le flux
+    est tombé » (une anomalie) de « TradingView ne connaît pas ce symbole »
+    (:data:`UNKNOWN_SYMBOL_STATUS`, qui n'en est pas une). Une exception réseau
+    rend ``0`` : il n'y a pas eu de statut du tout.
     """
     try:
         response = client.get(url, headers=dict(HEADERS))
     except Exception as exc:      # noqa: BLE001 — réseau/TLS/HTTP
         logger.warning("paper tvnews: appel échoué (%s)", type(exc).__name__)
-        return None
+        return None, 0
     if isinstance(response, (dict, list)):
-        return response
+        return response, 200
     status = getattr(response, "status_code", 200)
     try:
         status = int(status)
     except (TypeError, ValueError):
         status = 200
     if status != 200:
-        logger.warning("paper tvnews: statut %s", status)
-        return None
+        # Un symbole inconnu n'a rien d'alarmant une fois qu'il est traité
+        # (place mémorisée ou mis au placard) : il ne mérite pas un warning
+        # par cycle dans le journal.
+        if status == UNKNOWN_SYMBOL_STATUS:
+            logger.debug("paper tvnews: symbole refusé (%s)", url)
+        else:
+            logger.warning("paper tvnews: statut %s", status)
+        return None, status
     getter = getattr(response, "json", None)
     if callable(getter):
         try:
-            return getter()
+            return getter(), status
         except Exception:         # noqa: BLE001 — JSON cassé
-            return None
+            return None, status
     text = getattr(response, "text", None)
     if isinstance(text, str):
         try:
-            return json.loads(text)
+            return json.loads(text), status
         except ValueError:
-            return None
-    return None
+            return None, status
+    return None, status
+
+
+def _get_json(client: Any, url: str) -> Optional[Any]:
+    """Le JSON seul (``None`` en panne) — pour qui se moque du statut."""
+    return _get_json_status(client, url)[0]
 
 
 def _fetch_items_raw(client: Any, tv_symbol: str,
-                     lang: str = "en") -> Tuple[List[Dict[str, Any]], bool]:
-    """``(items, transport_ok)``.
+                     lang: str = "en") -> Tuple[List[Dict[str, Any]], bool, int]:
+    """``(items, transport_ok, statut)``.
 
-    Le second membre distingue « le flux n'a rien de neuf » de « le flux n'a
+    ``transport_ok`` distingue « le flux n'a rien de neuf » de « le flux n'a
     pas répondu » : sans lui, ``run`` compterait une anomalie chaque fois qu'un
     titre discret ne fait parler de lui — et le drapeau d'erreur de l'état ne
-    voudrait plus rien dire.
+    voudrait plus rien dire. Le ``statut`` va plus loin : il sépare la panne du
+    symbole INCONNU (:data:`UNKNOWN_SYMBOL_STATUS`).
     """
     url = NEWS_URL.format(lang=_text(lang) or "en", tv_symbol=_text(tv_symbol))
-    payload = _get_json(client, url)
+    payload, status = _get_json_status(client, url)
     if payload is None:
-        return [], False
-    return parse_items(payload, tv_symbol), True
+        return [], False, status
+    return parse_items(payload, tv_symbol), True, status
 
 
 def fetch_items(client: Any, tv_symbol: str, lang: str = "en") -> List[Dict[str, Any]]:
@@ -602,6 +722,88 @@ def fetch_story(client: Any, item_id: str, lang: str = "en") -> Optional[str]:
 # Le cycle
 # --------------------------------------------------------------------------- #
 
+def _default_state() -> Dict[str, Any]:
+    """Le sous-état ``tv_news`` tel qu'il est sur le disque (copie).
+
+    Import PARESSEUX de ``newswatch`` dans un ``try``, comme ``tv_to_yahoo``
+    fait pour ``brief`` : ce module doit rester lisible même si la veille n'est
+    pas là (tests unitaires, import circulaire).
+    """
+    try:
+        from backend.bots.paper import newswatch
+        return newswatch.tv_news_state()
+    except Exception:             # noqa: BLE001 — veille absente ou cassée
+        return {}
+
+
+def _cache_of(state: Any) -> Dict[str, Any]:
+    if not isinstance(state, dict):
+        return {}
+    cache = state.get("items_by_symbol")
+    return cache if isinstance(cache, dict) else {}
+
+
+def cached_items(tv_symbol: Any, state: Any = None,
+                 limit: int = 10) -> List[Dict[str, Any]]:
+    """Les dernières dépêches que TradingView affiche pour CE symbole.
+
+    ``state`` : le sous-état ``tv_news`` (injectable) ; à défaut celui du
+    fichier global de ``newswatch``. ``[]`` si le symbole n'a jamais été
+    scanné — et **jamais** d'exception : la fiche du titre ne tombe pas parce
+    qu'un cache manque.
+
+    Ce que cette fonction rend N'EST PAS filtré par ``seen_ids``. C'est tout
+    son intérêt : la dédup globale sert les alertes, elle a fait disparaître
+    de la fiche une dépêche que TradingView montrait encore (11/09).
+
+    Le symbole est cherché tel quel, puis par le DÉTOUR YAHOO
+    (``BINANCE:BTCUSDT.P`` -> ``BTC-USD`` -> ``BITSTAMP:BTCUSD``) : l'extension
+    affiche la place que Massii a choisie, le cycle range sous celle de la
+    table inverse, et les deux n'ont aucune raison d'être la même.
+    """
+    try:
+        cap = max(0, int(limit))
+    except (TypeError, ValueError):
+        cap = 10
+    try:
+        cache = _cache_of(state if state is not None else _default_state())
+        if not cache:
+            return []
+        wanted = _text(tv_symbol).upper()
+        keys = [wanted] if wanted else []
+        alias = yahoo_to_tv(tv_to_yahoo(wanted)) if wanted else None
+        if alias and alias not in keys:
+            keys.append(alias)
+        for key in keys:
+            entry = cache.get(key)
+            rows = entry.get("items") if isinstance(entry, dict) else None
+            if isinstance(rows, list) and rows:
+                return [row for row in rows if isinstance(row, dict)][:cap]
+    except Exception:             # noqa: BLE001 — un cache n'est jamais fatal
+        logger.debug("paper tvnews: cache illisible")
+    return []
+
+
+def _remember_items(state: Dict[str, Any], tv_symbol: str,
+                    fresh: List[Dict[str, Any]], now_dt: datetime) -> None:
+    """Range la lecture fraîche d'un symbole dans le cache, EN PLACE."""
+    cache = state.get("items_by_symbol")
+    if not isinstance(cache, dict):
+        cache = {}
+        state["items_by_symbol"] = cache
+    entry = cache.get(tv_symbol)
+    existing = entry.get("items") if isinstance(entry, dict) else None
+    cache[tv_symbol] = {"fetched_at": now_dt.isoformat(),
+                        "items": merge_symbol_items(existing, fresh)}
+    if len(cache) > SYMBOL_CACHE_MAX:
+        # On jette les symboles les plus anciennement lus : ce sont ceux que
+        # plus personne ne regarde.
+        stale = sorted(cache.items(),
+                       key=lambda kv: _text((kv[1] or {}).get("fetched_at")))
+        for key, _ in stale[:len(cache) - SYMBOL_CACHE_MAX]:
+            cache.pop(key, None)
+
+
 def _now_dt(now: Any = None) -> datetime:
     if isinstance(now, datetime):
         return now if now.tzinfo else now.replace(tzinfo=timezone.utc)
@@ -621,6 +823,47 @@ def _seconds_since(state_iso: Any, now_dt: datetime) -> Optional[float]:
         last = last.replace(tzinfo=timezone.utc)
     delta = (now_dt - last).total_seconds()
     return delta if delta >= 0 else None      # horloge en arrière -> on réessaie
+
+
+def _is_us_fallback(symbol: str, tv_symbol: str) -> bool:
+    """Vrai si ``tv_symbol`` est le PARI ``NASDAQ:`` de :func:`yahoo_to_tv`.
+
+    Un symbole de la table inverse (``BTC-USD`` -> ``BITSTAMP:BTCUSD``) n'est
+    pas un pari : lui chercher une place américaine n'aurait aucun sens.
+    """
+    return (symbol not in _YAHOO_TO_TV
+            and tv_symbol == US_FALLBACK_EXCHANGES[0] + ":" + symbol)
+
+
+def _alt_us_symbols(symbol: str, tv_symbol: str) -> List[str]:
+    """Les autres places américaines à essayer pour ce ticker, ou ``[]``."""
+    if not _is_us_fallback(symbol, tv_symbol):
+        return []
+    return [exchange + ":" + symbol for exchange in US_FALLBACK_EXCHANGES
+            if exchange + ":" + symbol != tv_symbol]
+
+
+def _tv_for(symbol: str, state: Dict[str, Any]) -> Optional[str]:
+    """Le ``EXCHANGE:TICKER`` à interroger : la place MÉMORISÉE d'abord."""
+    memo = state.get("exchange_of")
+    if isinstance(memo, dict):
+        known = _text(memo.get(symbol)).upper()
+        if known:
+            return known
+    return yahoo_to_tv(symbol)
+
+
+def _is_unknown(state: Dict[str, Any], symbol: str, now_dt: datetime) -> bool:
+    """Ce symbole est-il au placard ? (Et l'en sortir quand le délai est
+    passé, ou quand l'entrée est illisible.)"""
+    memo = state.get("unknown")
+    if not isinstance(memo, dict):
+        return False
+    elapsed = _seconds_since(memo.get(symbol), now_dt)
+    if elapsed is not None and elapsed < UNKNOWN_TTL_S:
+        return True
+    memo.pop(symbol, None)
+    return False
 
 
 def _targets(username_symbols: Any, focus: Any) -> List[Tuple[str, Optional[str]]]:
@@ -673,12 +916,21 @@ def run(username_symbols: Any = None,
     place ::
 
         {"last_fetch": {tv_symbol: iso}, "seen_ids": [...],
-         "errors": int, "last_error": iso|None, "requests": int}
+         "errors": int, "last_error": iso|None, "requests": int,
+         "items_by_symbol": {tv_symbol: {"fetched_at": iso, "items": [...]}},
+         "exchange_of": {symbole_yahoo: "EXCHANGE:TICKER"},
+         "unknown": {symbole_yahoo: iso}}
 
     Trois garde-fous, dans cet ordre : la **cadence** (un symbole n'est
     réinterrogé qu'après ``MIN_INTERVAL_S``), le **budget** (``budget``
     requêtes au plus par cycle, corps compris), la **déduplication**
     (``seen_ids``, fenêtre glissante ``SEEN_MAX``).
+
+    ``items_by_symbol`` est le CACHE lu par :func:`cached_items` (donc par la
+    fiche du titre) : il se remplit à chaque lecture réussie, **même quand
+    aucun item n'est neuf**. Les événements rendus, eux, restent filtrés par
+    ``seen_ids`` — les deux répondent à deux questions différentes (« qu'est-ce
+    qui vient d'arriver ? » contre « qu'est-ce que TradingView affiche ? »).
 
     ``emit`` (injecté, défaut ``paper_ws.emit``) reçoit les news des symboles en
     FOCUS : c'est le chemin « ≤ 2 s » de la spec §7. Best-effort strict — une
@@ -709,7 +961,9 @@ def run(username_symbols: Any = None,
     focus_of: Dict[str, str] = {}
 
     for symbol, focus_user in _targets(username_symbols, focus):
-        tv_symbol = yahoo_to_tv(symbol)
+        if _is_unknown(state, symbol, now_dt):
+            continue
+        tv_symbol = _tv_for(symbol, state)
         if not tv_symbol:
             continue
         elapsed = _seconds_since(last_fetch.get(tv_symbol), now_dt)
@@ -717,14 +971,47 @@ def run(username_symbols: Any = None,
             continue
         if used >= remaining:
             break
+
+        alternatives = _alt_us_symbols(symbol, tv_symbol)
+        collected: List[Dict[str, Any]] = []   # pour le CACHE (tout, pas juste le neuf)
+        fetched_ok = False
+        unknown_symbol = False
+        cascade_cut_short = False
+
         for lang in lang_list:
             if used >= remaining:
                 break
             used += 1
             if client is None:
-                items, transport_ok = [], False
+                items, transport_ok, status = [], False, 0
             else:
-                items, transport_ok = _fetch_items_raw(client, tv_symbol, lang)
+                items, transport_ok, status = _fetch_items_raw(client, tv_symbol, lang)
+                if status == UNKNOWN_SYMBOL_STATUS and alternatives:
+                    # Le pari ``NASDAQ:`` est tombé à côté : on essaie les
+                    # autres places américaines UNE fois, et on retient celle
+                    # qui répond pour tous les cycles suivants.
+                    for alt in alternatives:
+                        if used >= remaining:
+                            cascade_cut_short = True
+                            break
+                        used += 1
+                        items, transport_ok, status = _fetch_items_raw(client, alt, lang)
+                        if status != UNKNOWN_SYMBOL_STATUS:
+                            tv_symbol = alt
+                            memo = state.setdefault("exchange_of", {})
+                            if isinstance(memo, dict):
+                                memo[symbol] = alt
+                            break
+                    alternatives = []          # une seule cascade par cycle
+            if status == UNKNOWN_SYMBOL_STATUS:
+                # Symbole que TradingView ne connaît pas : ce n'est PAS une
+                # panne, c'est notre table qui a parié de travers.
+                #
+                # SAUF si le budget a coupé la cascade : condamner un symbole
+                # pour 24 h sans avoir essayé les autres places, ce serait
+                # punir un titre valide parce que le cycle était chargé.
+                unknown_symbol = not cascade_cut_short
+                break
             if not transport_ok:
                 # 429, 5xx, JSON cassé, réseau coupé : on laisse une TRACE
                 # dans l'état (§7 de la spec) sans jamais lever. Un flux
@@ -732,7 +1019,11 @@ def run(username_symbols: Any = None,
                 state["errors"] = int(state.get("errors") or 0) + 1
                 state["last_error"] = now_dt.isoformat()
                 continue
+            fetched_ok = True
             for item in items:
+                row = cache_row(item, lang)
+                if row is not None:
+                    collected.append(row)
                 marker = _text(item.get("id")) or _text(item.get("url"))
                 if not marker or marker in seen_set:
                     continue
@@ -741,6 +1032,16 @@ def run(username_symbols: Any = None,
                 fresh_items.append(item)
                 if focus_user:
                     focus_of[marker] = focus_user
+
+        if unknown_symbol:
+            memo = state.setdefault("unknown", {})
+            if isinstance(memo, dict):
+                memo[symbol] = now_dt.isoformat()
+            continue                           # ni cache, ni cadence : au placard
+        if fetched_ok:
+            # Le CACHE se remplit même quand aucun item n'est neuf : c'est tout
+            # l'objet du 11/09 — la fiche montre le flux, pas la nouveauté.
+            _remember_items(state, tv_symbol, collected, now_dt)
         last_fetch[tv_symbol] = now_dt.isoformat()
 
     # Corps de dépêche — après la collecte, pour que le budget serve d'abord à

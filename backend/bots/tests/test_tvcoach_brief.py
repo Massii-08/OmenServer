@@ -204,6 +204,9 @@ def _deps(**overrides):
         "candles_1m": lambda symbol: _candles_1m(),
         "candles_1d": lambda symbol: _candles_1d(),
         "fees_profile": lambda username: "kraken_spot",
+        # Le cache TradingView du titre (``tvnews.cached_items``) : vide par
+        # défaut, les tests qui s'y intéressent l'injectent.
+        "tv_items": lambda tv_symbol: [],
         # Le taux réellement relevé dans le livre de scalps : 1 USD = 0,8129 CHF.
         "fx": lambda currency: 0.8129,
     }
@@ -333,9 +336,100 @@ def test_les_nouvelles_sont_filtrees_sur_le_titre_et_mises_en_forme():
     out = _build()
     assert len(out["news"]) == 1
     item = out["news"][0]
-    assert set(item) == {"ts", "title", "source", "via", "sentiment", "url"}
+    assert set(item) == {"ts", "title", "source", "via", "sentiment", "url",
+                         "lang"}
     assert item["source"] == "reuters"
     assert item["via"] == "tradingview"
+
+
+# --------------------------------------------------------------------------- #
+# Le cache TradingView du titre (11/09)
+#
+# TradingView affichait une dépêche française de 15 min sur BTC-USD, le coach
+# « Aucune dépêche récente » : l'item avait été vu UNE fois, pendant que Massii
+# regardait UKOIL, et la dédup globale l'a interdit de séjour à jamais. La
+# fiche lit donc désormais ce que le flux AFFICHE, pas seulement ce qui est
+# neuf pour le compte.
+# --------------------------------------------------------------------------- #
+
+def _tv_row(ident, published, **kw):
+    row = {"id": ident, "title": "Titre %s" % ident, "published": published,
+           "provider": "cointelegraph", "url": "https://tv.test/%s" % ident,
+           "lang": "fr", "symbol": "BTC-USD", "tv_symbol": "BITSTAMP:BTCUSD",
+           "urgency": 2}
+    row.update(kw)
+    return row
+
+
+def test_le_cache_tradingview_entre_dans_la_fiche():
+    cache = [_tv_row("neuf", "2026-09-09T13:45:00+00:00",
+                     title="Les acheteurs de Bitcoin doutent")]
+    out = _build(tv_items=lambda tv_symbol: cache)
+    assert out["news"][0]["title"] == "Les acheteurs de Bitcoin doutent"
+    assert out["news"][0]["source"] == "cointelegraph"
+    assert out["news"][0]["via"] == "tradingview"
+    assert out["news"][0]["lang"] == "fr"
+    assert out["news"][0]["sentiment"] is None
+    assert out["degraded"] == []
+
+
+def test_le_cache_est_demande_pour_le_symbole_tradingview_affiche():
+    vus = []
+    _build(tv_items=lambda tv_symbol: vus.append(tv_symbol) or [])
+    assert vus == ["BITSTAMP:BTCUSD"]
+
+
+def test_les_nouvelles_sont_triees_du_plus_recent_au_plus_ancien():
+    cache = [_tv_row("tv", "2026-09-09T13:45:00+00:00")]
+    out = _build(tv_items=lambda tv_symbol: cache)
+    # L'événement du compte date de 13:00, la dépêche du cache de 13:45.
+    assert [n["title"] for n in out["news"]] == ["Titre tv", "Bitcoin monte"]
+
+
+def test_une_depeche_presente_des_deux_cotes_ne_compte_qu_une_fois():
+    """Dédup par URL, puis par titre normalisé : le même papier arrivé par le
+    carnet ET par le cache ne doit pas faire deux lignes."""
+    par_url = [_tv_row("x", "2026-09-09T14:00:00+00:00",
+                       title="Un autre titre", url="https://example.test/1")]
+    assert len(_build(tv_items=lambda tv: par_url)["news"]) == 1
+
+    par_titre = [_tv_row("y", "2026-09-09T14:00:00+00:00",
+                         title="  BITCOIN   MONTE  ", url="")]
+    out = _build(tv_items=lambda tv: par_titre)
+    assert len(out["news"]) == 1
+    # L'événement du COMPTE gagne : c'est lui qui porte le sentiment.
+    assert out["news"][0]["title"] == "Bitcoin monte"
+    assert out["news"][0]["sentiment"] == "pos"
+
+
+def test_la_fiche_reste_bornee_a_dix_depeches_cache_compris():
+    cache = [_tv_row("i%02d" % i, "2026-09-09T14:%02d:00+00:00" % i)
+             for i in range(20)]
+    out = _build(tv_items=lambda tv_symbol: cache)
+    assert len(out["news"]) == brief.NEWS_LIMIT
+
+
+def test_un_cache_en_panne_laisse_la_fiche_debout():
+    def boom(tv_symbol):
+        raise RuntimeError("état illisible")
+    out = _build(tv_items=boom)
+    assert out["degraded"] == ["tv_items"]
+    assert [n["title"] for n in out["news"]] == ["Bitcoin monte"]
+    assert out["quote"]["price"] == 78760.1
+
+
+@pytest.mark.parametrize("garbage", [None, "pas une liste", 42, [{"sans": 1}]])
+def test_un_cache_absurde_ne_casse_rien(garbage):
+    out = _build(tv_items=lambda tv_symbol: garbage)
+    assert [n["title"] for n in out["news"]] == ["Bitcoin monte"]
+    assert out["degraded"] == []
+
+
+def test_news_of_fusionne_sans_evenement_de_compte():
+    """Le cas VÉCU : le carnet du compte est vide, le cache ne l'est pas."""
+    rows = brief._news_of([], "BTC-USD", "BITSTAMP:BTCUSD",
+                          [_tv_row("a", "2026-09-09T13:45:00+00:00")])
+    assert [r["title"] for r in rows] == ["Titre a"]
 
 
 def test_une_depeche_tradingview_du_symbole_tv_est_gardee():

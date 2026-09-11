@@ -568,6 +568,316 @@ def test_un_push_en_panne_ne_fait_perdre_aucun_evenement():
 
 
 # =========================================================================== #
+#  tvnews — le CACHE par symbole (« ce que TradingView montre »)
+#
+#  Vécu le 11/09 : TradingView affichait une dépêche française de 15 min sur
+#  BTC-USD, le coach « Aucune dépêche récente ». L'item était bien dans
+#  ``seen_ids`` — vu une fois pendant que Massii regardait UKOIL, donc jamais
+#  distribué à son compte, et jamais réémis ensuite. La dédup globale est faite
+#  pour les ALERTES ; la fiche, elle, doit montrer l'état du flux.
+# =========================================================================== #
+
+def _row(ident, published, **kw):
+    row = {"id": ident, "title": "Titre %s" % ident, "published": published,
+           "provider": "reuters", "url": "https://tv.test/%s" % ident,
+           "lang": "en", "symbol": "BTC-USD", "tv_symbol": "BITSTAMP:BTCUSD",
+           "urgency": 2}
+    row.update(kw)
+    return row
+
+
+def test_merge_symbol_items_trie_du_plus_recent_au_plus_ancien():
+    merged = tvnews.merge_symbol_items(
+        [_row("vieux", "2026-09-11T08:00:00+00:00")],
+        [_row("neuf", "2026-09-11T10:00:00+00:00"),
+         _row("moyen", "2026-09-11T09:00:00+00:00")])
+    assert [r["id"] for r in merged] == ["neuf", "moyen", "vieux"]
+
+
+def test_merge_symbol_items_dedoublonne_par_id_et_garde_le_frais():
+    merged = tvnews.merge_symbol_items(
+        [_row("a", "2026-09-11T08:00:00+00:00", title="ancien titre")],
+        [_row("a", "2026-09-11T08:00:00+00:00", title="titre corrigé")])
+    assert len(merged) == 1
+    assert merged[0]["title"] == "titre corrigé"
+
+
+def test_merge_symbol_items_dedoublonne_les_deux_langues():
+    """Le même flux en ``en`` et en ``fr`` rend le même ``id`` : une seule
+    ligne, celle de la dernière langue lue."""
+    fresh = [_row("x", "2026-09-11T10:00:00+00:00", lang="en"),
+             _row("x", "2026-09-11T10:00:00+00:00", lang="fr",
+                  title="Titre français")]
+    merged = tvnews.merge_symbol_items([], fresh)
+    assert len(merged) == 1 and merged[0]["lang"] == "fr"
+
+
+def test_merge_symbol_items_borne_la_liste():
+    fresh = [_row("i%02d" % i, "2026-09-11T%02d:00:00+00:00" % i)
+             for i in range(20)]
+    merged = tvnews.merge_symbol_items([], fresh)
+    assert len(merged) == tvnews.SYMBOL_ITEMS_MAX
+    assert merged[0]["id"] == "i19"                  # les plus RÉCENTS
+    assert tvnews.merge_symbol_items([], fresh, limit=3) == merged[:3]
+
+
+@pytest.mark.parametrize("garbage", [None, "pas une liste", 42, {"a": 1}])
+def test_merge_symbol_items_avale_n_importe_quoi(garbage):
+    assert tvnews.merge_symbol_items(garbage, garbage) == []
+
+
+def test_merge_symbol_items_jette_les_lignes_sans_date_ni_titre():
+    fresh = [{"id": "sans-date", "title": "Titre"},
+             {"id": "sans-titre", "published": "2026-09-11T10:00:00+00:00"},
+             "pas un dict",
+             _row("bon", "2026-09-11T10:00:00+00:00")]
+    assert [r["id"] for r in tvnews.merge_symbol_items([], fresh)] == ["bon"]
+
+
+def test_le_cycle_remplit_le_cache_meme_quand_tout_est_deja_vu():
+    """LE cas vécu : les ids sont tous dans ``seen_ids``, aucun événement ne
+    sort — et la fiche doit quand même savoir ce que TradingView affiche."""
+    client = _Client(_Response(_news_payload("a", "b")))
+    state = {"seen_ids": ["a", "b"]}
+    events = tvnews.run({"bob": ["AAPL"]}, None, client, state, NOW,
+                        langs=("en",))
+    assert events == []                              # rien de neuf : normal
+    cache = state["items_by_symbol"]["NASDAQ:AAPL"]
+    assert cache["fetched_at"] == NOW.isoformat()
+    assert [r["id"] for r in cache["items"]] == ["a", "b"]
+    assert cache["items"][0]["symbol"] == "AAPL"
+    assert cache["items"][0]["lang"] == "en"
+    assert set(cache["items"][0]) == {"id", "title", "published", "provider",
+                                      "url", "lang", "symbol", "tv_symbol",
+                                      "urgency"}
+
+
+def test_le_cache_fusionne_les_deux_langues_et_survit_au_cycle_suivant():
+    client = _Client(_Response(_news_payload("a")))
+    state = {}
+    tvnews.run({"bob": ["AAPL"]}, None, client, state, NOW)
+    assert len(state["items_by_symbol"]["NASDAQ:AAPL"]["items"]) == 1
+
+    client2 = _Client(_Response(_news_payload("b")))
+    tvnews.run({"bob": ["AAPL"]}, None, client2, state,
+               NOW + timedelta(seconds=61), langs=("en",))
+    ids = [r["id"] for r in state["items_by_symbol"]["NASDAQ:AAPL"]["items"]]
+    assert sorted(ids) == ["a", "b"]                 # l'ancien n'est pas perdu
+
+
+def test_un_flux_en_panne_ne_vide_pas_le_cache():
+    state = {"items_by_symbol": {
+        "NASDAQ:AAPL": {"fetched_at": "2026-09-11T09:00:00+00:00",
+                        "items": [_row("a", "2026-09-11T09:00:00+00:00")]}}}
+    client = _Client(_Response({"items": []}, status_code=500))
+    tvnews.run({"bob": ["AAPL"]}, None, client, state, NOW, langs=("en",))
+    cache = state["items_by_symbol"]["NASDAQ:AAPL"]
+    assert [r["id"] for r in cache["items"]] == ["a"]
+    assert cache["fetched_at"] == "2026-09-11T09:00:00+00:00"
+
+
+def test_cached_items_lit_un_etat_injecte():
+    state = {"items_by_symbol": {"BITSTAMP:BTCUSD": {
+        "fetched_at": NOW.isoformat(),
+        "items": [_row("a", "2026-09-11T10:00:00+00:00"),
+                  _row("b", "2026-09-11T09:00:00+00:00")]}}}
+    got = tvnews.cached_items("BITSTAMP:BTCUSD", state=state)
+    assert [r["id"] for r in got] == ["a", "b"]
+    assert tvnews.cached_items("BITSTAMP:BTCUSD", state=state, limit=1) == got[:1]
+
+
+def test_cached_items_rend_une_liste_vide_quand_le_symbole_est_absent():
+    for state in ({}, {"items_by_symbol": {}}, {"items_by_symbol": "cassé"},
+                  None):
+        assert tvnews.cached_items("SIX:NESN", state=state or {}) == []
+
+
+def test_cached_items_retrouve_le_symbole_par_le_detour_yahoo():
+    """L'extension affiche ``BINANCE:BTCUSDT.P``, le cycle a rangé sous
+    ``BITSTAMP:BTCUSD`` (la place de la table inverse) : le pont Yahoo fait le
+    raccord, sinon la fiche du bitcoin resterait vide à jamais."""
+    state = {"items_by_symbol": {"BITSTAMP:BTCUSD": {
+        "fetched_at": NOW.isoformat(),
+        "items": [_row("a", "2026-09-11T10:00:00+00:00")]}}}
+    assert len(tvnews.cached_items("BINANCE:BTCUSDT.P", state=state)) == 1
+    assert len(tvnews.cached_items("bitstamp:btcusd", state=state)) == 1
+
+
+def test_cached_items_ne_filtre_jamais_par_les_ids_deja_vus():
+    """Le cache n'est pas « ce qui est neuf », c'est « ce qui est affiché »."""
+    state = {"seen_ids": ["a"], "items_by_symbol": {"BITSTAMP:BTCUSD": {
+        "fetched_at": NOW.isoformat(),
+        "items": [_row("a", "2026-09-11T10:00:00+00:00")]}}}
+    assert len(tvnews.cached_items("BITSTAMP:BTCUSD", state=state)) == 1
+
+
+def test_cached_items_ne_leve_jamais(monkeypatch):
+    monkeypatch.setattr(tvnews, "_default_state",
+                        lambda: (_ for _ in ()).throw(RuntimeError("disque")))
+    assert tvnews.cached_items("BITSTAMP:BTCUSD") == []
+
+
+def test_le_sous_etat_tv_news_est_lisible_depuis_newswatch(tmp_path, monkeypatch):
+    monkeypatch.setattr(store, "DATA_DIR", tmp_path / "paper_trading")
+    assert newswatch.tv_news_state() == {}            # fichier absent
+    global_state = newswatch._load_global_seen()
+    global_state["tv_news"] = {"items_by_symbol": {"SIX:NESN": {
+        "fetched_at": NOW.isoformat(), "items": [_row("a", NOW.isoformat())]}}}
+    newswatch._save_global_seen(global_state)
+
+    assert "SIX:NESN" in newswatch.tv_news_state()["items_by_symbol"]
+    assert len(tvnews.cached_items("SIX:NESN")) == 1  # sans état injecté
+
+    # LECTURE SEULE : ce qu'on abîme dans la copie ne touche pas le fichier.
+    newswatch.tv_news_state()["items_by_symbol"].clear()
+    assert "SIX:NESN" in newswatch.tv_news_state()["items_by_symbol"]
+
+
+def test_la_chaine_complete_du_11_09_de_la_veille_a_la_fiche(tmp_path,
+                                                             monkeypatch):
+    """Le chemin ENTIER, celui qui était cassé : le volet de veille écrit le
+    cache dans l'état global, le fichier le garde, la fiche du titre le relit —
+    alors même que l'item a déjà été vu et n'ouvre AUCUN événement.
+    """
+    from backend.bots.paper import brief, focus as focus_mod
+
+    monkeypatch.setattr(store, "DATA_DIR", tmp_path / "paper_trading")
+    (tmp_path / "paper_trading").mkdir(parents=True, exist_ok=True)
+    focus_mod.state_path().write_text("{}", encoding="utf-8")   # le GATE du volet
+
+    payload = {"items": [
+        {"id": "cointelegraph:4e78182d1b858:0",
+         "title": "Les acheteurs de Bitcoin doutent d’un plancher",
+         "published": 1788976046, "urgency": 2,
+         "storyPath": "/news/cointelegraph:4e78182d1b858:0/",
+         "provider": {"id": "cointelegraph"},
+         "relatedSymbols": [{"symbol": "BITSTAMP:BTCUSD"}]}]}
+    client = _Client(_Response(payload))
+
+    gov_state = newswatch._load_global_seen()
+    # L'item est DÉJÀ vu (il l'a été pendant que Massii regardait UKOIL) :
+    # aucun événement ne sortira, et c'est justement le cas à couvrir.
+    gov_state["tv_news"] = {"seen_ids": ["cointelegraph:4e78182d1b858:0"]}
+    portfolios = [("Massii08", {"positions": [{"symbol": "BTC-USD"}]})]
+    counters = {"fetched": 0, "errors": 0}
+
+    by_user = newswatch._run_tvnews_volet(gov_state, portfolios, NOW, counters,
+                                          focus_map={}, client=client)
+    assert by_user == {}                       # rien de neuf : normal
+    newswatch._save_global_seen(gov_state)
+
+    # ... et pourtant la fiche du titre sait quoi montrer.
+    out = brief.build("Massii08", "BTC-USD", "BITSTAMP:BTCUSD",
+                      deps={"quote": lambda s: None, "portfolio": lambda u: {},
+                            "coach_positions": lambda: [],
+                            "ideas_for_symbol": lambda u, s: [],
+                            "hypotheses": lambda s: [], "news": lambda u: [],
+                            "calendar": lambda: [], "whales": lambda s: [],
+                            "mood": lambda: None, "btc": lambda: None,
+                            "alerts": lambda u: [],
+                            "candles_1m": lambda s: [],
+                            "candles_1d": lambda s: [],
+                            "fees_profile": lambda u: "kraken_spot",
+                            "fx": lambda c: 1.0},
+                      now=NOW.isoformat())
+    assert [n["title"] for n in out["news"]] == [
+        "Les acheteurs de Bitcoin doutent d’un plancher"]
+    assert out["news"][0]["via"] == "tradingview"
+    assert "tv_items" not in out["degraded"]
+
+
+# =========================================================================== #
+#  tvnews — 422 : « TradingView ne connaît pas ce symbole », pas une panne
+#
+#  Vécu : ``yahoo_to_tv`` préfixe tout ticker américain nu en ``NASDAQ:``, or
+#  Suncor et Everest sont au NYSE -> 422 à chaque cycle, 4 par passage, 228
+#  « anomalies » au compteur et autant de requêtes du budget brûlées.
+# =========================================================================== #
+
+def test_un_422_n_est_pas_compte_comme_une_anomalie():
+    client = _Client(_Response({"items": []}, status_code=422))
+    state = {}
+    assert tvnews.run({"bob": ["SU"]}, None, client, state, NOW,
+                      langs=("en",)) == []
+    assert int(state.get("errors") or 0) == 0
+    assert state.get("last_error") is None
+
+
+def test_un_422_sur_le_repli_nasdaq_essaie_les_autres_places_americaines():
+    client = _Client(_Response({"items": []}, status_code=422))
+    client.route("symbol:NYSE:SU", _Response(_news_payload("su-1")))
+    state = {}
+    events = tvnews.run({"bob": ["SU"]}, None, client, state, NOW,
+                        langs=("en",))
+    assert [e["title"] for e in events] == ["Titre su-1"]
+    assert state["exchange_of"]["SU"] == "NYSE:SU"
+    assert int(state.get("errors") or 0) == 0
+
+
+def test_la_place_trouvee_est_reutilisee_au_cycle_suivant():
+    client = _Client(_Response({"items": []}, status_code=422))
+    client.route("symbol:NYSE:SU", _Response(_news_payload("su-1")))
+    state = {}
+    tvnews.run({"bob": ["SU"]}, None, client, state, NOW, langs=("en",))
+
+    client2 = _Client(_Response(_news_payload("su-2")))
+    tvnews.run({"bob": ["SU"]}, None, client2, state,
+               NOW + timedelta(seconds=61), langs=("en",))
+    assert len(client2.calls) == 1                   # plus de cascade
+    assert "symbol:NYSE:SU" in client2.urls()[0]
+
+
+def test_un_symbole_qu_aucune_place_ne_connait_est_ignore_vingt_quatre_heures():
+    client = _Client(_Response({"items": []}, status_code=422))
+    state = {}
+    tvnews.run({"bob": ["ZZZZ"]}, None, client, state, NOW, langs=("en",))
+    assert state["unknown"]["ZZZZ"] == NOW.isoformat()
+    assert len(client.calls) == len(tvnews.US_FALLBACK_EXCHANGES)
+
+    client2 = _Client(_Response({"items": []}, status_code=422))
+    tvnews.run({"bob": ["ZZZZ"]}, None, client2, state,
+               NOW + timedelta(hours=23), langs=("en",))
+    assert client2.calls == []                       # pas une requête de plus
+
+    client3 = _Client(_Response(_news_payload("enfin")))
+    tvnews.run({"bob": ["ZZZZ"]}, None, client3, state,
+               NOW + timedelta(hours=25), langs=("en",))
+    assert client3.calls                             # ... et on réessaie après
+
+
+def test_un_422_sur_un_symbole_de_la_table_n_essaie_aucune_autre_place():
+    """``BTC-USD`` vient de la table inverse, pas du repli ``NASDAQ:`` : lui
+    chercher une place américaine n'aurait aucun sens."""
+    client = _Client(_Response({"items": []}, status_code=422))
+    state = {}
+    tvnews.run({"bob": ["BTC-USD"]}, None, client, state, NOW, langs=("en",))
+    assert len(client.calls) == 1
+    assert state["unknown"]["BTC-USD"] == NOW.isoformat()
+
+
+def test_un_budget_epuise_ne_condamne_pas_un_symbole_pour_la_journee():
+    """La cascade coûte des requêtes : si le budget la coupe avant d'avoir
+    essayé les autres places, on ne met PAS le symbole au placard — sinon un
+    cycle chargé blackboulerait un titre valide pendant 24 h."""
+    client = _Client(_Response({"items": []}, status_code=422))
+    state = {}
+    tvnews.run({"bob": ["SU"]}, None, client, state, NOW, budget=1,
+               langs=("en",))
+    assert len(client.calls) == 1
+    assert "SU" not in state.get("unknown", {})
+    assert int(state.get("errors") or 0) == 0
+
+
+def test_un_500_reste_une_anomalie():
+    """Le pendant : seul le 422 est requalifié, une vraie panne compte."""
+    client = _Client(_Response({"items": []}, status_code=500))
+    state = {}
+    tvnews.run({"bob": ["AAPL"]}, None, client, state, NOW, langs=("en",))
+    assert state["errors"] == 1
+    assert "AAPL" not in state.get("unknown", {})
+
+
+# =========================================================================== #
 #  tvcalendar — parseur sur la fixture RÉELLE
 # =========================================================================== #
 
