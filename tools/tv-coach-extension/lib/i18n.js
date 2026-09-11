@@ -119,6 +119,8 @@
       'scalp.mae': 'Pire creux',
       'scalp.mfe': 'Meilleur pic',
       'scalp.no_profile': 'Choisis un profil de frais avant d’ouvrir un scalp.',
+      'scalp.size_auto': 'Taille auto : {qty} ≈ {notional} CHF · frais A/R ≈ {fees} CHF',
+      'scalp.size_none': 'Capital insuffisant pour une unité à ce prix : scalp refusé.',
 
       'guard.all_clear': 'Rien ne s’oppose à ce scalp.',
       'guard.event_risk': 'Événement macro imminent — écarte-toi.',
@@ -144,6 +146,8 @@
       'draw.bets': 'Dessiner les paris',
       'draw.clear': 'Effacer',
       'draw.done': '{n} tracés posés.',
+      'draw.no_bets': 'Le coach n’a aucun pari ouvert sur ce titre : rien à dessiner.',
+      'draw.no_levels': 'Aucun niveau à dessiner : ouvre d’abord un ticket ou une position.',
 
       'section.watchlist': 'Watchlist',
       'watchlist.import': 'Importer la watchlist',
@@ -180,6 +184,8 @@
       'review.auto_done': 'Bilan automatique après 20 minutes sans scalp.',
       'review.capped': 'Plafond de bilans atteint : rien avant demain.',
 
+      'ads.closed': 'Pubs fermées : {n}',
+
       'options.title': 'Options du coach',
       'options.fee_profile': 'Profil de frais',
       'options.fee_profile_hint': 'Sans profil, le ticket refuse d’ouvrir un scalp.',
@@ -187,11 +193,14 @@
       'options.risk_pct': 'Risque par trade (%)',
       'options.lang': 'Langue',
       'options.scalp_auto': 'Mode scalp automatique sous 5 min',
+      'options.ads_auto_close': 'Fermer automatiquement les pubs TradingView (coin bas gauche et pop-up « sans pub »)',
       'options.api_base': 'URL de l’Omen',
       'options.token': 'Token (collage manuel)',
       'options.token_hint': 'Le bouton « Connecter » sur omenserver.org le remplit tout seul. Laisse vide pour garder le jeton actuel.',
       'options.save': 'Enregistrer',
       'options.saved': 'Enregistré.',
+      'options.reload': 'Recharger l’extension',
+      'options.reload_hint': 'Après une mise à jour des fichiers de l’extension (équivaut au ↻ de chrome://extensions). Recharge ensuite l’onglet TradingView.',
       'options.choose_fee_profile': 'Choisis ton profil de frais pour commencer.',
       'options.connected': 'Extension connectée à {base}.'
     },
@@ -297,6 +306,8 @@
       'scalp.mae': 'Peggior ribasso',
       'scalp.mfe': 'Miglior rialzo',
       'scalp.no_profile': 'Scegli un profilo di commissioni prima di aprire uno scalp.',
+      'scalp.size_auto': 'Taglia automatica: {qty} ≈ {notional} CHF · commissioni A/R ≈ {fees} CHF',
+      'scalp.size_none': 'Capitale insufficiente per un’unità a questo prezzo: scalp rifiutato.',
 
       'guard.all_clear': 'Niente osta a questo scalp.',
       'guard.event_risk': 'Evento macro imminente — stai fuori.',
@@ -322,6 +333,8 @@
       'draw.bets': 'Disegna le scommesse',
       'draw.clear': 'Cancella',
       'draw.done': '{n} tracciati posati.',
+      'draw.no_bets': 'Il coach non ha scommesse aperte su questo titolo: niente da disegnare.',
+      'draw.no_levels': 'Nessun livello da disegnare: apri prima un ticket o una posizione.',
 
       'section.watchlist': 'Watchlist',
       'watchlist.import': 'Importa la watchlist',
@@ -358,6 +371,8 @@
       'review.auto_done': 'Bilancio automatico dopo 20 minuti senza scalp.',
       'review.capped': 'Limite di bilanci raggiunto: nulla prima di domani.',
 
+      'ads.closed': 'Pubblicità chiuse: {n}',
+
       'options.title': 'Opzioni del coach',
       'options.fee_profile': 'Profilo di commissioni',
       'options.fee_profile_hint': 'Senza profilo il ticket rifiuta di aprire uno scalp.',
@@ -365,11 +380,14 @@
       'options.risk_pct': 'Rischio per trade (%)',
       'options.lang': 'Lingua',
       'options.scalp_auto': 'Modo scalp automatico sotto i 5 min',
+      'options.ads_auto_close': 'Chiudi automaticamente le pubblicità di TradingView (angolo in basso a sinistra e pop-up « senza pubblicità »)',
       'options.api_base': 'URL dell’Omen',
       'options.token': 'Token (incolla manuale)',
       'options.token_hint': 'Il pulsante « Collega » su omenserver.org lo riempie da solo. Lascia vuoto per mantenere il token attuale.',
       'options.save': 'Salva',
       'options.saved': 'Salvato.',
+      'options.reload': 'Ricarica l’estensione',
+      'options.reload_hint': 'Dopo un aggiornamento dei file dell’estensione (equivale al ↻ di chrome://extensions). Poi ricarica la scheda TradingView.',
       'options.choose_fee_profile': 'Scegli il profilo di commissioni per iniziare.',
       'options.connected': 'Estensione collegata a {base}.'
     },
@@ -475,6 +493,8 @@
       'scalp.mae': 'Worst drawdown',
       'scalp.mfe': 'Best excursion',
       'scalp.no_profile': 'Pick a fee profile before opening a scalp.',
+      'scalp.size_auto': 'Auto size: {qty} ≈ {notional} CHF · round-trip fees ≈ {fees} CHF',
+      'scalp.size_none': 'Not enough capital for one unit at this price: scalp refused.',
 
       'guard.all_clear': 'Nothing stands against this scalp.',
       'guard.event_risk': 'Macro event imminent — stay out.',
@@ -500,6 +520,8 @@
       'draw.bets': 'Draw the bets',
       'draw.clear': 'Clear',
       'draw.done': '{n} drawings placed.',
+      'draw.no_bets': 'The coach has no open bet on this symbol: nothing to draw.',
+      'draw.no_levels': 'No level to draw: open a ticket or a position first.',
 
       'section.watchlist': 'Watchlist',
       'watchlist.import': 'Import watchlist',
@@ -536,6 +558,8 @@
       'review.auto_done': 'Automatic review after 20 minutes without a scalp.',
       'review.capped': 'Review cap reached: nothing before tomorrow.',
 
+      'ads.closed': 'Ads closed: {n}',
+
       'options.title': 'Coach options',
       'options.fee_profile': 'Fee profile',
       'options.fee_profile_hint': 'Without a profile the ticket refuses to open a scalp.',
@@ -543,11 +567,14 @@
       'options.risk_pct': 'Risk per trade (%)',
       'options.lang': 'Language',
       'options.scalp_auto': 'Automatic scalp mode under 5 min',
+      'options.ads_auto_close': 'Auto-close TradingView ads (bottom-left corner and the “ad-free” pop-up)',
       'options.api_base': 'Omen URL',
       'options.token': 'Token (manual paste)',
       'options.token_hint': 'The "Connect" button on omenserver.org fills it in for you. Leave empty to keep the current token.',
       'options.save': 'Save',
       'options.saved': 'Saved.',
+      'options.reload': 'Reload the extension',
+      'options.reload_hint': 'After the extension files were updated (same as ↻ in chrome://extensions). Then reload the TradingView tab.',
       'options.choose_fee_profile': 'Pick your fee profile to get started.',
       'options.connected': 'Extension connected to {base}.'
     }

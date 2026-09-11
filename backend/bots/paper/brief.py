@@ -120,7 +120,7 @@ NEWS_LIMIT = 10
 
 # Les quinze sources injectables. L'ORDRE n'a aucune importance ; le NOM, si :
 # c'est celui qui apparaît dans ``degraded``.
-DEP_NAMES = ("quote", "portfolio", "coach_positions", "ideas_for_symbol",
+DEP_NAMES = ("quote", "fx", "portfolio", "coach_positions", "ideas_for_symbol",
              "hypotheses", "news", "calendar", "whales", "mood", "btc",
              "alerts", "candles_1m", "candles_1d", "fees_profile")
 
@@ -306,6 +306,10 @@ def default_deps() -> Dict[str, Callable]:
     avec les arguments documentés dans :func:`build`."""
     return {
         "quote": lambda symbol: quotes.get_quote(symbol),
+        # Le taux devise -> CHF de la cotation. Il est caché 10 minutes chez
+        # ``quotes`` : la fiche le redemande à chaque rafraîchissement sans
+        # ressortir sur le réseau pour autant.
+        "fx": lambda currency: quotes.fx_to_chf(currency),
         "portfolio": _default_portfolio,
         "coach_positions": _default_coach_positions,
         "ideas_for_symbol": _default_ideas,
@@ -371,9 +375,41 @@ class _Sources(object):
             self._degrade(name)
             return default
 
+    def degrade(self, name: str) -> None:
+        """Note une source muette SANS l'appeler — pour le cas où elle a bien
+        répondu, mais n'a pas répondu quelque chose d'utilisable (un taux de
+        change nul, par exemple). Idempotent."""
+        self._degrade(name)
+
     def _degrade(self, name: str) -> None:
         if name not in self.degraded:
             self.degraded.append(name)
+
+
+def _fx_of(src: "_Sources", currency: Any) -> Optional[float]:
+    """Le taux devise -> CHF de la cotation, ``None`` si on ne l'a pas.
+
+    POURQUOI IL EST DANS LA FICHE. L'extension borne un scalp par le CAPITAL,
+    qui est en francs, alors que le prix est dans la devise du titre : sans le
+    taux, elle ne peut pas comparer les deux. Le 11/09 elle a ouvert « 1 BTC »
+    (62 770 CHF) sur un compte papier de 10 000 CHF, faute de savoir convertir.
+
+    Le franc — et une devise absente, qu'on ne peut pas convertir à l'aveugle —
+    valent 1.0 SANS appeler la source : pas de réseau pour un taux connu.
+
+    Une source en panne ou une réponse inutilisable (nulle, négative, pas un
+    nombre) rend ``None`` et note ``fx`` dans ``degraded`` : « champs absents =
+    null, jamais inventés » (§5.1). Côté extension, l'absence de taux vaut 1 et
+    SOUS-dimensionne — le sens sûr de l'erreur.
+    """
+    code = str(currency or "").strip().upper()
+    if not code or code == "CHF":
+        return 1.0
+    rate = _val(src.get("fx", code))
+    if rate is None or rate <= 0:
+        src.degrade("fx")
+        return None
+    return rate
 
 
 def _position_of(portfolio: Any, symbol: str,
@@ -569,7 +605,8 @@ def build(username: str, symbol: str, tv_symbol: str,
     filtre des dépêches et au dessin côté extension).
 
     ``deps`` : les sources, une par une (voir :data:`DEP_NAMES`). Chacune est
-    appelée ainsi — ``quote(symbol)``, ``portfolio(username)``,
+    appelée ainsi — ``quote(symbol)``, ``fx(currency)`` (le code devise déjà
+    normalisé ; jamais appelée pour le franc), ``portfolio(username)``,
     ``coach_positions()``, ``ideas_for_symbol(username, symbol)``,
     ``hypotheses(symbol)``, ``news(username)``, ``calendar()``,
     ``whales(symbol)``, ``mood()``, ``btc()``, ``alerts(username)``,
@@ -597,6 +634,7 @@ def build(username: str, symbol: str, tv_symbol: str,
             "name": raw_quote.get("name"),
             "ts": now,
             "delay_min": 0 if kind in REALTIME_KINDS else YAHOO_DELAY_MIN,
+            "fx_to_chf": _fx_of(src, raw_quote.get("currency")),
         }
 
     # --- portefeuille (position, ordres, équité, défauts) ------------------ #

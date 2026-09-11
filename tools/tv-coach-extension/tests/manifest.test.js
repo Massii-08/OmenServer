@@ -41,7 +41,8 @@ test('le panneau est injecté en monde isolé avec ses modules et son CSS', () =
   assert.ok(panel, 'aucun content script pour content.js');
   assert.deepStrictEqual(panel.css, ['panel.css']);
   for (const module of ['lib/i18n.js', 'lib/symbols.js', 'lib/alerts.js',
-                        'lib/api.js', 'lib/draw.js'].concat(EXTERNAL)) {
+                        'lib/api.js', 'lib/draw.js', 'lib/ads.js',
+                        'lib/sizing.js'].concat(EXTERNAL)) {
     assert.ok(panel.js.indexOf(module) !== -1, module + ' absent du manifeste');
   }
   /* content.js vient APRÈS ses modules. */

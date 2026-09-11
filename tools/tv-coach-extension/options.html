@@ -70,6 +70,12 @@
       color: var(--accent);
       cursor: pointer;
     }
+    button.ghost {
+      background: transparent;
+      color: var(--muted);
+      border-color: var(--border);
+      margin-left: 8px;
+    }
     .banner {
       margin: 0 0 16px;
       padding: 10px 12px;
@@ -130,6 +136,11 @@
         <span id="l-scalp">Mode scalp automatique sous 5 min</span>
       </label>
 
+      <label class="check">
+        <input type="checkbox" id="ads_auto_close">
+        <span id="l-ads">Fermer automatiquement les pubs TradingView (coin bas gauche et pop-up « sans pub »)</span>
+      </label>
+
       <label class="field">
         <span id="l-base">URL de l’Omen</span>
         <input type="text" id="api_base" placeholder="https://omenserver.org">
@@ -144,7 +155,9 @@
       <div>
         <button type="button" id="save">Enregistrer</button>
         <span class="status" id="status"></span>
+        <button type="button" id="reload" class="ghost">Recharger l’extension</button>
       </div>
+      <p class="hint" id="h-reload"></p>
     </div>
   </main>
 

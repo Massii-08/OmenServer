@@ -204,6 +204,8 @@ def _deps(**overrides):
         "candles_1m": lambda symbol: _candles_1m(),
         "candles_1d": lambda symbol: _candles_1d(),
         "fees_profile": lambda username: "kraken_spot",
+        # Le taux réellement relevé dans le livre de scalps : 1 USD = 0,8129 CHF.
+        "fx": lambda currency: 0.8129,
     }
     base.update(overrides)
     return base
@@ -235,6 +237,55 @@ def test_la_cotation_dit_son_retard():
     assert out["quote"]["price"] == 78760.1
     assert out["quote"]["delay_min"] == 0       # crypto : pas de différé Yahoo
     assert out["quote"]["ts"] == NOW
+
+
+def test_la_cotation_porte_le_taux_de_change_vers_le_franc():
+    """Sans ce taux, l'extension ne peut pas borner un scalp par le capital :
+    le 11/09 elle a ouvert 1 BTC (62 770 CHF) sur un compte de 10 000 CHF."""
+    out = _build()
+    assert out["quote"]["currency"] == "USD"
+    assert out["quote"]["fx_to_chf"] == 0.8129
+    assert out["degraded"] == []
+
+
+def test_une_cotation_en_francs_ne_demande_aucun_taux():
+    def jamais(currency):                   # pragma: no cover - ne doit pas courir
+        raise AssertionError("le franc n'a pas de taux à demander")
+    out = _build(quote=lambda symbol: {"price": 31.4, "currency": "CHF"},
+                 fx=jamais)
+    assert out["quote"]["fx_to_chf"] == 1.0
+    assert out["degraded"] == []
+
+
+def test_une_cotation_sans_devise_vaut_le_franc():
+    out = _build(quote=lambda symbol: {"price": 31.4, "currency": None})
+    assert out["quote"]["fx_to_chf"] == 1.0
+
+
+def test_un_taux_de_change_en_panne_laisse_la_fiche_debout():
+    """Champs absents = ``null`` (§5.1) : mieux vaut pas de taux qu'un taux
+    inventé — l'extension sous-dimensionne alors au lieu de sur-exposer."""
+    def boom(currency):
+        raise RuntimeError("Yahoo muet")
+    out = _build(fx=boom)
+    assert out["quote"]["fx_to_chf"] is None
+    assert out["quote"]["price"] == 78760.1          # le reste vit
+    assert "fx" in out["degraded"]
+
+
+@pytest.mark.parametrize("value", [None, 0, -1.5, "beaucoup"])
+def test_un_taux_qui_n_en_est_pas_un_est_traite_comme_une_panne(value):
+    out = _build(fx=lambda currency: value)
+    assert out["quote"]["fx_to_chf"] is None
+    assert "fx" in out["degraded"]
+
+
+def test_le_taux_est_demande_pour_la_devise_de_la_cotation():
+    vus = []
+    out = _build(quote=lambda symbol: {"price": 230.0, "currency": "usd "},
+                 fx=lambda currency: vus.append(currency) or 0.8129)
+    assert vus == ["USD"]                   # normalisé avant l'appel
+    assert out["quote"]["fx_to_chf"] == 0.8129
 
 
 def test_une_action_annonce_le_differe_de_quinze_minutes():
@@ -409,7 +460,9 @@ def test_toutes_les_sources_en_panne_rendent_une_fiche_complete_et_vide():
     assert out["news"] == [] and out["alerts"] == [] and out["ideas"] == []
     assert out["ta"] == {"atr14_d": None, "atr1_m": None, "vwap": None,
                          "day_high": None, "day_low": None}
-    assert set(out["degraded"]) == set(brief.DEP_NAMES)
+    # ``fx`` n'est PAS dedans : sans cotation il n'y a pas de devise, donc rien
+    # à convertir — « pas demandé n'est pas en panne » (cf. le volet bitcoin).
+    assert set(out["degraded"]) == set(brief.DEP_NAMES) - {"fx"}
 
 
 def test_build_ne_leve_jamais_meme_sur_des_sources_absurdes():

@@ -543,3 +543,197 @@ test('le minuteur du bilan automatique ne part pas sans attendre', () => {
   assert.notStrictEqual(coach.state.advice.status, 'pending',
                         'un scalp qui vient de fermer ne déclenche pas de bilan');
 });
+
+/* --------------------------------------------------------------------- *
+ * Fermeture automatique des pubs : le balayage tourne VRAIMENT sur un DOM
+ * bouchon (un parse ne prouve rien, piège #64). Le toast pub et le pop-up
+ * « sans pub » sont fermés ; l'alerte, le conteneur des toasts, le portail
+ * « Acheter au prix du marché » et un pop-up trop petit ne sont jamais touchés.
+ * --------------------------------------------------------------------- */
+
+test('adSweep ferme le toast pub et le pop-up « sans pub », et rien d’autre', () => {
+  require('../lib/ads.js');
+
+  const clicks = [];
+  const fakeButton = (spec) => ({
+    getAttribute: (name) => (Object.prototype.hasOwnProperty.call(spec, name) ? spec[name] : null),
+    textContent: spec.text || '',
+    click: () => { clicks.push(spec.text || spec['data-name'] || ''); }
+  });
+  const fakeBox = (spec, buttons) => ({
+    getAttribute: (name) => (Object.prototype.hasOwnProperty.call(spec, name) ? spec[name] : null),
+    textContent: spec.text || '',
+    children: [],
+    getBoundingClientRect: () => ({ width: spec.width || 0, height: spec.height || 0 }),
+    querySelectorAll: (selector) => (selector.indexOf('button') === 0 ? buttons : []),
+    querySelector: () => null
+  });
+
+  /* Le toast réel : ``#charting-ad`` ET le slot Google dans le MÊME ``li``,
+     bouton « Fermer la publicité » frère (texte caché, ni aria-label ni
+     data-name) à côté d'une incitation d'achat. */
+  const toast = fakeBox({}, [fakeButton({ text: 'Essayer' }),
+                             fakeButton({ text: 'Fermer la publicité' })]);
+  const adNode = { closest: (selector) => (selector === 'li' ? toast : null) };
+  const gptNode = { closest: (selector) => (selector === 'li' ? toast : null) };
+
+  const toastsContainer = fakeBox({ 'data-id': 'chart-toasts-container', role: 'dialog',
+                                    width: 600, height: 400, text: 'sans pub' },
+                                  [fakeButton({ text: 'Fermer' })]);
+  const gopro = fakeBox({ 'data-dialog-name': 'gopro-dialog', role: 'dialog',
+                          width: 420, height: 300,
+                          text: 'Débloque des fonctionnalités avancées' },
+                        [fakeButton({ text: 'Essayer gratuitement' }),
+                         fakeButton({ 'data-name': 'close', 'aria-label': 'Fermer' })]);
+  const alertDialog = fakeBox({ 'data-dialog-name': 'alert-dialog', role: 'dialog',
+                                width: 420, height: 300, text: 'Alerte sur BTCUSD' },
+                              [fakeButton({ text: 'Fermer' })]);
+  const marketPortal = fakeBox({ width: 160, height: 30,
+                                 text: 'Acheter au prix du marché Shift B' },
+                               [fakeButton({ text: 'Fermer' })]);
+  const tinyUpsell = fakeBox({ role: 'dialog', width: 200, height: 100, text: 'sans pub' },
+                             [fakeButton({ text: 'Non merci' })]);
+  const overlap = { children: [toastsContainer, gopro, alertDialog, marketPortal, tinyUpsell] };
+
+  const savedQuerySelectorAll = documentStub.querySelectorAll;
+  documentStub.querySelectorAll = (selector) => (selector.indexOf('#charting-ad') === 0
+    ? [adNode, gptNode] : []);
+  documentStub.getElementById = (id) => (id === 'overlap-manager-root' ? overlap : null);
+  try {
+    coach.state.ads_closed = 0;
+    coach.state.settings.ads_auto_close = true;
+    coach.adSweep();
+    assert.deepStrictEqual(clicks, ['Fermer la publicité', 'close']);
+    assert.strictEqual(coach.state.ads_closed, 2);
+    assert.ok(shadow().innerHTML.indexOf('Pubs fermées : 2') !== -1,
+              'la ligne « Pubs fermées » manque en pied de panneau');
+
+    /* Même DOM au tour suivant : aucun reclic, le compteur ne bouge pas. */
+    coach.adSweep();
+    assert.deepStrictEqual(clicks, ['Fermer la publicité', 'close']);
+    assert.strictEqual(coach.state.ads_closed, 2);
+
+    /* Option décochée : le balayage ne lit même plus la page. */
+    coach.state.settings.ads_auto_close = false;
+    documentStub.querySelectorAll = () => { throw new Error('lecture interdite'); };
+    coach.adSweep();
+    assert.strictEqual(coach.state.ads_closed, 2);
+  } finally {
+    documentStub.querySelectorAll = savedQuerySelectorAll;
+    delete documentStub.getElementById;
+    coach.state.settings.ads_auto_close = true;
+    coach.state.ads_closed = 0;
+    coach.render();
+  }
+});
+
+/* --------------------------------------------------------------------- *
+ * Taille automatique d'un scalp (lib/sizing).
+ *
+ * Ces tests viennent EN DERNIER : le premier a besoin que ``lib/sizing.js`` ne
+ * soit pas encore chargé, pour prouver qu'un module absent REFUSE le scalp au
+ * lieu de retomber sur l'ancien défaut « 1 » (un bitcoin, le 11/09).
+ * --------------------------------------------------------------------- */
+
+/** Remet le panneau dans l'état du 11/09 : BTC-USD à 77 216, 10 000 CHF. */
+function scalpSetup() {
+  coach.state.mode = 'scalp';
+  coach.state.tv_symbol = 'BINANCE:BTCUSDT.P';
+  coach.state.symbol = 'BTC-USD';
+  coach.state.kind = 'crypto';
+  coach.state.settings.fee_profile = 'kraken_spot';
+  coach.state.settings.risk_pct = 1;
+  coach.state.ticket = null;
+  coach.state.scalp.open = false;
+  coach.state.scalp.handle = null;
+  coach.state.scalp.result = null;
+  coach.state.price = 77216;
+  coach.state.toasts = [];
+  coach.state.brief = {
+    news: [], calendar: [], ideas: [], hypotheses: [], alerts: [],
+    quote: { price: 77216, currency: 'USD', fx_to_chf: 0.8129 },
+    fees: { profile: 'kraken_spot', round_trip_pct: 0.52 },
+    defaults: { risk_pct: 1, equity_chf: 10000 },
+    ta: {}
+  };
+}
+
+test('sans lib/sizing.js, un scalp sans ticket est REFUSÉ (jamais 1 unité)', () => {
+  scalpSetup();
+  assert.strictEqual(coach.scalpSizing(), null, 'le module ne devrait pas être chargé');
+  coach.openScalp('buy');
+  assert.strictEqual(coach.state.scalp.open, false, 'un scalp a été ouvert sans taille');
+  assert.strictEqual(coach.state.scalp.handle, null);
+  const refusal = coach.state.toasts[coach.state.toasts.length - 1];
+  assert.ok(refusal && refusal.text.indexOf('Capital insuffisant') === 0,
+            'le refus n’est pas expliqué');
+});
+
+test('sans ticket, le scalp prend la taille auto, annoncée avant le clic', () => {
+  require('../lib/sizing.js');
+  scalpSetup();
+
+  const sizing = coach.scalpSizing();
+  assert.strictEqual(sizing.qty, 0.1593, '0,1593 BTC attendu (plafond de capital)');
+  assert.strictEqual(sizing.capped_by, 'notional');
+  assert.ok(sizing.notional_chf <= 10000);
+
+  /* La ligne est à l'écran AVANT le clic, avec la taille ET son coût. */
+  coach.render();
+  const html = shadow().innerHTML;
+  assert.ok(html.indexOf('Taille auto') !== -1, 'la ligne de taille manque');
+  assert.ok(html.indexOf('0.1593') !== -1, 'la quantité n’est pas affichée');
+  /* 9999,08 CHF x 2 côtés x 0,26 % = 52,00 CHF d'aller-retour — le chiffre
+     qui manquait à l'écran le 11/09 (326 CHF payés sans les avoir vus). */
+  assert.ok(html.indexOf('52.00') !== -1, 'les frais aller-retour manquent');
+
+  coach.openScalp('buy');
+  assert.strictEqual(coach.state.scalp.open, true);
+  assert.strictEqual(coach.state.scalp.handle.qty, 0.1593,
+                     'le ledger a reçu autre chose que la taille auto');
+  coach.closeScalp();
+});
+
+test('la quantité du ticket, quand il y en a une, reste prioritaire', () => {
+  scalpSetup();
+  coach.state.ticket = { side: 'buy', qty: 3, stop: null, target: null,
+                         precheck: {}, warnings: [] };
+  coach.openScalp('buy');
+  assert.strictEqual(coach.state.scalp.handle.qty, 3);
+
+  /* Et le panneau ne double pas la ligne : c'est le ticket qui annonce. */
+  coach.state.scalp.open = false;
+  coach.state.scalp.handle = null;
+  coach.render();
+  assert.strictEqual(shadow().innerHTML.indexOf('Taille auto'), -1,
+                     'la taille auto s’affiche alors que le ticket a une quantité');
+});
+
+test('capital hors de portée : le panneau prévient et le scalp est refusé', () => {
+  scalpSetup();
+  coach.state.brief.defaults.equity_chf = 5;    /* 5 CHF contre un bitcoin */
+  assert.strictEqual(coach.scalpSizing().qty, 0);
+
+  coach.render();
+  assert.ok(shadow().innerHTML.indexOf('Capital insuffisant') !== -1,
+            'le panneau n’explique pas le refus');
+
+  coach.openScalp('buy');
+  assert.strictEqual(coach.state.scalp.open, false);
+  assert.strictEqual(coach.state.scalp.handle, null);
+});
+
+test('fiche pas encore arrivée : le panneau se tait, le clic refuse quand même',
+     () => {
+  scalpSetup();
+  coach.state.brief = null;                 /* changement de titre en cours */
+
+  coach.render();
+  assert.strictEqual(shadow().innerHTML.indexOf('Capital insuffisant'), -1,
+                     'le panneau accuse un manque de capital qu’il ignore');
+
+  coach.openScalp('buy');
+  assert.strictEqual(coach.state.scalp.open, false, 'ouvert sans savoir l’équité');
+  const refusal = coach.state.toasts[coach.state.toasts.length - 1];
+  assert.ok(refusal && refusal.text.indexOf('Capital insuffisant') === 0);
+});

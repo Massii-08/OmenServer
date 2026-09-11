@@ -13,6 +13,7 @@ est écrit est relu. C'est le piège documenté en tête de ``_load_seen_state``
 une clé d'état absente de l'allowlist est silencieusement perdue à la
 relecture, et rien ne le signale.
 """
+import functools
 import json
 import os
 import stat
@@ -981,6 +982,11 @@ def test_route_focus_refuse_un_symbole_invalide():
 def test_route_tvcalendar_sert_le_cache(monkeypatch):
     tvcalendar.refresh(_Client(_Response(_fixture("tv_calendar.json"))), now=NOW)
     monkeypatch.setattr(paper_tv_router, "_tvcalendar_client", lambda: None)
+    # La route lit l'horloge SYSTÈME : on fenêtre le cache à ``NOW`` (l'époque
+    # de la fixture), sinon le compte pourrit au fil des jours (vécu le 11/09 :
+    # 27 -> 21 deux jours plus tard).
+    monkeypatch.setattr(tvcalendar, "cached_items",
+                        functools.partial(tvcalendar.cached_items, now=NOW))
     body = _client().get("/api/paper/tvcalendar?days=60").json()
     assert len(body["items"]) == 27
     assert body["items"][0]["kind"] == "macro"

@@ -39,6 +39,7 @@ var DEFAULTS = {
   risk_pct: 1,
   lang: 'fr',
   scalp_auto: true,
+  ads_auto_close: true,
   panel_pos: null,
   scalp_queue: []
 };

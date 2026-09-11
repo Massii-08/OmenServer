@@ -50,6 +50,12 @@ l'extension** (ou le bouton « Options » dans l'en-tête du panneau).
 | Mode scalp auto | Bascule en mode scalp quand l'intervalle du graphique est 1, 2, 3 ou 5 minutes. |
 | URL de l'Omen | `https://omenserver.org` par défaut, `http://localhost:8000` pour la vérification locale. |
 | Token | Collage manuel (voie de secours). |
+| Recharger l'extension | Bouton en bas de la page d'options = le ↻ de `chrome://extensions` après une mise à jour des fichiers (extension non empaquetée) ; recharge ensuite l'onglet TradingView. |
+| Fermeture auto des pubs | Cochée par défaut. Voir les trois lignes ci-dessous. |
+
+- **Ce qu'elle ferme** : la pub du coin bas gauche du graphique (le toast `#charting-ad`, bouton « Fermer la publicité ») et le pop-up qui propose un plan « sans pub » (`data-dialog-name` de la famille `gopro`/`offer`, ou texte qui parle de publicité), dès qu'ils apparaissent.
+- **Ce qu'elle ne touche jamais** : alertes, recherche de symbole, paramètres du graphique, menus, infobulles — un dialogue n'est fermé que s'il parle de pub, et jamais par un bouton d'achat (« Essayer », « Upgrade », « Acheter »).
+- **La désactiver** : Options → décocher « Fermer automatiquement les pubs TradingView » ; effet immédiat, sans recharger l'onglet. Le panneau affiche « Pubs fermées : N » en pied quand elle a agi.
 
 ## Vérification locale
 
@@ -81,7 +87,8 @@ lancé depuis ce dossier, marche aussi).
 Ce qui est couvert : la table des symboles (miroir du serveur), les alertes
 (hystérésis, one-shot), la parité des trois langues, le manifeste (JSON,
 `world: "MAIN"`, permissions, fichiers cités présents), les commandes de
-dessin, les barres/garde-fous/ledger du mode scalp, et un test de fumée qui
+dessin, les barres/garde-fous/ledger du mode scalp, la taille automatique d'un
+scalp (le cas vécu du 11/09, chiffres à l'appui), et un test de fumée qui
 CHARGE vraiment `content.js` et `bridge.js` avec un DOM bouchon — sans objet
 `chrome` : la voie dégradée doit tenir debout toute seule.
 
@@ -104,6 +111,7 @@ CHARGE vraiment `content.js` et `bridge.js` avec un DOM bouchon — sans objet
 | `lib/watchlist.js` | Le plan d'import « watchlist TV → favoris Omen » : à créer / déjà suivis / inconnus, plafonné à 30. |
 | `lib/note.js` | La note rapide : nettoyage, coupe à 500 caractères, charge utile de `POST /ideas/note`. |
 | `lib/idle.js` | Le minuteur du bilan automatique (20 min sans scalp), muet jusqu'au lendemain après un 429. |
+| `lib/sizing.js` | La taille automatique d'un scalp : risque × équité / distance de stop, **plafonnée par le capital**. |
 | `panel.css` | Tokens Ion (sombre) et Givre (clair), `prefers-color-scheme`, 320 px, 70 vh, chiffres tabulaires. |
 
 ## Les quatre gestes du panneau
@@ -115,11 +123,45 @@ CHARGE vraiment `content.js` et `bridge.js` avec un DOM bouchon — sans objet
 | **Note rapide** | Deux lignes dans la section « Le coach », 500 caractères, `Ctrl`/`Cmd`+`Entrée` pour envoyer → `POST /ideas/note`. |
 | **Bilan automatique** | En mode scalp, 20 minutes après le **dernier scalp fermé** : `POST /scalps/review` (travail détaché, comme le bouton « Bilan de session »), réponse affichée dans le panneau + notification navigateur. Le serveur plafonne à trois bilans par jour : un 429 fait taire le minuteur jusqu'au lendemain, sans réessai. |
 
+## Taille d'un scalp
+
+En mode scalp il n'y a le plus souvent **pas de ticket**, donc pas de quantité
+calculée par le serveur. Le panneau la calcule lui-même (`lib/sizing.js`) et
+**l'affiche avant le clic**, avec son coût :
+
+> `Taille auto : 0.1593 ≈ 9999 CHF · frais A/R ≈ 52.00 CHF`
+
+La règle, deux bornes et la plus petite gagne :
+
+- **le risque** — `risk_pct × équité / distance de stop` (le risque est celui
+  des options, 1 % par défaut ; l'équité vient de la fiche) ;
+- **le capital** — l'exposition ne dépasse **jamais** l'équité du portefeuille
+  papier : c'est du comptant, il n'y a pas de levier.
+
+La **distance de stop est implicite** (un scalp n'a pas de stop saisi) : `2 ×
+ATR 1 min`, avec un plancher à 0,15 % du prix ; sans ATR du tout, 0,3 % du prix.
+La quantité est **arrondie par le bas** — quatre décimales pour une crypto,
+l'entier pour le reste. Si même le lot minimal dépasse le capital, le panneau
+affiche « Capital insuffisant pour une unité à ce prix » et **refuse le scalp**.
+
+Tout repli **sous-dimensionne** : un taux de change manquant vaut 1, donc un
+titre en dollars est compté plus cher qu'il ne l'est et on achète moins. Ce
+taux (`quote.fx_to_chf`) vient de la fiche ; quand le serveur ne l'a pas, il le
+dit dans `degraded` au lieu de l'inventer.
+
+> Pourquoi c'est écrit noir sur blanc : le 11/09, faute de ticket, le panneau
+> ouvrait « 1 » — soit **un bitcoin**, 62 770 CHF d'exposition sur un compte de
+> 10 000 CHF, refermé 43 secondes plus tard pour 326 CHF de frais.
+
 ## Ce qu'il faut savoir
 
-- **Le dessin exige d'être connecté à TradingView.** Sinon le panneau affiche
-  « connecte-toi à TradingView pour le dessin » et n'essaie plus qu'une fois par
-  titre. L'extension n'efface QUE les tracés qu'elle a posés.
+- **Le dessin exige d'être connecté à TradingView** (un compte gratuit suffit).
+  Anonyme, le panneau affiche dès le chargement « connecte-toi à TradingView
+  pour le dessin » et n'essaie plus qu'une fois par titre. L'extension n'efface
+  QUE les tracés qu'elle a posés.
+- **« Dessiner les paris »** ne trace que les paris **ouverts** du coach sur le
+  titre affiché. S'il n'en a aucun (ou pas de ticket/position pour les niveaux),
+  le panneau le dit au lieu de rester muet.
 - **Sélecteurs DOM** : les trois familles (bid/ask, pane du graphique, rangées
   de watchlist) vivent dans trois constantes commentées en tête de `bridge.js`.
   Le pane (`.chart-markup-table.pane`), la watchlist

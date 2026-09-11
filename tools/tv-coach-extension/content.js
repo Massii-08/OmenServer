@@ -32,6 +32,7 @@
   var WATCHLIST_WAIT_MS = 5000;       /* au-delà, le pont ne répondra plus */
   var IDLE_REVIEW_MS = 1200000;       /* 20 min sans scalp -> bilan (spec §8) */
   var NOTE_MAX = 500;                 /* = lib/note.MAX_LEN */
+  var AD_SWEEP_MS = 1500;             /* balayage des pubs TradingView */
 
   var DEFAULT_SETTINGS = {
     token: '',
@@ -41,6 +42,7 @@
     risk_pct: 1,
     lang: 'fr',
     scalp_auto: true,
+    ads_auto_close: true,
     panel_pos: null
   };
 
@@ -125,6 +127,20 @@
     var parsed = num(value);
     if (parsed === null) { return '—'; }
     return parsed.toFixed(digits === undefined ? 2 : digits) + ' %';
+  }
+
+  /** La famille du titre affiché : celle déduite du symbole TradingView, à
+   *  défaut celle que la fiche annonce (les deux tables sont un miroir). */
+  function symbolKind() {
+    if (state.kind) { return state.kind; }
+    var brief = state.brief;
+    return (brief && brief.kind) ? brief.kind : null;
+  }
+
+  /** Un nombre d'unités : 4 décimales pour une crypto (on achète des fractions
+   *  de bitcoin), l'entier partout ailleurs — même règle que ``lib/sizing``. */
+  function fmtQty(value) {
+    return fmtNum(value, symbolKind() === 'crypto' ? 4 : 0);
   }
 
   function pad2(value) {
@@ -293,7 +309,9 @@
     /* Alt+clic sur le graphique : la confirmation avant de poser l'alerte. */
     alert_draft: null,
     watchlist: { busy: false, status: '' },
-    note: { text: '', status: '' }
+    note: { text: '', status: '' },
+    /* Pubs TradingView fermées par l'extension depuis le chargement de la page. */
+    ads_closed: 0
   };
 
   var root = null;         /* racine d'ombre (ou hôte si attachShadow absent) */
@@ -402,6 +420,7 @@
   function onBridgeReady(data) {
     state.drawing.available = true;
     state.drawing.allowed = data.drawing_allowed !== false;
+    setBanner('draw_login', !state.drawing.allowed);
     setBanner('draw_unavailable', false);
     render();
   }
@@ -1218,6 +1237,36 @@
     return num(state.settings.custom_pct);
   }
 
+  /**
+   * La taille AUTOMATIQUE d'un scalp (``lib/sizing``), depuis l'état courant :
+   * l'équité du portefeuille papier, le risque des options, le prix live, le
+   * taux de change de la fiche et l'ATR 1 min du flux.
+   *
+   * ``null`` si le module manque ou si l'état n'a pas de quoi calculer — et
+   * l'appelant REFUSE alors le scalp. C'est le remplacement du défaut ``1``,
+   * qui valait « un bitcoin » sur BTC-USD (spec §6, « Ticket »).
+   */
+  function scalpSizing() {
+    var mod = lib('sizing');
+    if (!mod || typeof mod.scalpQty !== 'function') { return null; }
+    var brief = state.brief || {};
+    var defaults = brief.defaults || {};
+    var quote = brief.quote || {};
+    try {
+      return mod.scalpQty({
+        equity_chf: num(defaults.equity_chf),
+        risk_pct: num(state.settings.risk_pct),
+        price: state.price,
+        fx_to_chf: num(quote.fx_to_chf),
+        atr: callBars('atr', null, 14),
+        kind: symbolKind()
+      });
+    } catch (e) {
+      debug('sizing.scalpQty refusé', e);
+      return null;
+    }
+  }
+
   function openScalp(side) {
     /* Sans profil de frais, le ticket REFUSE d'ouvrir un scalp (spec §6.4). */
     if (!state.settings.fee_profile) { toast(t('scalp.no_profile'), 'warn'); return; }
@@ -1231,10 +1280,18 @@
     if (state.ticket) { state.ticket.side = side; schedulePrecheck(); }
     var ticket = state.ticket || {};
     var qty = num(ticket.qty);
+    if (qty === null || qty <= 0) {
+      /* Pas de ticket (le cas NORMAL en scalp) : on dimensionne nous-mêmes.
+         Sans taille calculable, on N'OUVRE PAS — l'ancien défaut ``1`` a coûté
+         62 770 CHF d'exposition et 326 CHF de frais le 11/09. */
+      var sizing = scalpSizing();
+      if (!sizing || !sizing.qty) { toast(t('scalp.size_none'), 'warn'); return; }
+      qty = sizing.qty;
+    }
     try {
       state.scalp.handle = mod.open({
         side: side,
-        qty: qty === null ? 1 : qty,
+        qty: qty,
         price: state.price,
         ts_ms: Date.now(),
         fee_profile: state.settings.fee_profile,
@@ -1427,6 +1484,16 @@
     postToBridge('draw:apply', { id: requestId, commands: commands });
   }
 
+  function drawOrExplain(commands, emptyKey) {
+    if (state.drawing.allowed === false) {
+      setBanner('draw_login', true);
+      toast(t('banner.draw_login'), 'warn');
+      return;
+    }
+    if (!commands || !commands.length) { toast(t(emptyKey)); return; }
+    sendDraw(commands);
+  }
+
   function clearDrawings() {
     if (!state.drawing.available) { return; }
     var requestId = uuid();
@@ -1437,19 +1504,21 @@
   function drawTicketLevels() {
     var draw = lib('draw');
     var ticket = state.ticket;
-    if (!draw || !ticket) { return; }
-    sendDraw(draw.levels({
+    if (!draw) { return; }
+    if (!ticket) { toast(t('draw.no_levels')); return; }
+    drawOrExplain(draw.levels({
       entry: ticket.entry, stop: ticket.stop, target: ticket.target,
       side: ticket.side, qty: ticket.qty
-    }));
+    }), 'draw.no_levels');
   }
 
   function drawBets() {
     var draw = lib('draw');
-    if (!draw || !state.brief) { return; }
+    if (!draw) { return; }
+    if (!state.brief) { toast(t('draw.no_bets')); return; }
     var hypotheses = Array.isArray(state.brief.hypotheses) ? state.brief.hypotheses : [];
     var nowSec = Math.floor(Date.now() / 1000);
-    sendDraw(draw.bets(hypotheses, state.price, nowSec));
+    drawOrExplain(draw.bets(hypotheses, state.price, nowSec), 'draw.no_bets');
   }
 
   function drawScalpLevels() {
@@ -1457,12 +1526,12 @@
     if (!draw) { return; }
     var ta = (state.brief && state.brief.ta) ? state.brief.ta : {};
     var btc = (state.brief && state.brief.btc) ? state.brief.btc : {};
-    sendDraw(draw.scalp({
+    drawOrExplain(draw.scalp({
       vwap: ta.vwap,
       day_high: ta.day_high === undefined ? callBars('dayHigh', null) : ta.day_high,
       day_low: ta.day_low === undefined ? callBars('dayLow', null) : ta.day_low,
       cme_gap: btc.cme_gap
-    }, Math.floor(Date.now() / 1000)));
+    }, Math.floor(Date.now() / 1000)), 'draw.no_levels');
   }
 
   /* --------------------------------------------------------------- */
@@ -1897,6 +1966,29 @@
       out.push(button('draw-scalp', t('draw.levels'), 'omen-ghost'));
       out.push('</div>');
     } else {
+      /* La taille et son coût AVANT le clic : le prix d'un aller-retour doit
+         se lire sur le bouton, pas se découvrir dans le bilan. Affichée aux
+         MÊMES conditions qu'``openScalp`` l'emploie — si le ticket porte déjà
+         une quantité, c'est elle qui part, et ``renderTicketFields`` la
+         montre déjà en haut. */
+      var ticketQty = state.ticket ? num(state.ticket.qty) : null;
+      if (ticketQty === null || ticketQty <= 0) {
+        var sizing = scalpSizing();
+        if (sizing && sizing.qty > 0) {
+          var perSide = feePctPerSide();
+          var fees = perSide === null ? null : sizing.notional_chf * 2 * perSide / 100;
+          out.push('<p class="omen-note">' + esc(t('scalp.size_auto', {
+            qty: fmtQty(sizing.qty),
+            notional: fmtNum(sizing.notional_chf, 0),
+            fees: fmtNum(fees, 2)
+          })) + '</p>');
+        } else if (state.price !== null && state.brief) {
+          /* ``state.brief`` dans la garde : sans fiche on ne SAIT pas encore,
+             et annoncer « capital insuffisant » pendant le chargement serait
+             un mensonge d'une demi-seconde. Le clic, lui, refuse toujours. */
+          out.push('<p class="omen-note omen-warn">' + esc(t('scalp.size_none')) + '</p>');
+        }
+      }
       out.push('<div class="omen-actions">');
       out.push(button('scalp-buy', t('ticket.buy'), 'omen-primary'));
       out.push(button('scalp-sell', t('ticket.sell'), 'omen-danger'));
@@ -1936,6 +2028,10 @@
       out.push('<p class="omen-stamp">'
         + esc(t('panel.updated_at', { time: fmtTime(new Date(state.brief_at).toISOString()) }))
         + '</p>');
+    }
+    if (state.ads_closed > 0) {
+      out.push('<p class="omen-stamp omen-dim">'
+        + esc(t('ads.closed', { n: state.ads_closed })) + '</p>');
     }
     return out.join('');
   }
@@ -2157,6 +2253,159 @@
     render();
   }
 
+  /* --------------------------------------------------------------- */
+  /* Fermeture automatique des pubs TradingView                       */
+  /* --------------------------------------------------------------- */
+
+  /* Deux surfaces, et rien d'autre : le toast pub du coin bas gauche
+     (``#charting-ad`` dans un ``li`` du conteneur de toasts) et le pop-up
+     « plan sans pub » (un dialogue de ``#overlap-manager-root``). La décision
+     revient au module PUR ``lib/ads.js`` (testé) ; ici on ne fait que lire la
+     page en JSON et cliquer ce qu'il désigne. */
+  var AD_SELECTOR = '#charting-ad, [id^="div-gpt-ad-"]';
+  var DIALOG_SELECTOR = '[data-dialog-name], [role="dialog"], [aria-modal="true"]';
+  var BUTTON_SELECTOR = 'button, [role="button"]';
+  var TOASTS_CONTAINER_ID = 'chart-toasts-container';
+  var DIALOG_MIN_WIDTH = 240;
+  var DIALOG_MIN_HEIGHT = 120;
+  var DIALOG_TEXT_MAX = 600;
+  var DIALOG_BUTTONS_MAX = 20;
+
+  /* Boutons déjà cliqués : un toast qui réapparaît est un NOUVEAU nœud, et
+     un même nœud ne se reclique jamais (un clic sans effet ne doit pas boucler). */
+  var adClicked = new WeakSet();
+
+  function normText(value) {
+    return String(value === null || value === undefined ? '' : value)
+      .replace(/\s+/g, ' ').trim();
+  }
+
+  function attr(node, name) {
+    if (!node || typeof node.getAttribute !== 'function') { return ''; }
+    return node.getAttribute(name) || '';
+  }
+
+  /** Les boutons d'un conteneur, dans l'ordre du DOM — le même au clic. */
+  function buttonNodes(container) {
+    if (!container || typeof container.querySelectorAll !== 'function') { return []; }
+    return Array.prototype.slice.call(container.querySelectorAll(BUTTON_SELECTOR));
+  }
+
+  function buttonSnapshot(container, cap) {
+    var nodes = buttonNodes(container);
+    if (cap > 0 && nodes.length > cap) { nodes = nodes.slice(0, cap); }
+    var out = [];
+    for (var i = 0; i < nodes.length; i += 1) {
+      out.push({ name: attr(nodes[i], 'data-name'), label: attr(nodes[i], 'aria-label'),
+                 text: normText(nodes[i].textContent) });
+    }
+    return out;
+  }
+
+  /** Le toast qui porte la pub : l'ancêtre ``li`` ou, à défaut, le 3e parent
+   *  (le bouton « Fermer la publicité » est un frère de ``#charting-ad``,
+   *  jamais dedans). */
+  function adContainer(node) {
+    if (typeof node.closest === 'function') {
+      var item = node.closest('li');
+      if (item) { return item; }
+    }
+    var up = node;
+    for (var i = 0; i < 3; i += 1) {
+      if (!up.parentNode) { break; }
+      up = up.parentNode;
+    }
+    return up;
+  }
+
+  function looksLikeDialog(node) {
+    return !!(attr(node, 'data-dialog-name') || attr(node, 'role') === 'dialog'
+      || attr(node, 'aria-modal') === 'true');
+  }
+
+  /** ``data-dialog-name`` de la racine, sinon du premier descendant qui en a un. */
+  function dialogName(container) {
+    var own = attr(container, 'data-dialog-name');
+    if (own) { return own; }
+    var inner = typeof container.querySelector === 'function'
+      ? container.querySelector('[data-dialog-name]') : null;
+    return attr(inner, 'data-dialog-name');
+  }
+
+  function snapshotAds(nodeMap) {
+    var ads = [];
+    var seen = [];
+    var nodes = document.querySelectorAll(AD_SELECTOR);
+    for (var i = 0; i < nodes.length; i += 1) {
+      var container = adContainer(nodes[i]);
+      if (!container || seen.indexOf(container) !== -1) { continue; }
+      seen.push(container);
+      var id = 'ad' + ads.length;
+      nodeMap.set(id, container);
+      ads.push({ id: id, buttons: buttonSnapshot(container, 0) });
+    }
+    return ads;
+  }
+
+  function snapshotDialogs(nodeMap) {
+    var dialogs = [];
+    var overlap = document.getElementById('overlap-manager-root');
+    var children = (overlap && overlap.children) ? overlap.children : [];
+    for (var i = 0; i < children.length; i += 1) {
+      var child = children[i];
+      /* Le conteneur des toasts vit ici aussi : c'est la partie « pub », pas
+         un dialogue. Les menus et infobulles n'ont ni role ni data-dialog-name. */
+      if (attr(child, 'data-id') === TOASTS_CONTAINER_ID) { continue; }
+      var isDialog = looksLikeDialog(child)
+        || (typeof child.querySelector === 'function' && !!child.querySelector(DIALOG_SELECTOR));
+      if (!isDialog) { continue; }
+      var box = typeof child.getBoundingClientRect === 'function'
+        ? child.getBoundingClientRect() : null;
+      if (!box || box.width < DIALOG_MIN_WIDTH || box.height < DIALOG_MIN_HEIGHT) { continue; }
+      var id = 'dlg' + dialogs.length;
+      nodeMap.set(id, child);
+      dialogs.push({
+        id: id,
+        name: dialogName(child),
+        text: normText(child.textContent).slice(0, DIALOG_TEXT_MAX),
+        buttons: buttonSnapshot(child, DIALOG_BUTTONS_MAX)
+      });
+    }
+    return dialogs;
+  }
+
+  /**
+   * Un tour toutes les 1,5 s : lit la page, demande à ``lib/ads.js`` quoi
+   * cliquer, clique. Le décochage de l'option agit au tour suivant (les
+   * réglages arrivent déjà par ``applySettings``). Jamais d'exception qui
+   * remonte : une page TradingView refondue doit rendre le balayage muet,
+   * pas casser le panneau.
+   */
+  function adSweep() {
+    if (!state.settings.ads_auto_close) { return; }
+    var adsLib = lib('ads');
+    if (!adsLib || typeof adsLib.plan !== 'function') { return; }
+    try {
+      var nodeMap = new Map();
+      var actions = adsLib.plan({ ads: snapshotAds(nodeMap), dialogs: snapshotDialogs(nodeMap) });
+      var closed = 0;
+      for (var i = 0; i < actions.length; i += 1) {
+        var target = buttonNodes(nodeMap.get(actions[i].id))[actions[i].button];
+        if (!target || adClicked.has(target) || typeof target.click !== 'function') { continue; }
+        adClicked.add(target);
+        target.click();
+        closed += 1;
+        debug('pub fermée', actions[i].kind);
+      }
+      if (closed) {
+        state.ads_closed += closed;
+        render();
+      }
+    } catch (e) {
+      debug('adSweep', e);
+    }
+  }
+
   function makeNonce() {
     return uuid().replace(/-/g, '').slice(0, 24);
   }
@@ -2251,6 +2500,7 @@
     every(BRIEF_REFRESH_MS, function () { refreshBrief(true); });
     every(FOCUS_MS, function () { sendFocus(); });
     every(QUEUE_FLUSH_MS, function () { flushScalpQueue(); });
+    every(AD_SWEEP_MS, adSweep);
     every(1000, function () {
       pruneToasts();
       if (state.mode === 'scalp') { refreshGuards(); checkIdleReview(); }
@@ -2266,6 +2516,7 @@
     modeFor: modeFor,
     buildOrderPayload: buildOrderPayload,
     guardState: guardState,
+    scalpSizing: scalpSizing,
     openScalp: openScalp,
     closeScalp: closeScalp,
     refreshGuards: refreshGuards,
@@ -2275,6 +2526,7 @@
     sendNote: sendNote,
     touchIdle: touchIdle,
     checkIdleReview: checkIdleReview,
+    adSweep: adSweep,
     state: state,
     boot: boot,
     render: render,

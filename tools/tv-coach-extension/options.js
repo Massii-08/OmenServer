@@ -20,7 +20,8 @@
     custom_pct: null,
     risk_pct: 1,
     lang: 'fr',
-    scalp_auto: true
+    scalp_auto: true,
+    ads_auto_close: true
   };
 
   function debug() {
@@ -47,10 +48,13 @@
       ['l-risk', 'options.risk_pct'],
       ['l-lang', 'options.lang'],
       ['l-scalp', 'options.scalp_auto'],
+      ['l-ads', 'options.ads_auto_close'],
       ['l-base', 'options.api_base'],
       ['l-token', 'options.token'],
       ['h-token', 'options.token_hint'],
-      ['save', 'options.save']
+      ['save', 'options.save'],
+      ['reload', 'options.reload'],
+      ['h-reload', 'options.reload_hint']
     ];
     for (var i = 0; i < pairs.length; i += 1) {
       var node = byId(pairs[i][0]);
@@ -83,6 +87,7 @@
         || conf.risk_pct === undefined ? 1 : conf.risk_pct);
       byId('lang').value = conf.lang || 'fr';
       byId('scalp_auto').checked = conf.scalp_auto !== false;
+      byId('ads_auto_close').checked = conf.ads_auto_close !== false;
       byId('api_base').value = conf.api_base || DEFAULTS.api_base;
       byId('token').value = conf.token || '';
       paintLabels(byId('lang').value);
@@ -106,6 +111,7 @@
         ? 1 : numberOrNull(byId('risk_pct').value),
       lang: lang,
       scalp_auto: byId('scalp_auto').checked === true,
+      ads_auto_close: byId('ads_auto_close').checked === true,
       api_base: String(byId('api_base').value || DEFAULTS.api_base).replace(/\/+$/, '')
     };
     /* Champ vide -> on garde le jeton déjà stocké : la page peut être restée
@@ -146,6 +152,12 @@
     load();
     watchTokenChanges();
     byId('save').addEventListener('click', save, false);
+    /* L'extension est chargée non empaquetée et ses fichiers changent souvent :
+       ce bouton vaut le ↻ de chrome://extensions. La page d'options est servie
+       depuis le disque, donc il reste atteignable quand le reste est périmé. */
+    byId('reload').addEventListener('click', function () {
+      try { chrome.runtime.reload(); } catch (e) { debug('rechargement refusé', e); }
+    }, false);
     byId('fee_profile').addEventListener('change', function () {
       refreshFeeBanner(byId('lang').value);
     }, false);
