@@ -110,6 +110,43 @@ test('scalp pose les repères de séance, gap comblé exclu', () => {
   assert.strictEqual(comble.length, 1);
 });
 
+test('scalp avec un prix de référence ignore un niveau d’un AUTRE marché', () => {
+  /* Vécu : bas du jour d'EURUSD (1,16) resté dans la fiche pendant qu'on
+     passe sur BTC (77000) -> TradingView recadre l'échelle sur ce tracé et
+     le graphique s'écrase. */
+  const commands = draw.scalp({ vwap: 78000, day_low: 1.16 }, NOW, 77000);
+  assert.strictEqual(commands.length, 1, 'le niveau hors marché doit être ignoré');
+  assert.strictEqual(commands[0].text, '⌂ coach · VWAP');
+});
+
+test('scalp avec un prix de référence : les niveaux à ±5 % restent présents', () => {
+  const price = 77000;
+  const commands = draw.scalp({ vwap: price * 1.05, day_high: price * 0.95 },
+                              NOW, price);
+  assert.strictEqual(commands.length, 2, 'des niveaux à ±5 % ont été rejetés à tort');
+});
+
+test('scalp : les bornes ±20 % sont incluses, au-delà est coupé', () => {
+  const price = 77000;
+  const within = draw.scalp({ vwap: price * 0.8, day_high: price * 1.2 }, NOW, price);
+  assert.strictEqual(within.length, 2, 'les bornes exactes ont été rejetées');
+
+  const outside = draw.scalp({ vwap: price * 0.79, day_high: price * 1.21 }, NOW, price);
+  assert.strictEqual(outside.length, 0, 'des niveaux hors ±20 % ont été gardés');
+});
+
+test('scalp sans prix de référence : comportement inchangé, rien n’est filtré', () => {
+  const commands = draw.scalp({ vwap: 1.16, day_high: 77000 }, NOW);
+  assert.strictEqual(commands.length, 2);
+});
+
+test('scalp : un prix de référence non positif ou illisible ne filtre rien', () => {
+  for (const bogus of [0, -5, 'abc', null, undefined]) {
+    const commands = draw.scalp({ vwap: 1.16, day_high: 77000 }, NOW, bogus);
+    assert.strictEqual(commands.length, 2, 'filtré à tort avec price=' + String(bogus));
+  }
+});
+
 test('clear ne demande qu’une chose', () => {
   assert.deepStrictEqual(draw.clear(), [{ kind: 'clear' }]);
 });

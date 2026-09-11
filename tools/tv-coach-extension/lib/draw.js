@@ -191,18 +191,31 @@
   }
 
   /**
-   * ``scalp({vwap, day_high, day_low, cme_gap}, nowSec)`` — les repères du mode
-   * scalp. Un gap CME déjà comblé (``open: false``) n'est pas dessiné.
+   * ``scalp({vwap, day_high, day_low, cme_gap}, nowSec, price)`` — les repères
+   * du mode scalp. Un gap CME déjà comblé (``open: false``) n'est pas dessiné.
+   *
+   * ``price`` (optionnel) est le cours COURANT du titre affiché : un niveau
+   * hors de ``[price × 0.8, price × 1.2]`` appartient forcément à un AUTRE
+   * marché (fiche pas encore rafraîchie après un changement de titre — vécu :
+   * bas du jour d'EURUSD à 1,16 dessiné sur BTC à 77 000, TradingView recadre
+   * son échelle sur ce tracé et le graphique s'écrase) : il est IGNORÉ plutôt
+   * que dessiné. Sans ``price`` (ou une valeur ≤ 0/illisible), aucun filtre —
+   * comportement inchangé.
    */
-  function scalp(levelsSpec, nowSec) {
+  function scalp(levelsSpec, nowSec, price) {
     var conf = levelsSpec || {};
     var now = num(nowSec);
     if (now === null) { now = Math.floor(Date.now() / 1000); }
+    var ref = num(price);
+    var hasRef = ref !== null && ref > 0;
+    var lo = hasRef ? ref * 0.8 : null;
+    var hi = hasRef ? ref * 1.2 : null;
     var out = [];
 
-    function line(price, label, color, style) {
-      var value = num(price);
+    function line(levelPrice, label, color, style) {
+      var value = num(levelPrice);
       if (value === null) { return; }
+      if (hasRef && (value < lo || value > hi)) { return; }
       out.push({
         kind: 'shape', shape: 'horizontal_line',
         point: { time: Math.round(now), price: value },

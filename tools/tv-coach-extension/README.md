@@ -121,6 +121,7 @@ CHARGE vraiment `content.js` et `bridge.js` avec un DOM bouchon — sans objet
 | `lib/note.js` | La note rapide : nettoyage, coupe à 500 caractères, charge utile de `POST /ideas/note`. |
 | `lib/idle.js` | Le minuteur du bilan automatique (20 min sans scalp), muet jusqu'au lendemain après un 429. |
 | `lib/sizing.js` | La taille automatique d'un scalp : risque × équité / distance de stop, **plafonnée par le capital**. |
+| `lib/outage.js` | Machine à états « Omen injoignable » : `ok → suspect → down`, bandeau au 2ᵉ échec de suite seulement, ré-essai à 6 s puis toutes les 15 s. |
 | `panel.css` | Tokens Ion (sombre) et Givre (clair), `prefers-color-scheme`, 320 px, 70 vh, chiffres tabulaires. |
 
 ## Les quatre gestes du panneau
@@ -192,3 +193,8 @@ dit dans `degraded` au lieu de l'inventer.
   alertes continuent d'être évaluées, le ticket se verrouille, et un scalp fermé
   part dans une file locale (`chrome.storage.local`) rejouée au prochain succès —
   jamais perdu, jamais dupliqué (`client_id`).
+- **Bandeau débounced** (`lib/outage.js`) : un push sur `main` redémarre l'Omen
+  quelques secondes (auto-déploiement) — le bandeau n'apparaît qu'au **second**
+  appel raté de suite, jamais au premier (un simple redémarrage reste invisible).
+  Une fois affiché, l'extension retente toutes les **15 s** (le tout premier
+  ré-essai part après **6 s**) jusqu'au retour, sans action de l'utilisateur.

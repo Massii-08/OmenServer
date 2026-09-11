@@ -304,7 +304,17 @@
     banners: {},
     toasts: [],
     drawing: { allowed: true, available: true, denied_for: null },
+    /* Note posée sous le bouton « Dessiner… » cliqué (même texte que le
+       toast, mais qui reste visible) : {where: 'coach'|'scalp'|'ticket',
+       text, at}. ``where`` dit QUELLE section doit l'afficher. */
+    draw_note: null,
     server_ok: true,
+    /* Machine à états « Omen injoignable » (lib/outage.js) : un blip isolé
+       reste invisible, seule une vraie coupure (2 échecs) lève le bandeau. */
+    outage: { status: 'ok', failures: 0, next_probe_at: null },
+    /* Vrai pendant qu'un GET /brief est en vol : évite d'empiler deux sondes
+       (le minuteur périodique ET la sonde de reprise). */
+    brief_inflight: false,
     degraded: [],
     /* Alt+clic sur le graphique : la confirmation avant de poser l'alerte. */
     alert_draft: null,
@@ -357,6 +367,15 @@
     }
     if (kept.length !== state.toasts.length) {
       state.toasts = kept;
+      render();
+    }
+  }
+
+  /** Même fenêtre que les toasts (``TOAST_MS``) : au-delà, la note posée par
+   *  ``setDrawNote`` disparaît et le panneau repeint sans elle. */
+  function pruneDrawNote() {
+    if (state.draw_note && (Date.now() - state.draw_note.at) >= TOAST_MS) {
+      state.draw_note = null;
       render();
     }
   }
@@ -455,6 +474,16 @@
     if (changed) {
       state.drawing.denied_for = null;    /* 1 seul essai de dessin PAR TITRE */
       state.ticket = null;
+      /* Le prix (et tout ce qui en dérive) appartient à l'ANCIEN titre : le
+         garder ouvrait un ticket au prix d'un autre marché dès le premier
+         tick, avant même que le nouveau prix soit arrivé (EURUSD 1,16 ->
+         BTC-USD, stop/cible posés sur 1,16). Le premier ``tv:tick`` du
+         nouveau titre les repeuple. */
+      state.price = null;
+      state.prev_price = null;
+      state.bid = null;
+      state.ask = null;
+      resetBars();
       state.advice = { status: 'idle', text: '', error: '' };
       /* Une alerte se pose sur le titre où on a cliqué, jamais sur le suivant. */
       state.alert_draft = null;
@@ -489,6 +518,14 @@
     }
     state.bid = num(data.bid);
     state.ask = num(data.ask);
+    /* En scalp, le ticket est toujours ouvert (c'est le ledger) : la
+       quantité vient du pré-check dès qu'un PRIX est là. ``ticket.symbol``
+       protège contre un ticket resté du titre précédent (défense en
+       profondeur — ``onSymbol`` l'a déjà mis à ``null`` au changement). */
+    if (state.mode === 'scalp' && state.price !== null
+        && (!state.ticket || state.ticket.symbol !== state.symbol)) {
+      openTicket('buy', false);
+    }
     feedBars(data);
     evaluateAlerts();
     sampleScalp(price, num(data.ts));
@@ -510,9 +547,13 @@
     var pending = drawRequests[data.id];
     if (pending) { delete drawRequests[data.id]; }
     if (data.error === 'not_authenticated') {
-      /* Un seul essai par titre (spec §11) : on note le titre refusé. */
+      /* Un seul essai par titre (spec §11) : on note le titre refusé. Le
+         bouton cliqué reste connu via ``pending.where`` (posé par
+         ``sendDraw``) — à défaut (requête pas retrouvée), la section coach
+         est le meilleur repli. */
       state.drawing.denied_for = state.tv_symbol;
       setBanner('draw_login', true);
+      setDrawNote((pending && pending.where) || 'coach', t('banner.draw_login'));
       render();
       return;
     }
@@ -522,7 +563,9 @@
     }
     setBanner('draw_login', false);
     var count = Array.isArray(data.ids) ? data.ids.length : 0;
-    if (pending === 'apply' && count > 0) { toast(t('draw.done', { n: count })); }
+    if (pending && pending.type === 'apply' && count > 0) {
+      toast(t('draw.done', { n: count }));
+    }
     render();
   }
 
@@ -530,21 +573,53 @@
   /* Appels serveur                                                   */
   /* --------------------------------------------------------------- */
 
+  /**
+   * ``ok`` REFLÈTE le verdict de la machine à états ``lib/outage.js`` sur
+   * l'écran (bandeau + verrou du ticket) — elle ne le CALCULE pas pour la
+   * branche échec (c'est le travail de ``noteError``, seul appelant de
+   * ``markServer(false, ...)``). Un succès, lui, repart TOUJOURS à ``ok``
+   * immédiatement : ``markServer(true)`` est appelé depuis une dizaine
+   * d'appels réseau différents, jamais via ``noteError``, donc c'est ICI
+   * que la reprise doit être actée.
+   */
   function markServer(ok, error) {
-    state.server_ok = ok;
-    setBanner('server_down', !ok);
-    if (!ok && error) { debug('Omen injoignable', error.message || error); }
+    if (ok) {
+      var mod = lib('outage');
+      state.outage = mod ? mod.onSuccess(state.outage) : { status: 'ok', failures: 0, next_probe_at: null };
+      state.server_ok = true;
+      setBanner('server_down', false);
+      return;
+    }
+    state.server_ok = false;
+    setBanner('server_down', true);
+    if (error) { debug('Omen injoignable', error.message || error); }
   }
 
   /**
    * Une erreur d'appel n'est pas forcément une panne : un 401 ou un 404 prouve
-   * que l'Omen répond. Seuls le réseau muet et les 5xx verrouillent le ticket.
+   * que l'Omen répond. Seuls le réseau muet et les 5xx sont des candidats à
+   * une coupure — encore faut-il que ce soit le DEUXIÈME de suite : l'auto-
+   * déploiement de l'Omen redémarre le serveur à chaque push (quelques
+   * secondes de trou) et un blip isolé ne doit JAMAIS verrouiller le ticket
+   * ni afficher « Omen injoignable » (spec bug « bandeau posé au 1er échec,
+   * gardé 2 min »). ``lib/outage.js`` tient le compte ; seul un deuxième
+   * échec consécutif (état ``down``) pose le bandeau.
    */
   function noteError(error) {
     var status = (error && error.status) || 0;
-    if (status === 0 || status >= 500) { markServer(false, error); return; }
-    markServer(true);
-    debug('appel refusé', status, (error && error.detail) || '');
+    if (status !== 0 && status < 500) {
+      markServer(true);
+      debug('appel refusé', status, (error && error.detail) || '');
+      return;
+    }
+    var mod = lib('outage');
+    if (!mod) { markServer(false, error); return; }
+    state.outage = mod.onFailure(state.outage, Date.now());
+    if (state.outage.status === 'down') {
+      markServer(false, error);
+    } else {
+      debug('Omen suspect (pas encore de bandeau)', status, state.outage.failures);
+    }
   }
 
   /**
@@ -578,8 +653,15 @@
         && (Date.now() - state.brief_at) < BRIEF_REFRESH_MS) {
       return Promise.resolve(state.brief);
     }
+    /* La fiche sert aussi de SONDE de reprise (la boucle 1 s de ``boot()``
+       la rappelle quand ``lib/outage.js`` dit qu'un essai est dû) : sans ce
+       garde-fou, le minuteur périodique (5 min) ET la sonde pourraient
+       empiler deux ``GET /brief`` en vol en même temps. */
+    if (state.brief_inflight) { return Promise.resolve(state.brief); }
+    state.brief_inflight = true;
     return client.get('/brief', briefQuery())
       .then(function (data) {
+        state.brief_inflight = false;
         markServer(true);
         setBanner('token_expired', false);
         state.brief = data || null;
@@ -595,6 +677,7 @@
         return data;
       })
       .catch(function (error) {
+        state.brief_inflight = false;
         noteError(error);
         if (error && error.status === 401) { setBanner('token_expired', true); }
         render();
@@ -989,6 +1072,14 @@
     return bars;
   }
 
+  /** ``lib/bars.js`` n'expose pas de ``reset()`` (spec du module) : changer
+   *  de titre oublie l'instance, ``barsHandle()`` en recrée une fraîche au
+   *  prochain ``feedBars()``. Sans ça, l'ATR/spread d'un titre continuait de
+   *  peser sur le suivant. */
+  function resetBars() {
+    bars = null;
+  }
+
   /**
    * ``lib/ledger.js`` (lot ext-scalp) est FONCTIONNEL : ``open(order)`` rend
    * l'objet scalp, que ``sample``/``close``/``serialize`` reçoivent en premier
@@ -1136,7 +1227,11 @@
       warnings: [],
       needs_confirm: null,
       status: '',
-      thesis: ''
+      thesis: '',
+      /* Le titre POUR LEQUEL ce ticket a été ouvert : ``onTick`` s'en sert
+         pour détecter un ticket resté de l'ancien titre (bug du 11/09 —
+         stop/cible posés au prix d'un autre marché). */
+      symbol: state.symbol
     };
     /* Stop et cible proposés à ±1 ATR (jour) quand la fiche les donne. */
     var ta = (state.brief && state.brief.ta) ? state.brief.ta : {};
@@ -1501,27 +1596,43 @@
     return true;
   }
 
-  function sendDraw(commands) {
+  /** Note posée sous le bouton cliqué (même texte que le toast, mais qui
+   *  reste visible à l'écran — un toast qui a expiré en 9 s passait
+   *  facilement inaperçu). ``pruneDrawNote()`` la retire comme un toast
+   *  expiré. Ne rend JAMAIS elle-même (même convention que ``setBanner`` —
+   *  l'appelant décide quand repeindre). */
+  function setDrawNote(where, text) {
+    state.draw_note = { where: where || null, text: String(text || ''), at: Date.now() };
+  }
+
+  function sendDraw(commands, where) {
     if (!canDraw() || !commands || !commands.length) { return; }
     var requestId = uuid();
-    drawRequests[requestId] = 'apply';
+    drawRequests[requestId] = { type: 'apply', where: where || null };
     postToBridge('draw:apply', { id: requestId, commands: commands });
   }
 
-  function drawOrExplain(commands, emptyKey) {
+  function drawOrExplain(commands, emptyKey, where) {
     if (state.drawing.allowed === false) {
       setBanner('draw_login', true);
-      toast(t('banner.draw_login'), 'warn');
+      var loginText = t('banner.draw_login');
+      setDrawNote(where, loginText);
+      toast(loginText, 'warn');
       return;
     }
-    if (!commands || !commands.length) { toast(t(emptyKey)); return; }
-    sendDraw(commands);
+    if (!commands || !commands.length) {
+      var emptyText = t(emptyKey);
+      setDrawNote(where, emptyText);
+      toast(emptyText);
+      return;
+    }
+    sendDraw(commands, where);
   }
 
   function clearDrawings() {
     if (!state.drawing.available) { return; }
     var requestId = uuid();
-    drawRequests[requestId] = 'clear';
+    drawRequests[requestId] = { type: 'clear', where: null };
     postToBridge('draw:clear', { id: requestId });
   }
 
@@ -1533,7 +1644,7 @@
     drawOrExplain(draw.levels({
       entry: ticket.entry, stop: ticket.stop, target: ticket.target,
       side: ticket.side, qty: ticket.qty
-    }), 'draw.no_levels');
+    }), 'draw.no_levels', 'ticket');
   }
 
   function drawBets() {
@@ -1542,7 +1653,7 @@
     if (!state.brief) { toast(t('draw.no_bets')); return; }
     var hypotheses = Array.isArray(state.brief.hypotheses) ? state.brief.hypotheses : [];
     var nowSec = Math.floor(Date.now() / 1000);
-    drawOrExplain(draw.bets(hypotheses, state.price, nowSec), 'draw.no_bets');
+    drawOrExplain(draw.bets(hypotheses, state.price, nowSec), 'draw.no_bets', 'coach');
   }
 
   function drawScalpLevels() {
@@ -1555,7 +1666,7 @@
       day_high: ta.day_high === undefined ? callBars('dayHigh', null) : ta.day_high,
       day_low: ta.day_low === undefined ? callBars('dayLow', null) : ta.day_low,
       cme_gap: btc.cme_gap
-    }, Math.floor(Date.now() / 1000)), 'draw.no_levels');
+    }, Math.floor(Date.now() / 1000), state.price), 'draw.no_levels', 'scalp');
   }
 
   /* --------------------------------------------------------------- */
@@ -1576,6 +1687,17 @@
 
   function section(title, body) {
     return '<section class="omen-section"><h3>' + esc(title) + '</h3>' + body + '</section>';
+  }
+
+  /** La note posée par ``setDrawNote`` (spec « dessiner les paris ne dessine
+   *  rien, ça a l'air d'un bug ») — juste sous le bloc de boutons de la
+   *  section qui l'a déclenchée, seulement si elle correspond ET n'a pas
+   *  expiré (même fenêtre que les toasts, ``pruneDrawNote()`` la retire). */
+  function renderDrawNote(where) {
+    var note = state.draw_note;
+    if (!note || note.where !== where) { return ''; }
+    if ((Date.now() - note.at) >= TOAST_MS) { return ''; }
+    return '<p class="omen-note omen-warn">' + esc(note.text) + '</p>';
   }
 
   function renderBanners() {
@@ -1691,6 +1813,7 @@
     out.push(button('draw-bets', t('draw.bets'), ''));
     out.push(button('draw-clear', t('draw.clear'), 'omen-ghost'));
     out.push('</div>');
+    out.push(renderDrawNote('coach'));
 
     if (state.advice.status === 'pending') {
       out.push('<p class="omen-note">'
@@ -1904,6 +2027,7 @@
     out.push(button('cancel', t('ticket.cancel'), 'omen-ghost'));
     out.push(button('draw-levels', t('draw.levels'), 'omen-ghost'));
     out.push('</div>');
+    out.push(renderDrawNote('ticket'));
     return section(t('section.ticket'), out.join(''));
   }
 
@@ -2019,6 +2143,7 @@
       out.push(button('draw-scalp', t('draw.levels'), 'omen-ghost'));
       out.push('</div>');
     }
+    out.push(renderDrawNote('scalp'));
     var result = state.scalp.result;
     if (result) {
       out.push(row(t('scalp.result'), fmtNum(result.pnl_net, 2) + ' CHF ('
@@ -2069,6 +2194,19 @@
 
   function render() {
     if (!root) { return; }
+    /* ``root.innerHTML = html`` reconstruit TOUT le panneau (spec « ça a
+       l'air d'avoir rafraîchi la page ») : ``.omen-body`` (overflow-y auto)
+       perd sa position de défilement et remonte en haut à chaque clic qui
+       repeint (ex. « Dessiner les paris » sans pari ouvert). On la mémorise
+       AVANT le remplacement et on la réapplique sur le NOUVEAU ``.omen-body``
+       — ``try/catch`` : le DOM bouchon des tests peut ne pas avoir de
+       ``scrollTop``, ni même de vrai ``querySelector``. */
+    var scrollTop = null;
+    try {
+      var previousBody = root.querySelector('.omen-body');
+      if (previousBody) { scrollTop = previousBody.scrollTop; }
+    } catch (e) { debug('lecture du scrollTop impossible', e); }
+
     var html;
     if (state.collapsed) {
       html = styleTag() + '<div class="omen-wrap omen-collapsed">'
@@ -2085,6 +2223,13 @@
       root.innerHTML = html;
     } catch (e) {
       debug('rendu impossible', e);
+    }
+
+    if (!state.collapsed && scrollTop !== null && scrollTop !== undefined) {
+      try {
+        var nextBody = root.querySelector('.omen-body');
+        if (nextBody) { nextBody.scrollTop = scrollTop; }
+      } catch (e) { debug('report du scrollTop impossible', e); }
     }
   }
 
@@ -2527,7 +2672,15 @@
     every(AD_SWEEP_MS, adSweep);
     every(1000, function () {
       pruneToasts();
+      pruneDrawNote();
       if (state.mode === 'scalp') { refreshGuards(); checkIdleReview(); }
+      /* La fiche EST la sonde de reprise : un succès repasse ``outage`` à
+         ``ok`` (dans ``markServer``) et retire le bandeau tout seul.
+         ``refreshBrief`` refuse elle-même de s'empiler (``brief_inflight`). */
+      var outageLib = lib('outage');
+      if (outageLib && outageLib.shouldProbe(state.outage, Date.now())) {
+        refreshBrief(true);
+      }
     });
     debug('panneau monté');
   }
@@ -2552,6 +2705,14 @@
     touchIdle: touchIdle,
     checkIdleReview: checkIdleReview,
     adSweep: adSweep,
+    noteError: noteError,
+    markServer: markServer,
+    refreshBrief: refreshBrief,
+    drawBets: drawBets,
+    drawScalpLevels: drawScalpLevels,
+    drawTicketLevels: drawTicketLevels,
+    clearDrawings: clearDrawings,
+    pruneDrawNote: pruneDrawNote,
     state: state,
     boot: boot,
     render: render,

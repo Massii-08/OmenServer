@@ -93,6 +93,7 @@ require('../lib/symbols.js');
 require('../lib/alerts.js');
 require('../lib/api.js');
 require('../lib/draw.js');
+require('../lib/outage.js');
 
 const coach = require('../content.js');
 
@@ -133,6 +134,71 @@ test('le panneau est monté en shadow DOM et rendu', async () => {
   assert.ok(host.shadowRoot.listeners.click.length === 1, 'délégation du clic absente');
 });
 
+/*
+ * render() reconstruit TOUT le panneau (``root.innerHTML = html``) : sans
+ * garde-fou, ``.omen-body`` (overflow-y auto) perd sa position de défilement
+ * et remonte en haut à chaque repeint — vécu sur « Dessiner les paris » sans
+ * pari ouvert (le panneau se comporte comme s'il avait rafraîchi la page).
+ *
+ * Le bouchon DOM de ce fichier a un ``querySelector`` DÉLIBÉRÉMENT muet
+ * (`() => null`, pas un vrai moteur de sélecteurs) et un ``innerHTML`` qui
+ * n'est qu'une chaîne : impossible d'y trouver un ``.omen-body`` réel. On le
+ * simule ICI, localement (jamais dans le bouchon partagé par tous les autres
+ * tests), avec deux objets DISTINCTS pour l'ancien et le nouveau nœud — sinon
+ * un ``render()`` qui ne reporterait RIEN passerait quand même le test, le
+ * même objet lu puis relu portant encore sa valeur de départ.
+ */
+test('render() reporte le scrollTop de l’ancien .omen-body vers le nouveau', () => {
+  const root = shadow();
+  assert.ok(root, 'pas de racine d’ombre');
+
+  const before = { scrollTop: 120 };     /* l'ancien nœud, tel qu'avant le clic */
+  const after = { scrollTop: 0 };        /* le nœud RECRÉÉ par innerHTML =, neuf */
+  let replaced = false;
+
+  const originalQuerySelector = root.querySelector;
+  root.querySelector = function (selector) {
+    if (selector !== '.omen-body') { return originalQuerySelector.call(root, selector); }
+    return replaced ? after : before;
+  };
+
+  let storedHtml = root.innerHTML;
+  Object.defineProperty(root, 'innerHTML', {
+    configurable: true,
+    get: function () { return storedHtml; },
+    set: function (value) { storedHtml = value; replaced = true; }
+  });
+
+  try {
+    coach.render();
+    assert.strictEqual(after.scrollTop, 120,
+                       'le NOUVEAU .omen-body n’a pas reçu le scrollTop de l’ancien');
+    assert.strictEqual(before.scrollTop, 120, 'l’ancien ne doit pas être modifié');
+  } finally {
+    root.querySelector = originalQuerySelector;
+    delete root.innerHTML;
+    root.innerHTML = storedHtml;
+  }
+});
+
+test('render() replié ne touche à aucun scrollTop (pas de .omen-body à replier)',
+     () => {
+  const root = shadow();
+  coach.state.collapsed = true;
+  try {
+    assert.doesNotThrow(function () { coach.render(); });
+    assert.ok(root.innerHTML.indexOf('omen-collapsed') !== -1);
+  } finally {
+    coach.state.collapsed = false;
+    coach.render();
+  }
+});
+
+test('render() ne lève jamais, même quand .omen-body est introuvable (bouchon dégradé)',
+     () => {
+  assert.doesNotThrow(function () { coach.render(); });
+});
+
 test('sans profil de frais ni token, les bandeaux le disent', async () => {
   await settled();
   assert.ok(Object.prototype.hasOwnProperty.call(coach.state.banners, 'no_fee_profile'));
@@ -154,6 +220,16 @@ test('un message du pont bien signé met la fiche à jour', async () => {
   assert.strictEqual(coach.state.symbol, 'BTC-USD');
   assert.strictEqual(coach.state.kind, 'crypto');
   assert.strictEqual(coach.state.mode, 'scalp');
+
+  /* Ce changement de titre vient de faire échouer son tout premier appel
+     réseau (aucun ``chrome.*`` dans ce harnais, ``GET /brief`` rejette) :
+     un blip isolé doit rester invisible (spec bug « Omen injoignable posé
+     au 1er échec »), preuve prise dans le flux RÉEL (pas un appel direct à
+     ``noteError``). */
+  assert.strictEqual(coach.state.outage.status, 'suspect',
+                     'le premier échec réseau doit être vu, sans encore alarmer');
+  assert.ok(!Object.prototype.hasOwnProperty.call(coach.state.banners, 'server_down'),
+            'un premier échec ne doit pas lever le bandeau « Omen injoignable »');
 });
 
 test('un titre non mappable lève le bandeau « titre non suivi »', async () => {
@@ -172,6 +248,53 @@ test('les ticks nourrissent le prix et gardent le précédent', async () => {
   assert.strictEqual(coach.state.price, 101);
   assert.strictEqual(coach.state.prev_price, 100);
   assert.strictEqual(coach.state.bid, 100.9);
+});
+
+test('changer de titre en scalp ne laisse jamais un ticket au prix de l’ancien titre',
+     async () => {
+  /* Titre A : EURUSD (forex), résolution scalp. */
+  sendFromBridge({ type: 'tv:symbol', tv_symbol: 'FX:EURUSD', resolution: '1' });
+  await settled();
+  assert.strictEqual(coach.state.symbol, 'EURUSD=X');
+  assert.strictEqual(coach.state.mode, 'scalp');
+  assert.strictEqual(coach.state.ticket, null, 'aucun ticket avant le premier tick');
+
+  sendFromBridge({ type: 'tv:tick', price: 1.16043, bid: 1.16040, ask: 1.16046,
+                   ts: Date.now() });
+  assert.ok(coach.state.ticket, 'le premier tick du titre A doit ouvrir un ticket');
+  assert.strictEqual(coach.state.ticket.symbol, 'EURUSD=X');
+  assert.strictEqual(coach.state.ticket.entry, 1.16043);
+
+  /* Titre B : BTC-USD, magnitude de prix totalement différente. Un autre
+     ticker TradingView que le test « mode scalp de bout en bout » plus bas
+     (``BINANCE:BTCUSDT.P``) pour ne pas fausser SON changement de titre. */
+  sendFromBridge({ type: 'tv:symbol', tv_symbol: 'COINBASE:BTCUSD', resolution: '1' });
+  await settled();
+  assert.strictEqual(coach.state.symbol, 'BTC-USD');
+  assert.strictEqual(coach.state.ticket, null,
+                     'le ticket du titre A doit être purgé au changement de titre');
+  assert.strictEqual(coach.state.price, null,
+                     'le prix du titre A ne doit pas survivre au changement de titre');
+  assert.strictEqual(coach.state.prev_price, null);
+  assert.strictEqual(coach.state.bid, null);
+  assert.strictEqual(coach.state.ask, null);
+
+  sendFromBridge({ type: 'tv:tick', price: 77203, bid: 77200.5, ask: 77205.5,
+                   ts: Date.now() });
+  assert.ok(coach.state.ticket, 'le premier tick du titre B doit ouvrir un ticket');
+  assert.strictEqual(coach.state.ticket.symbol, 'BTC-USD');
+  assert.strictEqual(coach.state.ticket.entry, 77203);
+
+  /* Stop/cible calculés sur 77203 (±1 %, pas d’ATR jour puisque la fiche
+     n’est pas encore arrivée) — JAMAIS sur 1,16043. */
+  const expectedStop = 77203 - (77203 * 0.01);
+  const expectedTarget = 77203 + (77203 * 0.01 * 2);
+  assert.ok(Math.abs(coach.state.ticket.stop - expectedStop) < 1e-6,
+            'stop attendu ' + expectedStop + ', reçu ' + coach.state.ticket.stop);
+  assert.ok(Math.abs(coach.state.ticket.target - expectedTarget) < 1e-6,
+            'cible attendue ' + expectedTarget + ', reçue ' + coach.state.ticket.target);
+  assert.notStrictEqual(coach.state.ticket.stop, 1.16043 - (1.16043 * 0.01),
+                        'le stop du titre B a été calculé sur le prix du titre A');
 });
 
 test('mode scalp uniquement sous 5 minutes', () => {
@@ -789,4 +912,214 @@ test('fiche pas encore arrivée : le panneau se tait, le clic refuse quand même
   assert.strictEqual(coach.state.scalp.open, false, 'ouvert sans savoir l’équité');
   const refusal = coach.state.toasts[coach.state.toasts.length - 1];
   assert.ok(refusal && refusal.text.indexOf('Capital insuffisant') === 0);
+});
+
+/* --------------------------------------------------------------------- *
+ * Omen injoignable : un blip isolé reste invisible (lib/outage.js).
+ *
+ * L'auto-déploiement de l'Omen redémarre le serveur à chaque push sur
+ * ``main`` (quelques secondes de trou) — avant ce fix, le tout premier appel
+ * raté pendant ce trou verrouillait le ticket et affichait le bandeau
+ * jusqu'au prochain appel réussi (5 min plus tard, ou 2 min pour le focus).
+ * État remis à zéro EXPLICITEMENT : les tests précédents ont déjà fait
+ * échouer d'autres appels réseau (aucun ``chrome.*`` dans ce harnais).
+ * --------------------------------------------------------------------- */
+
+test('un premier échec reste invisible, un second lève le bandeau, un succès l’efface',
+     () => {
+  coach.state.outage = { status: 'ok', failures: 0, next_probe_at: null };
+  coach.state.server_ok = true;
+  delete coach.state.banners.server_down;
+
+  coach.noteError({ status: 0 });
+  assert.strictEqual(coach.state.outage.status, 'suspect');
+  assert.strictEqual(coach.state.outage.failures, 1);
+  assert.ok(!Object.prototype.hasOwnProperty.call(coach.state.banners, 'server_down'),
+            'un premier échec ne doit pas lever le bandeau');
+  assert.strictEqual(coach.state.server_ok, true,
+                     'un blip isolé ne doit pas verrouiller le ticket');
+
+  coach.noteError({ status: 0 });
+  assert.strictEqual(coach.state.outage.status, 'down');
+  assert.strictEqual(coach.state.outage.failures, 2);
+  assert.ok(Object.prototype.hasOwnProperty.call(coach.state.banners, 'server_down'),
+            'un second échec de suite doit lever le bandeau');
+  assert.strictEqual(coach.state.server_ok, false);
+
+  coach.markServer(true);
+  assert.ok(!Object.prototype.hasOwnProperty.call(coach.state.banners, 'server_down'),
+            'un succès doit retirer le bandeau');
+  assert.strictEqual(coach.state.server_ok, true);
+  assert.strictEqual(coach.state.outage.status, 'ok');
+  assert.strictEqual(coach.state.outage.failures, 0);
+});
+
+test('un 5xx compte comme un échec réseau, un 4xx prouve au contraire que l’Omen répond',
+     () => {
+  coach.state.outage = { status: 'ok', failures: 0, next_probe_at: null };
+  delete coach.state.banners.server_down;
+
+  coach.noteError({ status: 503 });
+  assert.strictEqual(coach.state.outage.status, 'suspect', '503 doit compter comme un échec');
+
+  /* Un 404 (ou 401) prouve que le serveur RÉPOND : ça efface le doute, ce
+     n'est jamais un pas de plus vers le bandeau. */
+  coach.noteError({ status: 404 });
+  assert.strictEqual(coach.state.outage.status, 'ok',
+                     'un 404 doit effacer le doute laissé par l’échec précédent');
+  assert.ok(!Object.prototype.hasOwnProperty.call(coach.state.banners, 'server_down'));
+});
+
+/* --------------------------------------------------------------------- *
+ * Note inline sous le bouton « Dessiner… » cliqué (state.draw_note).
+ *
+ * Vécu : Massii clique « Dessiner les paris » sur BTC-USD sans pari ouvert
+ * -> ``drawOrExplain`` toaste puis ``render()`` reconstruit tout le panneau
+ * -> le toast (9 s) passe facilement inaperçu, ça se lit comme « ça bug,
+ * rien ne s'est dessiné ». La note reste À L'ÉCRAN, sous le bloc de boutons
+ * de la section qui l'a déclenchée.
+ * --------------------------------------------------------------------- */
+
+test('« Dessiner les paris » sans pari ouvert pose une note APRÈS les boutons coach',
+     () => {
+  coach.state.mode = 'swing';
+  coach.state.brief = { news: [], calendar: [], ideas: [], hypotheses: [], alerts: [] };
+  coach.drawBets();
+  assert.ok(coach.state.draw_note, 'aucune note posée');
+  assert.strictEqual(coach.state.draw_note.where, 'coach');
+
+  const lastToast = coach.state.toasts[coach.state.toasts.length - 1];
+  assert.strictEqual(coach.state.draw_note.text, lastToast.text,
+                     'la note doit porter le MÊME texte que le toast');
+  coach.state.toasts = [];      /* le toast porte le MÊME texte : évite un faux positif
+                                    dans la recherche ci-dessous, qui cherche le <p> */
+
+  coach.render();
+  const html = shadow().innerHTML;
+  const actionsIdx = html.indexOf('data-omen-act="draw-clear"');
+  const notePara = '<p class="omen-note omen-warn">' + coach.esc(coach.state.draw_note.text)
+    + '</p>';
+  const noteIdx = html.indexOf(notePara);
+  assert.ok(actionsIdx !== -1 && noteIdx !== -1 && noteIdx > actionsIdx,
+            'la note n’apparaît pas après le bloc de boutons coach');
+
+  coach.state.draw_note = null;
+});
+
+test('la note ne s’affiche QUE dans la section qui l’a déclenchée', () => {
+  coach.state.mode = 'swing';
+  coach.state.draw_note = { where: 'scalp', text: 'texte-scalp-unique-xyz',
+                            at: Date.now() };
+  coach.render();
+  /* Mode swing : renderScalp() n'est jamais appelé -> une note "scalp" n'a
+     nulle part où s'afficher, elle ne doit fuiter dans AUCUNE autre section. */
+  assert.strictEqual(shadow().innerHTML.indexOf('texte-scalp-unique-xyz'), -1,
+                     'une note "scalp" a fui dans une section qui n’est pas la sienne');
+  coach.state.draw_note = null;
+  coach.render();
+});
+
+test('la note expire comme un toast, et pruneDrawNote() la retire activement', () => {
+  coach.state.mode = 'swing';
+  coach.state.draw_note = { where: 'coach', text: 'note-expiree-test',
+                            at: Date.now() - 20000 };
+  coach.render();
+  assert.strictEqual(shadow().innerHTML.indexOf('note-expiree-test'), -1,
+                     'une note expirée doit disparaître du rendu');
+
+  /* pruneDrawNote() la purge activement (comme pruneToasts()) : un panneau
+     resté ouvert sans repeint ne doit pas garder une note fantôme. */
+  coach.state.draw_note = { where: 'coach', text: 'note-a-purger', at: Date.now() - 20000 };
+  coach.pruneDrawNote();
+  assert.strictEqual(coach.state.draw_note, null, 'la note expirée n’a pas été purgée');
+});
+
+test('dessin refusé (pas connecté à TradingView) : la note ET le toast portent le même texte, la note s’affiche après les boutons scalp',
+     () => {
+  coach.state.mode = 'scalp';
+  coach.state.scalp.open = false;
+  coach.state.drawing.allowed = false;
+  const before = coach.state.toasts.length;
+
+  coach.drawScalpLevels();
+  assert.strictEqual(coach.state.draw_note.where, 'scalp');
+  assert.ok(coach.state.toasts.length > before, 'le toast a disparu');
+  const lastToast = coach.state.toasts[coach.state.toasts.length - 1];
+  assert.strictEqual(coach.state.draw_note.text, lastToast.text);
+  coach.state.toasts = [];      /* même texte que le toast : sans ça la recherche du
+                                    <p> ci-dessous matcherait le <div> du toast */
+
+  coach.render();
+  const html = shadow().innerHTML;
+  const actionsIdx = html.indexOf('data-omen-act="draw-scalp"');
+  const notePara = '<p class="omen-note omen-warn">' + coach.esc(coach.state.draw_note.text)
+    + '</p>';
+  const noteIdx = html.indexOf(notePara);
+  assert.ok(actionsIdx !== -1 && noteIdx !== -1 && noteIdx > actionsIdx,
+            'la note n’apparaît pas après les boutons scalp');
+
+  coach.state.drawing.allowed = true;
+  coach.state.mode = 'swing';
+  coach.state.draw_note = null;
+});
+
+test('« Dessiner les niveaux » du ticket swing sans niveau valable pose la note "ticket"',
+     () => {
+  coach.state.mode = 'swing';
+  coach.state.ticket = { side: 'buy', entry: null, stop: null, target: null,
+                         qty: null, precheck: null, warnings: [], needs_confirm: null,
+                         status: '', thesis: '', symbol: coach.state.symbol };
+  coach.drawTicketLevels();
+  assert.strictEqual(coach.state.draw_note.where, 'ticket');
+  const lastToast = coach.state.toasts[coach.state.toasts.length - 1];
+  assert.strictEqual(coach.state.draw_note.text, lastToast.text);
+  coach.state.toasts = [];      /* même texte que le toast : sans ça la recherche du
+                                    <p> ci-dessous matcherait le <div> du toast */
+
+  coach.render();
+  const html = shadow().innerHTML;
+  const actionsIdx = html.indexOf('data-omen-act="draw-levels"');
+  const notePara = '<p class="omen-note omen-warn">' + coach.esc(coach.state.draw_note.text)
+    + '</p>';
+  const noteIdx = html.indexOf(notePara);
+  assert.ok(actionsIdx !== -1 && noteIdx !== -1 && noteIdx > actionsIdx,
+            'la note n’apparaît pas après les boutons du ticket');
+
+  coach.state.ticket = null;
+  coach.state.draw_note = null;
+});
+
+test('onDrawResult(not_authenticated) pose la note dans la section qui a demandé le dessin',
+     () => {
+  coach.state.mode = 'scalp';
+  coach.state.drawing.allowed = true;
+  coach.state.drawing.available = true;
+  coach.state.drawing.denied_for = null;
+  coach.state.price = 77216;
+  coach.state.brief = { ta: { vwap: 77216 }, btc: {} };
+
+  const before = posted.length;
+  coach.drawScalpLevels();
+  const sent = posted.slice(before).filter((m) => m.type === 'draw:apply').pop();
+  assert.ok(sent, 'aucune commande de dessin envoyée au pont (niveaux vides ?)');
+
+  sendFromBridge({ type: 'draw:result', id: sent.id, error: 'not_authenticated' });
+  assert.ok(coach.state.draw_note, 'aucune note posée par onDrawResult');
+  assert.strictEqual(coach.state.draw_note.where, 'scalp',
+                     'la note doit porter le "where" de la requête d’origine (scalp)');
+
+  coach.state.mode = 'swing';
+  coach.state.draw_note = null;
+  coach.state.drawing.denied_for = null;
+});
+
+test('onDrawResult(not_authenticated) retombe sur "coach" quand la requête d’origine est introuvable',
+     () => {
+  coach.state.draw_note = null;
+  sendFromBridge({ type: 'draw:result', id: 'requete-jamais-envoyee',
+                   error: 'not_authenticated' });
+  assert.ok(coach.state.draw_note, 'aucune note posée');
+  assert.strictEqual(coach.state.draw_note.where, 'coach');
+  coach.state.draw_note = null;
+  coach.state.drawing.denied_for = null;
 });

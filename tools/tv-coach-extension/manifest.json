@@ -37,6 +37,7 @@
         "lib/note.js",
         "lib/idle.js",
         "lib/ads.js",
+        "lib/outage.js",
         "content.js"
       ],
       "css": ["panel.css"],
