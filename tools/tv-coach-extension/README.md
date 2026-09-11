@@ -159,6 +159,11 @@ titre en dollars est compté plus cher qu'il ne l'est et on achète moins. Ce
 taux (`quote.fx_to_chf`) vient de la fiche ; quand le serveur ne l'a pas, il le
 dit dans `degraded` au lieu de l'inventer.
 
+Le **remplissage** suit la même logique de précision : ouvrir et fermer un
+scalp se fait au bid/ask réel (`fillPrice`) — achat au BUY, vente au SELL —
+jamais au dernier échange, dont l'écart est un coût et non un détail ; seuls
+les échantillons 1 Hz du suivi (MAE/MFE) restent au dernier échange.
+
 > Pourquoi c'est écrit noir sur blanc : le 11/09, faute de ticket, le panneau
 > ouvrait « 1 » — soit **un bitcoin**, 62 770 CHF d'exposition sur un compte de
 > 10 000 CHF, refermé 43 secondes plus tard pour 326 CHF de frais.

@@ -1386,6 +1386,36 @@
     }
   }
 
+  /**
+   * Le prix RÉELLEMENT pris à l'ouverture/fermeture d'un scalp : un preneur
+   * achète au BUY (``ask``) et vend au SELL (``bid``) — jamais au dernier
+   * échange (``state.price``), que le ledger utilisait jusqu'ici pour LES
+   * DEUX sens. L'écart bid/ask est un coût réel, pas un détail.
+   *
+   *   OUVRIR (``action === 'open'``)  : buy -> ask, sell -> bid ;
+   *   FERMER (``action === 'close'``) : buy -> bid,  sell -> ask
+   *   (fermer un ``buy``, c'est VENDRE ; fermer un ``sell``, c'est ACHETER).
+   *
+   * Repli sur ``state.price`` quand la pastille est absente, non finie,
+   * ≤ 0, ou ABERRANTE (> 1 % d'écart avec ``state.price``) — une pastille
+   * figée (bid/ask qui n'a plus bougé depuis un changement de titre, ou une
+   * page TradingView qui ne l'expose plus) ne doit jamais fabriquer un
+   * remplissage faux plutôt qu'un repli honnête.
+   */
+  function fillPrice(side, action) {
+    var opening = action === 'open';
+    var isSell = side === 'sell';
+    var quote = num(opening ? (isSell ? state.bid : state.ask)
+                             : (isSell ? state.ask : state.bid));
+    if (quote === null || quote <= 0) { return state.price; }
+    var reference = num(state.price);
+    if (reference !== null && reference > 0
+        && (Math.abs(quote - reference) / reference) > 0.01) {
+      return state.price;
+    }
+    return quote;
+  }
+
   function openScalp(side) {
     /* Sans profil de frais, le ticket REFUSE d'ouvrir un scalp (spec §6.4). */
     if (!state.settings.fee_profile) { toast(t('scalp.no_profile'), 'warn'); return; }
@@ -1411,7 +1441,7 @@
       state.scalp.handle = mod.open({
         side: side,
         qty: qty,
-        price: state.price,
+        price: fillPrice(side, 'open'),
         ts_ms: Date.now(),
         fee_profile: state.settings.fee_profile,
         fee_pct_per_side: feePctPerSide()
@@ -1444,7 +1474,7 @@
     if (!state.scalp.open || !mod || !handle) { return; }
     var result = null;
     try {
-      result = mod.close(handle, state.price, Date.now());
+      result = mod.close(handle, fillPrice(handle.side, 'close'), Date.now());
     } catch (e) {
       debug('ledger.close refusé', e);
       return;
@@ -2109,6 +2139,17 @@
     }
     out.push(renderTicketFields());
     if (state.scalp.open) {
+      /* Le prix RÉELLEMENT pris (bid/ask, ``fillPrice``) — jamais le
+         dernier échange, que ``handle.entryPrice`` ne porte plus depuis
+         cette même retouche. */
+      if (state.scalp.handle) {
+        var filledSideKey = state.scalp.handle.side === 'sell'
+          ? 'scalp.side_bid' : 'scalp.side_ask';
+        out.push('<p class="omen-note">' + esc(t('scalp.filled_at', {
+          price: fmtPrice(state.scalp.handle.entryPrice),
+          side_label: t(filledSideKey)
+        })) + '</p>');
+      }
       out.push('<div class="omen-actions">');
       out.push(button('scalp-close', t('scalp.close'), 'omen-danger'));
       out.push(button('draw-scalp', t('draw.levels'), 'omen-ghost'));
@@ -2438,8 +2479,13 @@
      dialogues TradingView se ferment tous à Échap,
      ``CLOSE_POPUPS_AND_DIALOGS_COMMAND``) est le seul repère qui lui reste,
      cherché n'importe où dans la page (pas seulement sous
-     ``#overlap-manager-root``, dont on ne sait pas s'il y mounte). */
-  var BODY_DIALOG_SELECTOR = '[data-focus-trap], [role="dialog"], [aria-modal="true"]';
+     ``#overlap-manager-root``, dont on ne sait pas s'il y mounte). Le VRAI
+     paywall (11/09) prouve qu'un dialogue peut porter ``data-dialog-name``
+     SANS aucun des trois autres — ``MARKED_SELECTOR`` sert deux fois : la
+     recherche dans ``body``, ET reconnaître un nœud déjà marqué (voir
+     ``measuredNodeFor``). */
+  var MARKED_SELECTOR =
+    '[data-focus-trap], [role="dialog"], [aria-modal="true"], [data-dialog-name]';
   var NAME_DESCENDANT_SELECTOR = '[data-dialog-name],[data-name],[data-qa-id]';
   var NAME_ATTRS = ['data-dialog-name', 'data-name', 'data-qa-id', 'id'];
   var NAME_DESCENDANTS_MAX = 10;
@@ -2450,6 +2496,7 @@
   var DIALOG_MIN_HEIGHT = 120;
   var DIALOG_TEXT_MAX = 600;
   var DIALOG_BUTTONS_MAX = 20;
+  var MEASURE_MAX_DEPTH = 3;
   var ESCAPE_RETRY_MS = 2000;
 
   /* Boutons déjà cliqués : un toast qui réapparaît est un NOUVEAU nœud, et
@@ -2576,15 +2623,76 @@
     return ads;
   }
 
-  /** Un candidat passe la garde de TAILLE puis devient un ``{id,name,text,
-   *  buttons}`` — dédoublonné par ``seen`` quel que soit le CHEMIN qui l'a
-   *  trouvé (enfant direct d'overlap, ou remonté depuis un focus-trap). Le
-   *  nom/texte pub reste vérifié par ``lib/ads.js`` : ici, seule la taille
-   *  écarte — jamais « fermer tout ce qui est grand ». */
+  function isMarked(node) {
+    return !!(attr(node, 'data-dialog-name') || attr(node, 'role') === 'dialog'
+      || attr(node, 'aria-modal') === 'true' || attr(node, 'data-focus-trap'));
+  }
+
+  function boxOf(node) {
+    return (node && typeof node.getBoundingClientRect === 'function')
+      ? node.getBoundingClientRect() : null;
+  }
+
+  function boxArea(box) {
+    return (box && isFinite(box.width) && isFinite(box.height)) ? box.width * box.height : -1;
+  }
+
+  /** Le plus grand descendant — DIRECT ou profond — parmi les
+   *  ``maxDepth`` premiers niveaux (BFS : un niveau à la fois, le meilleur
+   *  toutes profondeurs confondues gagne). Repli du paywall (11/09) quand
+   *  RIEN n'est marqué nulle part : le voile+dialogue plein écran reste le
+   *  plus grand rectangle du sous-arbre proche, la pastille visible
+   *  (616×708) est plus profonde que ``maxDepth`` et n'a pas besoin d'être
+   *  atteinte — son ANCÊTRE plein écran suffit à passer la garde de taille. */
+  function largestDescendant(node, maxDepth) {
+    var best = null;
+    var bestArea = -1;
+    var frontier = [node];
+    for (var depth = 1; depth <= maxDepth && frontier.length; depth += 1) {
+      var next = [];
+      for (var i = 0; i < frontier.length; i += 1) {
+        var kids = frontier[i].children || [];
+        for (var k = 0; k < kids.length; k += 1) {
+          var kid = kids[k];
+          var area = boxArea(boxOf(kid));
+          if (area > bestArea) { bestArea = area; best = kid; }
+          next.push(kid);
+        }
+      }
+      frontier = next;
+    }
+    return best;
+  }
+
+  /** Le nœud à MESURER pour la garde de taille — jamais forcément
+   *  l'enfant direct d'overlap-manager-root lui-même, qui n'est souvent
+   *  qu'un PORTAIL 0×0 (vécu : le vrai paywall TradingView du 11/09, capturé
+   *  à l'écran chez Massii, ``div[data-id="…"]`` 0×0 -> ``div[data-dialog-
+   *  name="gopro"]`` 1440×782 -> … -> panneau visible 616×708) :
+   *    1. lui-même, s'il est déjà marqué ;
+   *    2. sinon son premier descendant marqué (ordre du document) ;
+   *    3. sinon son plus grand descendant parmi les 3 premiers niveaux.
+   *  Le ``name``/``text``/les boutons restent lus sur ``node`` lui-même
+   *  (``dialogName``/``buttonSnapshot`` traversent déjà tout le sous-arbre) —
+   *  seule la garde de TAILLE change de nœud. */
+  function measuredNodeFor(node) {
+    if (isMarked(node)) { return node; }
+    var marked = (typeof node.querySelector === 'function')
+      ? node.querySelector(MARKED_SELECTOR) : null;
+    if (marked) { return marked; }
+    return largestDescendant(node, MEASURE_MAX_DEPTH) || node;
+  }
+
+  /** Un candidat passe la garde de TAILLE (mesurée sur ``measuredNodeFor``,
+   *  jamais forcément ``child`` lui-même) puis devient un ``{id,name,text,
+   *  buttons}`` LU SUR ``child`` — dédoublonné par ``seen`` quel que soit le
+   *  CHEMIN qui l'a trouvé (enfant direct d'overlap, ou remonté depuis un
+   *  focus-trap/data-dialog-name). Le nom/texte pub reste vérifié par
+   *  ``lib/ads.js`` : ici, seule la taille écarte — jamais « fermer tout ce
+   *  qui est grand ». */
   function collectDialog(child, seen, dialogs, nodeMap) {
     if (!child || seen.indexOf(child) !== -1) { return; }
-    var box = typeof child.getBoundingClientRect === 'function'
-      ? child.getBoundingClientRect() : null;
+    var box = boxOf(measuredNodeFor(child));
     if (!box || box.width < DIALOG_MIN_WIDTH || box.height < DIALOG_MIN_HEIGHT) { return; }
     seen.push(child);
     var id = 'dlg' + dialogs.length;
@@ -2625,7 +2733,7 @@
       collectDialog(child, seen, dialogs, nodeMap);
     }
 
-    var marked = document.querySelectorAll(BODY_DIALOG_SELECTOR);
+    var marked = document.querySelectorAll(MARKED_SELECTOR);
     for (i = 0; i < marked.length; i += 1) {
       if (isInsideOwnPanel(marked[i])) { continue; }
       var container = topLevelContainer(marked[i], overlap);

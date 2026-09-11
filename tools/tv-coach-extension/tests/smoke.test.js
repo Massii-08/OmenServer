@@ -785,6 +785,139 @@ test('adSweep ferme le toast pub et le pop-up « sans pub », et rien d’autre'
   }
 });
 
+/* --------------------------------------------------------------------- *
+ * Le VRAI paywall gopro capturé à l'écran chez Massii (11/09) : un
+ * PORTAIL 0×0 en enfant direct d'#overlap-manager-root, le dialogue
+ * (data-dialog-name="gopro", 1440×782) plusieurs niveaux plus bas, des
+ * boutons de carrousel (Pause + deux flèches, texte vide) à côté du vrai
+ * bouton de fermeture (aria-label « Fermeture », data-qa-id contenant
+ * « close »). L'ancienne détection mesurait le portail lui-même (0×0) et
+ * écartait tout le dialogue.
+ * --------------------------------------------------------------------- */
+
+test('adSweep ferme le VRAI paywall gopro (portail 0×0 -> dialogue data-dialog-name="gopro")',
+     () => {
+  const clicks = [];
+  const fakeButton = (spec) => ({
+    getAttribute: (name) => (Object.prototype.hasOwnProperty.call(spec, name) ? spec[name] : null),
+    textContent: spec.text || '',
+    click: () => { clicks.push(spec['data-qa-id'] || spec['aria-label'] || spec.text || ''); }
+  });
+
+  const closeBtn = fakeButton({ 'aria-label': 'Fermeture',
+                                'data-qa-id': 'promo-dialog-close-button', text: '' });
+  const pauseBtn = fakeButton({ 'aria-label': 'Pause', text: '' });
+  const leftBtn = fakeButton({ text: '' });
+  const rightBtn = fakeButton({ text: '' });
+  const upgradeBtn = fakeButton({ 'data-qa-id': 'upgrade_paywall_button',
+                                  'data-offer-kind': 'trial',
+                                  text: 'Upgradez pour un accès sans publicité' });
+  const buttons = [closeBtn, pauseBtn, leftBtn, rightBtn, upgradeBtn];
+
+  const paywallText = 'Sans publicité. Nulle part. Les annonces sont importantes, mais avec '
+    + 'nos plans upgradés vous ne les verrez plus.';
+
+  /* Le dialogue lui-même : marqué data-dialog-name, 1440×782 (voile +
+     dialogue plein écran). C'est LUI que la garde de taille doit mesurer —
+     jamais le portail 0×0 qui le contient. */
+  const dialogDiv = {
+    getAttribute: (name) => (name === 'data-dialog-name' ? 'gopro' : null),
+    children: [],
+    getBoundingClientRect: () => ({ width: 1440, height: 782 }),
+    textContent: paywallText,
+    querySelectorAll: () => [],
+    querySelector: () => null
+  };
+  const portal = {
+    getAttribute: (name) => (name === 'data-id' ? '5HZcv8THU4Yu7B_5K8y6X' : null),
+    children: [dialogDiv],
+    getBoundingClientRect: () => ({ width: 0, height: 0 }),   /* le portail : 0×0 */
+    textContent: paywallText,
+    querySelectorAll: (selector) => {
+      if (selector.indexOf('button') === 0) { return buttons; }
+      if (selector.indexOf('[data-dialog-name]') === 0) { return [dialogDiv, closeBtn, upgradeBtn]; }
+      return [];
+    },
+    querySelector: (selector) => (selector.indexOf('[data-focus-trap]') === 0 ? dialogDiv : null)
+  };
+
+  const overlap = { children: [portal] };
+  documentStub.getElementById = (id) => (id === 'overlap-manager-root' ? overlap : null);
+  const savedQuerySelectorAll = documentStub.querySelectorAll;
+  documentStub.querySelectorAll = () => [];
+
+  try {
+    coach.state.ads_closed = 0;
+    coach.state.settings.ads_auto_close = true;
+    coach.adSweep();
+    assert.deepStrictEqual(clicks, ['promo-dialog-close-button'],
+                           'seul le bouton de fermeture doit être cliqué (jamais Pause/carrousel/Upgradez)');
+    assert.strictEqual(coach.state.ads_closed, 1);
+    assert.ok(shadow().innerHTML.indexOf('Pubs fermées : 1') !== -1,
+              'la ligne « Pubs fermées » manque en pied de panneau');
+  } finally {
+    delete documentStub.getElementById;
+    documentStub.querySelectorAll = savedQuerySelectorAll;
+    coach.state.settings.ads_auto_close = true;
+    coach.state.ads_closed = 0;
+    coach.render();
+  }
+});
+
+test('adSweep ferme un paywall SANS data-dialog-name (repli sur le plus grand descendant + texte)',
+     () => {
+  const clicks = [];
+  const fakeButton = (spec) => ({
+    getAttribute: (name) => (Object.prototype.hasOwnProperty.call(spec, name) ? spec[name] : null),
+    textContent: spec.text || '',
+    click: () => { clicks.push(spec['data-qa-id'] || spec['aria-label'] || spec.text || ''); }
+  });
+  const closeBtn = fakeButton({ 'aria-label': 'Fermeture',
+                                'data-qa-id': 'promo-dialog-close-button', text: '' });
+
+  /* Aucun marqueur nulle part (ni data-dialog-name, ni role, ni aria-modal,
+     ni data-focus-trap) : seuls la TAILLE (plus grand descendant des 3
+     premiers niveaux) et le TEXTE (« Sans publicité ») permettent de le
+     reconnaître comme dialogue pub. */
+  const panel = {
+    getAttribute: () => null, children: [],
+    getBoundingClientRect: () => ({ width: 1440, height: 782 }),
+    textContent: 'Sans publicité'
+  };
+  const wrapper = {
+    getAttribute: () => null, children: [panel],
+    getBoundingClientRect: () => ({ width: 0, height: 0 }),
+    textContent: 'Sans publicité'
+  };
+  const portal = {
+    getAttribute: () => null,
+    children: [wrapper],
+    getBoundingClientRect: () => ({ width: 0, height: 0 }),
+    textContent: 'Sans publicité',
+    querySelectorAll: (selector) => (selector.indexOf('button') === 0 ? [closeBtn] : []),
+    querySelector: () => null
+  };
+
+  const overlap = { children: [portal] };
+  documentStub.getElementById = (id) => (id === 'overlap-manager-root' ? overlap : null);
+  const savedQuerySelectorAll = documentStub.querySelectorAll;
+  documentStub.querySelectorAll = () => [];
+
+  try {
+    coach.state.ads_closed = 0;
+    coach.state.settings.ads_auto_close = true;
+    coach.adSweep();
+    assert.deepStrictEqual(clicks, ['promo-dialog-close-button']);
+    assert.strictEqual(coach.state.ads_closed, 1);
+  } finally {
+    delete documentStub.getElementById;
+    documentStub.querySelectorAll = savedQuerySelectorAll;
+    coach.state.settings.ads_auto_close = true;
+    coach.state.ads_closed = 0;
+    coach.render();
+  }
+});
+
 test('dialogue pub sans bouton élu : Échap une fois, un second essai après 2 s, jamais un troisième',
      () => {
   const fakeButton = (spec) => ({
@@ -1123,6 +1256,105 @@ test('fiche pas encore arrivée : le panneau se tait, le clic refuse quand même
   assert.strictEqual(coach.state.scalp.open, false, 'ouvert sans savoir l’équité');
   const refusal = coach.state.toasts[coach.state.toasts.length - 1];
   assert.ok(refusal && refusal.text.indexOf('Capital insuffisant') === 0);
+});
+
+/* --------------------------------------------------------------------- *
+ * Remplissage d'un scalp au bid/ask réel (fillPrice), pas au dernier
+ * échange (state.price) — un preneur achète au BUY (ask) et vend au SELL
+ * (bid), l'écart est un coût réel que le ledger ignorait jusqu'ici.
+ * --------------------------------------------------------------------- */
+
+test('fillPrice : ouvrir un achat entre au ASK, le fermer (vendre) sort au BID', () => {
+  scalpSetup();
+  coach.state.ticket = { side: 'buy', qty: 1, stop: null, target: null,
+                         precheck: {}, warnings: [] };
+  coach.state.price = 101;
+  coach.state.bid = 100;
+  coach.state.ask = 102;
+
+  coach.openScalp('buy');
+  assert.strictEqual(coach.state.scalp.open, true);
+  const handle = coach.state.scalp.handle;
+  assert.ok(handle, 'le ledger n’a pas rendu de scalp');
+  assert.strictEqual(handle.entryPrice, 102, 'un achat doit entrer au ASK (102), pas à 101');
+
+  /* Affichage : « Rempli à 102.00 (au BUY) » pendant que le scalp est ouvert
+     (langue par défaut du panneau = fr). */
+  coach.render();
+  assert.ok(shadow().innerHTML.indexOf('102.00') !== -1,
+            'le prix de remplissage réel n’apparaît pas à l’écran');
+  assert.ok(shadow().innerHTML.indexOf('au BUY') !== -1,
+            'le côté (BUY) du remplissage n’apparaît pas à l’écran');
+
+  coach.closeScalp();
+  assert.strictEqual(coach.state.scalp.open, false);
+  assert.strictEqual(handle.exitPrice, 100,
+                     'fermer un achat (le revendre) doit sortir au BID (100), pas à 101');
+
+  coach.state.bid = null;
+  coach.state.ask = null;
+});
+
+test('fillPrice : ouvrir une vente entre au BID, la fermer (racheter) sort au ASK', () => {
+  scalpSetup();
+  coach.state.ticket = { side: 'sell', qty: 1, stop: null, target: null,
+                         precheck: {}, warnings: [] };
+  coach.state.price = 101;
+  coach.state.bid = 100;
+  coach.state.ask = 102;
+
+  coach.openScalp('sell');
+  assert.strictEqual(coach.state.scalp.open, true);
+  const handle = coach.state.scalp.handle;
+  assert.ok(handle, 'le ledger n’a pas rendu de scalp');
+  assert.strictEqual(handle.entryPrice, 100, 'une vente doit entrer au BID (100), pas à 101');
+
+  coach.closeScalp();
+  assert.strictEqual(coach.state.scalp.open, false);
+  assert.strictEqual(handle.exitPrice, 102,
+                     'fermer une vente (la racheter) doit sortir au ASK (102), pas à 101');
+
+  coach.state.bid = null;
+  coach.state.ask = null;
+});
+
+test('fillPrice : sans bid/ask, repli sur le dernier échange dans les deux sens', () => {
+  scalpSetup();
+  coach.state.ticket = { side: 'buy', qty: 1, stop: null, target: null,
+                         precheck: {}, warnings: [] };
+  coach.state.price = 101;
+  coach.state.bid = null;
+  coach.state.ask = null;
+
+  coach.openScalp('buy');
+  const handle = coach.state.scalp.handle;
+  assert.ok(handle, 'le ledger n’a pas rendu de scalp');
+  assert.strictEqual(handle.entryPrice, 101, 'sans ask, le repli doit être le dernier échange');
+
+  coach.closeScalp();
+  assert.strictEqual(handle.exitPrice, 101, 'sans bid, le repli doit être le dernier échange');
+});
+
+test('fillPrice : une pastille aberrante (> 1 % du dernier échange) retombe sur state.price',
+     () => {
+  scalpSetup();
+  coach.state.ticket = { side: 'buy', qty: 1, stop: null, target: null,
+                         precheck: {}, warnings: [] };
+  coach.state.price = 101;
+  coach.state.bid = 100;
+  /* 150 pour un dernier échange à 101 : bien plus de 1 % d'écart — une
+     pastille figée (ou une page qui ne l'expose plus) ne doit jamais
+     fabriquer un remplissage faux. */
+  coach.state.ask = 150;
+
+  coach.openScalp('buy');
+  const handle = coach.state.scalp.handle;
+  assert.ok(handle, 'le ledger n’a pas rendu de scalp');
+  assert.strictEqual(handle.entryPrice, 101,
+                     'un ask aberrant doit être ignoré au profit du dernier échange');
+
+  coach.state.bid = null;
+  coach.state.ask = null;
 });
 
 /* --------------------------------------------------------------------- *

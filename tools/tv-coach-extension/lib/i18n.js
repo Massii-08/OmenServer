@@ -121,6 +121,9 @@
       'scalp.no_profile': 'Choisis un profil de frais avant d’ouvrir un scalp.',
       'scalp.size_auto': 'Taille auto : {qty} ≈ {notional} CHF · frais A/R ≈ {fees} CHF',
       'scalp.size_none': 'Capital insuffisant pour une unité à ce prix : scalp refusé.',
+      'scalp.filled_at': 'Rempli à {price} ({side_label})',
+      'scalp.side_bid': 'au SELL',
+      'scalp.side_ask': 'au BUY',
 
       'guard.all_clear': 'Rien ne s’oppose à ce scalp.',
       'guard.event_risk': 'Événement macro imminent — écarte-toi.',
@@ -308,6 +311,9 @@
       'scalp.no_profile': 'Scegli un profilo di commissioni prima di aprire uno scalp.',
       'scalp.size_auto': 'Taglia automatica: {qty} ≈ {notional} CHF · commissioni A/R ≈ {fees} CHF',
       'scalp.size_none': 'Capitale insufficiente per un’unità a questo prezzo: scalp rifiutato.',
+      'scalp.filled_at': 'Eseguito a {price} ({side_label})',
+      'scalp.side_bid': 'al SELL',
+      'scalp.side_ask': 'al BUY',
 
       'guard.all_clear': 'Niente osta a questo scalp.',
       'guard.event_risk': 'Evento macro imminente — stai fuori.',
@@ -495,6 +501,9 @@
       'scalp.no_profile': 'Pick a fee profile before opening a scalp.',
       'scalp.size_auto': 'Auto size: {qty} ≈ {notional} CHF · round-trip fees ≈ {fees} CHF',
       'scalp.size_none': 'Not enough capital for one unit at this price: scalp refused.',
+      'scalp.filled_at': 'Filled at {price} ({side_label})',
+      'scalp.side_bid': 'at SELL',
+      'scalp.side_ask': 'at BUY',
 
       'guard.all_clear': 'Nothing stands against this scalp.',
       'guard.event_risk': 'Macro event imminent — stay out.',

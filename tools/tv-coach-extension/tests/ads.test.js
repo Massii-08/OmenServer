@@ -379,3 +379,79 @@ test('plan : un toast (ad) sans bouton reconnu reste ignoré, jamais d’action 
   };
   assert.deepStrictEqual(ads.plan(snapshot), []);
 });
+
+/* --------------------------------------------------------------------- *
+ * Le VRAI paywall gopro, capturé à l'écran chez Massii le 11/09 (raté par
+ * l'ancienne détection : portail 0×0 en enfant direct, boutons de carrousel
+ * au texte vide, bouton de fermeture au libellé « Fermeture »).
+ * --------------------------------------------------------------------- */
+
+test('isCloseLabel reconnaît « Fermeture »/« Chiusura »/« Closing »/« Schließen »', () => {
+  const positive = ['Fermeture', 'FERMETURE', 'Chiusura', 'Closing', 'Schließen', '  fermeture  '];
+  for (const label of positive) {
+    assert.strictEqual(ads.isCloseLabel(label), true, label + ' aurait dû être reconnu');
+  }
+});
+
+test('isIgnoreLabel reconnaît les commandes de carrousel, jamais une incitation ni une fermeture',
+     () => {
+  const positive = ['Pause', 'Précédent', 'Precedent', 'Suivant', 'Previous', 'Next',
+                    'Play', 'Lecture', '  pause  '];
+  for (const label of positive) {
+    assert.strictEqual(ads.isIgnoreLabel(label), true, label + ' aurait dû être reconnu');
+  }
+  const negative = ['Fermer', 'Non merci', 'Essayer', ''];
+  for (const label of negative) {
+    assert.strictEqual(ads.isIgnoreLabel(label), false, label + ' n’aurait pas dû être reconnu');
+  }
+});
+
+test('pickCloser n’élit JAMAIS un bouton de carrousel, même avec name="close"', () => {
+  /* Un bouton de lecture/carrousel n'est ni un achat ni une fermeture :
+     IGNORE_LABELS l'écarte AVANT tout palier, même si son name matche. */
+  assert.strictEqual(
+    ads.pickCloser([{ name: 'close', label: 'Pause', text: '' }]), -1);
+  const buttons = [
+    { name: 'close', label: 'Pause', text: '' },     /* carrousel, écarté */
+    { name: '', label: 'Fermer', text: '' }          /* vrai bouton de fermeture */
+  ];
+  assert.strictEqual(ads.pickCloser(buttons), 1);
+});
+
+test('pickCloser : un bouton au texte VIDE n’est élu QUE par name/qa/label, jamais par le texte',
+     () => {
+  /* Un bouton totalement vide (flèche de carrousel sans aria-label) ne
+     matche AUCUN palier — ni achat, ni carrousel, ni fermeture. */
+  assert.strictEqual(ads.pickCloser([{ name: '', label: '', text: '' }]), -1);
+  /* Mais le MÊME bouton vide reste élu via qa/name/label (paliers 1-2). */
+  assert.strictEqual(ads.pickCloser([{ name: '', label: '', text: '', qa: 'x-close-y' }]), 0);
+  assert.strictEqual(ads.pickCloser([{ name: '', label: 'Fermer', text: '' }]), 0);
+  assert.strictEqual(ads.pickCloser([{ name: 'close', label: '', text: '' }]), 0);
+});
+
+test('plan : le paywall gopro réel (portail 0×0, carrousel, « Fermeture ») élit la fermeture, '
+     + 'jamais Pause ni Upgradez',
+     () => {
+  /* Snapshot pur — capture exacte des boutons chez Massii le 11/09 :
+     0 Fermeture (aria-label + data-qa-id, texte vide)
+     1 Pause (carrousel, texte vide)
+     2-3 flèches de carrousel (texte vide, aucun libellé)
+     4 Upgradez (incitation d'achat) */
+  const snapshot = {
+    ads: [],
+    dialogs: [{
+      id: 'gopro1', name: 'gopro',
+      text: 'Sans publicité. Nulle part … Les annonces sont importantes… nos plans upgradés…',
+      buttons: [
+        { label: 'Fermeture', qa: 'promo-dialog-close-button', text: '' },
+        { label: 'Pause', text: '' },
+        { text: '' },
+        { text: '' },
+        { qa: 'upgrade_paywall_button', text: 'Upgradez pour un accès sans publicité' }
+      ]
+    }]
+  };
+  const actions = ads.plan(snapshot);
+  assert.deepStrictEqual(actions, [{ kind: 'upsell', id: 'gopro1', button: 0 }],
+                         'le bouton élu doit être « Fermeture » (index 0), rien d’autre');
+});

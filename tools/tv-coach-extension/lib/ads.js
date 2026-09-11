@@ -43,12 +43,16 @@
   var CLOSE_LABELS = [
     'fermer la publicité',
     'fermer',
+    'fermeture',
     'close ad',
     'close',
+    'closing',
     'chiudi l\'annuncio',
     'chiudi',
+    'chiusura',
     'cerrar anuncio',
     'anzeige schließen',
+    'schließen',
     '×',
     '✕'
   ];
@@ -115,6 +119,17 @@
     'abbonati', 'prova'
   ];
 
+  /* Jamais cliqués NON PLUS, même si le reste matche : les commandes d'un
+     CARROUSEL (pause/précédent/suivant) dans le paywall (vécu le 11/09 —
+     ``button[aria-label="Pause"]`` et deux flèches ``controlButton`` au
+     texte vide, à côté du vrai bouton de fermeture). Liste séparée de
+     ``BUY_WORDS`` : ce n'est pas une incitation d'achat, juste une commande
+     de lecture qu'un clic aveugle ne doit jamais actionner. */
+  var IGNORE_LABELS = [
+    'pause', 'précédent', 'precedent', 'suivant', 'previous', 'next',
+    'play', 'lecture'
+  ];
+
   function isCloseLabel(text) {
     var value = normalizeText(text);
     if (!value) { return false; }
@@ -151,6 +166,15 @@
     return false;
   }
 
+  function isIgnoreLabel(text) {
+    var value = normalizeText(text);
+    if (!value) { return false; }
+    for (var i = 0; i < IGNORE_LABELS.length; i += 1) {
+      if (value.indexOf(IGNORE_LABELS[i]) !== -1) { return true; }
+    }
+    return false;
+  }
+
   /** ``data-qa-id`` qui CONTIENT « close » (ex. ``qa-close-btn``) : signal
    *  structurel aussi fort que ``name === 'close'``, pas un mot à traduire. */
   function isCloseQaId(value) {
@@ -173,7 +197,12 @@
    *   4. libellé de fermeture porté par ``text``.
    *
    * Un bouton d'achat (``label`` OU ``text``) est écarté AVANT toute
-   * priorité — jamais élu, même s'il matche par ailleurs.
+   * priorité — jamais élu, même s'il matche par ailleurs. Un bouton de
+   * CARROUSEL (``IGNORE_LABELS`` — pause/précédent/suivant) l'est de la
+   * même façon : ni un achat ni une fermeture, jamais un candidat. Un
+   * bouton au TEXTE VIDE ne peut être élu QUE par ``name``/``qa``/``label``
+   * (paliers 1-2) — les paliers 3-4 exigent un texte, et ``isCloseLabel``/
+   * ``isDismissLabel`` rendent déjà ``false`` sur une chaîne vide.
    */
   function pickCloser(buttons) {
     var list = Array.isArray(buttons) ? buttons : [];
@@ -184,6 +213,7 @@
       var text = String(raw.text || '');
       var label = String(raw.label || '');
       if (isBuyLabel(text) || isBuyLabel(label)) { continue; }
+      if (isIgnoreLabel(text) || isIgnoreLabel(label)) { continue; }
       candidates.push({
         index: i, name: String(raw.name || ''), label: label, text: text,
         qa: String(raw.qa || '')
@@ -251,6 +281,7 @@
   var api = {
     isCloseLabel: isCloseLabel,
     isCloseQaId: isCloseQaId,
+    isIgnoreLabel: isIgnoreLabel,
     isUpsellText: isUpsellText,
     isUpsellName: isUpsellName,
     isDismissLabel: isDismissLabel,
