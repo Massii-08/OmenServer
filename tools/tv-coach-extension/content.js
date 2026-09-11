@@ -2432,17 +2432,33 @@
      revient au module PUR ``lib/ads.js`` (testé) ; ici on ne fait que lire la
      page en JSON et cliquer ce qu'il désigne. */
   var AD_SELECTOR = '#charting-ad, [id^="div-gpt-ad-"]';
-  var DIALOG_SELECTOR = '[data-dialog-name], [role="dialog"], [aria-modal="true"]';
+  /* Le paywall TradingView (module ``toast-ad``, ``_onCloseToast`` ->
+     ``openPaywall({feature:"adFree"})``) ne garantit ni ``role="dialog"``
+     ni ``data-dialog-name`` sur sa racine : ``[data-focus-trap]`` (les
+     dialogues TradingView se ferment tous à Échap,
+     ``CLOSE_POPUPS_AND_DIALOGS_COMMAND``) est le seul repère qui lui reste,
+     cherché n'importe où dans la page (pas seulement sous
+     ``#overlap-manager-root``, dont on ne sait pas s'il y mounte). */
+  var BODY_DIALOG_SELECTOR = '[data-focus-trap], [role="dialog"], [aria-modal="true"]';
+  var NAME_DESCENDANT_SELECTOR = '[data-dialog-name],[data-name],[data-qa-id]';
+  var NAME_ATTRS = ['data-dialog-name', 'data-name', 'data-qa-id', 'id'];
+  var NAME_DESCENDANTS_MAX = 10;
   var BUTTON_SELECTOR = 'button, [role="button"]';
   var TOASTS_CONTAINER_ID = 'chart-toasts-container';
+  var PANEL_HOST_ID = 'omen-coach';
   var DIALOG_MIN_WIDTH = 240;
   var DIALOG_MIN_HEIGHT = 120;
   var DIALOG_TEXT_MAX = 600;
   var DIALOG_BUTTONS_MAX = 20;
+  var ESCAPE_RETRY_MS = 2000;
 
   /* Boutons déjà cliqués : un toast qui réapparaît est un NOUVEAU nœud, et
      un même nœud ne se reclique jamais (un clic sans effet ne doit pas boucler). */
   var adClicked = new WeakSet();
+  /* Un dialogue pub SANS bouton élu (repli du paywall) reçoit Échap : une
+     fois tout de suite, un second essai passé ``ESCAPE_RETRY_MS`` s'il est
+     toujours là, jamais plus (nœud -> {at, retried}). */
+  var escaped = new WeakMap();
 
   function normText(value) {
     return String(value === null || value === undefined ? '' : value)
@@ -2465,8 +2481,10 @@
     if (cap > 0 && nodes.length > cap) { nodes = nodes.slice(0, cap); }
     var out = [];
     for (var i = 0; i < nodes.length; i += 1) {
-      out.push({ name: attr(nodes[i], 'data-name'), label: attr(nodes[i], 'aria-label'),
-                 text: normText(nodes[i].textContent) });
+      out.push({
+        name: attr(nodes[i], 'data-name'), label: attr(nodes[i], 'aria-label'),
+        qa: attr(nodes[i], 'data-qa-id'), text: normText(nodes[i].textContent)
+      });
     }
     return out;
   }
@@ -2487,18 +2505,60 @@
     return up;
   }
 
-  function looksLikeDialog(node) {
-    return !!(attr(node, 'data-dialog-name') || attr(node, 'role') === 'dialog'
-      || attr(node, 'aria-modal') === 'true');
+  /** Jamais un candidat : ``#omen-coach`` lui-même ou un de ses descendants.
+   *  En pratique notre contenu vit en shadow DOM (hors de portée des
+   *  sélecteurs de la page) — ceinture-et-bretelles, pas la seule garde. */
+  function isInsideOwnPanel(node) {
+    var current = node;
+    var depth = 0;
+    while (current && depth < 40) {
+      if (attr(current, 'id') === PANEL_HOST_ID) { return true; }
+      current = current.parentNode;
+      depth += 1;
+    }
+    return false;
   }
 
-  /** ``data-dialog-name`` de la racine, sinon du premier descendant qui en a un. */
+  /** Remonte ``node`` jusqu'à l'ancêtre (ou lui-même) qui est un enfant
+   *  DIRECT d'``overlap`` ou de ``document.body`` : c'est CE conteneur qui
+   *  devient le candidat dialogue — un ``[data-focus-trap]`` peut être
+   *  mounté au fond d'un wrapper quelconque, jamais forcément en enfant
+   *  direct d'``overlap-manager-root``. */
+  function topLevelContainer(node, overlap) {
+    var current = node;
+    var depth = 0;
+    while (current && current.parentNode && depth < 40) {
+      var parent = current.parentNode;
+      if (parent === overlap || parent === document.body) { return current; }
+      current = parent;
+      depth += 1;
+    }
+    return node;
+  }
+
+  function nameTokensFor(node) {
+    var tokens = [];
+    for (var i = 0; i < NAME_ATTRS.length; i += 1) {
+      var value = attr(node, NAME_ATTRS[i]);
+      if (value) { tokens.push(value); }
+    }
+    return tokens;
+  }
+
+  /** ``name`` du dialogue = tous les ``data-dialog-name``/``data-name``/
+   *  ``data-qa-id``/``id`` de la RACINE et de ses 10 premiers descendants
+   *  marqués, concaténés (séparés par des espaces) — le paywall ne les porte
+   *  pas forcément sur sa racine, ils sont répartis dans l'arbre. */
   function dialogName(container) {
-    var own = attr(container, 'data-dialog-name');
-    if (own) { return own; }
-    var inner = typeof container.querySelector === 'function'
-      ? container.querySelector('[data-dialog-name]') : null;
-    return attr(inner, 'data-dialog-name');
+    var tokens = nameTokensFor(container);
+    var descendants = (typeof container.querySelectorAll === 'function')
+      ? Array.prototype.slice.call(
+          container.querySelectorAll(NAME_DESCENDANT_SELECTOR), 0, NAME_DESCENDANTS_MAX)
+      : [];
+    for (var i = 0; i < descendants.length; i += 1) {
+      tokens = tokens.concat(nameTokensFor(descendants[i]));
+    }
+    return tokens.join(' ');
   }
 
   function snapshotAds(nodeMap) {
@@ -2516,39 +2576,120 @@
     return ads;
   }
 
+  /** Un candidat passe la garde de TAILLE puis devient un ``{id,name,text,
+   *  buttons}`` — dédoublonné par ``seen`` quel que soit le CHEMIN qui l'a
+   *  trouvé (enfant direct d'overlap, ou remonté depuis un focus-trap). Le
+   *  nom/texte pub reste vérifié par ``lib/ads.js`` : ici, seule la taille
+   *  écarte — jamais « fermer tout ce qui est grand ». */
+  function collectDialog(child, seen, dialogs, nodeMap) {
+    if (!child || seen.indexOf(child) !== -1) { return; }
+    var box = typeof child.getBoundingClientRect === 'function'
+      ? child.getBoundingClientRect() : null;
+    if (!box || box.width < DIALOG_MIN_WIDTH || box.height < DIALOG_MIN_HEIGHT) { return; }
+    seen.push(child);
+    var id = 'dlg' + dialogs.length;
+    nodeMap.set(id, child);
+    dialogs.push({
+      id: id,
+      name: dialogName(child),
+      text: normText(child.textContent).slice(0, DIALOG_TEXT_MAX),
+      buttons: buttonSnapshot(child, DIALOG_BUTTONS_MAX)
+    });
+  }
+
+  /**
+   * Candidats dialogues :
+   *  (a) chaque enfant DIRECT d'``#overlap-manager-root`` sauf le conteneur
+   *      des toasts — SANS exiger ``role``/``data-dialog-name`` (les menus
+   *      et infobulles sont écartés par la taille, PUIS par l'absence de nom
+   *      ou de texte pub dans ``lib/ads.js`` — jamais par une exigence de
+   *      structure que le paywall ne respecte pas) ;
+   *  (b) tout élément ``[data-focus-trap]``/``[role="dialog"]``/
+   *      ``[aria-modal="true"]`` n'importe où dans la page (hors de notre
+   *      propre panneau), remonté à son ancêtre direct sous
+   *      ``overlap-manager-root`` OU ``body`` — le paywall n'apparaît que
+   *      quand l'onglet est visible et sa position de montage exacte n'est
+   *      pas connue.
+   */
   function snapshotDialogs(nodeMap) {
     var dialogs = [];
+    var seen = [];
     var overlap = document.getElementById('overlap-manager-root');
     var children = (overlap && overlap.children) ? overlap.children : [];
-    for (var i = 0; i < children.length; i += 1) {
+    var i;
+    for (i = 0; i < children.length; i += 1) {
       var child = children[i];
       /* Le conteneur des toasts vit ici aussi : c'est la partie « pub », pas
-         un dialogue. Les menus et infobulles n'ont ni role ni data-dialog-name. */
+         un dialogue. */
       if (attr(child, 'data-id') === TOASTS_CONTAINER_ID) { continue; }
-      var isDialog = looksLikeDialog(child)
-        || (typeof child.querySelector === 'function' && !!child.querySelector(DIALOG_SELECTOR));
-      if (!isDialog) { continue; }
-      var box = typeof child.getBoundingClientRect === 'function'
-        ? child.getBoundingClientRect() : null;
-      if (!box || box.width < DIALOG_MIN_WIDTH || box.height < DIALOG_MIN_HEIGHT) { continue; }
-      var id = 'dlg' + dialogs.length;
-      nodeMap.set(id, child);
-      dialogs.push({
-        id: id,
-        name: dialogName(child),
-        text: normText(child.textContent).slice(0, DIALOG_TEXT_MAX),
-        buttons: buttonSnapshot(child, DIALOG_BUTTONS_MAX)
-      });
+      collectDialog(child, seen, dialogs, nodeMap);
+    }
+
+    var marked = document.querySelectorAll(BODY_DIALOG_SELECTOR);
+    for (i = 0; i < marked.length; i += 1) {
+      if (isInsideOwnPanel(marked[i])) { continue; }
+      var container = topLevelContainer(marked[i], overlap);
+      if (attr(container, 'data-id') === TOASTS_CONTAINER_ID) { continue; }
+      collectDialog(container, seen, dialogs, nodeMap);
     }
     return dialogs;
   }
 
+  /** ``new KeyboardEvent(...)`` n'existe pas sous ``node --test`` (pas de
+   *  DOM) : repli sur un objet simple, lu par le bouchon de test comme par
+   *  n'importe quel ``dispatchEvent`` minimal — dans un VRAI navigateur,
+   *  le constructeur existe toujours et est utilisé. */
+  function keyEvent(type) {
+    var opts = { key: 'Escape', code: 'Escape', keyCode: 27, bubbles: true };
+    try {
+      if (typeof KeyboardEvent === 'function') { return new KeyboardEvent(type, opts); }
+    } catch (e) { /* repli ci-dessous */ }
+    var evt = { type: type };
+    var keys = Object.keys(opts);
+    for (var i = 0; i < keys.length; i += 1) { evt[keys[i]] = opts[keys[i]]; }
+    return evt;
+  }
+
+  /** Les dialogues TradingView se ferment tous à Échap
+   *  (``CLOSE_POPUPS_AND_DIALOGS_COMMAND``) : le repli quand aucun bouton
+   *  n'est élu (le paywall, dont la structure exacte des boutons est
+   *  inconnue). Cible ``document.activeElement`` en priorité — un focus
+   *  resté dans le dialogue reçoit Échap comme le ferait un vrai utilisateur. */
+  function dispatchEscape() {
+    var target = document.activeElement || document.body;
+    if (!target || typeof target.dispatchEvent !== 'function') { return; }
+    try {
+      target.dispatchEvent(keyEvent('keydown'));
+      target.dispatchEvent(keyEvent('keyup'));
+    } catch (e) { debug('Échap refusé', e); }
+  }
+
+  /** Une fois tout de suite, un second essai passé ``ESCAPE_RETRY_MS`` si le
+   *  nœud est TOUJOURS un candidat pub sans bouton (rappelé par ``adSweep``
+   *  à chaque tour) — jamais plus de deux essais par nœud. */
+  function maybeEscape(node, kind) {
+    var now = Date.now();
+    var record = escaped.get(node);
+    if (!record) {
+      dispatchEscape();
+      escaped.set(node, { at: now, retried: false });
+      debug('pub : Échap', kind);
+      return;
+    }
+    if (!record.retried && (now - record.at) >= ESCAPE_RETRY_MS) {
+      dispatchEscape();
+      record.retried = true;
+      debug('pub : Échap', kind);
+    }
+  }
+
   /**
    * Un tour toutes les 1,5 s : lit la page, demande à ``lib/ads.js`` quoi
-   * cliquer, clique. Le décochage de l'option agit au tour suivant (les
-   * réglages arrivent déjà par ``applySettings``). Jamais d'exception qui
-   * remonte : une page TradingView refondue doit rendre le balayage muet,
-   * pas casser le panneau.
+   * cliquer, clique. Un dialogue pub sans bouton élu (``button:-1,
+   * escape:true``) reçoit Échap plutôt qu'un clic dans le vide. Le
+   * décochage de l'option agit au tour suivant (les réglages arrivent déjà
+   * par ``applySettings``). Jamais d'exception qui remonte : une page
+   * TradingView refondue doit rendre le balayage muet, pas casser le panneau.
    */
   function adSweep() {
     if (!state.settings.ads_auto_close) { return; }
@@ -2559,12 +2700,20 @@
       var actions = adsLib.plan({ ads: snapshotAds(nodeMap), dialogs: snapshotDialogs(nodeMap) });
       var closed = 0;
       for (var i = 0; i < actions.length; i += 1) {
-        var target = buttonNodes(nodeMap.get(actions[i].id))[actions[i].button];
+        var action = actions[i];
+        if (action.button === -1) {
+          if (action.escape) {
+            var node = nodeMap.get(action.id);
+            if (node) { maybeEscape(node, action.kind); }
+          }
+          continue;
+        }
+        var target = buttonNodes(nodeMap.get(action.id))[action.button];
         if (!target || adClicked.has(target) || typeof target.click !== 'function') { continue; }
         adClicked.add(target);
         target.click();
         closed += 1;
-        debug('pub fermée', actions[i].kind);
+        debug('pub fermée', action.kind);
       }
       if (closed) {
         state.ads_closed += closed;
@@ -2713,6 +2862,8 @@
     drawTicketLevels: drawTicketLevels,
     clearDrawings: clearDrawings,
     pruneDrawNote: pruneDrawNote,
+    snapshotAds: snapshotAds,
+    snapshotDialogs: snapshotDialogs,
     state: state,
     boot: boot,
     render: render,

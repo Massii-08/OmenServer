@@ -716,12 +716,40 @@ test('adSweep ferme le toast pub et le pop-up « sans pub », et rien d’autre'
                                [fakeButton({ text: 'Fermer' })]);
   const tinyUpsell = fakeBox({ role: 'dialog', width: 200, height: 100, text: 'sans pub' },
                              [fakeButton({ text: 'Non merci' })]);
-  const overlap = { children: [toastsContainer, gopro, alertDialog, marketPortal, tinyUpsell] };
+  /* Le paywall (spec 2026-09-11) : NI role NI data-dialog-name — c'est
+     justement ce qui l'a fait échapper à l'ancienne détection. Un seul
+     bouton, une incitation d'achat : aucun bouton fermable, le repli Échap
+     doit prendre le relais SANS jamais cliquer. */
+  const paywall = fakeBox({ width: 500, height: 400,
+                            text: 'Débarrassez-vous des publicités' },
+                          [fakeButton({ text: 'Essayer gratuitement' })]);
+  /* Un menu/tooltip QUELCONQUE, sans role ni data-dialog-name lui non plus,
+     trop petit (200×40 < 240×120) : doit rester écarté par la seule taille,
+     maintenant que le rôle n'est plus exigé pour les enfants d'overlap. */
+  const tinyMenu = fakeBox({ width: 200, height: 40, text: 'Paramètres rapides' },
+                           [fakeButton({ text: 'OK' })]);
+  const overlap = { children: [toastsContainer, gopro, alertDialog, marketPortal, tinyUpsell,
+                               paywall, tinyMenu] };
 
   const savedQuerySelectorAll = documentStub.querySelectorAll;
   documentStub.querySelectorAll = (selector) => (selector.indexOf('#charting-ad') === 0
     ? [adNode, gptNode] : []);
   documentStub.getElementById = (id) => (id === 'overlap-manager-root' ? overlap : null);
+
+  /* Le repli Échap dispatche sur document.activeElement || document.body :
+     ce bouchon n'a pas d'activeElement, donc document.body. dispatchEvent
+     n'existe pas nativement sur le bouchon — on le simule ICI, localement,
+     comme le SEUL saut de bulle qui compte pour ce test (body -> document). */
+  const escapes = [];
+  const onKeydown = (e) => { if (e.key === 'Escape') { escapes.push(e); } };
+  document.addEventListener('keydown', onKeydown);
+  const savedBodyDispatch = documentStub.body.dispatchEvent;
+  documentStub.body.dispatchEvent = function (evt) {
+    const list = documentListeners[evt.type] || [];
+    for (const fn of list) { fn(evt); }
+    return true;
+  };
+
   try {
     coach.state.ads_closed = 0;
     coach.state.settings.ads_auto_close = true;
@@ -730,6 +758,8 @@ test('adSweep ferme le toast pub et le pop-up « sans pub », et rien d’autre'
     assert.strictEqual(coach.state.ads_closed, 2);
     assert.ok(shadow().innerHTML.indexOf('Pubs fermées : 2') !== -1,
               'la ligne « Pubs fermées » manque en pied de panneau');
+    assert.strictEqual(escapes.length, 1,
+                       'le repli Échap n’a pas été dispatché sur le paywall sans bouton');
 
     /* Même DOM au tour suivant : aucun reclic, le compteur ne bouge pas. */
     coach.adSweep();
@@ -744,8 +774,189 @@ test('adSweep ferme le toast pub et le pop-up « sans pub », et rien d’autre'
   } finally {
     documentStub.querySelectorAll = savedQuerySelectorAll;
     delete documentStub.getElementById;
+    /* documentStub n'a pas de removeEventListener : on retire la fonction
+       de la liste que addEventListener a réellement remplie. */
+    const idx = (documentListeners.keydown || []).indexOf(onKeydown);
+    if (idx !== -1) { documentListeners.keydown.splice(idx, 1); }
+    documentStub.body.dispatchEvent = savedBodyDispatch;
     coach.state.settings.ads_auto_close = true;
     coach.state.ads_closed = 0;
+    coach.render();
+  }
+});
+
+test('dialogue pub sans bouton élu : Échap une fois, un second essai après 2 s, jamais un troisième',
+     () => {
+  const fakeButton = (spec) => ({
+    getAttribute: (name) => (Object.prototype.hasOwnProperty.call(spec, name) ? spec[name] : null),
+    textContent: spec.text || '',
+    click: () => { throw new Error('ce bouton d’achat ne doit jamais être cliqué'); }
+  });
+  const fakeBox = (spec, buttons) => ({
+    getAttribute: (name) => (Object.prototype.hasOwnProperty.call(spec, name) ? spec[name] : null),
+    textContent: spec.text || '',
+    children: [],
+    getBoundingClientRect: () => ({ width: spec.width || 0, height: spec.height || 0 }),
+    querySelectorAll: (selector) => (selector.indexOf('button') === 0 ? buttons : []),
+    querySelector: () => null
+  });
+
+  const paywall = fakeBox({ width: 500, height: 400, text: 'sans publicité' },
+                          [fakeButton({ text: 'Essayer' })]);
+  const overlap = { children: [paywall] };
+
+  const escapes = [];
+  const onKeydown = (e) => { if (e.key === 'Escape') { escapes.push(Date.now()); } };
+  document.addEventListener('keydown', onKeydown);
+  const savedBodyDispatch = documentStub.body.dispatchEvent;
+  documentStub.body.dispatchEvent = function (evt) {
+    const list = documentListeners[evt.type] || [];
+    for (const fn of list) { fn(evt); }
+    return true;
+  };
+  const savedQuerySelectorAll = documentStub.querySelectorAll;
+  documentStub.querySelectorAll = (selector) => (selector.indexOf('#charting-ad') === 0
+    ? [] : []);
+  documentStub.getElementById = (id) => (id === 'overlap-manager-root' ? overlap : null);
+
+  const realNow = Date.now;
+  let fakeNow = realNow();
+  Date.now = () => fakeNow;
+
+  try {
+    coach.state.settings.ads_auto_close = true;
+
+    coach.adSweep();
+    assert.strictEqual(escapes.length, 1, 'le premier essai n’a pas eu lieu');
+
+    /* Moins de 2 s plus tard : pas de second essai. */
+    fakeNow += 500;
+    coach.adSweep();
+    assert.strictEqual(escapes.length, 1, 'un second essai est parti trop tôt (< 2 s)');
+
+    /* 2 s (et plus) après le PREMIER essai : le second part. */
+    fakeNow += 2000;
+    coach.adSweep();
+    assert.strictEqual(escapes.length, 2, 'le second essai (2 s plus tard) n’a pas eu lieu');
+
+    /* Encore plus tard, plusieurs tours : jamais un TROISIÈME essai. */
+    fakeNow += 10000;
+    coach.adSweep();
+    coach.adSweep();
+    assert.strictEqual(escapes.length, 2, 'un troisième essai a été dispatché');
+  } finally {
+    Date.now = realNow;
+    documentStub.querySelectorAll = savedQuerySelectorAll;
+    delete documentStub.getElementById;
+    const idx = (documentListeners.keydown || []).indexOf(onKeydown);
+    if (idx !== -1) { documentListeners.keydown.splice(idx, 1); }
+    documentStub.body.dispatchEvent = savedBodyDispatch;
+    coach.state.settings.ads_auto_close = true;
+    coach.render();
+  }
+});
+
+test('un [data-focus-trap] mounté n’importe où dans body est remonté à son conteneur ; dédoublonné ; jamais dans notre propre panneau',
+     () => {
+  const fakeButton = (spec) => ({
+    getAttribute: (name) => (Object.prototype.hasOwnProperty.call(spec, name) ? spec[name] : null),
+    textContent: spec.text || '',
+    click: () => { throw new Error('jamais cliqué dans ce test (bouton d’achat seul)'); }
+  });
+
+  /* Le focus-trap est profondément niché dans un wrapper anonyme, mounté
+     DIRECTEMENT DANS BODY — PAS sous overlap-manager-root (celui-ci reste
+     VIDE : ce test ne prouve rien si le chemin (a) pouvait, à lui seul,
+     trouver ce dialogue). Deux focus-trap SIBLINGS sous le même wrapper
+     remontent au MÊME conteneur : un seul dialogue doit en sortir
+     (dédoublonnage à l'intérieur même du chemin (b)). */
+  const buyBtn = fakeButton({ text: 'Essayer 30 jours' });
+  const focusTrap = {
+    getAttribute: (name) => (name === 'data-focus-trap' ? 'true' : null),
+    parentNode: null, children: [],
+    querySelectorAll: () => [], querySelector: () => null, textContent: ''
+  };
+  const focusTrap2 = {
+    getAttribute: (name) => (name === 'data-focus-trap' ? 'true' : null),
+    parentNode: null, children: [],
+    querySelectorAll: () => [], querySelector: () => null, textContent: ''
+  };
+  const wrapperMid = {
+    getAttribute: () => null, parentNode: null, children: [focusTrap, focusTrap2],
+    querySelectorAll: () => [], querySelector: () => null, textContent: ''
+  };
+  const dialogRoot = {
+    getAttribute: (name) => (name === 'data-qa-id' ? 'paywall-root' : null),
+    parentNode: null, children: [wrapperMid],
+    textContent: 'Passez à un plan sans publicité',
+    getBoundingClientRect: () => ({ width: 500, height: 400 }),
+    querySelectorAll: (selector) => (selector.indexOf('button') === 0 ? [buyBtn] : []),
+    querySelector: () => null
+  };
+  focusTrap.parentNode = wrapperMid;
+  focusTrap2.parentNode = wrapperMid;
+  wrapperMid.parentNode = dialogRoot;
+  dialogRoot.parentNode = documentStub.body;   /* PAS overlap : body seulement */
+
+  const overlap = { children: [] };   /* rien côté (a) : la preuve vient du (b) seul */
+
+  /* Second focus-trap, celui-ci À L'INTÉRIEUR de notre propre panneau
+     (#omen-coach) : jamais un candidat, quoi qu'il porte. ``ownPanelHost``
+     (ce que topLevelContainer résout, remonté jusqu'à body) porte volontairement
+     une taille ET un texte pub — s'il devenait un candidat malgré tout, il
+     produirait un DEUXIÈME Échap et ferait échouer l'assertion ci-dessous ;
+     ça prouve que c'est bien ``isInsideOwnPanel`` qui l'arrête, pas un autre
+     garde-fou (taille, contenu) qui l'aurait de toute façon écarté. */
+  const ownPanelHost = {
+    getAttribute: (name) => (name === 'id' ? 'omen-coach' : null),
+    parentNode: documentStub.body, children: [],
+    textContent: 'sans pub', getBoundingClientRect: () => ({ width: 500, height: 400 }),
+    querySelectorAll: () => [], querySelector: () => null
+  };
+  const insideOwnPanel = {
+    getAttribute: (name) => (name === 'data-focus-trap' ? 'true' : null),
+    parentNode: ownPanelHost, children: [],
+    querySelectorAll: () => [], querySelector: () => null, textContent: ''
+  };
+
+  const escapes = [];
+  const onKeydown = (e) => { if (e.key === 'Escape') { escapes.push(e); } };
+  document.addEventListener('keydown', onKeydown);
+  const savedBodyDispatch = documentStub.body.dispatchEvent;
+  documentStub.body.dispatchEvent = function (evt) {
+    const list = documentListeners[evt.type] || [];
+    for (const fn of list) { fn(evt); }
+    return true;
+  };
+  documentStub.getElementById = (id) => (id === 'overlap-manager-root' ? overlap : null);
+  documentStub.querySelectorAll = (selector) => (selector.indexOf('[data-focus-trap]') === 0
+    ? [focusTrap, focusTrap2, insideOwnPanel] : []);
+
+  try {
+    /* Preuve DIRECTE du dédoublonnage, sur le snapshot lui-même : passer
+       par adSweep()/l'action Échap ne le prouverait pas seul, puisque
+       maybeEscape() dédoublonne AUSSI par nœud (deux entrées du MÊME nœud
+       ne produiraient qu'un Échap de toute façon, même sans dédoublonnage
+       dans snapshotDialogs). */
+    const dialogs = coach.snapshotDialogs(new Map());
+    assert.strictEqual(dialogs.length, 1,
+                       'les deux focus-trap remontant au même conteneur ont produit ' +
+                       dialogs.length + ' dialogue(s) au lieu d’un seul (dédoublonnage)');
+
+    coach.state.settings.ads_auto_close = true;
+    coach.adSweep();
+    /* UNE seule action Échap : les deux focus-trap remontent au MÊME
+       dialogRoot (dédoublonné dans le chemin (b) lui-même) — jamais deux,
+       et jamais celui niché dans #omen-coach. */
+    assert.strictEqual(escapes.length, 1,
+                       'attendu exactement 1 Échap (dédoublonné, panneau exclu)');
+  } finally {
+    delete documentStub.getElementById;
+    documentStub.querySelectorAll = () => [];
+    const idx = (documentListeners.keydown || []).indexOf(onKeydown);
+    if (idx !== -1) { documentListeners.keydown.splice(idx, 1); }
+    documentStub.body.dispatchEvent = savedBodyDispatch;
+    coach.state.settings.ads_auto_close = true;
     coach.render();
   }
 });
