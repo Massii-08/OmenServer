@@ -723,6 +723,59 @@ test('capital hors de portée : le panneau prévient et le scalp est refusé', (
   assert.strictEqual(coach.state.scalp.handle, null);
 });
 
+/* --------------------------------------------------------------------- *
+ * Le profil de frais part AVEC la demande de fiche.
+ *
+ * Vu sur UKOIL : « frais A/R ≈ 128.98 CHF » — le barème de Yuh (1,3 %), le
+ * courtier du SITE, alors que l'extension enregistre ses scalps chez Kraken
+ * (0,52 %). Le serveur ne pouvait pas deviner : personne ne le lui disait.
+ * --------------------------------------------------------------------- */
+
+test('la demande de fiche porte le profil de frais de l’extension', () => {
+  scalpSetup();                                  /* fee_profile kraken_spot */
+  const query = coach.briefQuery();
+  assert.strictEqual(query.symbol, 'BTC-USD');
+  assert.strictEqual(query.tv, 'BINANCE:BTCUSDT.P');
+  assert.strictEqual(query.fee_profile, 'kraken_spot');
+  assert.strictEqual(query.custom_pct, null);
+
+  /* Et le sérialiseur OMET la valeur absente au lieu d'envoyer « null ». */
+  const buildQuery = require('../lib/api.js').buildQuery;
+  assert.strictEqual(
+    buildQuery(query),
+    '?symbol=BTC-USD&tv=BINANCE%3ABTCUSDT.P&fee_profile=kraken_spot');
+});
+
+test('le taux personnalisé ne part QUE sur le profil « custom »', () => {
+  scalpSetup();
+  const buildQuery = require('../lib/api.js').buildQuery;
+
+  coach.state.settings.custom_pct = 0.1;
+  assert.strictEqual(coach.briefQuery().custom_pct, null, 'taux envoyé hors custom');
+  assert.strictEqual(buildQuery(coach.briefQuery()).indexOf('custom_pct'), -1);
+
+  coach.state.settings.fee_profile = 'custom';
+  assert.strictEqual(coach.briefQuery().custom_pct, 0.1);
+  assert.ok(buildQuery(coach.briefQuery()).indexOf('custom_pct=0.1') !== -1);
+
+  /* Profil custom SANS taux lisible : rien ne part, le serveur gardera son
+     défaut plutôt que de recevoir « null » ou « NaN ». */
+  for (const bogus of [null, '', 'zéro virgule un', undefined]) {
+    coach.state.settings.custom_pct = bogus;
+    assert.strictEqual(coach.briefQuery().custom_pct, null, String(bogus));
+  }
+  coach.state.settings.custom_pct = null;
+});
+
+test('sans profil réglé, la demande n’impose rien au serveur', () => {
+  scalpSetup();
+  coach.state.settings.fee_profile = '';
+  const query = coach.briefQuery();
+  assert.strictEqual(query.fee_profile, '');
+  assert.strictEqual(require('../lib/api.js').buildQuery(query).indexOf('fee_profile'),
+                     -1, 'un profil vide ne doit pas partir du tout');
+});
+
 test('fiche pas encore arrivée : le panneau se tait, le clic refuse quand même',
      () => {
   scalpSetup();

@@ -390,6 +390,83 @@ def test_les_frais_annoncent_le_profil_et_l_aller_retour():
     assert out["fees"]["round_trip_pct"] == 0.5206
 
 
+def _fee_deps(**overrides):
+    """Un portefeuille SANS ligne sur le titre, chez ``yuh``.
+
+    Sans position, ``_fees_view`` chiffre sur le ticket de référence (10 % de
+    l'équité) : 1 000 CHF ronds, donc des barèmes lisibles (0,52 % / 1,30 % /
+    0,20 %) au lieu des arrondis au centime du test voisin. Et le profil du
+    PORTEFEUILLE (``yuh``) diffère de celui que l'extension impose : sans cet
+    écart, un test « le profil imposé gagne » ne prouverait rien.
+    """
+    base = {
+        "portfolio": lambda username: {"cash_chf": 10000.0,
+                                       "fee_profile": "yuh",
+                                       "positions": [], "orders": []},
+        "fees_profile": lambda username: "yuh",
+    }
+    base.update(overrides)
+    return _deps(**base)
+
+
+def _fee_build(deps=None, **kwargs):
+    return brief.build("tester", "BTC-USD", "BITSTAMP:BTCUSD",
+                       deps=_fee_deps() if deps is None else deps,
+                       now=NOW, **kwargs)
+
+
+def test_sans_profil_impose_la_fiche_garde_celui_du_portefeuille():
+    out = _fee_build()
+    assert out["fees"] == {"profile": "yuh", "round_trip_pct": 1.3,
+                           "notional_chf": 1000.0}
+
+
+def test_le_profil_de_l_extension_remplace_celui_du_portefeuille():
+    """Le cas vécu sur UKOIL : la fiche annonçait 1,30 % (Yuh, le profil du
+    SITE) alors que l'extension enregistre ses scalps en ``kraken_spot``
+    (0,52 %) — les frais affichés étaient ceux d'un autre courtier."""
+    out = _fee_build(fee_profile="kraken_spot")
+    assert out["fees"]["profile"] == "kraken_spot"
+    assert out["fees"]["round_trip_pct"] == 0.52
+
+
+@pytest.mark.parametrize("value", ["  KRAKEN_SPOT  ", "Kraken_Spot", "kraken_spot"])
+def test_le_profil_impose_est_normalise(value):
+    assert _fee_build(fee_profile=value)["fees"]["profile"] == "kraken_spot"
+
+
+@pytest.mark.parametrize("value", ["", None, "   ", "binance_frites", "yuh "])
+def test_un_profil_impose_inconnu_retombe_en_silence_sur_le_portefeuille(value):
+    """Repli SILENCIEUX : une faute de frappe dans l'extension ne doit pas
+    faire tomber la fiche ni inventer un barème."""
+    out = _fee_build(fee_profile=value)
+    assert out["fees"]["profile"] == "yuh"
+    assert out["fees"]["round_trip_pct"] == 1.3
+    assert out["degraded"] == []
+
+
+def test_le_taux_personnalise_est_transmis_au_bareme():
+    assert _fee_build(fee_profile="custom",
+                      custom_pct=0.1)["fees"]["round_trip_pct"] == 0.2
+    assert _fee_build(fee_profile="custom",
+                      custom_pct=0.5)["fees"]["round_trip_pct"] == 1.0
+
+
+def test_un_taux_personnalise_hors_profil_custom_est_ignore():
+    """``fees`` ne laisse réécrire le taux que sur le profil ``custom`` : un
+    ``custom_pct`` envoyé avec Kraken ne doit rien changer."""
+    out = _fee_build(fee_profile="kraken_spot", custom_pct=5.0)
+    assert out["fees"]["round_trip_pct"] == 0.52
+
+
+def test_le_profil_impose_ne_touche_a_rien_d_autre():
+    """Il change les FRAIS, pas le portefeuille ni la cotation."""
+    impose = _fee_build(fee_profile="kraken_spot")
+    defaut = _fee_build()
+    for key in ("quote", "position", "defaults", "ta", "degraded"):
+        assert impose[key] == defaut[key], key
+
+
 def test_l_humeur_recolte_le_fear_and_greed_et_le_dvol_du_volet_bitcoin():
     out = _build()
     assert out["mood"]["vix"] == 18.2
@@ -513,6 +590,46 @@ def test_brief_repond_pour_un_symbole_yahoo(tmp_path, monkeypatch):
     assert got.status_code == 200
     assert got.json()["symbol"] == "BTC-USD"
     assert got.json()["tv_symbol"] == "BITSTAMP:BTCUSD"
+
+
+def _spy_build(monkeypatch):
+    """Remplace ``brief.build`` par un mouchard qui garde ses mots-clés."""
+    vus = {}
+
+    def _build(username, symbol, tv_symbol, **kw):
+        vus.update(kw)
+        return {"symbol": symbol, "tv_symbol": tv_symbol,
+                "kind": brief.kind_of(symbol), "degraded": []}
+
+    monkeypatch.setattr(ptr.brief, "build", _build)
+    return vus
+
+
+def test_brief_transmet_le_profil_de_frais_de_l_extension(tmp_path, monkeypatch):
+    client = make_client(tmp_path, monkeypatch)
+    vus = _spy_build(monkeypatch)
+    got = client.get("/api/paper/brief?symbol=BTC-USD&tv=BITSTAMP:BTCUSD"
+                     "&fee_profile=kraken_spot&custom_pct=0.1")
+    assert got.status_code == 200
+    assert vus["fee_profile"] == "kraken_spot"
+    assert vus["custom_pct"] == 0.1
+
+
+def test_brief_sans_profil_impose_n_impose_rien(tmp_path, monkeypatch):
+    client = make_client(tmp_path, monkeypatch)
+    vus = _spy_build(monkeypatch)
+    assert client.get("/api/paper/brief?symbol=BTC-USD").status_code == 200
+    assert vus["fee_profile"] == ""
+    assert vus["custom_pct"] is None
+
+
+def test_brief_avale_un_profil_inconnu_sans_500(tmp_path, monkeypatch):
+    """Le repli vit dans ``build`` : la route ne filtre pas, elle transmet."""
+    client = make_client(tmp_path, monkeypatch)
+    vus = _spy_build(monkeypatch)
+    got = client.get("/api/paper/brief?symbol=BTC-USD&fee_profile=binance_frites")
+    assert got.status_code == 200
+    assert vus["fee_profile"] == "binance_frites"
 
 
 def test_brief_deduit_le_symbole_du_seul_symbole_tradingview(tmp_path, monkeypatch):

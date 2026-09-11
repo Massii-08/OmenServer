@@ -569,7 +569,8 @@ def _session_ta(candles_1m: Any, candles_1d: Any) -> Dict[str, Any]:
 
 
 def _fees_view(profile: Any, symbol: str, equity: float,
-               position_value: float) -> Dict[str, Any]:
+               position_value: float,
+               custom_pct: Optional[float] = None) -> Dict[str, Any]:
     """Profil de frais et coût d'un ALLER-RETOUR, en % (§5.1).
 
     Le pourcentage dépend du montant chez les courtiers à paliers ou à
@@ -578,6 +579,9 @@ def _fees_view(profile: Any, symbol: str, equity: float,
     référence de ``coach_trader.MIN_POSITION_PCT`` % de l'équité — le plancher
     en dessous duquel une ligne « n'est pas des actions en centimes ». Le
     montant retenu est SERVI (``notional_chf``) : rien de caché.
+
+    ``custom_pct`` : le taux saisi à la main, que ``fees`` ne laisse réécrire
+    que sur le profil ``custom`` — passé ailleurs, il est ignoré par le barème.
     """
     from backend.bots.paper import coach_trader
     key = str(profile or "").strip().lower()
@@ -587,7 +591,7 @@ def _fees_view(profile: Any, symbol: str, equity: float,
     if not notional or notional <= 0:
         notional = max(equity, 0.0) * coach_trader.MIN_POSITION_PCT / 100.0
     try:
-        round_trip = fees.round_trip_pct(key, notional, symbol)
+        round_trip = fees.round_trip_pct(key, notional, symbol, custom_pct)
     except (ValueError, TypeError):
         round_trip = None
     return {"profile": key, "round_trip_pct": round_trip,
@@ -596,7 +600,8 @@ def _fees_view(profile: Any, symbol: str, equity: float,
 
 def build(username: str, symbol: str, tv_symbol: str,
           deps: Optional[Dict[str, Callable]] = None,
-          now: Any = None) -> Dict[str, Any]:
+          now: Any = None, fee_profile: str = "",
+          custom_pct: Optional[float] = None) -> Dict[str, Any]:
     """La fiche complète du titre (§5.1). **Ne lève jamais.**
 
     ``username`` : le compte qui regarde. ``symbol`` : le symbole YAHOO déjà
@@ -615,6 +620,14 @@ def build(username: str, symbol: str, tv_symbol: str,
 
     ``now`` : l'horodatage servi dans ``quote.ts`` (l'instant de la LECTURE,
     pas celui du tick — Yahoo ne donne pas l'heure de sa dernière transaction).
+
+    ``fee_profile`` / ``custom_pct`` : le courtier de CELUI QUI REGARDE, quand
+    ce n'est pas celui du portefeuille. L'extension TradingView enregistre ses
+    scalps chez ``kraken_spot`` alors que le portefeuille du site vit chez
+    ``yuh`` : sans cette bascule, la fiche annonçait 1,30 % d'aller-retour là
+    où le scalp en paie 0,52 %, et les garde-fous du panneau héritaient du
+    mauvais chiffre. Profil inconnu (ou vide) -> repli SILENCIEUX sur celui du
+    portefeuille : une faute de frappe ne fait pas tomber la fiche.
     """
     symbol = str(symbol or "").strip().upper()
     tv_symbol = str(tv_symbol or "").strip().upper()
@@ -676,7 +689,12 @@ def build(username: str, symbol: str, tv_symbol: str,
                 mood_view = mood_view if mood_view is not None else {}
                 mood_view[key] = btc.get(key)
 
+    # Le profil du portefeuille est lu dans tous les cas : c'est lui le repli,
+    # et sa panne doit rester visible dans ``degraded``.
     fees_profile = src.get("fees_profile", username)
+    imposed = str(fee_profile or "").strip().lower()
+    if imposed in fees.FEE_PROFILES:
+        fees_profile = imposed
 
     out = {
         "symbol": symbol,
@@ -694,7 +712,8 @@ def build(username: str, symbol: str, tv_symbol: str,
         "whales": _rows(src.get("whales", symbol)),
         "mood": mood_view,
         "btc": btc,
-        "fees": _fees_view(fees_profile, symbol, equity, position_value),
+        "fees": _fees_view(fees_profile, symbol, equity, position_value,
+                           _val(custom_pct)),
         "ta": _session_ta(src.get("candles_1m", symbol),
                           src.get("candles_1d", symbol)),
         "defaults": {"risk_pct": DEFAULT_RISK_PCT,

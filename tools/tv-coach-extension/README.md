@@ -57,6 +57,15 @@ l'extension** (ou le bouton « Options » dans l'en-tête du panneau).
 - **Ce qu'elle ne touche jamais** : alertes, recherche de symbole, paramètres du graphique, menus, infobulles — un dialogue n'est fermé que s'il parle de pub, et jamais par un bouton d'achat (« Essayer », « Upgrade », « Acheter »).
 - **La désactiver** : Options → décocher « Fermer automatiquement les pubs TradingView » ; effet immédiat, sans recharger l'onglet. Le panneau affiche « Pubs fermées : N » en pied quand elle a agi.
 
+**Le profil de frais est celui de l'extension, pas celui du site.** Il part
+avec chaque demande de fiche (`GET /brief?fee_profile=…`), donc c'est lui —
+et lui seul — qui chiffre l'aller-retour affiché dans la fiche, le coût de la
+taille auto, les garde-fous du mode scalp et les scalps enregistrés. Laissé
+vide (ou inconnu du serveur), la fiche retombe en silence sur le courtier du
+portefeuille OmenServer. Avant, elle répondait **toujours** avec celui du site :
+sur UKOIL, « frais A/R ≈ 128.98 CHF » était le barème de Yuh (1,3 % l'A/R) pour
+un scalp qui en paie 0,52 % chez Kraken.
+
 ## Vérification locale
 
 ```bash

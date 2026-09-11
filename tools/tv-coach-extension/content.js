@@ -547,6 +547,30 @@
     debug('appel refusé', status, (error && error.detail) || '');
   }
 
+  /**
+   * Les paramètres de ``GET /brief``.
+   *
+   * Le PROFIL DE FRAIS voyage avec la demande : le serveur tient les comptes
+   * du portefeuille chez le courtier du site (Yuh), l'extension enregistre ses
+   * scalps chez le sien (Kraken). Sans ce champ, la fiche renvoyait le barème
+   * du site — « frais A/R ≈ 128.98 CHF » sur UKOIL, soit 1,3 % au lieu de
+   * 0,52 % — et les garde-fous comme ``feePctPerSide`` en héritaient.
+   *
+   * ``custom_pct`` ne part QUE sur le profil ``custom`` (le seul que le barème
+   * laisse réécrire) et seulement s'il est un nombre : ``null`` est OMIS par
+   * ``lib/api.buildQuery``, donc le serveur garde son défaut au lieu de
+   * recevoir « null ».
+   */
+  function briefQuery() {
+    var profile = state.settings.fee_profile || '';
+    return {
+      symbol: state.symbol,
+      tv: state.tv_symbol,
+      fee_profile: profile,
+      custom_pct: profile === 'custom' ? num(state.settings.custom_pct) : null
+    };
+  }
+
   function refreshBrief(force) {
     var client = apiClient();
     if (!client || !state.symbol) { return Promise.resolve(null); }
@@ -554,7 +578,7 @@
         && (Date.now() - state.brief_at) < BRIEF_REFRESH_MS) {
       return Promise.resolve(state.brief);
     }
-    return client.get('/brief', { symbol: state.symbol, tv: state.tv_symbol })
+    return client.get('/brief', briefQuery())
       .then(function (data) {
         markServer(true);
         setBanner('token_expired', false);
@@ -2516,6 +2540,7 @@
     modeFor: modeFor,
     buildOrderPayload: buildOrderPayload,
     guardState: guardState,
+    briefQuery: briefQuery,
     scalpSizing: scalpSizing,
     openScalp: openScalp,
     closeScalp: closeScalp,

@@ -118,7 +118,8 @@ def _resolve_symbol(symbol: _AnyAB, tv_symbol: _AnyAB) -> str:
 
 
 @router.get("/brief")
-def paper_tv_brief(symbol: str = "", tv: str = "",
+def paper_tv_brief(symbol: str = "", tv: str = "", fee_profile: str = "",
+                   custom_pct: _OptionalAB[float] = None,
                    current_user: _UserAB = _DependsAB(
                        _require_role_ab(*_BRIEF_ROLES))):
     """La fiche du titre affiché dans TradingView (spec §5.1) — LECTURE PURE.
@@ -126,6 +127,11 @@ def paper_tv_brief(symbol: str = "", tv: str = "",
     ``symbol`` : le symbole Yahoo. ``tv`` : le symbole TradingView
     (``EXCHANGE:TICKER``), qui sert à la fois de repli quand ``symbol`` manque
     et de filtre pour les dépêches du volet TradingView.
+
+    ``fee_profile`` / ``custom_pct`` : le courtier de l'extension, quand il
+    n'est pas celui du portefeuille (elle scalpe chez Kraken pendant que le
+    site tient les comptes chez Yuh). La route ne filtre pas : un profil
+    inconnu retombe en silence sur celui du portefeuille dans ``brief.build``.
 
     400 si aucun des deux ne donne un symbole connu : mieux vaut le dire que
     peindre un panneau vide qui aurait l'air d'un titre sans actualité.
@@ -139,7 +145,8 @@ def paper_tv_brief(symbol: str = "", tv: str = "",
             status_code=400,
             detail="Symbole inconnu (ni Yahoo, ni une place TradingView connue).")
     return brief.build(current_user.username, wanted,
-                       str(tv or "").strip().upper(), now=_now_iso())
+                       str(tv or "").strip().upper(), now=_now_iso(),
+                       fee_profile=fee_profile, custom_pct=custom_pct)
 
 
 @router.post("/precheck")
