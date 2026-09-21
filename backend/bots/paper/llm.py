@@ -931,8 +931,10 @@ def _fees_lines(view: Any) -> list:
         "FRAIS : chaque aller-retour te coûte ~%s (mêmes frais que ton "
         "propriétaire — c'est la règle). Vise au moins 3x ce coût, ne "
         "resserre JAMAIS un stop dans le bruit (moins de 2x les frais, ou "
-        "0,5 ATR si le titre en réclame plus) sauf pour verrouiller un gain "
-        "déjà acquis, et préfère un trade qui court à trois qui grignotent. "
+        "1 ATR ENTIER si le titre en réclame plus, et jamais moins de 1 %%) "
+        "sauf pour verrouiller un gain déjà acquis — au moins ce plancher-là, "
+        "pas seulement 3x les frais —, et préfère un trade qui court à trois "
+        "qui grignotent. "
         "Cette semaine : %s CHF de frais pour %s CHF de brut (%s CHF net) — "
         "tu as travaillé pour ton courtier."
         % (_pct(view.get("round_trip_pct")),
@@ -1071,17 +1073,38 @@ def coach_actions_block(book: Any) -> str:
         # née d'un vécu : UNE ligne tenue, et des passes entières à guetter
         # « une clôture sous la SMA50 » sans jamais rien armer). Le mandat ne
         # dit plus seulement ce qui est INTERDIT, il dit ce qui est ATTENDU.
+        #
+        # LOT 13 — AMENDÉ, et il fallait l'amender. Ce mandat-là, posé devant
+        # un signal faible, a produit ~1 trade par jour dans un marché plat :
+        # -11,1 % en 24 jours, dont 609 CHF de frais sur 1 256 CHF de perte.
+        # Il vise toujours 3 à 5 thèmes — mais SOUS CONDITION qu'un candidat
+        # passe les règles. Le second paragraphe dit l'autre moitié, celle qui
+        # manquait : le cash EST une position.
         "RÉGIME DÉPLOYÉ : vise 3 à 5 positions OUVERTES sur des THÈMES "
-        "DIFFÉRENTS. Le même catalyseur ne se joue qu'UNE fois (ta règle "
-        "anti-corrélation est juste) — mais chaque THÈME distinct à "
-        "conviction se joue : carburant/Iran, tarifs, semi-conducteurs, "
-        "l'Europe, la crypto sont des paris INDÉPENDANTS. Si ton cash "
+        "DIFFÉRENTS — QUAND des candidats passent les règles. Le même "
+        "catalyseur ne se joue qu'UNE fois (ta règle anti-corrélation est "
+        "juste) — mais chaque THÈME distinct à conviction se joue : "
+        "carburant/Iran, tarifs, semi-conducteurs, l'Europe, la crypto sont "
+        "des paris INDÉPENDANTS. Devant un candidat qui PASSE les règles, "
+        "l'attente du parfait est une faute (doctrine du propriétaire : "
+        "n'attends pas le parfait, ce sera déjà trop tard) : si ton cash "
         "dépasse 50 % de l'équité ALORS QU'il existe des candidats "
         "tradables à thèse valable, tu DOIS expliquer pourquoi tu n'es pas "
-        "déployé — l'attente du parfait est une faute (doctrine du "
-        "propriétaire : n'attends pas le parfait, ce sera déjà trop tard). "
-        "L'inaction se paie en crédibilité : ton taux de déploiement est "
-        "archivé et comparé.",
+        "déployé.",
+        "MAIS LE CASH EST UNE POSITION. Une entrée dont l'espérance NETTE DE "
+        "FRAIS est sous %s n'est PAS un trade. Ce rapport se lit "
+        "net = (gain visé - aller-retour) / (risque + aller-retour), tout en "
+        "pourcentage du prix d'entrée : l'aller-retour se paie DEUX fois, il "
+        "ampute ce que le trade peut rapporter ET s'ajoute à ce qu'il peut "
+        "coûter. Refuser une telle entrée n'est pas de l'attentisme, c'est la "
+        "RÈGLE — et le garde-fou la refusera de toute façon "
+        "(``edge_thin``). Si AUCUN candidat ne passe, tu ne trades pas : "
+        "rester en cash est une décision LÉGITIME, et tu l'écris dans ta "
+        "note en disant CE QUI MANQUE — objectif trop proche, stop dans le "
+        "bruit, rapport net insuffisant. Un « rien à faire » argumenté est "
+        "une décision complète ; un trade forcé pour avoir l'air déployé est "
+        "une perte chiffrée d'avance."
+        % ("%g" % coach_trader.MIN_NET_RR).replace(".", ","),
     ] + _deployment_lines(book.get("deployment")) + _fees_lines(book.get("fees")) + [
         # LOT 9 — le vrai « ne plus attendre ». Le coach écrivait « j'attends
         # une clôture sous la SMA50 pour ouvrir un short » : une embuscade

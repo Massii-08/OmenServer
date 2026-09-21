@@ -100,6 +100,21 @@ MAX_POSITIONS = 6         # nombre de fronts ouverts simultanément
 MAX_CRYPTO = 2            # dont au plus deux cryptos
 MIN_CASH_PCT = 5.0        # trésorerie plancher : on ne se met jamais à sec
 
+# --- LOT 13 — l'ÉCONOMIE d'une entrée ------------------------------------- #
+# Espérance NETTE DE FRAIS minimale d'une entrée :
+#     net_rr = (gain visé % - aller-retour) / (risque % + aller-retour)
+# Pourquoi ce calcul et pas le R:R brut : l'aller-retour se paie DEUX fois
+# dans la comparaison — il AMPUTE le gain ET s'AJOUTE à la perte. Vécu sur les
+# 19 trades réels du compte : 8 des perdants portaient l'avertissement
+# ``reward_risk_below_1`` de ``risk.preorder_warnings`` — mais ce n'est qu'un
+# AVERTISSEMENT forcé, et ils sont tous partis quand même. Ici, c'est un REFUS.
+MIN_NET_RR = 1.5
+# Fenêtre du rachat-réflexe, en jours civils et INCLUSE (``<= 5``). Les quatre
+# re-entrées réelles du compte sont tombées à J+0 (FRO), J+3 (GM), J+3 (PINS)
+# et J+4 (WYNN) : un seuil plus court n'en attraperait qu'une, la règle serait
+# cosmétique.
+WHIPSAW_DAYS = 5
+
 # --- Embuscades (LOT 9) --------------------------------------------------- #
 MAX_PENDING = 4           # pièges armés simultanément, au plus
 # Le risque CUMULÉ des pièges armés, en % de l'équité. Deux trades pleins.
@@ -199,6 +214,19 @@ REJECT_CODES = (
     #                       plancher de bruit et ne verrouille pas un gain
     #                       déjà acquis.
     "fee_ratio", "stop_in_noise",
+    # LOT 13 — le régime IBKR (0,05 %/côté) : quand les frais s'effondrent, ce
+    # ne sont plus eux qui bornent un trade — il faut le dire autrement.
+    #   ``no_target`` — une ENTRÉE sans objectif exploitable. C'était
+    #                   l'échappatoire la plus large de la porte : ``fee_ratio``
+    #                   était conditionné par la présence du ``target``, donc
+    #                   omettre l'objectif DÉSARMAIT tout contrôle économique.
+    #   ``edge_thin``  — l'espérance NETTE DE FRAIS de l'entrée est sous
+    #                    :data:`MIN_NET_RR`. L'aller-retour ampute le gain ET
+    #                    s'ajoute à la perte : il se paie DEUX fois.
+    #   ``whipsaw``    — racheter PLUS CHER (ou re-shorter PLUS BAS) ce qu'on
+    #                    vient de perdre sur ce même symbole, dans les
+    #                    :data:`WHIPSAW_DAYS` jours.
+    "no_target", "edge_thin", "whipsaw",
 )
 
 # D'où vient une décision : du digest quotidien, de la passe planifiée (créneau),
@@ -601,19 +629,40 @@ def _atr_pct(technical: Any) -> Optional[float]:
     return _val(technical.get("atr14_pct"))
 
 
+# L'ATR mesure la respiration ORDINAIRE du titre sur une séance : un stop
+# posé à un demi-ATR est dans le bruit par construction. Vécu sur le compte :
+# les stops « à 1 ATR » du coach se sont TOUS fait toucher. Le coefficient est
+# donc 1,0, pas 0,5.
+_NOISE_ATR_MULT = 1.0
+# Et sans ATR, un plancher ABSOLU : au régime IBKR (0,10 % l'aller-retour) le
+# terme frais seul vaudrait 0,2 %, c'est-à-dire un stop collé au cours que le
+# premier tick emporte.
+_NOISE_MIN_PCT = 1.0
+
+
 def _noise_floor_pct(round_trip: float, atr_pct: Optional[float]) -> float:
     """Le plancher de distance stop↔cours en dessous duquel resserrer revient
     à se faire toucher par le bruit ordinaire du titre plutôt que par une
     vraie invalidation de thèse.
 
-    ``2 x round_trip`` seul si le contexte technique ne porte pas d'ATR ;
-    sinon le PLUS LARGE des deux avec ``0,5 x atr14_pct`` — l'ATR mesure le
-    bruit RÉEL du titre, les frais mesurent le prix d'un aller-retour raté,
-    et le stop doit survivre au plus exigeant des deux.
+    Le PLUS EXIGEANT de trois termes :
+      - ``2 x round_trip`` — le prix d'un aller-retour raté ;
+      - ``1 x atr14_pct``  — la respiration réelle du titre, quand on la
+        connaît (l'ATR ENTIER : à un demi-ATR, le stop est DANS le bruit) ;
+      - :data:`_NOISE_MIN_PCT` — un plancher absolu de 1 %, quand l'ATR est
+        inconnu.
+
+    ⚠️ LOT 13 — pourquoi les deux derniers termes existent. Le plancher ne
+    tenait auparavant que par les FRAIS : au profil Yuh (1,30 % l'aller-retour)
+    ``2 x round_trip`` valait 2,6 % et bornait tout. Le compte passe à IBKR
+    (0,05 %/côté, pas de droit de timbre) : le même terme tombe à 0,2 %, et il
+    ne resterait qu'un demi-ATR — soit précisément le stop que le bruit
+    ordinaire du titre touche presque sûrement. Une baisse de frais ne rend pas
+    un titre moins volatil : le bruit, lui, n'a pas changé de barème.
     """
-    floor = 2.0 * round_trip
+    floor = max(2.0 * round_trip, _NOISE_MIN_PCT)
     if atr_pct is not None:
-        floor = max(floor, 0.5 * atr_pct)
+        floor = max(floor, _NOISE_ATR_MULT * atr_pct)
     return floor
 
 
@@ -637,10 +686,152 @@ def _stop_in_noise(distance_pct: float, round_trip: float,
     C'est l'exception qui rend tenable « laisse courir les gagnants » : un
     stop remonté APRÈS un gain suffisant protège du RÉALISÉ, il n'a plus
     besoin de respirer le bruit ordinaire du titre.
+
+    ⚠️ LOT 13 — le seuil de DÉROGATION suit le plancher. « 3 x l'aller-retour »
+    seul valait 3,9 % au profil Yuh ; au régime IBKR il ne vaudrait plus que
+    0,3 %, et une erreur d'arrondi suffirait à rouvrir tous les stops collés
+    que ce garde-fou vient de fermer. On ne déroge donc au plancher que si le
+    gain DÉJÀ ENCAISSÉ vaut au moins ce plancher : autrement dit, on ne
+    s'autorise un stop dans le bruit qu'une fois le bruit déjà payé.
     """
-    if locked_gain_pct >= 3.0 * round_trip:
+    floor = _noise_floor_pct(round_trip, atr_pct)
+    if locked_gain_pct >= max(3.0 * round_trip, floor):
         return False
-    return distance_pct < _noise_floor_pct(round_trip, atr_pct)
+    return distance_pct < floor
+
+
+# --------------------------------------------------------------------------- #
+# LOT 13 — l'ÉCONOMIE d'une entrée et la MÉMOIRE de la précédente.
+#
+# Deux leçons chiffrées des 19 trades réels du compte :
+#   - l'edge BRUT était négatif (-1,33 %/trade, 6 gagnants bruts sur 19) et
+#     609 CHF de frais sur 1256 CHF de perte. Un R:R brut flatteur ne dit rien
+#     tant que l'aller-retour n'est pas compté DES DEUX CÔTÉS ;
+#   - 4 re-entrées sur un titre qu'on venait de perdre, dont 2 rachetées PLUS
+#     CHER que la sortie et une le JOUR MÊME. Ce n'est pas une thèse qui
+#     insiste, c'est un réflexe qui repaie le courtier.
+# --------------------------------------------------------------------------- #
+
+def _net_rr(entry: Optional[float], target: Optional[float],
+            stop: Optional[float], round_trip: float) -> Optional[float]:
+    """L'espérance NETTE DE FRAIS d'une entrée, ou ``None`` si incalculable.
+
+        net_rr = (gain visé % - aller-retour) / (risque % + aller-retour)
+
+    L'aller-retour se paie DEUX fois dans cette comparaison : il ampute ce que
+    le trade peut rapporter ET s'ajoute à ce qu'il peut coûter. C'est la seule
+    lecture honnête d'un R:R — celle du BRUT dit « 1,55 » là où le net dit
+    « 0,98 », et c'est le net qui décrit ce que le compte encaisse.
+
+    ``None`` plutôt qu'un chiffre inventé quand une borne manque ou quand le
+    dénominateur est nul (stop COLLÉ au prix d'entrée — déjà refusé par
+    ``no_stop``, qui exige un stop du bon côté, donc à distance STRICTEMENT
+    positive ; la garde est là pour que cette fonction reste vraie hors de son
+    appelant).
+    """
+    if entry is None or entry <= 0 or target is None or stop is None:
+        return None
+    gain_pct = abs(target - entry) / entry * 100.0
+    risk_pct = abs(entry - stop) / entry * 100.0
+    denominator = risk_pct + round_trip
+    if denominator <= 0:
+        return None
+    return (gain_pct - round_trip) / denominator
+
+
+def _moment_local(value: Any) -> Optional[datetime]:
+    """Un instant (``datetime`` ou chaîne ISO) rendu en heure de Rome, ou
+    ``None`` s'il est illisible.
+
+    COMPOSE les deux parseurs déjà en place — :func:`_parse_iso_naive_as_local`
+    (convention MAISON : un horodatage naïf est DÉJÀ local, cf. :func:`_local`)
+    puis :func:`_parse_iso` pour l'aware — au lieu d'en écrire un troisième.
+
+    La seule différence avec :func:`_local` est le REPLI, et il est
+    essentiel ici : ``_local`` retombe sur l'HORLOGE COURANTE quand la valeur
+    est illisible. Un ``exit_at`` vide se lirait alors « à l'instant » et
+    fabriquerait un whipsaw qui n'a jamais eu lieu — en plus de rendre une
+    fonction PURE dépendante de l'heure qu'il est. Illisible == ``None``, et
+    l'appelant saute son contrôle.
+
+    Les deux chemins rendent un datetime AWARE : rien ne compare jamais un
+    aware et un naïf (ce mélange a déjà fait planter un thread détaché de ce
+    dépôt).
+    """
+    if isinstance(value, datetime):
+        return _local(value)
+    if not isinstance(value, str) or not value.strip():
+        return None
+    naive = _parse_iso_naive_as_local(value)
+    if naive is not None:
+        return naive.replace(tzinfo=ZoneInfo(LOCAL_TZ))
+    parsed = _parse_iso(value)
+    if parsed is None:
+        return None
+    return parsed.astimezone(ZoneInfo(LOCAL_TZ))
+
+
+def _last_closed_trade(trades: Any, symbol: str):
+    """Le DERNIER trade clos de ce symbole (le plus récent par ``exit_at``) et
+    l'instant de sa sortie — ``(None, None)`` si aucun n'est datable.
+
+    « Le dernier » et pas « le dernier de la liste » : l'ordre d'un historique
+    persisté n'est pas un contrat, la DATE en est un.
+    """
+    best = None
+    best_at = None
+    for trade in _dicts(trades):
+        if _symbol(trade.get("symbol")) != symbol:
+            continue
+        moment = _moment_local(trade.get("exit_at"))
+        if moment is None:
+            continue
+        if best_at is None or moment > best_at:
+            best, best_at = trade, moment
+    return best, best_at
+
+
+def _is_whipsaw(trades: Any, symbol: str, side: str,
+                entry: Optional[float], now: Any) -> bool:
+    """Cette entrée rachète-t-elle PLUS CHER ce qu'on vient de perdre ? (PUR)
+
+    QUATRE conditions, toutes nécessaires — si l'une manque, on laisse passer :
+      1. le dernier trade CLOS de ce symbole est dans le MÊME sens ;
+      2. il s'est soldé par une PERTE (``pnl_chf <= 0``) ;
+      3. sa sortie date de :data:`WHIPSAW_DAYS` jours civils ou moins ;
+      4. et le prix d'entrée demandé est PIRE que le prix de sortie précédent
+         — plus HAUT pour un achat, plus BAS pour une vente à découvert.
+
+    La quatrième est ce qui distingue le réflexe de la décision : re-rentrer à
+    un prix MEILLEUR après s'être fait sortir est parfaitement légitime (même
+    thèse, meilleur point d'entrée), et ce garde-fou ne doit pas l'interdire.
+
+    ``now`` absent -> ``False``. Sans horloge, on ne DEVINE pas une date : le
+    contrôle est SAUTÉ, exactement comme celui des horaires de marché.
+    """
+    if now is None:
+        return False
+    now_local = _moment_local(now)
+    if now_local is None:
+        return False
+    trade, exit_at = _last_closed_trade(trades, symbol)
+    if trade is None or exit_at is None:
+        return False
+    if (_text(trade.get("side")) or "long").lower() != side:
+        return False
+    pnl = _val(trade.get("pnl_chf"))
+    if pnl is None or pnl > 0:
+        return False
+    # Jours CIVILS et borne INCLUSE : les re-entrées réelles allaient de J+0 à
+    # J+4. Un délai NÉGATIF (sortie dans le futur, horloges désaccordées) n'est
+    # pas un whipsaw — on ne refuse pas sur une incohérence.
+    delay_days = (now_local.date() - exit_at.date()).days
+    if delay_days < 0 or delay_days > WHIPSAW_DAYS:
+        return False
+    exit_price = _val(trade.get("exit_price"))
+    if exit_price is None or exit_price <= 0 or entry is None:
+        return False
+    return entry > exit_price if side == "long" else entry < exit_price
 
 
 # --------------------------------------------------------------------------- #
@@ -709,8 +900,13 @@ def gate_decision(decision: Any, portfolio: Any, quote: Any,
       8. ENTRÉE (``buy``/``short``) : ``wrong_side``, ``no_thesis``,
          ``no_stop``, ``risk_high``, ``too_small``, ``oversize``,
          ``too_many_positions``, ``too_many_crypto``, ``cash_floor``,
-         puis (LOT 12, les contrôles les plus fins, en tout dernier)
-         ``fee_ratio`` et ``stop_in_noise``.
+         puis (LOT 12 et LOT 13, les contrôles les plus fins, en tout dernier)
+         ``no_target``, ``fee_ratio``, ``edge_thin``, ``stop_in_noise``, et
+         enfin ``whipsaw`` — le seul qui ne juge pas l'ordre mais le PASSÉ du
+         livre, d'où sa dernière place.
+
+    ``now`` sert AUSSI (LOT 13) à dater la fenêtre anti-``whipsaw`` ; sans lui
+    ce contrôle est SAUTÉ, comme celui des horaires de marché.
     """
     decision = decision if isinstance(decision, dict) else {}
     portfolio = portfolio if isinstance(portfolio, dict) else {}
@@ -912,13 +1108,29 @@ def gate_decision(decision: Any, portfolio: Any, quote: Any,
     # perdant une fois les frais comptés.
     round_trip = _round_trip_pct(portfolio.get("fee_profile"), value_chf, symbol)
 
+    # LOT 13 — l'objectif devient OBLIGATOIRE sur une ENTRÉE (embuscade
+    # comprise : un piège est une entrée qui partira sans témoin). Jusqu'ici,
+    # ``fee_ratio`` était conditionné par la PRÉSENCE du ``target`` : omettre
+    # l'objectif désarmait donc tout contrôle économique — l'échappatoire la
+    # plus large de cette porte. Une entrée qui ne sait pas ce qu'elle vise
+    # n'est pas une entrée prudente, c'est une entrée non mesurable.
     target = _val(decision.get("target"))
-    if target is not None and target > 0:
-        # Un objectif qui ne rapporte pas au moins 3x le coût d'un
-        # aller-retour ne couvre même pas le risque de se faire sortir une
-        # fois et repayer le courtier une seconde.
-        if abs(target - entry) / entry * 100.0 < 3.0 * round_trip:
-            return _reject("fee_ratio")
+    if target is None or target <= 0:
+        return _reject("no_target")
+
+    # Un objectif qui ne rapporte pas au moins 3x le coût d'un aller-retour ne
+    # couvre même pas le risque de se faire sortir une fois et repayer le
+    # courtier une seconde.
+    if abs(target - entry) / entry * 100.0 < 3.0 * round_trip:
+        return _reject("fee_ratio")
+
+    # LOT 13 — l'ESPÉRANCE NETTE DE FRAIS (cf. :func:`_net_rr`). ``fee_ratio``
+    # ne regarde que le GAIN ; celui-ci met le gain en face du RISQUE, frais
+    # comptés des deux côtés. ``None`` (incalculable) ne refuse pas : on
+    # n'invente pas un motif sur un chiffre qu'on n'a pas su faire.
+    net_rr = _net_rr(entry, target, stop, round_trip)
+    if net_rr is not None and net_rr < MIN_NET_RR:
+        return _reject("edge_thin")
 
     # Le stop INITIAL d'une entrée n'a encore verrouillé aucun gain (la ligne
     # n'existe pas encore) : l'exception de :func:`_stop_in_noise` ne joue
@@ -926,6 +1138,13 @@ def gate_decision(decision: Any, portfolio: Any, quote: Any,
     distance_pct = abs(entry - stop) / entry * 100.0
     if _stop_in_noise(distance_pct, round_trip, _atr_pct(technical), 0.0):
         return _reject("stop_in_noise")
+
+    # LOT 13 — l'anti-whipsaw en TOUT dernier, et c'est délibéré : c'est le
+    # SEUL contrôle qui ne juge pas l'ordre lui-même mais le PASSÉ du livre.
+    # Un ordre économiquement bancal doit s'entendre dire qu'il est bancal
+    # avant de s'entendre dire qu'il arrive trop tôt.
+    if _is_whipsaw(portfolio.get("trades"), symbol, wanted, entry, now):
+        return _reject("whipsaw")
 
     return _accept(symbol, action, qty, decision, kind=plan_kind,
                    trigger=trigger)
@@ -1016,6 +1235,121 @@ def _gate_cancel_pending(symbol: str,
     if not any(_symbol(a.get("symbol")) == symbol for a in ambushes):
         return _reject("no_pending")
     return _accept(symbol, "cancel_pending", 0, {})
+
+
+# --------------------------------------------------------------------------- #
+# PUR — le détail CHIFFRÉ des refus du LOT 13
+#
+# Le code (``edge_thin``) dit CE QUI a été violé ; le détail dit DE COMBIEN.
+# C'est lui que l'écran affiche sous le refus et que le registre archive —
+# « espérance nette de 0,94 pour 1,5 minimum » enseigne quelque chose,
+# « edge_thin » tout seul n'enseigne rien.
+#
+# ⚠️ POURQUOI ICI et pas dans le routeur, où vivent les détails des 25 autres
+# codes (``paper_router._coach_reject_detail``) : ces trois-là se CHIFFRENT
+# avec les helpers de ce module (``_round_trip_pct``, ``_net_rr``,
+# ``_last_closed_trade``) et avec ses seuils. Les recopier là-bas ferait
+# diverger le texte du calcul au premier ajustement — exactement la raison pour
+# laquelle ``precheck`` appelle ``_stop_in_noise`` au lieu de le réécrire.
+# Le routeur n'a qu'à déléguer :
+#
+#     extra = coach_trader.reject_detail(code, decision, portfolio.to_dict(),
+#                                        quote, now=now_iso)
+#     if extra is not None:
+#         return extra
+#
+# Tant que ce branchement n'est pas posé, le refus reste correct et archivé —
+# il est seulement moins bavard.
+# --------------------------------------------------------------------------- #
+
+def _fr(value: float, digits: int = 2) -> str:
+    """Un nombre à la française (« 0,94 ») — ce texte se LIT, il ne se
+    sérialise pas (même doctrine que ``llm._pct``)."""
+    return ("%.*f" % (digits, value)).replace(".", ",")
+
+
+def reject_detail(code: Any, decision: Any, portfolio: Any, quote: Any,
+                  now: Any = None) -> Optional[str]:
+    """La phrase lisible et CHIFFRÉE des trois refus du LOT 13 (PUR).
+
+    Rend ``None`` pour tout autre code — les 25 précédents sont chiffrés par
+    le routeur, et se taire vaut mieux que servir un texte à moitié juste.
+
+    ``portfolio`` est le DICT (``models.Portfolio.to_dict()``), comme pour
+    :func:`gate_decision` : ce module ne connaît pas les objets du moteur.
+
+    Best-effort, comme son homologue du routeur : un détail illisible ne doit
+    JAMAIS empêcher le refus d'être consigné, d'où le ``None`` de repli sur
+    n'importe quelle erreur.
+    """
+    try:
+        code = _text(code)
+        if code not in ("no_target", "edge_thin", "whipsaw"):
+            return None
+
+        decision = decision if isinstance(decision, dict) else {}
+        portfolio = portfolio if isinstance(portfolio, dict) else {}
+        quote = quote if isinstance(quote, dict) else {}
+        symbol = _symbol(decision.get("symbol"))
+
+        if code == "no_target":
+            raw = decision.get("target")
+            if raw is None or (isinstance(raw, str) and not raw.strip()):
+                return ("aucun objectif : sans lui, rien ne mesure ce que le "
+                        "trade peut RAPPORTER — une entrée en porte un, "
+                        "toujours")
+            return ("objectif illisible (%s) : une entrée doit dire ce "
+                    "qu'elle vise, en chiffres" % (raw,))
+
+        # Le NIVEAU de référence est celui de la porte : le trigger d'une
+        # embuscade, le cours sinon (cf. ``gate_decision``).
+        price = _val(quote.get("price"))
+        trigger = _val(decision.get("trigger"))
+        entry = price
+        if _text(decision.get("kind")).lower() == "stop" \
+                and trigger is not None and trigger > 0:
+            entry = trigger
+        if entry is None or entry <= 0:
+            return None
+
+        if code == "edge_thin":
+            target = _val(decision.get("target"))
+            stop = _val(decision.get("stop"))
+            qty = _as_qty(decision.get("qty")) or 0
+            fx = _val(quote.get("fx_rate")) or 1.0
+            round_trip = _round_trip_pct(portfolio.get("fee_profile"),
+                                         qty * entry * fx, symbol)
+            ratio = _net_rr(entry, target, stop, round_trip)
+            if ratio is None:
+                return None
+            return ("espérance nette de %s pour %s minimum — gain visé %s %%, "
+                    "risque %s %%, et l'aller-retour (%s %%) se paie DEUX "
+                    "fois : il ampute le gain ET s'ajoute à la perte"
+                    % (_fr(ratio, 2), _fr(MIN_NET_RR, 1),
+                       _fr(abs(target - entry) / entry * 100.0),
+                       _fr(abs(entry - stop) / entry * 100.0),
+                       _fr(round_trip)))
+
+        # whipsaw
+        trade, exit_at = _last_closed_trade(portfolio.get("trades"), symbol)
+        if trade is None or exit_at is None:
+            return None
+        exit_price = _val(trade.get("exit_price"))
+        if exit_price is None:
+            return None
+        moment = _moment_local(now)
+        delay = "" if moment is None else \
+            (" il y a %d jour(s)" % (moment.date() - exit_at.date()).days)
+        side = (_text(trade.get("side")) or "long").lower()
+        sens = "PLUS CHER" if side == "long" else "PLUS BAS"
+        pnl = _val(trade.get("pnl_chf"))
+        perte = "" if pnl is None else (" sur une perte de %s CHF" % _fr(abs(pnl)))
+        return ("sorti de %s à %s%s%s — y rentrer à %s, c'est racheter %s ce "
+                "qu'on vient de perdre (fenêtre de %d jours)"
+                % (symbol or "?", _fr(exit_price), delay, perte,
+                   _fr(entry), sens, WHIPSAW_DAYS))
+    except Exception:            # noqa: BLE001 — best-effort, jamais fatal
+        return None
 
 
 def _accept(symbol: str, side: str, qty: int,

@@ -1331,7 +1331,8 @@ def test_le_prompt_gardien_ne_leve_jamais():
 
 def test_coach_actions_block_enonce_le_regime_deploye():
     """« On ne peut pas rester à attendre » : le mandat vise 3 à 5 lignes sur
-    des THÈMES différents, et l'attente du parfait est nommée comme une FAUTE."""
+    des THÈMES différents, et devant un candidat qui PASSE les règles,
+    l'attente du parfait reste nommée comme une FAUTE."""
     block = llm.coach_actions_block(BOOK)
     low = block.lower()
     assert "régime déployé" in low
@@ -1341,8 +1342,48 @@ def test_coach_actions_block_enonce_le_regime_deploye():
     assert "n'attends pas le parfait, ce sera déjà trop tard" in low
     # Le même catalyseur ne se joue qu'une fois — mais un thème DISTINCT, si.
     assert "une fois" in low and "indépendant" in low
-    # L'inaction se paie.
-    assert "crédibilité" in low
+    # LOT 13 — l'objectif de déploiement est désormais CONDITIONNEL : il ne
+    # vaut que pour des candidats qui passent les règles.
+    assert "quand des candidats passent les règles" in low
+
+
+def test_le_mandat_ne_fait_PLUS_de_l_inaction_une_faute_de_credibilite():
+    """LOT 13 — ASSERTION INVERSÉE, et c'est le cœur du lot. Le mandat se
+    terminait par « L'inaction se paie en crédibilité : ton taux de
+    déploiement est archivé et comparé ». Couplée à un signal faible, cette
+    phrase a produit ~1 trade par jour dans un marché plat : -11,1 % en 24
+    jours, dont 609 CHF de frais sur 1 256 CHF de perte. On ne peut pas à la
+    fois demander au coach de refuser les trades sans espérance et lui dire
+    que ne pas trader lui coûte sa réputation."""
+    low = llm.coach_actions_block(BOOK).lower()
+    assert "l'inaction se paie" not in low
+    assert "taux de déploiement est archivé" not in low
+    # ⚠️ On épingle la PHRASE retirée, pas le mot « crédibilité » : il vit
+    # aussi dans « tu joues ta crédibilité à chaque ligne », qui parle de la
+    # publicité du registre et reste parfaitement juste.
+    assert "ne rien faire reste une réponse légitime" in low
+
+
+def test_le_mandat_fait_du_CASH_une_position():
+    """Le pendant de « on ne peut pas rester à attendre » : quand AUCUN
+    candidat ne passe, ne pas trader est une décision — et elle s'écrit."""
+    block = llm.coach_actions_block(BOOK)
+    low = block.lower()
+    assert "le cash est une position" in low
+    assert "aucun candidat" in low
+    assert "décision légitime" in low
+    # Il doit DIRE ce qui manque, pas se taire.
+    assert "ce qui manque" in low
+
+
+def test_le_mandat_nomme_le_seuil_d_esperance_nette_ET_son_code_de_refus():
+    """Le modèle doit connaître le chiffre ET le code : un refus qu'il n'a pas
+    vu venir ne lui apprend rien, et le seuil vient de la porte (source
+    unique), jamais d'une constante recopiée dans le prompt."""
+    block = llm.coach_actions_block(BOOK)
+    assert "edge_thin" in block
+    assert "1,5" in block
+    assert coach_trader.MIN_NET_RR == 1.5
 
 
 def test_coach_actions_block_pose_le_seuil_de_50pct_de_tresorerie():
@@ -1411,10 +1452,17 @@ def test_coach_actions_block_affiche_le_bloc_frais_chiffre():
 
 def test_coach_actions_block_sans_frais_garde_le_reste_du_bloc():
     """Sans vue de frais (livre en panne), le reste du bloc d'actions
-    survit — même doctrine que ``_deployment_lines``."""
+    survit — même doctrine que ``_deployment_lines``.
+
+    ⚠️ LOT 13 — la sonde a dû devenir PRÉCISE. Elle cherchait le mot « frais »,
+    proxy commode de « la section FRAIS est absente » ; le mandat parle
+    désormais d'espérance NETTE DE FRAIS dans un bloc qui, lui, est toujours
+    là. On sonde donc le MARQUEUR de la section, pas un mot qui vit ailleurs."""
     block = llm.coach_actions_block(BOOK)
+    low = block.lower()
     assert block   # pas d'exception, pas de bloc vide
-    assert "frais" not in block.lower()
+    assert "frais : chaque aller-retour" not in low
+    assert "tu as travaillé pour ton courtier" not in low
 
 
 def test_les_deux_prompts_coach_heritent_de_la_conscience_des_frais():

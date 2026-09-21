@@ -940,6 +940,222 @@ def test_tick_cancels_an_order_that_became_unaffordable(tmp_path, monkeypatch):
 
 
 # ================================================================
+#  BUG DES ORDRES DE SORTIE ORPHELINS (2026-09-21)
+# ================================================================
+# Vécu en production : le compte coach portait 23 ordres ouverts pour 3
+# positions -- 13 étaient des sorties (sell/cover) sur des symboles qu'il ne
+# détenait PLUS, certains posés depuis le 30/08. Deux zombies (sell FRO 50,
+# sell WYNN 38) dormaient à côté d'une ligne ROUVERTE sur le même symbole :
+# si le cours avait atteint leur limite, ils auraient liquidé une position
+# que personne n'avait décidé de fermer à ce prix.
+#
+# Le correctif a deux jambes, testées séparément ci-dessous :
+#   * à la SOURCE -- toute clôture qui ramène une position à zéro (les deux
+#     boucles de ``run_tick``, une clôture manuelle, le coach) annule les
+#     ordres de sortie SIBLINGS du même symbole (``_cancel_orphan_exit_
+#     orders``, appelé depuis ``_close_leg``) ;
+#   * en BALAYAGE -- ``run_tick`` nettoie, dès son premier appel et même sans
+#     aucune clôture CE tick, tout ordre de sortie déjà orphelin
+#     (``_sweep_orphan_exit_orders``) -- ce qui purgera tout seul les
+#     zombies déjà écrits sur le fichier de production.
+
+def test_a_protective_stop_cancels_the_stray_exit_orders_left_on_the_symbol(
+        tmp_path, monkeypatch):
+    """Le stop protecteur (2e boucle de ``run_tick``) clôture la ligne : un
+    objectif manuel jamais atteint, posé sur le même symbole, doit être
+    annulé AVEC elle plutôt que de survivre en zombie."""
+    c, market = make_client(tmp_path, monkeypatch)
+    buy(c, qty=10, stop_loss=90.0, thesis="Cassure haussière, invalidation sous 90")
+    stray = buy(c, side="sell", kind="limit", limit_price=150.0, qty=10)
+    stray_id = stray["order"]["id"]
+
+    market.candles["NESN.SW"] = [
+        {"ts": _ts(11), "open": 95.0, "high": 96.0, "low": 88.0, "close": 89.0}]
+    result = c.post("/api/paper/tick").json()
+
+    assert len(result["stopped"]) == 1
+    reasons = {row["order_id"]: row["reason"] for row in result["cancelled"]}
+    assert reasons.get(stray_id) == "position_closed"
+    assert portfolio_of(c)["portfolio"]["open_orders"] == []
+
+
+def test_a_filled_exit_order_cancels_the_other_stray_exit_orders_on_the_symbol(
+        tmp_path, monkeypatch):
+    """Même bug, dans l'AUTRE boucle de ``run_tick`` : un ordre de sortie qui
+    se remplit lui-même (ici un stop-vente manuel, distinct du stop protecteur
+    de la ligne) doit aussi annuler les AUTRES ordres de sortie qui
+    traînaient encore sur le même symbole -- pas seulement se retirer
+    lui-même."""
+    c, market = make_client(tmp_path, monkeypatch)
+    buy(c, qty=10, thesis="Une thèse suffisamment longue pour passer le seuil du coach")
+    buy(c, side="sell", kind="stop", stop_price=95.0, qty=10)
+    stray = buy(c, side="sell", kind="limit", limit_price=150.0, qty=10)
+    stray_id = stray["order"]["id"]
+
+    market.candles["NESN.SW"] = [
+        {"ts": _ts(11), "open": 98.0, "high": 99.0, "low": 90.0, "close": 91.0}]
+    result = c.post("/api/paper/tick").json()
+
+    assert len(result["fills"]) == 1
+    reasons = {row["order_id"]: row["reason"] for row in result["cancelled"]}
+    assert reasons.get(stray_id) == "position_closed"
+    assert portfolio_of(c)["portfolio"]["open_orders"] == []
+
+
+def test_a_partial_reduction_leaves_the_remaining_exit_orders_alone(
+        tmp_path, monkeypatch):
+    """Une ligne réduite PARTIELLEMENT reste vivante : ses ordres de sortie
+    doivent SURVIVRE -- même celui posé pour la quantité PLEINE, désormais
+    supérieure à ce qui reste détenu (ce n'est pas à ce balayage de le couper
+    par avance ; le moteur le refusera par quantité le jour où il se
+    déclencherait)."""
+    c, market = make_client(tmp_path, monkeypatch)
+    buy(c, qty=10, thesis="Une thèse suffisamment longue pour passer le seuil du coach")
+    target = buy(c, side="sell", kind="limit", limit_price=150.0, qty=10)
+    target_id = target["order"]["id"]
+
+    buy(c, side="sell", qty=4)          # réduction partielle : 10 -> 6
+
+    data = portfolio_of(c)["portfolio"]
+    assert data["positions"][0]["qty"] == 6
+    open_ids = {o["id"] for o in data["open_orders"]}
+    assert target_id in open_ids
+
+
+def test_a_loaded_portfolio_with_orphans_is_swept_clean_on_the_first_tick(
+        monkeypatch):
+    """Bonus obligatoire (purge des zombies déjà écrits sur disque avant ce
+    correctif) : le balayage tourne en tout DÉBUT de ``run_tick``,
+    indépendant de toute clôture survenant CE tick -- aucun des trois ordres
+    ci-dessous ne touche une bougie, ``fetch_candles`` rend toujours ``[]``."""
+    from backend.bots.paper import models as m
+    portfolio = m.Portfolio(cash_chf=10000.0, initial_capital=10000.0)
+    portfolio.open_orders.append(m.Order(
+        id="zombie-fro", symbol="FRO", side="sell", kind="limit", qty=50,
+        limit_price=54.90, status="open", created_at=FIXED_NOW))
+    portfolio.open_orders.append(m.Order(
+        id="zombie-wynn", symbol="WYNN", side="cover", kind="limit", qty=38,
+        limit_price=93.50, status="open", created_at=FIXED_NOW))
+    # Une position RÉELLEMENT détenue, avec son propre ordre de sortie : le
+    # balayage ne doit JAMAIS y toucher.
+    portfolio.positions.append(m.Position(
+        symbol="GM", qty=42, avg_price=90.0, currency="USD", fx_rate=1.0,
+        side="long", opened_at=FIXED_NOW))
+    portfolio.open_orders.append(m.Order(
+        id="legit", symbol="GM", side="sell", kind="limit", qty=42,
+        limit_price=95.0, status="open", created_at=FIXED_NOW))
+
+    result = pr.run_tick(portfolio, FIXED_NOW, lambda symbol: [], lambda ccy: 1.0)
+
+    assert result["fills"] == [] and result["stopped"] == []   # aucune clôture ce tick
+    reasons = {row["order_id"]: row["reason"] for row in result["cancelled"]}
+    assert reasons.get("zombie-fro") == "orphan"
+    assert reasons.get("zombie-wynn") == "orphan"
+    assert "legit" not in reasons
+    assert {o.id for o in portfolio.open_orders} == {"legit"}
+
+
+# --- Extension du balayage (2026-09-22) : ordres PÉRIMÉS -------------------
+# Rejoué sur le VRAI fichier de production : 15 orphelins nettoyés, 3
+# embuscades épargnées, mais 2 ordres de sortie survivaient encore --
+# WYNN/FRO closes puis ROUVERTES sur le même symbole, l'ancien objectif à
+# côté de la nouvelle ligne. Le symbole étant de nouveau détenu, le balayage
+# "orphelin" ne les voit pas : il faut comparer l'ordre à la position.
+
+def test_an_exit_order_older_than_the_held_position_is_swept_as_stale():
+    """Le cas FRO mesuré en production (créé le 18/09 à 54.90, ligne rouverte
+    le 21/09) : un ordre de sortie plus VIEUX que la ligne qu'il prétend
+    clôturer vise forcément une position MORTE."""
+    from backend.bots.paper import models as m
+    portfolio = m.Portfolio(cash_chf=10000.0, initial_capital=10000.0)
+    portfolio.positions.append(m.Position(
+        symbol="FRO", qty=46, avg_price=52.0, currency="USD", fx_rate=1.0,
+        side="long", opened_at="2026-09-21T15:41:57"))
+    portfolio.open_orders.append(m.Order(
+        id="stale-fro", symbol="FRO", side="sell", kind="limit", qty=50,
+        limit_price=54.90, status="open", created_at="2026-09-18T21:42:07"))
+
+    result = pr._sweep_orphan_exit_orders(portfolio)
+
+    assert result == [{"order_id": "stale-fro", "symbol": "FRO",
+                       "reason": "stale_target"}]
+    assert portfolio.open_orders == []
+
+
+def test_an_exit_order_at_the_exact_opened_at_of_the_position_survives():
+    """Le cas PIÈGE, le plus important à ne pas casser : un objectif
+    LÉGITIME porte EXACTEMENT le même horodatage que l'ouverture de sa ligne
+    (``_append_target_order`` est posé dans la MÊME opération, même
+    ``now_iso``). L'égalité N'EST PAS un ordre périmé -- la comparaison doit
+    rester STRICTE."""
+    from backend.bots.paper import models as m
+    portfolio = m.Portfolio(cash_chf=10000.0, initial_capital=10000.0)
+    portfolio.positions.append(m.Position(
+        symbol="HSY", qty=10, avg_price=150.0, currency="USD", fx_rate=1.0,
+        side="long", opened_at="2026-09-18T16:42:07.517840"))
+    portfolio.open_orders.append(m.Order(
+        id="legit-hsy", symbol="HSY", side="sell", kind="limit", qty=10,
+        limit_price=150.0, status="open",
+        created_at="2026-09-18T16:42:07.517840"))
+
+    result = pr._sweep_orphan_exit_orders(portfolio)
+
+    assert result == []
+    assert [o.id for o in portfolio.open_orders] == ["legit-hsy"]
+
+
+def test_an_exit_order_newer_than_the_position_survives():
+    """Un renfort de ligne (``_average_into``) ne touche JAMAIS
+    ``opened_at`` (il reste celui de la première entrée) : un objectif posé
+    APRÈS ce renfort est donc plus RÉCENT que ``opened_at``, et doit
+    survivre."""
+    from backend.bots.paper import models as m
+    portfolio = m.Portfolio(cash_chf=10000.0, initial_capital=10000.0)
+    portfolio.positions.append(m.Position(
+        symbol="WYNN", qty=38, avg_price=92.0, currency="USD", fx_rate=1.0,
+        side="long", opened_at="2026-09-21T16:16:57.229987"))
+    portfolio.open_orders.append(m.Order(
+        id="fresh-wynn", symbol="WYNN", side="sell", kind="limit", qty=38,
+        limit_price=92.0, status="open", created_at="2026-09-21T16:20:00"))
+
+    result = pr._sweep_orphan_exit_orders(portfolio)
+
+    assert result == []
+    assert [o.id for o in portfolio.open_orders] == ["fresh-wynn"]
+
+
+def test_an_unreadable_timestamp_on_either_side_never_gets_guessed_into_a_deletion():
+    """Doctrine du module : on ne devine jamais une date. Un horodatage
+    illisible ou absent -- côté ORDRE ou côté POSITION -- ne doit jamais
+    faire supprimer un ordre de sortie."""
+    from backend.bots.paper import models as m
+    portfolio = m.Portfolio(cash_chf=10000.0, initial_capital=10000.0)
+    # Côté ORDRE illisible ; la position, elle, a un horodatage parfaitement
+    # lisible.
+    portfolio.positions.append(m.Position(
+        symbol="KRE", qty=5, avg_price=50.0, currency="USD", fx_rate=1.0,
+        side="long", opened_at="2026-09-20T09:00:00"))
+    portfolio.open_orders.append(m.Order(
+        id="unreadable-order-side", symbol="KRE", side="sell", kind="limit",
+        qty=5, limit_price=55.0, status="open", created_at="n'importe quoi"))
+    # Côté POSITION illisible (jamais posé) ; l'ordre, lui, a un horodatage
+    # parfaitement lisible.
+    portfolio.positions.append(m.Position(
+        symbol="TXT", qty=7, avg_price=70.0, currency="USD", fx_rate=1.0,
+        side="long", opened_at=""))
+    portfolio.open_orders.append(m.Order(
+        id="unreadable-position-side", symbol="TXT", side="sell", kind="limit",
+        qty=7, limit_price=75.0, status="open",
+        created_at="2026-09-01T00:00:00"))
+
+    result = pr._sweep_orphan_exit_orders(portfolio)
+
+    assert result == []
+    assert {o.id for o in portfolio.open_orders} == \
+        {"unreadable-order-side", "unreadable-position-side"}
+
+
+# ================================================================
 #  CLÔTURES
 # ================================================================
 
@@ -5609,6 +5825,45 @@ def test_the_coach_account_is_loaded_not_recreated(tmp_path, monkeypatch):
     assert pr._ensure_coach_account().cash_chf == 4242.0
 
 
+# --- 1bis) Bug n°2 (2026-09-21) : le coach simule IBKR, jamais Yuh --------
+# Décision Massii sur données RÉELLES : sur le profil "yuh" (0,5%/côté +
+# 0,15% de droit de timbre = 1,30% l'aller-retour), les frais ont mangé
+# 609 CHF sur 1256 CHF de perte en 24 jours. SEUL le compte coach change --
+# ``models.DEFAULT_FEE_PROFILE`` ("yuh") reste le défaut humain (pédagogique,
+# courtier suisse, droit de timbre visible).
+
+def test_a_fresh_coach_account_is_created_with_the_ibkr_fee_profile(
+        tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+    portfolio = pr._ensure_coach_account()
+    assert portfolio.fee_profile == pr.COACH_FEE_PROFILE == "ibkr"
+
+
+def test_the_coach_account_migrates_off_the_yuh_fee_profile_on_load(
+        tmp_path, monkeypatch):
+    """Un fichier persisté AVANT ce correctif (encore sur le défaut "yuh")
+    doit se corriger tout seul dès le premier accès -- et la correction est
+    ÉCRITE sur disque tout de suite, pas seulement tenue en mémoire pour cet
+    appel : un accès EN LECTURE plus tard doit voir le fichier déjà propre."""
+    c, _ = make_client(tmp_path, monkeypatch)
+    stale = pr.new_portfolio(pr.coach_trader.COACH_CAPITAL, "yuh", FIXED_NOW)
+    pr._save(pr.coach_trader.COACH_USERNAME, stale)
+
+    portfolio = pr._ensure_coach_account()
+    assert portfolio.fee_profile == "ibkr"
+
+    raw = store.load_portfolio(pr.coach_trader.COACH_USERNAME)
+    assert raw["fee_profile"] == "ibkr"
+
+
+def test_a_human_account_still_defaults_to_the_yuh_fee_profile(tmp_path, monkeypatch):
+    """Le défaut humain ne bouge pas (pédagogique : courtier suisse, droit de
+    timbre visible) -- seul le compte coach est migré vers IBKR."""
+    c, _ = make_client(tmp_path, monkeypatch)
+    assert portfolio_of(c)["portfolio"]["fee_profile"] == "yuh"
+    assert pr.models.DEFAULT_FEE_PROFILE == "yuh"
+
+
 def test_the_coach_is_listed_once_in_the_community(tmp_path, monkeypatch):
     """Ses positions sont PUBLIQUES par design : dès qu'il a un carnet, il est
     un trader comme les autres — présent, et une seule fois."""
@@ -5704,16 +5959,30 @@ def test_a_clean_entry_records_no_forced_warning(tmp_path, monkeypatch):
     assert coach_portfolio()["positions"][0]["forced_warnings"] == []
 
 
-def test_reward_risk_below_1_is_recorded_on_the_coach_order(tmp_path, monkeypatch):
-    """Objectif trop proche de l'entrée (105 pour un stop à 90, entrée 100) :
-    le gain visé (5 %) est bien plus petit que le risque accepté (10 %) --
-    CONSIGNÉ, même geste que ``oversize``. Assez loin (5 % > 3x le coût d'un
-    aller-retour Yuh, ~1,15 %) pour ne pas se faire intercepter par
-    ``fee_ratio`` (LOT 12) avant d'atteindre cet avertissement SOUPLE."""
+def test_reward_risk_below_1_is_now_a_REFUSAL_on_the_coach_order(tmp_path, monkeypatch):
+    """LOT 13 — CONTRAT INVERSÉ (ce test figeait l'inverse jusqu'ici).
+
+    Même ordre qu'avant : objectif 105 pour un stop à 90 et une entrée à 100,
+    soit un gain visé de 5 % contre un risque accepté de 10 %. Il PARTAIT, en
+    CONSIGNANT l'avertissement souple ``reward_risk_below_1``.
+
+    Vécu sur les 19 trades réels du compte : 8 des perdants portaient
+    exactement cet avertissement — un avertissement forcé n'a jamais arrêté
+    personne. L'espérance NETTE DE FRAIS en fait désormais un REFUS, et le
+    verdict ne dépend pas du barème : (5 - 0,10) / (10 + 0,10) = 0,49 au tarif
+    du coach (IBKR), 0,35 au tarif Yuh — dans les deux cas très loin du 1,5
+    exigé.
+
+    Et il ne peut PLUS exister d'ordre accepté portant
+    ``reward_risk_below_1`` : le net est toujours inférieur au brut (les frais
+    amputent le gain ET s'ajoutent à la perte), donc un R:R brut sous 1 est
+    sous 1,5 net par construction. Ce test ne pouvait pas être « réparé », il
+    devait changer de sens."""
     c, _ = make_client(tmp_path, monkeypatch)
-    pr.execute_coach_actions([coach_action(target=105.0)], source="daily")
-    assert coach_portfolio()["positions"][0]["forced_warnings"] == \
-        ["reward_risk_below_1"]
+    rows = pr.execute_coach_actions([coach_action(target=105.0)], source="daily")
+    assert rows[0]["accepted"] is False
+    assert rows[0]["reason"] == "edge_thin"
+    assert coach_portfolio()["positions"] == []
 
 
 def test_the_gate_accepts_without_atr_context_at_two_times_the_fees(tmp_path, monkeypatch):
@@ -5737,20 +6006,27 @@ def test_the_gate_receives_the_atr_context_and_widens_the_noise_floor(tmp_path, 
 
 
 def test_the_fee_ratio_refusal_names_the_distance_and_the_floor(tmp_path, monkeypatch):
+    """Le compte coach simule IBKR (bug n°2, 2026-09-21) : round-trip ~0,2%
+    sur ce notional (1500 CHF), plancher de 3x = ~0,6% -- un objectif à 0,3%
+    de l'entrée (100) tombe dessous."""
     c, _ = make_client(tmp_path, monkeypatch)
-    rows = pr.execute_coach_actions([coach_action(target=102.0)], source="daily")
+    rows = pr.execute_coach_actions([coach_action(target=100.3)], source="daily")
     assert rows[0]["reason"] == "fee_ratio"
     detail = rows[0]["detail"] or ""
-    assert "102" in detail
+    assert "100.3" in detail
 
 
 def test_the_stop_in_noise_refusal_names_the_distance(tmp_path, monkeypatch):
+    """Au régime IBKR, le plancher de bruit retombe sur le plancher ABSOLU de
+    1% (``_NOISE_MIN_PCT``, faute d'ATR ici) -- un stop à 0,5% de l'entrée
+    (100) y tombe. ``target`` reste loin (140) pour ne trébucher ni sur
+    ``fee_ratio`` ni sur ``edge_thin`` avant d'atteindre ce contrôle."""
     c, _ = make_client(tmp_path, monkeypatch)
-    rows = pr.execute_coach_actions([coach_action(stop=99.0, target=140.0)],
+    rows = pr.execute_coach_actions([coach_action(stop=99.5, target=140.0)],
                                     source="daily")
     assert rows[0]["reason"] == "stop_in_noise"
     detail = rows[0]["detail"] or ""
-    assert "99" in detail
+    assert "99.5" in detail
 
 
 def test_the_coach_can_sell_what_he_holds(tmp_path, monkeypatch):
@@ -7073,11 +7349,12 @@ def test_a_short_pays_fees_on_both_legs(tmp_path, monkeypatch):
                              source="daily")
 
     trade = coach_portfolio()["trades"][0]
-    # 15 x 100 à l'entrée, 15 x 90 à la sortie — l'aller ET le retour.
-    courtage = (fees.compute_fees("yuh", 1500.0, "NESN.SW")["brokerage_chf"]
-                + fees.compute_fees("yuh", 1350.0, "NESN.SW")["brokerage_chf"])
+    # 15 x 100 à l'entrée, 15 x 90 à la sortie — l'aller ET le retour. Le
+    # compte coach simule IBKR (bug n°2, 2026-09-21), pas Yuh.
+    courtage = (fees.compute_fees(pr.COACH_FEE_PROFILE, 1500.0, "NESN.SW")["brokerage_chf"]
+                + fees.compute_fees(pr.COACH_FEE_PROFILE, 1350.0, "NESN.SW")["brokerage_chf"])
     assert trade["fees_chf"] == pytest.approx(courtage, abs=0.01)
-    assert trade["stamp_duty_chf"] > 0
+    assert trade["stamp_duty_chf"] == 0          # IBKR : courtier étranger
     # Le gain BRUT vaut 150 ; le net est amputé des deux jambes de frais.
     assert trade["pnl_chf"] == pytest.approx(
         150.0 - trade["fees_chf"] - trade["stamp_duty_chf"], abs=0.01)
@@ -7150,9 +7427,11 @@ def test_the_wealth_curve_does_not_inflate_when_the_coach_shorts(
     raw = coach_portfolio()
     prices = {"NESN.SW": 100.0}
     rates = {"CHF": 1.0}
-    # Au cours d'entrée : l'équité vaut le capital moins les frais payés.
+    # Au cours d'entrée : l'équité vaut le capital moins les frais payés. Le
+    # compte coach simule IBKR (bug n°2, 2026-09-21), pas Yuh.
     equity = pr._equity_now_chf(raw, prices, rates)
-    assert equity == pytest.approx(10000.0 - fee_total(1500.0), abs=0.01)
+    assert equity == pytest.approx(
+        10000.0 - fee_total(1500.0, profile=pr.COACH_FEE_PROFILE), abs=0.01)
 
     # Le titre BAISSE de 10 % : le short gagne 150 CHF.
     gagnant = pr._equity_now_chf(raw, {"NESN.SW": 90.0}, rates)
@@ -7908,6 +8187,25 @@ def test_une_embuscade_perimee_est_NETTOYEE_par_le_tick(tmp_path, monkeypatch):
     row = coach_ledger()[0]
     assert row["action"] == "ambush_expired" and row["accepted"] is False
     assert row["reason"] == "expired"
+
+
+def test_une_embuscade_armee_sur_un_symbole_non_detenu_survit_au_balayage(
+        tmp_path, monkeypatch):
+    """Bug des ordres de sortie orphelins : le balayage de cohérence
+    (``_sweep_orphan_exit_orders``) ne touche QU'AUX ordres de SORTIE. Une
+    embuscade d'ENTRÉE (``buy``/``short``, ``kind='stop'``) armée sur un
+    symbole que le compte ne détient pas est normale -- c'est sa raison
+    d'être -- et ne doit jamais être annulée par lui."""
+    c, market = make_client(tmp_path, monkeypatch)
+    pr.execute_coach_actions([coach_ambush()], source="daily")
+    market.candles["NESN.SW"] = [
+        {"ts": _ts(11), "open": 101.0, "high": 105.0, "low": 99.0, "close": 103.0}]
+
+    result = pr.tick_coach_account()
+
+    assert result["cancelled"] == []
+    armed = coach_ambushes()
+    assert len(armed) == 1 and armed[0]["status"] == "open"
 
 
 def test_un_ordre_LIMITE_d_objectif_ne_perime_JAMAIS(tmp_path, monkeypatch):

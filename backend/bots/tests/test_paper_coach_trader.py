@@ -135,9 +135,12 @@ def test_every_reject_code_is_declared():
         "no_pending",
         # LOT 12 — la conscience des frais.
         "fee_ratio", "stop_in_noise",
+        # LOT 13 — le regime IBKR : l'objectif obligatoire, l'esperance NETTE,
+        # et le rachat plus cher de ce qu'on vient de perdre.
+        "no_target", "edge_thin", "whipsaw",
     }
     assert set(coach_trader.REJECT_CODES) == expected
-    assert len(coach_trader.REJECT_CODES) == 25
+    assert len(coach_trader.REJECT_CODES) == 28
 
 
 def test_coach_username_survives_the_store_allowlist():
@@ -337,19 +340,30 @@ def test_gate_rejects_an_entry_whose_target_does_not_clear_three_times_the_fees(
 
 
 def test_gate_accepts_an_entry_whose_target_clears_three_times_the_fees():
-    """Objectif à 4 % de l'entrée — au-dessus du plancher de 3,45 %."""
-    out = coach_trader.gate_decision(_buy(qty=20, stop=95.0, target=104.0),
+    """Objectif à 12 % de l'entrée — au-dessus du plancher de 3,45 %.
+
+    ⚠️ LOT 13 : ce test visait 4 % à l'origine. Un objectif à 4 % passe encore
+    ``fee_ratio``, mais plus l'espérance NETTE — et c'est VOULU : au profil
+    Yuh (1,15 % l'aller-retour), un objectif à 4 % avec un stop qui respire le
+    bruit (2,3 % minimum) rend (4 - 1,15)/(2,3 + 1,15) = 0,83, sous le seuil de
+    1,5. Autrement dit : au tarif Yuh, un 4 % n'était pas un trade. Pour tester
+    ``fee_ratio`` SEUL il faut donc un objectif qui survive aussi au contrôle
+    suivant."""
+    out = coach_trader.gate_decision(_buy(qty=20, stop=95.0, target=112.0),
                                      _pf(), _quote(100.0))
     assert out["accepted"] is True
 
 
-def test_gate_ignores_fee_ratio_when_no_target_is_given():
-    """Sans objectif, rien à mesurer — le mandat n'exige pas de ``target``,
-    ``fee_ratio`` ne se prononce donc pas."""
+def test_gate_rejects_an_entry_without_a_target():
+    """LOT 13 — CONTRAT INVERSÉ. Jusqu'ici, une entrée sans objectif passait :
+    ``fee_ratio`` était conditionné par la présence du ``target``, donc omettre
+    l'objectif DÉSARMAIT tout contrôle économique. C'était l'échappatoire la
+    plus large de la porte — désormais une entrée SANS objectif est refusée."""
     decision = _buy(qty=20, stop=90.0)
     decision.pop("target")
     out = coach_trader.gate_decision(decision, _pf(), _quote(100.0))
-    assert out["accepted"] is True
+    assert out["accepted"] is False
+    assert out["reason"] == "no_target"
 
 
 def test_gate_rejects_an_initial_stop_stuck_in_the_noise():
@@ -427,6 +441,418 @@ def test_gate_accepts_a_stop_beyond_half_the_atr():
         _buy(qty=20, stop=94.0, target=140.0), _pf(), _quote(100.0),
         technical=technical)
     assert out["accepted"] is True
+
+
+# --------------------------------------------------------------------------- #
+# gate_decision — LOT 13 : le régime IBKR
+#
+# Le compte du coach quitte Yuh (1,30 % l'aller-retour) pour IBKR (0,05 %/côté,
+# pas de droit de timbre). Trois conséquences mesurées sur les 19 trades réels
+# du compte, et trois garde-fous :
+#
+#   1. le PLANCHER DE BRUIT ne doit pas s'effondrer avec les frais. Il valait
+#      ``max(2 x aller-retour, 0,5 x ATR)`` : à 1,30 % le terme frais dominait
+#      (2,6 %), à 0,10 % il ne vaut plus rien (0,2 %) et il ne resterait qu'un
+#      DEMI-ATR — or les stops à ~1 ATR du coach se sont TOUS fait toucher.
+#      -> coefficient ATR porté à 1,0 et plancher ABSOLU de 1 %.
+#   2. une ENTRÉE SANS OBJECTIF ne peut plus passer (``no_target``) : c'était
+#      l'échappatoire qui désarmait tout contrôle économique.
+#   3. l'ESPÉRANCE NETTE DE FRAIS devient une règle (``edge_thin``), et on ne
+#      rachète plus plus cher ce qu'on vient de perdre (``whipsaw``).
+#
+# Barème utile ici : IBKR rend EXACTEMENT 0,10 % l'aller-retour dès 3000 CHF de
+# notional (en dessous, le minimum de 1,50 CHF par côté domine) — d'où les
+# qty=30 à 100 CHF de ces tests. Yuh reste à 1,15 % sur un titre suisse.
+# --------------------------------------------------------------------------- #
+
+def _ibkr(**over):
+    """Le portefeuille du coach au NOUVEAU profil de frais."""
+    return _pf(fee_profile="ibkr", **over)
+
+
+# --- 1a. le plancher de bruit, en unitaire -------------------------------- #
+
+def test_le_plancher_de_bruit_vaut_un_ATR_ENTIER_et_non_la_moitie():
+    """Un stop à un demi-ATR se fait toucher par la respiration ordinaire du
+    titre : c'est l'ATR ENTIER qui borne le bruit."""
+    assert coach_trader._noise_floor_pct(0.10, 5.0) == 5.0
+
+
+def test_le_plancher_de_bruit_ne_descend_jamais_sous_un_pour_cent():
+    """Sans ATR et au tarif IBKR, le terme frais seul vaudrait 0,2 % — un stop
+    collé au cours. Le plancher ABSOLU de 1 % l'en empêche."""
+    assert coach_trader._noise_floor_pct(0.10, None) == 1.0
+
+
+def test_le_plancher_de_bruit_reste_deux_fois_les_frais_quand_ils_dominent():
+    """Au tarif Yuh le terme frais (2,3 %) bat le plancher absolu : rien ne
+    change pour l'ancien profil."""
+    assert coach_trader._noise_floor_pct(1.15, None) == 2.3
+
+
+# --- 1b. le plancher de bruit, dans la porte ------------------------------ #
+
+def test_avec_ibkr_un_stop_sous_un_pour_cent_tombe_dans_le_bruit():
+    """Stop à 0,8 % : accepté si le plancher n'était que 2 x 0,10 %, refusé
+    par le plancher absolu."""
+    out = coach_trader.gate_decision(
+        _buy(qty=30, stop=99.2, target=140.0), _ibkr(), _quote(100.0))
+    assert out["accepted"] is False
+    assert out["reason"] == "stop_in_noise"
+
+
+def test_avec_ibkr_un_stop_au_dela_d_un_pour_cent_passe():
+    out = coach_trader.gate_decision(
+        _buy(qty=30, stop=98.5, target=140.0), _ibkr(), _quote(100.0))
+    assert out["accepted"] is True
+
+
+def test_un_ATR_entier_refuse_ce_qu_un_demi_ATR_acceptait():
+    """ATR 5 % : l'ancien plancher (0,5 x ATR = 2,5 %) acceptait un stop à 4 %,
+    le nouveau (1 x ATR = 5 %) le refuse. C'est LE changement du lot."""
+    out = coach_trader.gate_decision(
+        _buy(qty=30, stop=96.0, target=140.0), _ibkr(), _quote(100.0),
+        technical={"atr14_pct": 5.0})
+    assert out["accepted"] is False
+    assert out["reason"] == "stop_in_noise"
+
+
+def test_un_stop_au_dela_d_un_ATR_entier_passe():
+    out = coach_trader.gate_decision(
+        _buy(qty=30, stop=94.0, target=140.0), _ibkr(), _quote(100.0),
+        technical={"atr14_pct": 5.0})
+    assert out["accepted"] is True
+
+
+# --- 2. l'exception « gain déjà acquis » suit le même plancher ------------ #
+
+def test_l_exception_du_gain_acquis_suit_le_plancher_de_bruit():
+    """Gain acquis de 0,5 % : au tarif IBKR, 3 x l'aller-retour ne vaut que
+    0,3 % — une erreur d'arrondi suffirait à rouvrir les stops collés. Le seuil
+    de dérogation ne descend donc jamais sous le plancher de bruit (1 %)."""
+    pf = _ibkr(positions=[_pos("NESN.SW", qty=30, avg_price=100.0)])
+    out = coach_trader.gate_decision(
+        {"action": "adjust_stop", "symbol": "NESN.SW", "stop": 100.4},
+        pf, _quote(100.5))
+    assert out["accepted"] is False
+    assert out["reason"] == "stop_in_noise"
+
+
+def test_l_exception_du_gain_acquis_joue_des_que_le_plancher_est_encaisse():
+    """Gain acquis de 1,5 %, au-dessus du plancher : le stop protège du
+    RÉALISÉ, il n'a plus à respirer le bruit — « laisse courir les gagnants »
+    reste tenable."""
+    pf = _ibkr(positions=[_pos("NESN.SW", qty=30, avg_price=100.0)])
+    out = coach_trader.gate_decision(
+        {"action": "adjust_stop", "symbol": "NESN.SW", "stop": 101.4},
+        pf, _quote(101.5))
+    assert out["accepted"] is True
+
+
+# --- 3. une ENTRÉE sans objectif est refusée ------------------------------ #
+
+def test_une_embuscade_sans_objectif_est_refusee():
+    """Une embuscade est une ENTRÉE : elle doit porter son objectif comme les
+    autres, sinon elle partirait la nuit sans qu'aucune économie soit jugée."""
+    piege = _buy(qty=20, stop=104.0, kind="stop", trigger=110.0)
+    piege.pop("target")
+    out = coach_trader.gate_decision(piege, _pf(), _quote(100.0))
+    assert out["reason"] == "no_target"
+
+
+def test_un_objectif_illisible_vaut_absence_d_objectif():
+    out = coach_trader.gate_decision(_buy(qty=20, stop=95.0, target="bientôt"),
+                                     _pf(), _quote(100.0))
+    assert out["reason"] == "no_target"
+
+
+def test_un_objectif_nul_vaut_absence_d_objectif():
+    out = coach_trader.gate_decision(_buy(qty=20, stop=95.0, target=0.0),
+                                     _pf(), _quote(100.0))
+    assert out["reason"] == "no_target"
+
+
+def test_une_SORTIE_n_a_pas_besoin_d_objectif():
+    """Une sortie réduit l'exposition : rien à espérer, rien à mesurer."""
+    pf = _pf(positions=[_pos("NESN.SW", qty=10, avg_price=100.0)])
+    out = coach_trader.gate_decision(
+        {"action": "sell", "symbol": "NESN.SW", "qty": 10}, pf, _quote(100.0))
+    assert out["accepted"] is True
+
+
+def test_ajuster_un_stop_n_exige_pas_d_objectif():
+    pf = _pf(positions=[_pos("NESN.SW", qty=20, avg_price=100.0)])
+    out = coach_trader.gate_decision(
+        {"action": "adjust_stop", "symbol": "NESN.SW", "stop": 95.0},
+        pf, _quote(100.0))
+    assert out["accepted"] is True
+
+
+# --- 4. l'espérance NETTE de frais ---------------------------------------- #
+
+def test_edge_thin_refuse_un_rapport_net_sous_un_et_demi():
+    """Entrée 100, stop 97, objectif 103 au tarif IBKR (0,10 %) :
+    (3 - 0,1) / (3 + 0,1) = 0,94 — sous 1,5, ce n'est pas un trade."""
+    out = coach_trader.gate_decision(
+        _buy(qty=30, stop=97.0, target=103.0), _ibkr(), _quote(100.0))
+    assert out["accepted"] is False
+    assert out["reason"] == "edge_thin"
+    assert out["order"] is None
+
+
+def test_edge_thin_laisse_passer_un_rapport_net_au_dessus_d_un_et_demi():
+    """Même entrée, même stop, objectif 106 : (6 - 0,1)/(3,1) = 1,90."""
+    out = coach_trader.gate_decision(
+        _buy(qty=30, stop=97.0, target=106.0), _ibkr(), _quote(100.0))
+    assert out["accepted"] is True
+
+
+def test_edge_thin_compte_l_aller_retour_DEUX_fois():
+    """Le cœur du calcul : au tarif Yuh, un R:R BRUT de 1,55 (gain 6,2 % pour
+    un risque de 4 %) tombe à 0,98 une fois l'aller-retour compté — il ampute
+    le gain ET s'ajoute à la perte. ``risk.preorder_warnings`` n'aurait ici
+    rien signalé (son ``reward_risk_below_1`` regarde le BRUT), et 8 des 19
+    trades perdants du compte portaient exactement ce profil."""
+    out = coach_trader.gate_decision(
+        _buy(qty=20, stop=96.0, target=106.2), _pf(), _quote(100.0))
+    assert out["accepted"] is False
+    assert out["reason"] == "edge_thin"
+
+
+def test_edge_thin_arrive_APRES_fee_ratio():
+    """Ordre déterministe : un objectif qui ne couvre même pas 3 x les frais
+    est nommé ``fee_ratio``, le motif le plus grossier d'abord."""
+    out = coach_trader.gate_decision(
+        _buy(qty=30, stop=97.0, target=100.1), _ibkr(), _quote(100.0))
+    assert out["reason"] == "fee_ratio"
+
+
+def test_edge_thin_arrive_AVANT_stop_in_noise():
+    """Un ordre à la fois sans espérance ET au stop collé est nommé
+    ``edge_thin`` : l'économie du trade prime sur la mécanique du stop."""
+    out = coach_trader.gate_decision(
+        _buy(qty=30, stop=99.5, target=100.6), _ibkr(), _quote(100.0))
+    assert out["reason"] == "edge_thin"
+
+
+def test_edge_thin_ne_concerne_pas_les_sorties():
+    pf = _ibkr(positions=[_pos("NESN.SW", qty=10, avg_price=100.0)])
+    out = coach_trader.gate_decision(
+        {"action": "sell", "symbol": "NESN.SW", "qty": 10}, pf, _quote(100.0))
+    assert out["accepted"] is True
+
+
+def test_l_embuscade_mesure_son_esperance_depuis_le_TRIGGER():
+    """Piège armé à 110 sur un cours de 100, stop 106,5, objectif 116 : mesuré
+    depuis le TRIGGER le rapport net vaut (5,45 - 0,1)/(3,18 + 0,1) = 1,63 et
+    passe ; mesuré depuis le cours il aurait été absurde (16 % de gain pour
+    6,5 % de risque)."""
+    out = coach_trader.gate_decision(
+        _buy(qty=27, stop=106.5, target=116.0, kind="stop", trigger=110.0),
+        _ibkr(), _quote(100.0))
+    assert out["accepted"] is True
+
+
+def test_l_embuscade_refuse_une_esperance_mince_mesuree_au_TRIGGER():
+    """Le même piège avec un objectif à 113 : (2,73 - 0,1)/(3,18 + 0,1) = 0,80
+    — refusé, alors qu'un calcul fait depuis le cours de 100 l'aurait cru
+    généreux (13 % de gain)."""
+    out = coach_trader.gate_decision(
+        _buy(qty=27, stop=106.5, target=113.0, kind="stop", trigger=110.0),
+        _ibkr(), _quote(100.0))
+    assert out["reason"] == "edge_thin"
+
+
+# --- 5. anti-whipsaw ------------------------------------------------------ #
+#
+# Vécu : 4 re-entrées sur un titre qu'on venait de perdre, dont 2 RACHETÉES
+# PLUS CHER que la sortie (GM, PINS) et une le jour même (FRO, 3,3 % au-dessus
+# de son propre stop). Les délais réels : J+0, J+3, J+3 et J+4 — d'où les 5
+# jours INCLUSIFS de :data:`coach_trader.WHIPSAW_DAYS` (à 3 jours stricts, la
+# règle n'aurait attrapé qu'un cas sur quatre).
+
+WED_NOW = "2026-09-16T15:00:00"        # mercredi 15:00 Rome — SIX ouverte
+
+
+def _trade(symbol="NESN.SW", side="long", exit_price=100.0, pnl_chf=-120.0,
+          exit_at="2026-09-14T16:00:00"):
+    return {"symbol": symbol, "side": side, "qty": 20,
+            "entry_price": 105.0, "exit_price": exit_price,
+            "entry_at": "2026-09-10T10:00:00", "exit_at": exit_at,
+            "pnl_chf": pnl_chf, "pnl_pct": -4.8, "exit_reason": "stop"}
+
+
+def test_whipsaw_refuse_de_racheter_PLUS_CHER_ce_qu_on_vient_de_perdre():
+    """Sorti à 100 sur un stop il y a deux jours, on rachète à 102 : c'est le
+    scénario GM/PINS, payé deux fois le courtier pour la même idée."""
+    pf = _ibkr(trades=[_trade(exit_price=100.0)])
+    out = coach_trader.gate_decision(
+        _buy(qty=29, stop=98.0, target=110.0), pf, _quote(102.0), now=WED_NOW)
+    assert out["accepted"] is False
+    assert out["reason"] == "whipsaw"
+
+
+def test_whipsaw_laisse_passer_un_rachat_MOINS_CHER():
+    """Re-rentrer à un prix MEILLEUR après un stop est une décision légitime :
+    la thèse est la même, le point d'entrée est meilleur."""
+    pf = _ibkr(trades=[_trade(exit_price=100.0)])
+    out = coach_trader.gate_decision(
+        _buy(qty=30, stop=94.0, target=106.0), pf, _quote(97.0), now=WED_NOW)
+    assert out["accepted"] is True
+
+
+def test_whipsaw_ne_vise_pas_l_AUTRE_sens():
+    """Perdre un long puis shorter le titre n'est pas un whipsaw : c'est un
+    changement d'avis, et il a le droit de se jouer."""
+    pf = _ibkr(trades=[_trade(side="long", exit_price=100.0)])
+    out = coach_trader.gate_decision(
+        {"action": "short", "symbol": "NESN.SW", "qty": 29, "stop": 105.0,
+         "target": 94.0, "thesis": THESIS},
+        pf, _quote(102.0), now=WED_NOW)
+    assert out["accepted"] is True
+
+
+def test_whipsaw_ne_vise_pas_un_trade_GAGNANT():
+    """Re-rentrer plus cher sur un titre qu'on vient de gagner, c'est suivre
+    une tendance — l'inverse exact du whipsaw."""
+    pf = _ibkr(trades=[_trade(exit_price=100.0, pnl_chf=250.0)])
+    out = coach_trader.gate_decision(
+        _buy(qty=29, stop=98.0, target=110.0), pf, _quote(102.0), now=WED_NOW)
+    assert out["accepted"] is True
+
+
+def test_whipsaw_refuse_ENCORE_a_J_plus_5():
+    """La borne est INCLUSIVE : les re-entrées réelles allaient jusqu'à J+4,
+    une règle qui s'arrêterait avant serait cosmétique."""
+    pf = _ibkr(trades=[_trade(exit_at="2026-09-11T16:00:00")])
+    out = coach_trader.gate_decision(
+        _buy(qty=29, stop=98.0, target=110.0), pf, _quote(102.0), now=WED_NOW)
+    assert out["reason"] == "whipsaw"
+
+
+def test_whipsaw_laisse_passer_a_J_plus_6():
+    """Au-delà, l'idée a eu le temps de redevenir une idée neuve."""
+    pf = _ibkr(trades=[_trade(exit_at="2026-09-10T16:00:00")])
+    out = coach_trader.gate_decision(
+        _buy(qty=29, stop=98.0, target=110.0), pf, _quote(102.0), now=WED_NOW)
+    assert out["accepted"] is True
+
+
+def test_whipsaw_refuse_le_rachat_LE_JOUR_MEME():
+    """Le cas FRO : sorti le matin, racheté l'après-midi au-dessus de son
+    propre stop."""
+    pf = _ibkr(trades=[_trade(exit_at="2026-09-16T09:30:00")])
+    out = coach_trader.gate_decision(
+        _buy(qty=29, stop=98.0, target=110.0), pf, _quote(102.0), now=WED_NOW)
+    assert out["reason"] == "whipsaw"
+
+
+def test_whipsaw_ne_regarde_que_le_DERNIER_trade_clos():
+    """Deux passages sur le titre : c'est le plus RÉCENT qui décide. Ici le
+    dernier fut gagnant — l'ancienne perte ne bloque plus rien."""
+    pf = _ibkr(trades=[
+        _trade(exit_at="2026-09-14T16:00:00", exit_price=100.0),
+        _trade(exit_at="2026-09-15T16:00:00", exit_price=101.0,
+               pnl_chf=180.0),
+    ])
+    out = coach_trader.gate_decision(
+        _buy(qty=29, stop=98.0, target=110.0), pf, _quote(102.0), now=WED_NOW)
+    assert out["accepted"] is True
+
+
+def test_whipsaw_ignore_les_trades_d_un_AUTRE_symbole():
+    pf = _ibkr(trades=[_trade(symbol="AAPL", exit_price=100.0)])
+    out = coach_trader.gate_decision(
+        _buy(qty=29, stop=98.0, target=110.0), pf, _quote(102.0), now=WED_NOW)
+    assert out["accepted"] is True
+
+
+def test_whipsaw_ne_se_prononce_pas_SANS_horloge():
+    """``now`` est optionnel dans cette porte (cf. ``market_closed``) : sans
+    horloge on ne DEVINE pas une date, on saute le contrôle."""
+    pf = _ibkr(trades=[_trade(exit_price=100.0)])
+    out = coach_trader.gate_decision(
+        _buy(qty=29, stop=98.0, target=110.0), pf, _quote(102.0))
+    assert out["accepted"] is True
+
+
+def test_whipsaw_ignore_un_horodatage_de_sortie_illisible():
+    """Un ``exit_at`` vide ne doit pas se lire « maintenant » : sans date, pas
+    de délai, donc pas de whipsaw (et surtout pas de refus inventé)."""
+    pf = _ibkr(trades=[_trade(exit_at="")])
+    out = coach_trader.gate_decision(
+        _buy(qty=29, stop=98.0, target=110.0), pf, _quote(102.0), now=WED_NOW)
+    assert out["accepted"] is True
+
+
+def test_whipsaw_pour_un_SHORT_refuse_une_re_entree_PLUS_BAS():
+    """Miroir : un short se dégrade quand on le rouvre PLUS BAS, puisque la
+    chute restante est plus courte."""
+    pf = _ibkr(trades=[_trade(side="short", exit_price=100.0)])
+    out = coach_trader.gate_decision(
+        {"action": "short", "symbol": "NESN.SW", "qty": 30, "stop": 102.0,
+         "target": 90.0, "thesis": THESIS},
+        pf, _quote(98.0), now=WED_NOW)
+    assert out["reason"] == "whipsaw"
+
+
+def test_whipsaw_laisse_passer_un_SHORT_rouvert_PLUS_HAUT():
+    pf = _ibkr(trades=[_trade(side="short", exit_price=100.0)])
+    out = coach_trader.gate_decision(
+        {"action": "short", "symbol": "NESN.SW", "qty": 28, "stop": 107.0,
+         "target": 94.0, "thesis": THESIS},
+        pf, _quote(104.0), now=WED_NOW)
+    assert out["accepted"] is True
+
+
+def test_whipsaw_mesure_une_embuscade_a_son_TRIGGER():
+    """Un piège armé AU-DESSUS du prix de sortie perdant est un whipsaw
+    programmé : c'est le trigger qui sera payé, pas le cours d'aujourd'hui."""
+    pf = _ibkr(trades=[_trade(exit_price=100.0)])
+    out = coach_trader.gate_decision(
+        _buy(qty=29, stop=98.5, target=112.0, kind="stop", trigger=102.0),
+        pf, _quote(99.0), now=WED_NOW)
+    assert out["reason"] == "whipsaw"
+
+
+# --- 6. le détail chiffré des trois nouveaux refus ------------------------ #
+
+def test_le_detail_de_no_target_dit_ce_qui_manque():
+    detail = coach_trader.reject_detail("no_target", _buy(qty=30, stop=97.0),
+                                        _pf(), _quote(100.0))
+    assert detail is not None
+    assert "objectif" in detail.lower()
+
+
+def test_le_detail_de_edge_thin_chiffre_le_rapport_net():
+    detail = coach_trader.reject_detail(
+        "edge_thin", _buy(qty=30, stop=97.0, target=103.0),
+        _ibkr(), _quote(100.0))
+    assert detail is not None
+    assert "0,94" in detail or "0.94" in detail
+    assert "1,5" in detail or "1.5" in detail
+
+
+def test_le_detail_de_whipsaw_nomme_la_sortie_precedente():
+    pf = _ibkr(trades=[_trade(exit_price=100.0)])
+    detail = coach_trader.reject_detail(
+        "whipsaw", _buy(qty=29, stop=98.0, target=110.0), pf, _quote(102.0),
+        now=WED_NOW)
+    assert detail is not None
+    assert "100" in detail and "102" in detail
+
+
+def test_le_detail_se_tait_sur_un_code_qui_n_est_pas_a_lui():
+    """``reject_detail`` ne couvre QUE les trois codes du lot : les autres
+    restent la responsabilité du routeur, qui les chiffre déjà."""
+    assert coach_trader.reject_detail("oversize", _buy(), _pf(),
+                                      _quote(100.0)) is None
+
+
+def test_le_detail_ne_leve_JAMAIS_sur_une_decision_illisible():
+    """Un détail illisible ne doit jamais empêcher le refus d'être consigné."""
+    assert coach_trader.reject_detail("edge_thin", {"target": "x"},
+                                      None, None) is None
 
 
 # --------------------------------------------------------------------------- #

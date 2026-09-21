@@ -358,9 +358,12 @@ def test_a_stock_order_is_refused_outside_its_market_hours():
 
 
 def test_a_crypto_order_passes_whatever_the_hour():
+    # LOT 13 — l'objectif est désormais OBLIGATOIRE sur une entrée
+    # (``no_target``) : ce test porte sur l'HEURE, il lui en faut donc un,
+    # sinon il se ferait refuser pour une raison qui n'est pas la sienne.
     out = coach_trader.gate_decision(
         {"action": "buy", "symbol": "BTC-USD", "qty": 20, "stop": 95.0,
-         "thesis": THESIS},
+         "target": 130.0, "thesis": THESIS},
         _pf(), _quote(), now=SUN_1805)
     assert out["accepted"] is True
 

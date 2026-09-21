@@ -115,6 +115,20 @@ DOSSIER_MEMORY_PER_SYMBOL = 5
 # déjà tourner le serveur et les autres bots.
 MAX_AUTO_POSTMORTEMS_PER_DAY = 6
 
+# Profil de frais RÉSERVÉ au compte coach (bug n°2, 2026-09-21). Décision
+# Massii sur données RÉELLES : sur le profil "yuh" (0,5 %/côté + 0,15 % de
+# droit de timbre = 1,30 % l'aller-retour), les frais ont mangé 609 CHF sur
+# 1 256 CHF de perte en 24 jours. Le coach simule désormais Interactive
+# Brokers ("ibkr" dans ``fees.FEE_PROFILES`` : 0,05 %/côté, minimum 1,50 CHF,
+# pas de droit de timbre -> ~0,10-0,12 % l'aller-retour).
+#
+# ⚠️ SEUL le compte coach change : ``models.DEFAULT_FEE_PROFILE`` ("yuh")
+# reste le défaut de tout compte HUMAIN -- c'est voulu pédagogiquement (un
+# courtier suisse, le droit de timbre visible). Appliqué par
+# ``_ensure_coach_account`` à la CRÉATION et au CHARGEMENT (migration d'un
+# fichier persisté avant ce correctif).
+COACH_FEE_PROFILE = "ibkr"
+
 _SEVERITY_ORDER = {"critical": 0, "warn": 1, "info": 2}
 
 # Cache mémoire du contenu pédagogique (fichiers statiques versionnés), UNE
@@ -511,6 +525,11 @@ def execute_order(portfolio: models.Portfolio, order: models.Order,
     ``cover``) — ignoré sans effet pour un ordre d'ouverture, jamais une
     erreur : un appelant générique n'a pas à connaître le sens de l'ordre pour
     le passer.
+
+    ``fill["orphans_cancelled"]`` (bug des ordres de sortie orphelins) porte
+    les ordres de sortie SIBLINGS annulés quand cette exécution vient de
+    clôturer la position à zéro (cf. :func:`_close_leg`) — toujours présent,
+    vide sauf pour une clôture qui ramène la ligne à zéro.
     """
     symbol = order.symbol
     qty = int(order.qty)
@@ -534,6 +553,7 @@ def execute_order(portfolio: models.Portfolio, order: models.Order,
         "fees": fee,
         "exit_reason": None,
         "trade": None,
+        "orphans_cancelled": [],
     }
 
     if side == "buy":
@@ -541,10 +561,12 @@ def execute_order(portfolio: models.Portfolio, order: models.Order,
     elif side == "short":
         _open_short(portfolio, order, price, fx_rate, notional, fee, now_iso)
     elif side in ("sell", "cover"):
-        trade = _close_leg(portfolio, order, price, fx_rate, notional, fee,
-                           now_iso, exit_reason, emotion_close)
+        trade, orphans_cancelled = _close_leg(portfolio, order, price, fx_rate,
+                                              notional, fee, now_iso, exit_reason,
+                                              emotion_close)
         fill["trade"] = trade.to_dict()
         fill["exit_reason"] = trade.exit_reason
+        fill["orphans_cancelled"] = orphans_cancelled
     else:
         raise OrderError("Sens d'ordre inconnu: %s" % side)
 
@@ -644,8 +666,130 @@ def _average_into(position: models.Position, order: models.Order,
         position.forced_warnings = list(order.forced_warnings)
 
 
+# --------------------------------------------------------------------------- #
+# Bug des ordres de sortie ORPHELINS (2026-09-21) — un ordre de SORTIE
+# (``sell``/``cover``) dont la position a disparu ne doit jamais survivre à
+# celle-ci. Vécu en production : un objectif limite posé loin du cours ne se
+# déclenche JAMAIS tout seul (contrairement à ce qu'affirmait l'ancien
+# commentaire de ``_append_target_order``) — si la position a été soldée par
+# un AUTRE chemin (stop protecteur, clôture manuelle, un autre ordre de
+# sortie), cet objectif reste ouvert indéfiniment. S'il traîne assez
+# longtemps, une ligne SANS RAPPORT peut rouvrir sur le même symbole à côté
+# de lui, et le voir se déclencher un jour au pire moment.
+#
+# Deux mécanismes, complémentaires :
+#  * :func:`_cancel_orphan_exit_orders` — appelé À LA SOURCE, dès qu'une
+#    clôture (n'importe laquelle) vient de ramener une position à zéro
+#    (cf. :func:`_close_leg`) : empêche le zombie de naître.
+#  * :func:`_sweep_orphan_exit_orders` — un balayage de COHÉRENCE, appelé en
+#    tout début de :func:`run_tick` : rattrape les zombies déjà écrits sur
+#    disque par un fichier persisté AVANT ce correctif.
+# --------------------------------------------------------------------------- #
+def _cancel_orders(portfolio: models.Portfolio, doomed: List[models.Order],
+                   reason: str) -> List[Dict[str, Any]]:
+    """Marque ``doomed`` ``cancelled`` et les retire de ``open_orders``. MUTE
+    ``portfolio``. Rend les entrées de registre, même forme que les
+    annulations déjà produites par :func:`run_tick` (``order_id``/``symbol``/
+    ``reason``) — pour que ce soit visible et traçable comme les autres."""
+    if not doomed:
+        return []
+    for order in doomed:
+        order.status = "cancelled"
+    # Retrait par IDENTITE : ``models.Order`` est une dataclass, donc ``in``
+    # compare CHAMP A CHAMP. Deux ordres distincts ne peuvent aujourd'hui pas
+    # etre egaux (l'``id`` est un uuid obligatoire), mais cette fonction ne
+    # doit pas dependre d'une propriete de ses APPELANTS : ``doomed`` sort de
+    # ``open_orders``, on y retire exactement CES objets-la.
+    portfolio.open_orders = [o for o in portfolio.open_orders
+                             if not any(o is d for d in doomed)]
+    return [{"order_id": o.id, "symbol": o.symbol, "reason": reason} for o in doomed]
+
+
+def _cancel_orphan_exit_orders(portfolio: models.Portfolio, symbol: str,
+                               keep_order: Optional[models.Order],
+                               reason: str = "position_closed") -> List[Dict[str, Any]]:
+    """Annule les ordres de SORTIE encore ouverts sur ``symbol``, sauf
+    ``keep_order`` lui-même.
+
+    Ne touche QU'AUX ordres de sortie (``side`` dans
+    :data:`coach_trader.EXIT_ACTIONS` — en pratique ``sell``/``cover``, seuls
+    à jamais atteindre ``Order.side``) : une EMBUSCADE d'entrée (``buy``/
+    ``short``, LOT 9) armée sur un symbole non détenu est normale, c'est sa
+    raison d'être — jamais annulée ici.
+
+    ``keep_order`` exclut l'ordre EN COURS d'exécution : au moment où
+    :func:`_close_leg` retire la position, l'ordre qui vient de la clôturer
+    est ENCORE dans ``portfolio.open_orders`` (son appelant ne l'en retire
+    qu'après coup, cf. les deux boucles de ``run_tick``) — sans cette
+    exclusion, l'ordre qui vient de RÉUSSIR se retrouverait annulé par
+    erreur.
+    """
+    doomed = [o for o in portfolio.open_orders
+              if o is not keep_order and o.status == "open"
+              and o.symbol == symbol and o.side in coach_trader.EXIT_ACTIONS]
+    return _cancel_orders(portfolio, doomed, reason)
+
+
+def _sweep_orphan_exit_orders(portfolio: models.Portfolio,
+                              reason: str = "orphan",
+                              stale_reason: str = "stale_target") -> List[Dict[str, Any]]:
+    """Balayage de COHÉRENCE : annule deux formes d'ordres de sortie qui ne
+    peuvent plus viser une position vivante.
+
+    1. **Orphelin** (``reason``) — le symbole n'a PLUS AUCUNE position (ni
+       long ni short).
+    2. **Périmé** (``stale_reason``, 2026-09-22) — le symbole EST détenu,
+       mais l'ordre est plus ANCIEN que la position courante. Vécu sur le
+       fichier de production : une ligne FRO/WYNN close, remplacée plus tard
+       par une NOUVELLE ouverture sur le même symbole, avec l'ancien objectif
+       encore vivant à côté — le cas n°1 ne le voit pas, puisque le symbole
+       EST de nouveau détenu.
+
+       Le fait décisif, mesuré sur ce même fichier : un objectif LÉGITIME
+       porte EXACTEMENT le ``created_at`` de l'``opened_at`` de sa ligne, à la
+       microseconde près — :func:`_append_target_order` est posé dans la
+       MÊME opération que l'ouverture, avec le MÊME horodatage (cf. les deux
+       boucles de :func:`run_tick` et :func:`_coach_execute_one`, qui
+       passent tous le même ``now_iso`` aux deux). Un ordre de sortie plus
+       VIEUX que la ligne qu'il prétend clôturer vise donc forcément une
+       position MORTE — l'ancienne, déjà remplacée.
+
+       ⚠️ Comparaison STRICTEMENT ``<`` : l'égalité est le cas NORMAL (cf.
+       ci-dessus) — la confondre avec un ordre périmé supprimerait TOUS les
+       objectifs légitimes. Si une ligne est renforcée plus tard,
+       ``opened_at`` reste celui de la PREMIÈRE entrée (cf.
+       ``_average_into``, qui n'y touche jamais) : les objectifs posés
+       APRÈS ce renfort sont alors plus RÉCENTS que ``opened_at``, jamais
+       balayés — c'est le comportement voulu. Un horodatage illisible ou
+       absent d'un côté ou de l'autre (:func:`_epoch` rend ``None``) ne
+       supprime RIEN : on ne devine jamais une date (doctrine du module).
+
+    Appelé en tout PREMIER dans :func:`run_tick`, avant même de regarder un
+    cours — c'est indépendant de toute clôture survenant CE tick : un fichier
+    chargé depuis avant ce correctif peut porter des zombies vieux de
+    plusieurs semaines (cf. ``_cancel_orphan_exit_orders``, qui empêche d'en
+    créer de nouveaux, mais ne rattrape pas ceux déjà écrits sur disque).
+    """
+    orphaned: List[models.Order] = []
+    stale: List[models.Order] = []
+    for o in portfolio.open_orders:
+        if o.status != "open" or o.side not in coach_trader.EXIT_ACTIONS:
+            continue
+        position = _find_position(portfolio, o.symbol)
+        if position is None:
+            orphaned.append(o)
+            continue
+        created = _epoch(o.created_at)
+        opened = _epoch(position.opened_at)
+        if created is not None and opened is not None and created < opened:
+            stale.append(o)
+    return (_cancel_orders(portfolio, orphaned, reason)
+            + _cancel_orders(portfolio, stale, stale_reason))
+
+
 def _close_leg(portfolio, order, price, fx_rate, notional, fee,
-               now_iso, exit_reason, emotion_close: str = "") -> models.Trade:
+               now_iso, exit_reason,
+               emotion_close: str = "") -> Tuple[models.Trade, List[Dict[str, Any]]]:
     """Clôture (totale ou partielle) et produit le ``Trade`` pédagogique.
 
     Les frais du ``Trade`` AGRÈGENT l'entrée et la sortie (recalculés sur le
@@ -653,6 +797,10 @@ def _close_leg(portfolio, order, price, fx_rate, notional, fee,
     l'aller-retour, celui qui enseigne. Les flux de trésorerie, eux, restent
     ceux réellement payés à chaque transaction — l'entrée avait déjà été
     débitée au moment de l'achat.
+
+    Rend ``(trade, orphans_cancelled)`` : le second élément est TOUJOURS une
+    liste (vide sauf quand cette clôture vient de ramener la position à
+    zéro — cf. :func:`_cancel_orphan_exit_orders`).
     """
     symbol = order.symbol
     qty = int(order.qty)
@@ -710,9 +858,17 @@ def _close_leg(portfolio, order, price, fx_rate, notional, fee,
         portfolio.cash_chf = round(portfolio.cash_chf - notional - fee["total_chf"], 2)
 
     position.qty -= qty
+    orphans_cancelled: List[Dict[str, Any]] = []
     if position.qty <= 0:
         portfolio.positions = [p for p in portfolio.positions if p is not position]
-    return trade
+        # Bug des ordres de sortie ORPHELINS — la ligne vient de tomber à
+        # zéro : tout ordre de sortie qui la visait encore (un objectif posé
+        # à l'ouverture, un stop manuel, un doublon) devient infaisable À CET
+        # INSTANT. Ne PAS le nettoyer ici, c'est exactement le bug vécu en
+        # production : l'objectif restait ouvert des semaines, jusqu'à ce
+        # qu'une ligne SANS RAPPORT rouvre sur le même symbole à côté de lui.
+        orphans_cancelled = _cancel_orphan_exit_orders(portfolio, symbol, order)
+    return trade, orphans_cancelled
 
 
 def close_position(portfolio: models.Portfolio, position: models.Position,
@@ -909,6 +1065,15 @@ def run_tick(portfolio: models.Portfolio, now_iso: str,
     autres continuent (invariant 2). Un ordre devenu infaisable (la trésorerie a
     fondu entre-temps) est ANNULÉ, pas exécuté à découvert.
 
+    En tout PREMIER (avant même de regarder un cours) : un balayage de
+    cohérence annule tout ordre de sortie dont le symbole n'a plus aucune
+    position — cf. :func:`_sweep_orphan_exit_orders` (bug des ordres de
+    sortie orphelins). Les deux boucles ci-dessous, elles, annulent en plus
+    les ordres de sortie SIBLINGS de toute clôture qui vient de ramener une
+    position à zéro (cf. :func:`_cancel_orphan_exit_orders`, appelé depuis
+    :func:`_close_leg`) — les deux mécanismes sont complémentaires, et leurs
+    annulations rejoignent la MÊME liste ``cancelled``.
+
     ``username`` (LOT 3, C1, facultatif) — transmis à ``_attach_trade_extras``
     pour le post-mortem automatique : un ordre limite/stop qui clôture ou un
     stop de protection qui saute PENDANT LA NUIT sont exactement les fills
@@ -929,6 +1094,12 @@ def run_tick(portfolio: models.Portfolio, now_iso: str,
                 cache[symbol] = None
                 errors.append({"symbol": symbol, "error": str(e)[:200]})
         return cache[symbol]
+
+    # Bug des ordres de sortie ORPHELINS — balayage de COHÉRENCE, indépendant
+    # de toute clôture survenant CE tick (cf. docstring). Avant la boucle
+    # d'ordres : une fois nettoyés, ces zombies ne doivent plus être traités
+    # comme des ordres vivants juste en dessous.
+    cancelled.extend(_sweep_orphan_exit_orders(portfolio))
 
     for order in list(portfolio.open_orders):
         if order.status != "open":
@@ -982,6 +1153,12 @@ def run_tick(portfolio: models.Portfolio, now_iso: str,
                     _append_target_order(portfolio, order, order.target,
                                          order.qty, now_iso)
                 filled.append(fill)
+                # Bug des ordres de sortie ORPHELINS — cette exécution vient
+                # peut-être de ramener la position à zéro (cf. _close_leg) :
+                # ses éventuels ordres de sortie siblings ont déjà été
+                # annulés côté portefeuille, il ne reste qu'à les rendre
+                # VISIBLES dans le ``cancelled`` que ce tick retourne.
+                cancelled.extend(fill.get("orphans_cancelled") or [])
             portfolio.open_orders = [o for o in portfolio.open_orders if o is not order]
             break
 
@@ -1013,6 +1190,11 @@ def run_tick(portfolio: models.Portfolio, now_iso: str,
             else:
                 _attach_trade_extras(portfolio, fill, username)
                 stopped.append(fill)
+                # Bug des ordres de sortie ORPHELINS — même geste que la
+                # boucle des ordres ci-dessus : le stop protecteur qui vient
+                # de solder la ligne a pu annuler des ordres de sortie
+                # siblings (un objectif jamais atteint, par exemple).
+                cancelled.extend(fill.get("orphans_cancelled") or [])
             break
 
     return {"fills": filled, "stopped": stopped, "cancelled": cancelled,
@@ -1296,12 +1478,25 @@ def _ensure_coach_account() -> models.Portfolio:
     initial — les mêmes 10 000 CHF qu'un humain, sans quoi la comparaison de
     performance ne voudrait rien dire — puis persisté tout de suite : un compte
     qui n'existerait qu'en mémoire disparaîtrait au premier redémarrage.
+
+    Profil de frais :data:`COACH_FEE_PROFILE` (bug n°2, 2026-09-21) — posé à
+    la CRÉATION, et re-vérifié à CHAQUE chargement : un fichier persisté
+    avant ce correctif (donc encore sur le défaut ``models.DEFAULT_FEE_
+    PROFILE``, "yuh") migre tout seul dès le premier accès, ici, SANS
+    intervention manuelle sur le fichier — et la correction est persistée
+    tout de suite (pas seulement en mémoire pour cet appel), pour que le
+    fichier sur disque ne mente plus dès la première lecture, qu'elle soit
+    suivie d'une écriture par l'appelant ou non.
     """
     username = coach_trader.COACH_USERNAME
     raw = store.load_portfolio(username)
     if raw is not None:
-        return models.Portfolio.from_dict(raw)
-    portfolio = new_portfolio(coach_trader.COACH_CAPITAL, None, _now_iso())
+        portfolio = models.Portfolio.from_dict(raw)
+        if portfolio.fee_profile != COACH_FEE_PROFILE:
+            portfolio.fee_profile = COACH_FEE_PROFILE
+            _save(username, portfolio)
+        return portfolio
+    portfolio = new_portfolio(coach_trader.COACH_CAPITAL, COACH_FEE_PROFILE, _now_iso())
     _save(username, portfolio)
     return portfolio
 
@@ -1548,7 +1743,8 @@ def _coach_equity_chf(portfolio: models.Portfolio) -> float:
 
 def _coach_reject_detail(code: str, decision: Dict[str, Any],
                          portfolio: models.Portfolio,
-                         quote: Optional[Dict[str, Any]]) -> Optional[str]:
+                         quote: Optional[Dict[str, Any]],
+                         now: Any = None) -> Optional[str]:
     """La phrase LISIBLE et CHIFFRÉE qui accompagne un code de refus.
 
     Le code (``oversize``) dit CE QUI a été violé ; ce détail dit DE COMBIEN.
@@ -1558,6 +1754,15 @@ def _coach_reject_detail(code: str, decision: Dict[str, Any],
     d'être consigné, d'où le ``None`` de repli.
     """
     try:
+        # LOT 13 — les trois refus economiques (``no_target``/``edge_thin``/
+        # ``whipsaw``) se CHIFFRENT avec les helpers et les seuils de
+        # ``coach_trader`` : on delegue au lieu de recopier le calcul ici,
+        # sinon le texte divergerait du garde-fou au premier ajustement.
+        # ``None`` pour tout autre code -> la suite de cette fonction.
+        extra = coach_trader.reject_detail(code, decision,
+                                          portfolio.to_dict(), quote, now=now)
+        if extra is not None:
+            return extra
         symbol = str(decision.get("symbol") or "") or "?"
         qty = _num(decision.get("qty"))
         equity = _coach_equity_chf(portfolio)
@@ -1739,8 +1944,13 @@ def _append_target_order(portfolio: models.Portfolio, order: models.Order,
     ``target`` posé sur une Position n'est JAMAIS exécuté mécaniquement. C'est
     cet ordre limite en attente qui rend l'objectif réel — et c'est la PREMIÈRE
     boucle de :func:`run_tick` qui le déclenchera. Si le stop part d'abord, la
-    position n'existe plus : l'ordre échouera proprement en ``cancelled`` au
-    tick suivant (comportement déjà géré par ``run_tick``).
+    position n'existe plus : cet ordre est ANNULÉ IMMÉDIATEMENT (bug des
+    ordres de sortie orphelins, 2026-09-21) par :func:`_cancel_orphan_exit_
+    orders`, appelé depuis :func:`_close_leg` dès que la clôture ramène la
+    position à zéro — il ne reste jamais orphelin à attendre un déclenchement
+    qui n'arrivera peut-être jamais (⚠️ ce n'était PAS le cas avant ce
+    correctif : un objectif resté loin du cours ne se déclenchait jamais tout
+    seul, et rien ne le nettoyait).
 
     ⚠️ Le sens du RETOUR dépend de celui de l'aller (LOT 5) : l'objectif d'une
     vente à découvert se prend en RACHETANT sous le prix. Poser un ``sell`` de
@@ -1817,7 +2027,8 @@ def _coach_execute_one(portfolio: models.Portfolio, action: Dict[str, Any],
         code = str(verdict.get("reason") or "")
         return (coach_trader.ledger_entry(
             now_iso, source, kind, symbol, False, reason=code,
-            detail=_coach_reject_detail(code, decision, portfolio, quote)), None)
+            detail=_coach_reject_detail(code, decision, portfolio, quote,
+                                        now=now_iso)), None)
 
     plan = verdict.get("order") or {}
     price = float(quote["price"])
@@ -1893,8 +2104,10 @@ def _coach_execute_one(portfolio: models.Portfolio, action: Dict[str, Any],
     # ``target`` posé sur une Position n'est JAMAIS exécuté mécaniquement.
     # C'est cet ordre limite en attente qui rend l'objectif réel — et c'est la
     # PREMIÈRE boucle de ``run_tick`` qui le déclenchera. Si le stop part
-    # d'abord, la position n'existe plus : l'ordre échouera proprement en
-    # ``cancelled`` au tick suivant (comportement déjà géré par ``run_tick``).
+    # d'abord, la position n'existe plus : cet ordre est annulé IMMÉDIATEMENT
+    # par ``_cancel_orphan_exit_orders`` (bug des ordres de sortie orphelins,
+    # 2026-09-21), appelé depuis ``_close_leg`` dès que la clôture ramène la
+    # position à zéro.
     #
     # ⚠️ Le sens du RETOUR dépend de celui de l'aller (LOT 5) : l'objectif
     # d'une vente à découvert se prend en RACHETANT sous le prix. Poser un
