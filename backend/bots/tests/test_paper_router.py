@@ -8899,3 +8899,33 @@ def test_the_daily_pass_hands_its_candidates_to_the_executor(tmp_path, monkeypat
     position = coach_portfolio()["positions"][0]
     assert position["symbol"] == "ZZZ.SW"
     assert position["candidate_source"] == "tendance"
+
+
+def test_reinforcing_a_LEGACY_line_stays_unknown_never_tagged_position(
+        tmp_path, monkeypatch):
+    """« position » et « embuscade » sont des RENVOIS, pas des idées : si la
+    ligne (ou l'ordre) renvoyée n'a pas de provenance, la provenance reste
+    INCONNUE — sinon ``by_source`` gagnerait une case « position » factice."""
+    c, _ = make_client(tmp_path, monkeypatch)
+    seed_coach_position(qty=10)                        # ligne d'avant LOT 14b
+    rows = pr.execute_coach_actions(
+        [coach_action(qty=12)], source="daily",
+        origins=[{"symbol": "NESN.SW", "source": "position"}])
+    assert rows[0]["accepted"] is True, rows[0]
+    position = coach_portfolio()["positions"][0]
+    assert position["candidate_source"] is None
+    assert position["hypothesis_id"] is None
+
+
+def test_an_order_behind_an_ambush_tag_without_provenance_stays_unknown(
+        tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+    portfolio = pr._ensure_coach_account()
+    portfolio.open_orders.append(pr.models.Order(
+        id="legacy", symbol="NESN.SW", side="buy", kind="stop", qty=5,
+        stop_price=150.0, status="open", created_at=FIXED_NOW))
+    pr._save(COACH, portfolio)
+    pr.execute_coach_actions([coach_action()], source="daily",
+                             origins=[{"symbol": "NESN.SW", "source": "embuscade"}])
+    position = coach_portfolio()["positions"][0]
+    assert position["candidate_source"] is None

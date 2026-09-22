@@ -2154,8 +2154,8 @@ def _coach_origin(symbol: str, side: str, portfolio: models.Portfolio,
       passe), à défaut celle retrouvée sans réseau
       (:func:`_coach_derive_source`) ;
     - ``position``/``embuscade`` ne sont pas des IDÉES mais des renvois : on
-      remonte à la provenance de la ligne / de l'ordre existant quand elle est
-      connue ;
+      remonte à la provenance de la ligne / de l'ordre existant ; inconnue
+      là-bas -> ``(None, None)``, jamais le renvoi lui-même ;
     - ``radar`` -> l'identifiant de l'hypothèse (:func:`_radar_hypothesis_of`).
     """
     if side in ("sell", "cover"):
@@ -2164,14 +2164,19 @@ def _coach_origin(symbol: str, side: str, portfolio: models.Portfolio,
             return None, None
         return line.candidate_source, line.hypothesis_id
     source = (origins or {}).get(symbol) or _coach_derive_source(symbol, portfolio)
+    # Un RENVOI sans provenance derrière (ligne ou ordre d'avant LOT 14b)
+    # reste INCONNU : « position »/« embuscade » ne sont pas des idées, et
+    # les écrire ferait naître une case factice dans ``by_source``.
     if source == CANDIDATE_SOURCE_POSITION:
         line = _find_position(portfolio, symbol)
         if line is not None and line.candidate_source:
             return line.candidate_source, line.hypothesis_id
+        return None, None
     if source == CANDIDATE_SOURCE_AMBUSH:
         for order in portfolio.open_orders:
             if order.symbol == symbol and order.candidate_source:
                 return order.candidate_source, order.hypothesis_id
+        return None, None
     if source == CANDIDATE_SOURCE_RADAR:
         return source, _radar_hypothesis_of(symbol)
     return source, None
