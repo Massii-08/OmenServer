@@ -374,9 +374,16 @@ def test_les_versions_des_fichiers_frontend_ont_ete_bumpees():
     libellés n'apparaissent jamais chez l'utilisateur (piège du dépôt)."""
     index = (_PROJECT_ROOT / "frontend" / "index.html").read_text(encoding="utf-8")
     sw = (_PROJECT_ROOT / "frontend" / "sw.js").read_text(encoding="utf-8")
-    assert "/js/lang.js?v=292" in index
-    assert "/js/paper_module.js?v=30" in index
-    assert "omenserver-v189" in sw
+    # MONOTONE, jamais fige : ce test garantit que le bump du LOT F a EU LIEU.
+    # Une egalite stricte cassait a CHAQUE bump suivant (vecu : LOT 13 a
+    # bumpe lang 293 / sw v190 et l'a rendu rouge sans rien casser d'autre).
+    def _v(pattern, text):
+        m = re.search(pattern, text)
+        assert m, pattern
+        return int(m.group(1))
+    assert _v(r"/js/lang\.js\?v=(\d+)", index) >= 292
+    assert _v(r"/js/paper_module\.js\?v=(\d+)", index) >= 30
+    assert _v(r"omenserver-v(\d+)", sw) >= 189
 
 
 # --------------------------------------------------------------------------- #
