@@ -286,3 +286,38 @@ def test_order_sans_peremption_reste_lisible():
     order = Order.from_dict({"id": "a1", "symbol": "AAPL"})
     assert order.expires_at == ""
     assert order.source == ""
+
+
+# --------------------------------------------------------------------------- #
+# LOT 14b T5 — la PROVENANCE d'une idée voyage d'ordre en position en trade
+# --------------------------------------------------------------------------- #
+
+def test_order_position_trade_carry_candidate_source_and_hypothesis_id():
+    from backend.bots.paper import models
+    for cls in (models.Order, models.Position, models.Trade):
+        kwargs = {"symbol": "HD"}
+        if cls is models.Order:
+            kwargs["id"] = "o1"
+        obj = cls(candidate_source="radar", hypothesis_id="abc123", **kwargs)
+        back = cls.from_dict(obj.to_dict())
+        assert back.candidate_source == "radar"
+        assert back.hypothesis_id == "abc123"
+
+
+def test_a_legacy_file_without_provenance_loads_as_None_never_invented():
+    """Rétro-compatible : un fichier d'avant LOT 14b n'a pas ces champs — le
+    chargement ne plante pas et n'INVENTE aucune source (``None`` = inconnue)."""
+    from backend.bots.paper import models
+    for cls, data in ((models.Order, {"id": "o1", "symbol": "HD"}),
+                      (models.Position, {"symbol": "HD"}),
+                      (models.Trade, {"symbol": "HD"})):
+        obj = cls.from_dict(data)
+        assert obj.candidate_source is None
+        assert obj.hypothesis_id is None
+
+
+def test_provenance_ignores_garbage_types():
+    from backend.bots.paper import models
+    obj = models.Trade.from_dict({"symbol": "HD", "candidate_source": 42,
+                                  "hypothesis_id": ["x"]})
+    assert obj.candidate_source is None and obj.hypothesis_id is None

@@ -8766,3 +8766,136 @@ def test_run_coach_daily_pass_threads_candidates_into_the_dossiers(
 
     pr.run_coach_daily_pass(FIXED_NOW, claude=speaker)
     assert seen == ["CHPT"]
+
+
+# =========================================================================== #
+#  LOT 14b T5 — chaque trade sait de quelle idée il vient
+# =========================================================================== #
+
+def _close_nesn_at(market, price):
+    market.candles["NESN.SW"] = [
+        {"ts": _ts(11), "open": price, "high": price, "low": price,
+         "close": price}]
+    return pr.tick_coach_account()
+
+
+def test_an_entry_records_the_source_the_model_SAW(tmp_path, monkeypatch):
+    """La passe passe ses candidats à l'exécuteur : la provenance est celle
+    que le modèle avait sous les yeux."""
+    c, market = make_client(tmp_path, monkeypatch)
+    rows = pr.execute_coach_actions(
+        [coach_action()], source="daily",
+        origins=[{"symbol": "NESN.SW", "source": "watchlist"}])
+    assert rows[0]["accepted"] is True
+    position = coach_portfolio()["positions"][0]
+    assert position["candidate_source"] == "watchlist"
+    assert position["hypothesis_id"] is None
+    target = coach_portfolio()["open_orders"][0]          # l'objectif limite
+    assert target["candidate_source"] == "watchlist"
+
+
+def test_a_radar_entry_records_the_hypothesis_id_up_to_the_closed_trade(
+        tmp_path, monkeypatch):
+    c, market = make_client(tmp_path, monkeypatch)
+    older = _open_hyp(["NESN.SW"], "vieille")
+    older["created_at"] = "2026-08-20T10:00:00"
+    newer = _open_hyp(["NESN.SW"], "recente")
+    newer["created_at"] = "2026-08-23T10:00:00"
+    _seed_radar([older, newer])
+    pr.execute_coach_actions(
+        [coach_action()], source="daily",
+        origins=[{"symbol": "NESN.SW", "source": "radar"}])
+
+    _close_nesn_at(market, 131.0)                        # l'objectif part
+    trade = coach_portfolio()["trades"][0]
+    assert trade["candidate_source"] == "radar"
+    # la plus RÉCENTE hypothèse qui suit le titre : celle qui l'a amené
+    assert trade["hypothesis_id"] == "recente"
+
+
+def test_without_origins_the_source_is_derived_without_network(tmp_path, monkeypatch):
+    """Chemin du digest (convergence) : aucune liste de candidats transmise.
+    La provenance est retrouvée sur les sources locales (radar ici)."""
+    c, _ = make_client(tmp_path, monkeypatch)
+    _seed_radar([_open_hyp(["NESN.SW"], "h7")])
+    pr.execute_coach_actions([coach_action()], source="digest")
+    position = coach_portfolio()["positions"][0]
+    assert (position["candidate_source"], position["hypothesis_id"]) == ("radar", "h7")
+
+
+def test_an_unknown_origin_is_None_never_invented(tmp_path, monkeypatch):
+    c, market = make_client(tmp_path, monkeypatch)
+    market.prices["ZZZ.SW"] = (100.0, "CHF", "Inconnue")
+    pr.execute_coach_actions([coach_action(symbol="ZZZ.SW")], source="digest")
+    position = coach_portfolio()["positions"][0]
+    assert position["candidate_source"] is None
+    assert position["hypothesis_id"] is None
+
+
+def test_an_ambush_carries_its_origin_to_the_position_it_opens(tmp_path, monkeypatch):
+    c, market = make_client(tmp_path, monkeypatch)
+    _seed_radar([_open_hyp(["NESN.SW"], "h3")])
+    pr.execute_coach_actions([coach_ambush()], source="daily",
+                             origins=[{"symbol": "NESN.SW", "source": "radar"}])
+    armed = coach_ambushes()[0]
+    assert (armed["candidate_source"], armed["hypothesis_id"]) == ("radar", "h3")
+
+    market.candles["NESN.SW"] = [
+        {"ts": _ts(11), "open": 108.0, "high": 114.0, "low": 107.0,
+         "close": 113.0}]
+    pr.tick_coach_account()
+    position = coach_portfolio()["positions"][0]
+    assert (position["candidate_source"], position["hypothesis_id"]) == ("radar", "h3")
+
+
+def test_reinforcing_a_line_keeps_the_idea_that_OPENED_it(tmp_path, monkeypatch):
+    """Un renfort est tagué « position » dans les candidats ; ce n'est pas une
+    idée nouvelle — la ligne garde la provenance de son ouverture."""
+    c, _ = make_client(tmp_path, monkeypatch)
+    pr.execute_coach_actions([coach_action(qty=12)], source="daily",
+                             origins=[{"symbol": "NESN.SW", "source": "europe_pool"}])
+    rows = pr.execute_coach_actions(
+        [coach_action(qty=12)], source="daily",
+        origins=[{"symbol": "NESN.SW", "source": "position"}])
+    assert rows[0]["accepted"] is True, rows[0]
+    position = coach_portfolio()["positions"][0]
+    assert position["qty"] == 24
+    assert position["candidate_source"] == "europe_pool"
+
+
+def test_an_exit_order_carries_the_origin_of_its_line(tmp_path, monkeypatch):
+    c, market = make_client(tmp_path, monkeypatch)
+    pr.execute_coach_actions([coach_action()], source="daily",
+                             origins=[{"symbol": "NESN.SW", "source": "tendance"}])
+    pr.execute_coach_actions([{"action": "sell", "symbol": "NESN.SW"}],
+                             source="daily")
+    trade = coach_portfolio()["trades"][0]
+    assert trade["candidate_source"] == "tendance"
+
+
+def test_a_legacy_coach_file_still_loads_and_closes(tmp_path, monkeypatch):
+    """Rétro-compatibilité : une position écrite AVANT ce lot (sans champ)
+    se clôt normalement, et son trade dit « inconnu », pas une source."""
+    c, market = make_client(tmp_path, monkeypatch)
+    seed_coach_position(qty=10)
+    _close_nesn_at(market, 80.0)                          # le stop part
+    trade = coach_portfolio()["trades"][0]
+    assert trade["candidate_source"] is None
+    body = c.get("/api/paper/coach-trader").json()
+    assert body["economics"]["by_source"]["unknown"]["n_trades"] == 1
+
+
+def test_the_daily_pass_hands_its_candidates_to_the_executor(tmp_path, monkeypatch):
+    """Bout en bout : la passe quotidienne transmet ses candidats. Un titre de
+    DÉCOUVERTE ne se retrouve que par eux (la dérivation sans réseau ne le
+    connaît pas) — c'est donc la preuve que la liste a bien voyagé."""
+    c, market = make_client(tmp_path, monkeypatch)
+    market.prices["ZZZ.SW"] = (100.0, "CHF", "Titre du jour")
+    monkeypatch.setattr(discovery, "discovery_candidates",
+                        _DiscoverySpy([{"symbol": "ZZZ.SW", "source": "tendance"}]))
+    speaker = _Speaker(_focus_answer(["ZZZ.SW"]),
+                       _actions_answer([coach_action(symbol="ZZZ.SW")]))
+    pr.run_coach_daily_pass(FIXED_NOW, claude=speaker)
+    position = coach_portfolio()["positions"][0]
+    assert position["symbol"] == "ZZZ.SW"
+    assert position["candidate_source"] == "tendance"

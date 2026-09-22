@@ -2692,3 +2692,36 @@ def test_deployment_view_short_proceeds_do_not_count_as_idle_cash():
     })
     # libre = 12 000 − 2 000 = 10 000 ; équité nette = 10 000
     assert view["cash_pct"] == 100.0
+
+
+# --------------------------------------------------------------------------- #
+# LOT 14b T5 — l'économie ventilée PAR SOURCE d'idée
+# --------------------------------------------------------------------------- #
+
+def _eco_trade(pnl, fees=2.0, source=None, stamp=0.0):
+    row = {"symbol": "X", "pnl_chf": pnl, "fees_chf": fees,
+           "stamp_duty_chf": stamp}
+    if source is not None:
+        row["candidate_source"] = source
+    return row
+
+
+def test_economics_view_breaks_down_by_candidate_source():
+    view = coach_trader.economics_view(_pf(trades=[
+        _eco_trade(10.0, source="radar"), _eco_trade(-4.0, source="radar"),
+        _eco_trade(6.0, fees=1.0, stamp=0.5, source="europe_pool"),
+        _eco_trade(-3.0),                                   # ancien trade
+    ]))
+    by = view["by_source"]
+    assert by["radar"] == {"n_trades": 2, "n_wins": 1, "net_pnl_chf": 6.0,
+                           "gross_pnl_chf": 10.0}
+    assert by["europe_pool"] == {"n_trades": 1, "n_wins": 1,
+                                 "net_pnl_chf": 6.0, "gross_pnl_chf": 7.5}
+    # un trade sans provenance n'est attribué à AUCUNE source réelle
+    assert by["unknown"] == {"n_trades": 1, "n_wins": 0, "net_pnl_chf": -3.0,
+                             "gross_pnl_chf": -1.0}
+    assert sum(r["n_trades"] for r in by.values()) == view["n_trades"]
+
+
+def test_economics_view_by_source_is_empty_without_trades():
+    assert coach_trader.economics_view(_pf())["by_source"] == {}

@@ -593,7 +593,9 @@ def _open_long(portfolio, order, price, fx_rate, notional, fee, now_iso) -> None
             thesis=order.thesis, stop_loss=order.stop_loss,
             target=order.target, risk_chf=order.risk_chf,
             setup=order.setup, emotion=order.emotion,
-            forced_warnings=list(order.forced_warnings)))
+            forced_warnings=list(order.forced_warnings),
+            candidate_source=order.candidate_source,
+            hypothesis_id=order.hypothesis_id))
     else:
         _average_into(position, order, price, fx_rate)
     portfolio.cash_chf = round(portfolio.cash_chf - cost, 2)
@@ -625,7 +627,9 @@ def _open_short(portfolio, order, price, fx_rate, notional, fee, now_iso) -> Non
             thesis=order.thesis, stop_loss=order.stop_loss,
             target=order.target, risk_chf=order.risk_chf,
             setup=order.setup, emotion=order.emotion,
-            forced_warnings=list(order.forced_warnings)))
+            forced_warnings=list(order.forced_warnings),
+            candidate_source=order.candidate_source,
+            hypothesis_id=order.hypothesis_id))
     else:
         _average_into(position, order, price, fx_rate)
     portfolio.cash_chf = round(portfolio.cash_chf + notional - fee["total_chf"], 2)
@@ -664,6 +668,12 @@ def _average_into(position: models.Position, order: models.Order,
         # LOT 3, C3 — même geste que setup/emotion : le renfort le plus
         # récent qui a forcé des avertissements est celui qui compte.
         position.forced_warnings = list(order.forced_warnings)
+    # LOT 14b — la PROVENANCE, elle, reste celle de l'idée qui a OUVERT la
+    # ligne (un renfort n'est pas une idée nouvelle) ; elle n'est reprise de
+    # l'ordre que si la ligne n'en avait pas.
+    if position.candidate_source is None and order.candidate_source:
+        position.candidate_source = order.candidate_source
+        position.hypothesis_id = order.hypothesis_id
 
 
 # --------------------------------------------------------------------------- #
@@ -849,6 +859,8 @@ def _close_leg(portfolio, order, price, fx_rate, notional, fee,
         emotion=position.emotion,
         emotion_close=str(emotion_close or ""),
         forced_warnings=list(position.forced_warnings),
+        candidate_source=position.candidate_source,
+        hypothesis_id=position.hypothesis_id,
     )
     portfolio.trades.append(trade)
 
@@ -2079,12 +2091,109 @@ def _append_target_order(portfolio: models.Portfolio, order: models.Order,
         currency=order.currency,
         fee_profile=portfolio.fee_profile,
         source=order.source,
+        candidate_source=order.candidate_source,
+        hypothesis_id=order.hypothesis_id,
     ))
+
+
+def _radar_hypothesis_of(symbol: str) -> Optional[str]:
+    """L'identifiant de la plus RÉCENTE hypothèse radar OUVERTE qui suit ce
+    titre (LOT 14b) — celle qui l'a amené dans les candidats, puisque le
+    radar y entre du plus récent au plus ancien. ``None`` si aucune."""
+    try:
+        hypotheses = _radar_newest_first(_open_radar_hypotheses())
+    except Exception:                           # noqa: BLE001 — best-effort
+        return None
+    for hyp in hypotheses:
+        muets = {quotes.canonical(t)
+                 for t in (hyp.get("unquoted") or []) if isinstance(t, str)}
+        for ticker in hyp.get("tickers") or []:
+            if not isinstance(ticker, str):
+                continue
+            canon = quotes.canonical(ticker)
+            if canon == symbol and canon not in muets:
+                hyp_id = str(hyp.get("id") or "").strip()
+                return hyp_id or None
+    return None
+
+
+def _coach_derive_source(symbol: str, portfolio: models.Portfolio) -> Optional[str]:
+    """La provenance d'un symbole retrouvée SANS réseau (LOT 14b) — pour les
+    chemins qui ne transmettent pas la liste de candidats (le digest de
+    convergence). Même ordre de priorité que :func:`_coach_candidate_entries`
+    ; la découverte (réseau) ne se retrouve pas -> ``None`` (inconnue),
+    jamais devinée."""
+    if _find_position(portfolio, symbol) is not None:
+        return CANDIDATE_SOURCE_POSITION
+    if any(o.symbol == symbol and (o.status or "open") == "open"
+           for o in portfolio.open_orders):
+        return CANDIDATE_SOURCE_AMBUSH
+    if _radar_hypothesis_of(symbol) is not None:
+        return CANDIDATE_SOURCE_RADAR
+    try:
+        watch = {quotes.canonical(s) for s in _coach_watchlist_symbols()
+                 if isinstance(s, str)}
+    except Exception:                           # noqa: BLE001 — best-effort
+        watch = set()
+    if symbol in watch:
+        return CANDIDATE_SOURCE_WATCHLIST
+    if symbol in _coach_europe_pool():
+        return CANDIDATE_SOURCE_EUROPE_POOL
+    return None
+
+
+def _coach_origin(symbol: str, side: str, portfolio: models.Portfolio,
+                  origins: Optional[Dict[str, str]]) -> Tuple[Optional[str],
+                                                             Optional[str]]:
+    """``(candidate_source, hypothesis_id)`` d'une décision du coach (LOT 14b).
+
+    - une SORTIE (``sell``/``cover``) porte la provenance de la ligne qu'elle
+      ferme ;
+    - une ENTRÉE prend la source du candidat que le modèle AVAIT SOUS LES
+      YEUX (``origins`` : symbole -> source, bâti depuis les candidats de la
+      passe), à défaut celle retrouvée sans réseau
+      (:func:`_coach_derive_source`) ;
+    - ``position``/``embuscade`` ne sont pas des IDÉES mais des renvois : on
+      remonte à la provenance de la ligne / de l'ordre existant quand elle est
+      connue ;
+    - ``radar`` -> l'identifiant de l'hypothèse (:func:`_radar_hypothesis_of`).
+    """
+    if side in ("sell", "cover"):
+        line = _find_position(portfolio, symbol)
+        if line is None:
+            return None, None
+        return line.candidate_source, line.hypothesis_id
+    source = (origins or {}).get(symbol) or _coach_derive_source(symbol, portfolio)
+    if source == CANDIDATE_SOURCE_POSITION:
+        line = _find_position(portfolio, symbol)
+        if line is not None and line.candidate_source:
+            return line.candidate_source, line.hypothesis_id
+    if source == CANDIDATE_SOURCE_AMBUSH:
+        for order in portfolio.open_orders:
+            if order.symbol == symbol and order.candidate_source:
+                return order.candidate_source, order.hypothesis_id
+    if source == CANDIDATE_SOURCE_RADAR:
+        return source, _radar_hypothesis_of(symbol)
+    return source, None
+
+
+def _coach_origin_map(candidates: Any) -> Dict[str, str]:
+    """``{symbole canonique: source}`` depuis des lignes de candidats."""
+    out: Dict[str, str] = {}
+    for row in candidates or []:
+        if not isinstance(row, dict):
+            continue
+        raw = row.get("symbol")
+        source = str(row.get("source") or "").strip()
+        if isinstance(raw, str) and raw.strip() and source:
+            out.setdefault(quotes.canonical(raw), source)
+    return out
 
 
 def _coach_execute_one(portfolio: models.Portfolio, action: Dict[str, Any],
                        source: str, now_iso: str,
-                       focus_symbol: Optional[str] = None) -> Any:
+                       focus_symbol: Optional[str] = None,
+                       origins: Optional[Dict[str, str]] = None) -> Any:
     """UNE décision : [périmètre du gardien] -> cours -> garde-fou -> moteur
     d'ordres.
 
@@ -2137,6 +2246,10 @@ def _coach_execute_one(portfolio: models.Portfolio, action: Dict[str, Any],
     price = float(quote["price"])
     fx_rate = float(quote["fx_rate"])
     qty = int(plan.get("qty") or 0)
+    # LOT 14b — de quelle IDÉE naît cet ordre (cf. :func:`_coach_origin`).
+    origin_source, origin_hyp = _coach_origin(
+        plan.get("symbol") or symbol, str(plan.get("side") or ""), portfolio,
+        origins)
 
     # ``adjust_stop`` (LOT 5) n'est PAS un ordre : rien ne s'échange, aucune
     # trésorerie ne bouge, aucun trade ne naît. Il repose le niveau
@@ -2156,7 +2269,8 @@ def _coach_execute_one(portfolio: models.Portfolio, action: Dict[str, Any],
     # réponse à « on ne peut pas rester à attendre » : le coach cesse de
     # re-juger passivement le même niveau à chaque passe.
     if plan.get("kind") == "stop":
-        return (_coach_arm_ambush(portfolio, plan, quote, source, now_iso), None)
+        return (_coach_arm_ambush(portfolio, plan, quote, source, now_iso,
+                                  origin=(origin_source, origin_hyp)), None)
 
     order = models.Order(
         id=uuid.uuid4().hex,
@@ -2174,6 +2288,8 @@ def _coach_execute_one(portfolio: models.Portfolio, action: Dict[str, Any],
         fee_profile=portfolio.fee_profile,
         setup=str(plan.get("setup") or ""),
         emotion=str(plan.get("emotion") or ""),
+        candidate_source=origin_source,
+        hypothesis_id=origin_hyp,
     )
 
     # ⚠️ La porte de confirmation N'EST PAS contournée, elle est CONSIGNÉE.
@@ -2226,7 +2342,9 @@ def _coach_execute_one(portfolio: models.Portfolio, action: Dict[str, Any],
 
 def _coach_arm_ambush(portfolio: models.Portfolio, plan: Dict[str, Any],
                       quote: Dict[str, Any], source: str,
-                      now_iso: str) -> Dict[str, Any]:
+                      now_iso: str,
+                      origin: Tuple[Optional[str], Optional[str]] = (None, None),
+                      ) -> Dict[str, Any]:
     """ARME une embuscade — l'entrée déclenchée par NIVEAU. MUTE ``portfolio``.
 
     Le garde-fou a DÉJÀ tout tranché À L'ARMEMENT (:func:`coach_trader.
@@ -2271,6 +2389,10 @@ def _coach_arm_ambush(portfolio: models.Portfolio, plan: Dict[str, Any],
         emotion=str(plan.get("emotion") or ""),
         expires_at=coach_trader.market_days_after(now_iso),
         source=source,
+        # LOT 14b — la provenance de l'idée, que la position héritera au
+        # déclenchement (des heures ou des jours plus tard).
+        candidate_source=origin[0],
+        hypothesis_id=origin[1],
     )
     portfolio.open_orders.append(order)
     sens = "au-dessus de" if order.side == "buy" else "sous"
@@ -2356,6 +2478,7 @@ def execute_coach_actions(actions: Any, source: str = "digest",
                           parse_error: Any = None,
                           note: Any = None,
                           focus_symbol: Optional[str] = None,
+                          origins: Any = None,
                           **_ignored: Any) -> List[Dict[str, Any]]:
     """Exécute les décisions du coach. Rend les lignes de registre produites.
 
@@ -2377,6 +2500,12 @@ def execute_coach_actions(actions: Any, source: str = "digest",
     porte sur un AUTRE symbole ou tente d'OUVRIR une ligne neuve) avant même
     de toucher un cours — les 3 autres chemins ne le passent jamais
     (``None`` par défaut), et ne sont donc pas concernés.
+
+    ``origins`` (LOT 14b) : les CANDIDATS que le modèle avait sous les yeux
+    (lignes ``{"symbol", "source", …}``). Ils donnent à chaque ordre la
+    PROVENANCE de son idée (``candidate_source``/``hypothesis_id``, portés
+    jusqu'au ``Trade`` clos). Absents (digest de convergence) : provenance
+    retrouvée sans réseau, ``None`` si introuvable — jamais inventée.
 
     ``note`` (LOT 4bis) est le champ de tête FACULTATIF du bloc ``COACH_
     ACTIONS`` (``coach_trader.parse_actions``/``convergence._parse_coach_
@@ -2411,7 +2540,8 @@ def execute_coach_actions(actions: Any, source: str = "digest",
         return _execute_coach_actions_locked(actions, source, now_iso,
                                              parse_error,
                                              _clean_coach_note(note),
-                                             focus_symbol)
+                                             focus_symbol,
+                                             _coach_origin_map(origins))
     except Exception as e:                  # noqa: BLE001 — jamais fatal
         logger.exception("paper coach: exécution des décisions en échec (%s)",
                          type(e).__name__)
@@ -2423,6 +2553,7 @@ def _execute_coach_actions_locked(actions: Any, source: str,
                                   parse_error: Any,
                                   note: Optional[str],
                                   focus_symbol: Optional[str] = None,
+                                  origins: Optional[Dict[str, str]] = None,
                                   ) -> List[Dict[str, Any]]:
     """Le corps de ``execute_coach_actions``.
 
@@ -2454,7 +2585,8 @@ def _execute_coach_actions_locked(actions: Any, source: str,
 
         for action in pending:
             entry, journal_entry = _coach_execute_one(portfolio, action, source,
-                                                      now, focus_symbol)
+                                                      now, focus_symbol,
+                                                      origins)
             rows.append(entry)
             if journal_entry is not None:
                 journal.append(journal_entry)
@@ -3244,7 +3376,9 @@ def run_coach_daily_pass(now_iso: Optional[str] = None,
                                  now_iso=now,
                                  parse_error=(error if error == "parse_failed"
                                               else None),
-                                 note=parsed.get("note"))
+                                 note=parsed.get("note"),
+                                 # LOT 14b — la provenance de chaque idée.
+                                 origins=context.get("candidates"))
     return {"ledger": rows, "text": parsed.get("text") or ""}
 
 

@@ -502,6 +502,12 @@ def fees_view(portfolio: Any, now: Any = None) -> Dict[str, Any]:
     }
 
 
+# LOT 14b — la case de :func:`economics_view` des trades SANS provenance
+# (clos avant que ``Trade.candidate_source`` existe). Explicite : un trade
+# ancien n'est attribué à AUCUNE source réelle.
+UNKNOWN_SOURCE = "unknown"
+
+
 def economics_view(portfolio: Any) -> Dict[str, Any]:
     """L'ÉCONOMIE du compte sur TOUS ses trades clos (PUR — LOT 14), pour
     l'écran « Coach en action ».
@@ -521,19 +527,40 @@ def economics_view(portfolio: Any) -> Dict[str, Any]:
     RÉEL ``fee_profile``, plus petite ligne permise par le mandat, timbre
     étranger) — l'écran et le coach lisent le même ; ``notional_chf`` dit à
     quelle taille il est mesuré. **NE LÈVE JAMAIS.**
+
+    ``by_source`` (LOT 14b) : la même économie ventilée par PROVENANCE de
+    l'idée (``Trade.candidate_source`` : radar, watchlist, europe_pool,
+    tendance…) — ``{source: {n_trades, n_wins, net_pnl_chf,
+    gross_pnl_chf}}``. C'est ce qui dira, dans quelques semaines, quelle
+    source a un avantage. Un trade sans provenance (clos avant ce lot) va
+    sous :data:`UNKNOWN_SOURCE`, jamais sous une source réelle. Vide sans
+    trade.
     """
     book = portfolio if isinstance(portfolio, dict) else {}
     trades = _dicts(book.get("trades"))
     fees_paid = 0.0
     net_pnl = 0.0
     n_wins = 0
+    by_source: Dict[str, Dict[str, Any]] = {}
     for trade in trades:
-        fees_paid += (_val(trade.get("fees_chf")) or 0.0) \
+        fees = (_val(trade.get("fees_chf")) or 0.0) \
             + (_val(trade.get("stamp_duty_chf")) or 0.0)
+        fees_paid += fees
         pnl = _val(trade.get("pnl_chf")) or 0.0
         net_pnl += pnl
         if pnl > 0:
             n_wins += 1
+        key = _text(trade.get("candidate_source")) or UNKNOWN_SOURCE
+        row = by_source.setdefault(key, {"n_trades": 0, "n_wins": 0,
+                                         "net_pnl_chf": 0.0,
+                                         "gross_pnl_chf": 0.0})
+        row["n_trades"] += 1
+        row["n_wins"] += 1 if pnl > 0 else 0
+        row["net_pnl_chf"] += pnl
+        row["gross_pnl_chf"] += pnl + fees
+    for row in by_source.values():
+        row["net_pnl_chf"] = round(row["net_pnl_chf"], 2)
+        row["gross_pnl_chf"] = round(row["gross_pnl_chf"], 2)
     n_trades = len(trades)
     gross_pnl = net_pnl + fees_paid
 
@@ -553,6 +580,7 @@ def economics_view(portfolio: Any) -> Dict[str, Any]:
         "fee_profile": profile,
         "round_trip_pct": _round_trip_pct(profile, notional, ""),
         "notional_chf": round(notional, 2),
+        "by_source": by_source,
     }
 
 

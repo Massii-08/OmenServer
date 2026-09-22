@@ -76,6 +76,15 @@ def _as_str(value: Any, default: str = "") -> str:
     return str(value)
 
 
+def _as_opt_text(value: Any) -> Optional[str]:
+    """Code-chaîne OPTIONNEL (LOT 14b : provenance d'une idée) : ``None``
+    reste ``None``, une chaîne vide ou un autre type aussi — une provenance
+    illisible est INCONNUE, jamais convertie en texte inventé."""
+    if isinstance(value, str) and value.strip():
+        return value
+    return None
+
+
 def _as_dict_list(value: Any) -> List[Dict[str, Any]]:
     """Liste de dictionnaires ; toute entrée qui n'en est pas un est ignorée."""
     if not isinstance(value, list):
@@ -129,6 +138,15 @@ class Position:
     # jusqu'au ``Trade`` clos, même geste que ``setup``/``emotion`` — le score
     # de discipline pourra les lire plus tard (stocké, pas encore câblé).
     forced_warnings: List[str] = field(default_factory=list)
+    # LOT 14b — la PROVENANCE de l'idée : la source du candidat qui a fait
+    # naître l'entrée (``position``/``embuscade``/``radar``/``watchlist``/
+    # ``europe_pool``/``tendance``, cf. ``paper_router.CANDIDATE_SOURCE_*``)
+    # et, pour le radar, l'identifiant de l'hypothèse. Posée sur l'ordre du
+    # COACH, portée à la position puis au ``Trade`` clos, comme ``setup``.
+    # ``None`` = INCONNUE (ordre d'avant ce lot, ou ordre d'un humain) — jamais
+    # une source devinée.
+    candidate_source: Optional[str] = None
+    hypothesis_id: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -151,6 +169,8 @@ class Position:
             setup=_as_str(data.get("setup")),
             emotion=_as_str(data.get("emotion")),
             forced_warnings=_as_str_list(data.get("forced_warnings")),
+            candidate_source=_as_opt_text(data.get("candidate_source")),
+            hypothesis_id=_as_opt_text(data.get("hypothesis_id")),
         )
 
 
@@ -194,6 +214,15 @@ class Order:
     # et pour ceux d'un humain (dont le formulaire n'arme rien).
     expires_at: str = ""
     source: str = ""
+    # LOT 14b — la PROVENANCE de l'idée : la source du candidat qui a fait
+    # naître l'entrée (``position``/``embuscade``/``radar``/``watchlist``/
+    # ``europe_pool``/``tendance``, cf. ``paper_router.CANDIDATE_SOURCE_*``)
+    # et, pour le radar, l'identifiant de l'hypothèse. Posée sur l'ordre du
+    # COACH, portée à la position puis au ``Trade`` clos, comme ``setup``.
+    # ``None`` = INCONNUE (ordre d'avant ce lot, ou ordre d'un humain) — jamais
+    # une source devinée.
+    candidate_source: Optional[str] = None
+    hypothesis_id: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -222,6 +251,8 @@ class Order:
             forced_warnings=_as_str_list(data.get("forced_warnings")),
             expires_at=_as_str(data.get("expires_at")),
             source=_as_str(data.get("source")),
+            candidate_source=_as_opt_text(data.get("candidate_source")),
+            hypothesis_id=_as_opt_text(data.get("hypothesis_id")),
         )
 
 
@@ -269,6 +300,15 @@ class Trade:
     # ce que Massii avait forcé à L'ENTRÉE. Stocké pour que le score de
     # discipline puisse un jour le lire ; rien ne le consomme encore.
     forced_warnings: List[str] = field(default_factory=list)
+    # LOT 14b — la PROVENANCE de l'idée : la source du candidat qui a fait
+    # naître l'entrée (``position``/``embuscade``/``radar``/``watchlist``/
+    # ``europe_pool``/``tendance``, cf. ``paper_router.CANDIDATE_SOURCE_*``)
+    # et, pour le radar, l'identifiant de l'hypothèse. Posée sur l'ordre du
+    # COACH, portée à la position puis au ``Trade`` clos, comme ``setup``.
+    # ``None`` = INCONNUE (ordre d'avant ce lot, ou ordre d'un humain) — jamais
+    # une source devinée.
+    candidate_source: Optional[str] = None
+    hypothesis_id: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -301,6 +341,8 @@ class Trade:
             mfe_pct=_as_opt_float(data.get("mfe_pct")),
             best_exit_gap_pct=_as_opt_float(data.get("best_exit_gap_pct")),
             forced_warnings=_as_str_list(data.get("forced_warnings")),
+            candidate_source=_as_opt_text(data.get("candidate_source")),
+            hypothesis_id=_as_opt_text(data.get("hypothesis_id")),
         )
 
 
