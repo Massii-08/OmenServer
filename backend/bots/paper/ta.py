@@ -30,6 +30,8 @@ CONTRAT — clés de ``technical_summary`` (LUES PAR LE PROMPT DU COACH : les
 renommer casse le coach en silence, sans test rouge ailleurs) :
 
     last_close        dernière clôture connue, l'ancre de tous les niveaux
+                      (le cours réel de la séance en cours si l'appelant le
+                      fournit et que sa bougie n'est pas consolidée — LOT 14b)
     sma20/50/200      moyennes mobiles simples (``None`` si trop peu de points)
     rsi14             RSI de Wilder 14 périodes, 0-100
     atr14             amplitude vraie moyenne 14 périodes, en devise du titre
@@ -327,8 +329,52 @@ def atr14(candles: Any) -> Optional[float]:
 # --------------------------------------------------------------------------- #
 # Résumé — le dict que lit le prompt du coach
 # --------------------------------------------------------------------------- #
-def technical_summary(candles: Any) -> Dict[str, Any]:
+def _with_live_session(candles: Any, price: Any) -> Any:
+    """La série où la séance EN COURS reçoit le cours réel (LOT 14b).
+
+    VÉCU 22/09 (TITAN.NS) : la dernière bougie avait ``open``/``high``/``low``
+    mais ``close: null`` (séance pas encore consolidée chez Yahoo) ; la
+    clôture absente était écartée, et TOUT le résumé reculait d'une séance —
+    ``last_close`` 4875 (la veille) pour une cotation à 4928,5, et avec lui
+    l'ATR en %, la position dans le canal, les moyennes, la variation 5 j.
+    Même piège que #67a (Market Pulse), même règle : une valeur NULLE ne doit
+    pas décaler la dernière valeur connue, et on n'invente JAMAIS la valeur
+    manquante.
+
+    D'où les bornes strictes : seule la DERNIÈRE bougie est complétée (un trou
+    au milieu reste un trou, cf. :func:`_floats`), seulement si elle n'a PAS
+    de clôture (une clôture consolidée n'est jamais remplacée), et seulement
+    par un cours RÉEL fourni par l'appelant (la cotation — ``quotes.
+    get_quote``, même réponse Yahoo, même unité que les bougies). Sans cours
+    lisible, la série est rendue telle quelle : l'ancre reste la dernière
+    clôture consolidée, jamais l'ouverture ni un milieu de range. Le cours
+    ayant été TOUCHÉ, il élargit les extrêmes de la séance s'il les dépasse.
+    Ne modifie JAMAIS la liste de l'appelant.
+    """
+    live = _num(price)
+    if live is None or live <= 0:
+        return candles
+    if not isinstance(candles, (list, tuple)) or not candles:
+        return candles
+    last = candles[-1]
+    if not isinstance(last, dict) or _field(last, "close") is not None:
+        return candles
+    high, low, _close = _span(last)
+    if high is None and low is None:
+        return candles              # pas une séance : rien à compléter
+    session = dict(last)
+    session["close"] = live
+    session["high"] = max(live, high) if high is not None else live
+    session["low"] = min(live, low) if low is not None else live
+    return list(candles[:-1]) + [session]
+
+
+def technical_summary(candles: Any, price: Any = None) -> Dict[str, Any]:
     """Résumé technique compact d'une série de bougies quotidiennes.
+
+    ``price`` (LOT 14b, optionnel) : le cours RÉEL de la séance en cours,
+    utilisé UNIQUEMENT si la dernière bougie n'a pas encore de clôture (cf.
+    :func:`_with_live_session`). Absent -> comportement historique.
 
     Toutes les clés de ``SUMMARY_KEYS`` sont TOUJOURS présentes : le prompt
     n'a pas à tester l'existence d'un champ, seulement sa nullité. Une entrée
@@ -341,6 +387,7 @@ def technical_summary(candles: Any) -> Dict[str, Any]:
     empty = dict((key, None) for key in SUMMARY_KEYS)  # type: Dict[str, Any]
     if not isinstance(candles, (list, tuple)):
         return empty
+    candles = _with_live_session(candles, price)
 
     closes = _floats([row.get("close") for row in candles if isinstance(row, dict)])
     if not closes:

@@ -353,3 +353,71 @@ def test_the_module_imports_nothing_that_touches_the_network_or_the_disk():
 def test_the_module_contains_no_nul_byte():
     with open(ta.__file__, "rb") as handle:
         assert handle.read().count(b"\x00") == 0
+
+
+# --------------------------------------------------------------------------- #
+# LOT 14b T2 — la séance EN COURS : dernière bougie à ``close: null``
+# --------------------------------------------------------------------------- #
+def _titan_like():
+    """VÉCU 22/09 (TITAN.NS) : la séance du jour est ouverte chez Yahoo
+    (``open``/``high``/``low`` écrits) mais sa clôture vaut ``null`` ; la
+    cotation, elle, est à 4928,5. ``ta`` rendait un ``last_close`` de 4875 —
+    la clôture de LA VEILLE, présentée comme l'ancre de tous les niveaux."""
+    candles = _realistic(30, start=4700.0)
+    candles[-2] = _candle(4880.0, 4780.0, 4875.0, open_=4816.5)
+    candles[-1] = _candle(4982.0, 4862.5, None, open_=4876.0)
+    return candles
+
+
+def test_technical_summary_anchors_the_open_session_on_the_live_price():
+    out = ta.technical_summary(_titan_like(), price=4928.5)
+    assert out["last_close"] == 4928.5
+    assert out["n_sessions"] == 30          # la séance du jour compte enfin
+    # et TOUS les dérivés suivent la même ancre (pas seulement le libellé)
+    closes = [c["close"] for c in _titan_like()[:-1]] + [4928.5]
+    assert out["sma20"] == ta.sma(closes, 20)
+    assert out["change_5d_pct"] == ta.change_5d_pct(closes)
+
+
+def test_technical_summary_without_live_price_never_invents_the_missing_close():
+    """Sans cotation, on ne fabrique RIEN (ni l'ouverture, ni le milieu du
+    range) : l'ancre reste la dernière clôture CONSOLIDÉE — l'ancien
+    comportement, qui est le seul honnête faute de mieux."""
+    out = ta.technical_summary(_titan_like())
+    assert out["last_close"] == 4875.0
+    assert out["n_sessions"] == 29
+
+
+def test_technical_summary_live_price_never_overrides_a_consolidated_close():
+    candles = _realistic(30)
+    last = candles[-1]["close"]
+    out = ta.technical_summary(candles, price=last * 1.5)
+    assert out["last_close"] == round(last, 4)
+
+
+def test_technical_summary_live_price_only_fills_the_LAST_candle():
+    """Un trou au MILIEU de la série n'est pas la séance en cours : il reste
+    un trou (doctrine ``_floats``), le cours du jour n'a rien à y faire."""
+    candles = _titan_like()
+    candles[10] = _candle(4800.0, 4700.0, None, open_=4750.0)
+    out = ta.technical_summary(candles, price=4928.5)
+    assert out["n_sessions"] == 29
+    assert out["last_close"] == 4928.5
+
+
+def test_technical_summary_live_price_widens_the_channel_if_it_was_touched():
+    candles = _titan_like()
+    out = ta.technical_summary(candles, price=6000.0)
+    assert out["week52_high"] == 6000.0
+    assert out["pos_in_range_pct"] == 100.0
+
+
+def test_technical_summary_ignores_an_unreadable_live_price():
+    for bad in (None, 0, -5.0, "abc", True):
+        assert ta.technical_summary(_titan_like(), price=bad)["last_close"] == 4875.0
+
+
+def test_technical_summary_does_not_mutate_the_callers_candles():
+    candles = _titan_like()
+    ta.technical_summary(candles, price=4928.5)
+    assert candles[-1]["close"] is None

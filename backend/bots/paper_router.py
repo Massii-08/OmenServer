@@ -1688,14 +1688,21 @@ def _coach_candidates(hypotheses: Any, now: Any = None,
             # LOT 5 — le cours seul ne permet pas de POSER un stop : il faut
             # un niveau. Absent (``None``) quand les bougies manquent, jamais
             # inventé.
-            "technical": _coach_technical(symbol),
+            "technical": _coach_technical(symbol, price=quote["price"]),
             "tradable": coach_trader.tradable_now(symbol, now),
         })
     return out
 
 
-def _coach_technical(symbol: str) -> Optional[Dict[str, Any]]:
+def _coach_technical(symbol: str,
+                     price: Optional[float] = None) -> Optional[Dict[str, Any]]:
     """L'analyse technique d'un titre, prête pour le prompt (LOT 5).
+
+    ``price`` (LOT 14b) : le cours COTÉ du titre quand l'appelant l'a déjà
+    (``_coach_quote``, même réponse Yahoo, même unité que les bougies). Il
+    complète la séance EN COURS si sa bougie n'a pas encore de clôture (cf.
+    ``ta._with_live_session`` — vécu TITAN.NS : ancre de la veille). Absent :
+    la dernière clôture consolidée, jamais une valeur inventée.
 
     Vécu en prod : le coach a refusé d'entrer faute d'« un niveau technique
     fiable pour poser un stop ». Il avait le cours et rien d'autre — impossible
@@ -1719,7 +1726,7 @@ def _coach_technical(symbol: str) -> Optional[Dict[str, Any]]:
                        symbol, type(e).__name__)
         return None
     try:
-        summary = ta.technical_summary(candles)
+        summary = ta.technical_summary(candles, price=price)
     except Exception as e:                      # noqa: BLE001 — jamais fatal
         logger.warning("paper coach: analyse technique illisible pour %s (%s)",
                        symbol, type(e).__name__)
@@ -2015,7 +2022,8 @@ def _coach_execute_one(portfolio: models.Portfolio, action: Dict[str, Any],
     # stop au-delà du seul seuil de frais quand le titre en réclame un plus
     # large (cf. ``coach_trader._noise_floor_pct``). Best-effort, même
     # doctrine que ``_coach_quote`` : une panne de bougies rend ``None``.
-    technical = _coach_technical(symbol) if symbol else None
+    technical = (_coach_technical(symbol, price=(quote or {}).get("price"))
+                 if symbol else None)
     verdict = coach_trader.gate_decision(decision, portfolio.to_dict(),
                                          quote or {}, now=now_iso,
                                          technical=technical)
@@ -2707,7 +2715,8 @@ def _coach_pass_context(portfolio: models.Portfolio,
                                   quote["fx_rate"] if quote else None)
         # LOT 5 — gérer une ligne (resserrer un stop, laisser courir) demande
         # exactement les mêmes niveaux qu'en ouvrir une.
-        row["technical"] = _coach_technical(position.symbol)
+        row["technical"] = _coach_technical(
+            position.symbol, price=quote["price"] if quote else None)
         positions.append(row)
         # ⚠️ Une ligne courte se SOUSTRAIT (LOT 5, même raison que
         # ``_equity_now_chf``) : son produit de vente est déjà dans la
@@ -3146,7 +3155,7 @@ def _coach_guardian_dossier(position: models.Position, price: float, rate: float
     action ») : mêmes calculs, un seul endroit — pas une formule dupliquée
     pour le prompt."""
     row = _coach_position_view_row(position, price, rate)
-    row["technical"] = _coach_technical(position.symbol)
+    row["technical"] = _coach_technical(position.symbol, price=price)
     row["trigger"] = trigger
     return row
 

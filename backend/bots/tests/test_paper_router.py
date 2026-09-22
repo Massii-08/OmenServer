@@ -5999,7 +5999,10 @@ def test_the_gate_receives_the_atr_context_and_widens_the_noise_floor(tmp_path, 
     preuve que ``_coach_execute_one`` transmet le contexte technique à
     ``gate_decision``, pas seulement au prompt."""
     c, _ = make_client(tmp_path, monkeypatch)
-    monkeypatch.setattr(pr, "_coach_technical", lambda symbol: {"atr14_pct": 5.0})
+    # LOT 14b : ``_coach_technical`` reçoit aussi le cours de la séance en
+    # cours (``price=``) — la doublure l'accepte, sans rien changer au sujet.
+    monkeypatch.setattr(pr, "_coach_technical",
+                        lambda symbol, price=None: {"atr14_pct": 5.0})
     rejected = pr.execute_coach_actions([coach_action(stop=97.6)], source="daily")
     assert rejected[0]["accepted"] is False
     assert rejected[0]["reason"] == "stop_in_noise"
@@ -7601,6 +7604,43 @@ def test_the_positions_of_the_pass_carry_their_technical_summary(
 
     context = pr._coach_pass_context(pr._ensure_coach_account(), FIXED_NOW)
     assert context["positions"][0]["technical"]["sma50"] is not None
+
+
+def _serie_seance_ouverte():
+    """La dernière bougie est la séance EN COURS, pas encore consolidée."""
+    serie = _serie()
+    serie[-1] = dict(serie[-1], close=None)
+    return serie
+
+
+def test_candidate_technical_is_anchored_on_the_live_quote(tmp_path, monkeypatch):
+    """LOT 14b — VÉCU 22/09 (TITAN.NS) : dernière bougie à ``close: null`` ->
+    ``last_close`` de la VEILLE (4875) pour une cotation à 4928,5. Le cours
+    du candidat (même réponse Yahoo) complète la séance en cours."""
+    c, market = make_client(tmp_path, monkeypatch)
+    market.candles["NESN.SW"] = _serie_seance_ouverte()
+    _seed_radar([_open_hyp(["NESN.SW"], "h1")])
+
+    candidat = pr._coach_candidates(pr._open_radar_hypotheses())[0]
+    assert candidat["technical"]["last_close"] == 100.0     # le cours coté
+
+
+def test_position_technical_is_anchored_on_the_live_quote(tmp_path, monkeypatch):
+    c, market = make_client(tmp_path, monkeypatch)
+    market.candles["NESN.SW"] = _serie_seance_ouverte()
+    seed_coach_position(qty=10)
+
+    context = pr._coach_pass_context(pr._ensure_coach_account(), FIXED_NOW)
+    assert context["positions"][0]["technical"]["last_close"] == 100.0
+
+
+def test_coach_technical_without_price_keeps_the_last_consolidated_close(
+        tmp_path, monkeypatch):
+    c, market = make_client(tmp_path, monkeypatch)
+    serie = _serie_seance_ouverte()
+    market.candles["NESN.SW"] = serie
+    assert pr._coach_technical("NESN.SW")["last_close"] == round(
+        serie[-2]["close"], 4)
 
 
 # --- E) Les deux temps : trier, puis instruire --------------------------
