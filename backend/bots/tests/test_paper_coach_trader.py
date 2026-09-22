@@ -2695,6 +2695,35 @@ def test_deployment_view_short_proceeds_do_not_count_as_idle_cash():
 
 
 # --------------------------------------------------------------------------- #
+# LOT 14b T2 — le plancher de trésorerie d'un ACHAT se mesure sur le LIBRE
+# --------------------------------------------------------------------------- #
+
+def test_cash_floor_is_measured_against_free_cash_when_short():
+    """Même famille que T1 : le contrôle ``cash_floor`` lisait encore
+    ``cash_chf`` BRUT, gonflé par le produit d'un short — un achat pouvait
+    donc être financé par l'argent d'une vente à découvert que le short doit
+    pourtant racheter. Ici : 8 000 de cash dont 8 000 sont la dette de
+    rachat d'un short DAL -> trésorerie libre = 0 ; un achat de 1 500 CHF
+    (équité nette 10 000, loin sous les plafonds oversize/risk_high/
+    too_small) doit être refusé cash_floor plutôt qu'accepté sur la foi du
+    cash brut."""
+    pf = _pf(cash=8000.0,
+             positions=[_pos("ABBN.SW", qty=100, avg_price=100.0),
+                        _pos("DAL", qty=100, avg_price=80.0, side="short")])
+    out = coach_trader.gate_decision(_buy(qty=15, stop=95.0), pf, _quote(100.0))
+    assert out["reason"] == "cash_floor"
+
+
+def test_cash_floor_without_a_short_is_unaffected():
+    """Sans short, la trésorerie libre EST la trésorerie brute (dette de
+    rachat nulle) — le même refus, pour la même raison : la règle dégénère
+    correctement à ``cash_chf`` seul, comportement inchangé par ce lot."""
+    pf = _pf(cash=0.0, positions=[_pos("ABBN.SW", qty=100, avg_price=100.0)])
+    out = coach_trader.gate_decision(_buy(qty=15, stop=95.0), pf, _quote(100.0))
+    assert out["reason"] == "cash_floor"
+
+
+# --------------------------------------------------------------------------- #
 # LOT 14b T5 — l'économie ventilée PAR SOURCE d'idée
 # --------------------------------------------------------------------------- #
 

@@ -2620,6 +2620,24 @@ def test_coach_equity_still_adds_long_lines(tmp_path, monkeypatch):
     assert pr._coach_equity_chf(portfolio) == pytest.approx(10000.0)
 
 
+def test_coach_reject_detail_cash_floor_counts_free_cash_not_raw(tmp_path, monkeypatch):
+    """LOT 14b T2 — même famille que ``test_coach_equity_counts_a_short_as_a_
+    debt_not_an_asset`` : le TEXTE de refus ``cash_floor`` chiffrait encore
+    ``portfolio.cash_chf`` BRUT. Ici cash 12 000 dont 2 000 sont la dette de
+    rachat d'un short DAL -> libre 10 000 ; un achat de 3 000 CHF devrait
+    laisser 7 000 CHF, pas 9 000 (l'ancien calcul, qui ignorait le short)."""
+    make_client(tmp_path, monkeypatch)
+    portfolio = pr.models.Portfolio(cash_chf=12000.0, initial_capital=10000.0)
+    portfolio.positions.append(pr.models.Position(
+        symbol="DAL", qty=25, avg_price=80.0, side="short", fx_rate=1.0))
+    decision = {"action": "buy", "symbol": "NESN.SW", "qty": 30}
+    quote = {"price": 100.0, "fx_rate": 1.0}
+    detail = pr._coach_reject_detail("cash_floor", decision, portfolio, quote)
+    assert detail is not None
+    assert "7000.00 CHF" in detail          # libre : 12 000 − 2 000 − 3 000
+    assert "9000.00 CHF" not in detail      # l'ancien mensonge : brut − 3 000
+
+
 def test_news_endpoint_serves_the_watch(tmp_path, monkeypatch):
     c, _ = make_client(tmp_path, monkeypatch)
     events = [{"ts": 1, "symbol": "NESN.SW", "title": "Résultats", "link": "http://x",

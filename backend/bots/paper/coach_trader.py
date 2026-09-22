@@ -1216,8 +1216,15 @@ def gate_decision(decision: Any, portfolio: Any, quote: Any,
     # compte à sec, et lui appliquer le plancher interdirait de shorter dès
     # que la trésorerie est investie. Sa contrainte à elle est la MARGE, que
     # le moteur d'ordres fait respecter (``_open_short``).
+    # LOT 14b T2 — la trésorerie ici est LIBRE (hors produit des shorts), même
+    # convention que :func:`deployment_view` et :func:`_short_liability_chf`
+    # (LOT 14b T1) : le cash porte DÉJÀ le produit d'une vente à découvert,
+    # gagée par sa dette de rachat — elle ne peut pas financer un ACHAT. Avant
+    # ce lot, un short ouvert gonflait ``cash_chf`` et desserrait ce plancher
+    # en silence, exactement la même confusion brut/net que sur l'équité (T1).
     if wanted == "long":
-        cash = _val(portfolio.get("cash_chf")) or 0.0
+        cash = (_val(portfolio.get("cash_chf")) or 0.0) \
+            - _short_liability_chf(positions)
         if cash - value_chf < equity * MIN_CASH_PCT / 100.0:
             return _reject("cash_floor")
 

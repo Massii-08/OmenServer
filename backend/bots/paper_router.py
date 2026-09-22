@@ -1950,7 +1950,12 @@ def _coach_reject_detail(code: str, decision: Dict[str, Any],
         if code == "too_many_crypto":
             return "plafond de %d cryptos atteint" % coach_trader.MAX_CRYPTO
         if code == "cash_floor":
-            left = portfolio.cash_chf - (value or 0.0)
+            # LOT 14b T2 — trésorerie LIBRE (hors produit des shorts), même
+            # calcul que le garde-fou (``coach_trader.gate_decision``) et que
+            # ``_coach_equity_chf`` juste au-dessus : sinon le chiffre affiché
+            # et celui qui a fait refuser l'ordre divergeraient.
+            free_cash = portfolio.cash_chf - _positions_value_chf(portfolio, "short")
+            left = free_cash - (value or 0.0)
             floor = equity * coach_trader.MIN_CASH_PCT / 100.0
             return ("resterait %.2f CHF, sous le plancher de %.0f%% (%.2f CHF)"
                     % (left, coach_trader.MIN_CASH_PCT, floor))
