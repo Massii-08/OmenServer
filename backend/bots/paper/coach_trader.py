@@ -465,6 +465,60 @@ def fees_view(portfolio: Any, now: Any = None) -> Dict[str, Any]:
     }
 
 
+def economics_view(portfolio: Any) -> Dict[str, Any]:
+    """L'ÉCONOMIE du compte sur TOUS ses trades clos (PUR — LOT 14), pour
+    l'écran « Coach en action ».
+
+    Né du diagnostic du 21/09 : -11,1 % en 24 jours dont 49 % en frais, et
+    rien à l'écran ne le montrait — il a fallu des heures pour le trouver.
+    :func:`fees_view` porte le même calcul sur 7 jours pour le PROMPT ; ici
+    c'est la vie entière du compte, les trois chiffres ensemble :
+      - ``fees_paid_chf`` = ``fees_chf`` + ``stamp_duty_chf`` ;
+      - ``net_pnl_chf``   = somme des ``pnl_chf`` (déjà NET de frais) ;
+      - ``gross_pnl_chf`` = net + frais — le résultat sans le courtier.
+    Plus ``n_trades``/``n_wins`` (gagnant = net > 0, même règle que
+    ``risk.portfolio_stats``) et l'espérance PAR TRADE, nette et brute
+    (``None`` sans trade — jamais une division par zéro).
+
+    ``round_trip_pct`` : EXACTEMENT le chiffre de :func:`fees_view` (profil
+    RÉEL ``fee_profile``, plus petite ligne permise par le mandat, timbre
+    étranger) — l'écran et le coach lisent le même ; ``notional_chf`` dit à
+    quelle taille il est mesuré. **NE LÈVE JAMAIS.**
+    """
+    book = portfolio if isinstance(portfolio, dict) else {}
+    trades = _dicts(book.get("trades"))
+    fees_paid = 0.0
+    net_pnl = 0.0
+    n_wins = 0
+    for trade in trades:
+        fees_paid += (_val(trade.get("fees_chf")) or 0.0) \
+            + (_val(trade.get("stamp_duty_chf")) or 0.0)
+        pnl = _val(trade.get("pnl_chf")) or 0.0
+        net_pnl += pnl
+        if pnl > 0:
+            n_wins += 1
+    n_trades = len(trades)
+    gross_pnl = net_pnl + fees_paid
+
+    equity = _equity_chf(book.get("cash_chf"), _dicts(book.get("positions")))
+    notional = equity * MIN_POSITION_PCT / 100.0
+    profile = _text(book.get("fee_profile")) or models.DEFAULT_FEE_PROFILE
+    return {
+        "n_trades": n_trades,
+        "n_wins": n_wins,
+        "fees_paid_chf": round(fees_paid, 2),
+        "gross_pnl_chf": round(gross_pnl, 2),
+        "net_pnl_chf": round(net_pnl, 2),
+        "net_per_trade_chf": (round(net_pnl / n_trades, 2)
+                              if n_trades else None),
+        "gross_per_trade_chf": (round(gross_pnl / n_trades, 2)
+                                if n_trades else None),
+        "fee_profile": profile,
+        "round_trip_pct": _round_trip_pct(profile, notional, ""),
+        "notional_chf": round(notional, 2),
+    }
+
+
 def _fronts(positions: List[Dict[str, Any]], ambushes: List[Dict[str, Any]],
             symbol: str) -> set:
     """Les FRONTS qu'ouvrirait ``symbol`` (PUR — LOT 9, extrait LOT 14) :

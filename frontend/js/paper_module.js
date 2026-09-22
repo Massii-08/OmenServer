@@ -3463,7 +3463,7 @@ const PaperModule = {
         if (!this._ct) return this._card(this._muted(Lang.t('paper.loading')));
         const intro = this._ctIntroCard();
         if (this._ctVirgin()) return intro + this._card(this._muted(Lang.t('paper.ct_empty')));
-        return intro + this._ctStatCards() + this._ctEquityCard() +
+        return intro + this._ctStatCards() + this._ctEconomicsCard() + this._ctEquityCard() +
             this._ctPositionsCard() + this._ctOrdersCard() + this._ctLedgerCard();
     },
 
@@ -3552,6 +3552,84 @@ const PaperModule = {
         '</div>' +
         '<div style="font-size:12px;color:var(--text-dim);margin-bottom:14px;">' +
           esc(Lang.t('paper.ct_stats_hint')) + '</div>';
+    },
+
+    // --- L'économie du compte : frais / brut / net (LOT 14) -----------------
+    // Le diagnostic du 21/09 a pris des heures parce que RIEN à l'écran ne
+    // montrait que la moitié de la perte était des frais. Les trois chiffres
+    // vont ENSEMBLE (brut = net + frais) : un seul ne dit rien. Tout vient de
+    // economics (coach_trader.economics_view) — l'aller-retour suit le
+    // profil RÉEL du compte, jamais un taux recopié ici.
+
+    _ctEconomicsCard() {
+        const ct = this._ct || {};
+        const eco = (ct.economics && typeof ct.economics === 'object') ? ct.economics : null;
+        if (!eco) return '';
+        const st = (ct.stats && typeof ct.stats === 'object') ? ct.stats : {};
+        const n = this._n(eco.n_trades) || 0;
+        const wins = this._n(eco.n_wins) || 0;
+        const fees = this._n(eco.fees_paid_chf);
+        const gross = this._n(eco.gross_pnl_chf);
+        const net = this._n(eco.net_pnl_chf);
+        const rt = this._n(eco.round_trip_pct);
+        const notional = this._n(eco.notional_chf);
+        const expR = this._n(st.expectancy_r);
+
+        const head = this._head(Lang.t('paper.ct_eco_title'),
+            n + ' ' + Lang.t('paper.ct_eco_closed'));
+        const rtLine = '<div style="font-size:13px;color:var(--text-muted);margin-top:4px;">' +
+            esc(this._feeLabel(eco.fee_profile) + ' — ' + Lang.t('paper.ct_eco_round_trip') + ' ') +
+            '<span style="' + this._mono + 'color:var(--text);">' +
+              esc(rt === null ? '—' : (this._num(rt, 2) + ' %')) + '</span>' +
+            (notional === null ? '' :
+              ' <span style="font-size:12px;color:var(--text-dim);">' +
+                esc(Lang.t('paper.ct_eco_round_trip_on') + ' ' + this._chf(notional, 0)) +
+              '</span>') +
+        '</div>';
+        if (!n) return this._card(head + this._muted(Lang.t('paper.ct_eco_empty')) + rtLine);
+
+        const hint = (text) => '<span style="font-size:12px;color:var(--text-dim);">' +
+            esc(text) + '</span>';
+        const cell = (labelKey, value, color, footer) =>
+            '<div class="stat-card">' +
+              '<div class="label">' + esc(Lang.t(labelKey)) + '</div>' +
+              '<div class="value"' + (color ? ' style="color:' + color + ';"' : '') + '>' +
+                esc(value) + '<span class="unit">CHF</span>' +
+              '</div>' +
+              '<div class="footer">' + footer + '</div>' +
+            '</div>';
+        // « dont X % en frais » : seulement quand le net est une PERTE —
+        // c'est là que la part des frais se lit comme la question du 21/09.
+        const share = (fees !== null && net !== null && net < 0)
+            ? (fees / Math.abs(net) * 100) : null;
+        const feesFooter = (share === null)
+            ? hint(Lang.t('paper.ct_eco_fees_hint'))
+            : hint(Lang.t('paper.ct_eco_fees_share') + ' ' + this._num(share, 0) + ' %');
+
+        const perTrade = [
+            this._signedChf(eco.net_per_trade_chf, 2) + ' ' + Lang.t('paper.ct_eco_net_short'),
+            this._signedChf(eco.gross_per_trade_chf, 2) + ' ' + Lang.t('paper.ct_eco_gross_short')
+        ];
+        if (expR !== null) perTrade.push(this._signed(expR, 2, ' R'));
+
+        return this._card(head +
+            '<div class="bento-overview" style="grid-template-columns:' +
+                'repeat(auto-fit,minmax(150px,1fr));grid-template-rows:auto;margin-bottom:8px;">' +
+              cell('paper.ct_eco_fees', this._num(fees === null ? null : -fees, 2),
+                   'var(--danger)', feesFooter) +
+              cell('paper.ct_eco_gross', this._signed(gross, 2, ''), this._color(gross),
+                   hint(Lang.t('paper.ct_eco_gross_hint'))) +
+              cell('paper.ct_eco_net', this._signed(net, 2, ''), this._color(net),
+                   hint(Lang.t('paper.ct_eco_net_hint'))) +
+            '</div>' +
+            '<div style="font-size:13px;color:var(--text-muted);">' +
+              esc(Lang.t('paper.ct_eco_per_trade') + ' ') +
+              '<span style="' + this._mono + 'color:var(--text);">' + esc(perTrade.join(' · ')) + '</span>' +
+              ' <span style="color:var(--text-dim);">·</span> ' +
+              esc(Lang.t('paper.ct_eco_winners') + ' ') +
+              '<span style="' + this._mono + 'color:var(--text);">' + esc(wins + ' / ' + n) + '</span>' +
+            '</div>' +
+            rtLine);
     },
 
     // --- La courbe : la sienne, la vôtre, et le capital de départ -----------

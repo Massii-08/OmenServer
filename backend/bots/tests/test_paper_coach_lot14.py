@@ -135,3 +135,77 @@ def test_a2_le_routeur_sert_la_phrase_vraie():
     detail = paper_router._coach_reject_detail(
         "market_closed", _short_nly(), portfolio, None, now=TUESDAY_0426)
     assert "week-end" not in detail
+
+
+# --- C — l'économie du compte, lisible à l'écran --------------------------- #
+
+from backend.bots.paper import fees  # noqa: E402
+
+
+def _closed(pnl, fee, stamp=0.0, exit_at="2026-09-01T18:00:00"):
+    return {"symbol": "X", "pnl_chf": pnl, "fees_chf": fee,
+            "stamp_duty_chf": stamp, "exit_at": exit_at}
+
+
+def test_c_economics_view_brut_egale_net_plus_frais_sur_TOUS_les_trades():
+    """Toute la vie du compte, pas 7 jours : le diagnostic du 21/09 portait
+    sur 24 jours et c'est ce chiffre-là qui manquait à l'écran."""
+    pf = dict(_pf(), trades=[_closed(-50.0, 10.0, 2.0,
+                                     exit_at="2026-08-20T18:00:00"),
+                             _closed(30.0, 8.0),
+                             _closed(-20.0, 5.0)])
+    view = coach_trader.economics_view(pf)
+    assert view["n_trades"] == 3
+    assert view["n_wins"] == 1
+    assert view["fees_paid_chf"] == 25.0
+    assert view["net_pnl_chf"] == -40.0
+    assert view["gross_pnl_chf"] == -15.0
+    assert view["net_per_trade_chf"] == round(-40.0 / 3, 2)
+    assert view["gross_per_trade_chf"] == -5.0
+
+
+def test_c_economics_view_aller_retour_au_profil_REEL_du_compte():
+    """Jamais un taux recopié : le chiffre suit ``fee_profile``."""
+    ibkr = coach_trader.economics_view(dict(_pf(), fee_profile="ibkr"))
+    yuh = coach_trader.economics_view(dict(_pf(), fee_profile="yuh"))
+    assert ibkr["fee_profile"] == "ibkr"
+    assert ibkr["round_trip_pct"] == fees.round_trip_pct(
+        "ibkr", ibkr["notional_chf"], "")
+    assert yuh["round_trip_pct"] == fees.round_trip_pct(
+        "yuh", yuh["notional_chf"], "")
+    assert ibkr["round_trip_pct"] != yuh["round_trip_pct"]
+    # mesuré sur la plus petite ligne permise par le mandat (même règle que
+    # ``fees_view``, qui alimente le prompt : l'écran et le coach lisent le
+    # même chiffre)
+    assert ibkr["round_trip_pct"] == coach_trader.fees_view(
+        dict(_pf(), fee_profile="ibkr"))["round_trip_pct"]
+
+
+def test_c_economics_view_sans_trade_est_neutre_et_ne_divise_pas_par_zero():
+    view = coach_trader.economics_view(_pf())
+    assert view["n_trades"] == 0
+    assert view["net_per_trade_chf"] is None
+    assert view["gross_per_trade_chf"] is None
+    assert view["fees_paid_chf"] == 0.0
+
+
+def test_c_economics_view_ne_leve_jamais():
+    view = coach_trader.economics_view(None)
+    assert view["n_trades"] == 0
+
+
+def test_c_la_route_coach_trader_sert_l_economie(tmp_path, monkeypatch):
+    from backend.bots.tests.test_paper_router import make_client
+    from backend.bots import paper_router as pr
+    c, _ = make_client(tmp_path, monkeypatch)
+    portfolio = pr._ensure_coach_account()
+    portfolio.trades.append(pr.models.Trade.from_dict(dict(
+        _closed(30.0, 8.0), entry_price=10.0, exit_price=11.0, qty=10,
+        side="long", entry_at="2026-08-30T15:40:00")))
+    pr._save(pr.coach_trader.COACH_USERNAME, portfolio)
+    body = c.get("/api/paper/coach-trader").json()
+    eco = body["economics"]
+    assert eco["fee_profile"] == pr.COACH_FEE_PROFILE
+    assert eco["fees_paid_chf"] == 8.0
+    assert eco["gross_pnl_chf"] == 38.0
+    assert eco["net_pnl_chf"] == 30.0

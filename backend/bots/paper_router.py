@@ -4163,6 +4163,10 @@ def paper_coach_trader(
                                       initial_capital=portfolio.initial_capital),
         "discipline": tradestats.discipline_score(trades,
                                                   portfolio.initial_capital),
+        # LOT 14 — frais / brut / net sur TOUS les trades clos, et le coût
+        # d'un aller-retour au profil RÉEL du compte : ce que l'écran n'a
+        # jamais montré, alors que la moitié de la perte était des frais.
+        "economics": coach_trader.economics_view(portfolio.to_dict()),
         "ledger": store.load_ledger(coach_trader.COACH_USERNAME),
         "equity": {
             "coach": store.load_equity(coach_trader.COACH_USERNAME),
