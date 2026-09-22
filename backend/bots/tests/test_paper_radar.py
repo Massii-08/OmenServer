@@ -1738,3 +1738,35 @@ def test_le_prompt_dit_qu_une_evincee_attend_son_echeance():
                                 {"hits": 0, "misses": 0, "unclear": 0},
                                 NOW.isoformat())
     assert "[en attente d'échéance]" in prompt
+
+
+# ================================================================
+#  _default_fetch_candles — passerelle réelle vers quotes.py (LOT 14b T2bis)
+# ================================================================
+
+def test_default_fetch_candles_canonicalise_le_symbole_avant_l_appel(monkeypatch):
+    """ROG.SW (ticker SIX de Roche) doit interroger Yahoo sous RO.SW — sinon
+    le juge du radar (:func:`radar.judge_evicted`) ne reçoit aucune bougie
+    pour ce ticker et grave un verdict partiel de façon DÉFINITIVE
+    (``expiry_verdict_at``, cf. tête de fichier)."""
+    from backend.bots.paper import quotes
+    calls = []
+
+    def fake_get_candles(symbol, range_, interval):
+        calls.append(symbol)
+        return []
+
+    monkeypatch.setattr(quotes, "get_candles", fake_get_candles)
+    radar._default_fetch_candles("ROG.SW", "5d", "1d")
+    assert calls == ["RO.SW"]
+
+
+def test_default_fetch_candles_symbole_sans_alias_traverse_intact(monkeypatch):
+    """Sans alias, le symbole n'est que nettoyé (majuscules/espaces) — pas de
+    régression sur le chemin déjà correct."""
+    from backend.bots.paper import quotes
+    calls = []
+    monkeypatch.setattr(quotes, "get_candles",
+                        lambda symbol, range_, interval: calls.append(symbol))
+    radar._default_fetch_candles("  aapl ", "5d", "1d")
+    assert calls == ["AAPL"]

@@ -1302,9 +1302,12 @@ def _default_llm(prompt: str) -> str:
 
 
 def _default_fetch_candles(symbol: str, range_: str, interval: str) -> Any:
-    """Les bougies Yahoo via ``paper/quotes.py``."""
+    """Les bougies Yahoo via ``paper/quotes.py`` — symbole CANONIQUE (LOT 14b) :
+    sans ça, un alias comme ``ROG.SW`` (cf. ``quotes.SYMBOL_ALIASES``) rend
+    « aucune donnée » et :func:`judge_evicted` grave un verdict DÉFINITIF sur
+    la seule matière des autres tickers de l'hypothèse."""
     from backend.bots.paper import quotes
-    return quotes.get_candles(symbol, range_, interval)
+    return quotes.get_candles(quotes.canonical(symbol), range_, interval)
 
 
 def _social_module():
