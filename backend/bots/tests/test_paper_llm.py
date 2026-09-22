@@ -1232,6 +1232,13 @@ def test_le_prompt_de_tri_explique_le_champ_source():
         assert mot in prompt, mot
 
 
+def test_le_prompt_de_tri_explique_la_source_embuscade():
+    """LOT 14b : un symbole portant un ordre en attente est TOUJOURS candidat,
+    sous la source ``embuscade`` — le prompt la nomme comme les autres."""
+    prompt = llm.build_coach_screen_prompt(SCREEN_CTX)
+    assert "``embuscade`` (" in prompt
+
+
 def test_le_prompt_de_tri_met_en_garde_sur_un_titre_de_tendance(monkeypatch):
     """LOT 11 : un titre de tendance sans historique dans la mémoire du coach
     doit se jouer petit (entrée de fourchette), jamais pleine taille -- la

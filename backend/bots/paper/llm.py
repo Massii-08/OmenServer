@@ -1231,7 +1231,10 @@ def build_coach_screen_prompt(context: Optional[Dict[str, Any]],
         # à l'écran, alors qu'elles ne méritent pas le même degré de
         # confiance a priori.
         "Chaque candidat porte aussi un champ ``source`` : ``position`` (tu "
-        "la détiens déjà), ``radar`` (une hypothèse ouverte le suit), "
+        "la détiens déjà), ``embuscade`` (un de TES ordres attend au carnet "
+        "sur ce titre : garde-le, ajuste-le ou retire-le en connaissance de "
+        "cause), ``radar`` (une hypothèse ouverte le suit — les plus "
+        "RÉCENTES d'abord), "
         "``watchlist`` (Massii le surveille personnellement — tu peux "
         "creuser plus volontiers ce type de titre), ``europe_pool`` (une "
         "grande valeur suisse ou européenne, TOUJOURS présente même sans "

@@ -1395,12 +1395,24 @@ COACH_DISPLAY = "Coach"
 COACH_HOLD_DETAIL = "aucune action : le coach a choisi de ne rien changer"
 
 # Le nombre de tickers DISTINCTS que le coach reçoit COTÉS (LOT 4bis, étendu
-# LOT 8b, étendu LOT 11) — le plafond du TOTAL fusionné de
+# LOT 8b, étendu LOT 11, LOT 14b) — le plafond du TOTAL fusionné de
 # :func:`_coach_candidate_entries`, pas de chaque source prise seule. Monté de
-# 14 à 16 avec la CINQUIÈME source (la découverte) : deux places de plus pour
-# qu'elle ait une chance d'exister sans jamais évincer les quatre premières.
-MAX_COACH_CANDIDATES = 16
+# 14 à 16 avec la CINQUIÈME source (la découverte).
+#
+# LOT 14b — 16 -> 20, sur MESURE (données de prod du 22/09) : un candidat
+# coté avec son analyse technique pèse ~350 caractères (≈ 90 jetons) ; les
+# 16 candidats faisaient 5 655 caractères d'un prompt de tri de 42 947
+# (≈ 10,7 k jetons). Quatre places de plus coûtent ≈ +1 400 caractères,
+# ≈ +3 % du prompt de tri — et c'est ce qui permet de GARANTIR des places à
+# la watchlist, au pool européen et à la découverte sans affamer le radar.
+# Le second temps de la passe (les dossiers) ne dépend PAS de ce nombre.
+# ⚠️ Doctrine du propriétaire : « je ne veux pas que mes limites Claude
+# explosent » — ne relever ce plafond que sur une mesure du même genre.
+MAX_COACH_CANDIDATES = 20
 
+# ⚠️ LOT 14b — L'ORDRE CI-DESSOUS A CHANGÉ (cf. le bloc « NOUVEL ORDRE » plus
+# bas). Il est gardé pour l'HISTOIRE des sources, pas pour leur priorité.
+#
 # LOT 8b — mesuré en prod le 31/08 : aux créneaux du matin européen (Lot 8),
 # l'univers du coach (jusqu'ici les seuls tickers des hypothèses radar
 # ouvertes) ne laissait plus, une fois filtré par ``coach_trader.
@@ -1427,6 +1439,36 @@ MAX_COACH_CANDIDATES = 16
 # Chaque candidat garde son marquage ``tradable`` (LOT 8) — le pool ni la
 # découverte ne changent rien à CETTE règle, ils changent seulement d'où
 # vient l'univers.
+#
+# NOUVEL ORDRE (LOT 14b). Mesuré en prod le 22/09 : l'ancien générateur
+# coupait à 16 une file « positions -> TOUT le radar du plus ANCIEN au plus
+# récent -> watchlist -> pool » : les thèses les plus récentes (HD,
+# TITAN.NS, BAER.SW, rangs 18-21) étaient coupées, watchlist / pool européen
+# / découverte ne passaient JAMAIS, et KRE, qui portait une embuscade armée,
+# n'était dans aucune source — un ordre en attente sur un titre dont le coach
+# ne voyait ni le cours ni le contexte. Désormais :
+#   1. OBLIGATOIRES, jamais coupés, même au-delà du plafond : (a) les
+#      positions ouvertes, puis (a') tout symbole portant un ORDRE EN ATTENTE
+#      au carnet (``CANDIDATE_SOURCE_AMBUSH``). Invariant : le coach ne peut
+#      jamais avoir un ordre en attente sur un symbole absent de ses
+#      candidats ;
+#   2. le reste du plafond se partage entre (b) le radar, pris du plus
+#      RÉCENT au plus ancien — toutes les hypothèses ouvertes étant en
+#      confiance « basse », la FRAÎCHEUR est le seul critère réel disponible
+#      (on ne trie pas sur un score qui n'existe pas) —, (c) la watchlist,
+#      (d) le pool européen et (e) la découverte. Chacune a des places
+#      GARANTIES (:data:`MIN_CANDIDATE_PLACES`) quand elle a des candidats,
+#      distribuées à tour de rôle (radar d'abord) si la place manque ; ce
+#      qui reste va au radar, puis watchlist, pool, découverte ;
+#   3. dédoublonnage : la première source dans l'ordre (a) (a') (b) (c) (d)
+#      (e) garde le symbole et sa provenance.
+# L'affichage suit les groupes dans ce même ordre.
+MIN_CANDIDATE_PLACES = {
+    "radar": 6,
+    "watchlist": 2,
+    "europe_pool": 2,
+    "tendance": 2,           # == CANDIDATE_SOURCE_DISCOVERY (épinglé)
+}
 
 # Le SEUL compte réel dont la watchlist alimente le coach (LOT 8b, source
 # (c) ci-dessus). Le coach est un compte UNIQUE, pas un assistant par
@@ -1447,6 +1489,10 @@ CANDIDATE_SOURCE_EUROPE_POOL = "europe_pool"
 # Source unique de vérité : la chaîne vit dans ``discovery.py`` (module qui
 # ne connaît PAS ``paper_router``, pour éviter tout import circulaire).
 CANDIDATE_SOURCE_DISCOVERY = discovery.CANDIDATE_SOURCE_DISCOVERY
+# LOT 14b — un symbole présent parce qu'un ORDRE l'attend au carnet (une
+# embuscade armée, le plus souvent). En français comme ``tendance`` : c'est
+# le mot que le prompt du coach emploie pour ces pièges.
+CANDIDATE_SOURCE_AMBUSH = "embuscade"
 
 
 def _num(value: Any) -> Optional[float]:
@@ -1554,29 +1600,60 @@ def _coach_europe_pool() -> List[str]:
            if coach_trader.market_of(symbol) == "europe"]
 
 
-def _coach_candidate_entries(hypotheses: Any, positions: Any = None,
-                             now: Any = None) -> List[Tuple[str, str]]:
-    """La fusion ORDONNÉE des CINQ sources de l'univers du coach (LOT 8b,
-    LOT 11), en paires ``(symbole canonique, source)`` — PUR hormis la
-    lecture best-effort de la watchlist ET la découverte (réseau + cache,
-    best-effort STRICT elle aussi). Voir le bloc de constantes juste
-    au-dessus de :data:`MAX_COACH_CANDIDATES` pour l'ordre de priorité et sa
-    raison.
+def _order_field(order: Any, key: str) -> Any:
+    """Un champ d'ordre, que ce soit un ``models.Order`` ou son ``to_dict``."""
+    if isinstance(order, dict):
+        return order.get(key)
+    return getattr(order, key, None)
 
-    Dédoublonnée par symbole : la PREMIÈRE apparition gagne, aussi bien la
-    valeur que sa ``source`` — une position déjà détenue qui se trouve AUSSI
-    dans le pool européen reste taguée ``"position"``, jamais ``"europe_
-    pool"``. Plafonnée au TOTAL fusionné (:data:`MAX_COACH_CANDIDATES`).
+
+def _radar_newest_first(hypotheses: Any) -> List[Dict[str, Any]]:
+    """Les hypothèses du plus RÉCENT au plus ancien (LOT 14b) ; tri STABLE
+    (deux dates égales gardent l'ordre du fichier), date illisible en fin."""
+    rows = [h for h in (hypotheses or []) if isinstance(h, dict)]
+    radar_mod = _radar()
+
+    def _key(hyp: Dict[str, Any]) -> float:
+        when = radar_mod._parse_dt(hyp.get("created_at"))
+        return -(when - datetime(1970, 1, 1)).total_seconds() if when else float("inf")
+
+    return sorted(rows, key=_key)
+
+
+def _coach_candidate_entries(hypotheses: Any, positions: Any = None,
+                             now: Any = None,
+                             orders: Any = None) -> List[Tuple[str, str]]:
+    """La fusion des sources de l'univers du coach (LOT 8b, LOT 11, LOT 14b),
+    en paires ``(symbole canonique, source)`` — PUR hormis la lecture
+    best-effort de la watchlist ET la découverte (réseau + cache,
+    best-effort STRICT elle aussi). Voir le bloc « NOUVEL ORDRE » au-dessus
+    de :data:`MAX_COACH_CANDIDATES` pour l'ordre et sa raison.
+
+    ``orders`` (LOT 14b) : les ordres du carnet du coach (``models.Order`` ou
+    dicts). Tout symbole portant un ordre ``open`` est OBLIGATOIRE, comme une
+    position.
+
+    Dédoublonnée par symbole : la PREMIÈRE source dans l'ordre de priorité
+    gagne, aussi bien la valeur que sa ``source`` — une position déjà détenue
+    qui se trouve AUSSI dans le pool européen reste taguée ``"position"``.
 
     Appelée avec des hypothèses déjà filtrées OUVERTES
-    (``_open_radar_hypotheses``) : ce filtre-ci ne fait QUE dédoublonner et
-    canoniser, il ne relit pas le statut."""
-    def _raw():
-        for position in positions or []:
-            yield getattr(position, "symbol", None), CANDIDATE_SOURCE_POSITION
-        for hyp in hypotheses or []:
-            if not isinstance(hyp, dict):
+    (``_open_radar_hypotheses``) : ce filtre-ci ne fait QUE trier,
+    dédoublonner et canoniser, il ne relit pas le statut."""
+    seen_symbols: set = set()
+
+    def _take(raws: Any) -> List[str]:
+        out: List[str] = []
+        for raw in raws:
+            symbol = quotes.canonical(raw) if isinstance(raw, str) else ""
+            if not symbol or symbol in seen_symbols:
                 continue
+            seen_symbols.add(symbol)
+            out.append(symbol)
+        return out
+
+    def _radar_raws():
+        for hyp in _radar_newest_first(hypotheses):
             # LOT 5 — les tickers que le marché ne connaît pas (``radar.mark_
             # unquoted``, posé à la NAISSANCE de l'hypothèse) sont sautés.
             # Vécu : « SAP.TO » n'existe pas chez Yahoo ; il entrait dans
@@ -1589,58 +1666,76 @@ def _coach_candidate_entries(hypotheses: Any, positions: Any = None,
                 symbol = quotes.canonical(ticker) if isinstance(ticker, str) else ""
                 if symbol and symbol in muets:
                     continue
-                yield ticker, CANDIDATE_SOURCE_RADAR
-        for symbol in _coach_watchlist_symbols():
-            yield symbol, CANDIDATE_SOURCE_WATCHLIST
-        for symbol in _coach_europe_pool():
-            yield symbol, CANDIDATE_SOURCE_EUROPE_POOL
+                yield ticker
 
-    seen_symbols: set = set()
-    entries: List[Tuple[str, str]] = []
-    for raw, source in _raw():
-        symbol = quotes.canonical(raw) if isinstance(raw, str) else ""
-        if not symbol or symbol in seen_symbols:
-            continue
-        seen_symbols.add(symbol)
-        entries.append((symbol, source))
-        if len(entries) >= MAX_COACH_CANDIDATES:
-            break
+    held = _take(getattr(p, "symbol", None) for p in (positions or []))
+    pending = _take(
+        _order_field(o, "symbol") for o in (orders or [])
+        if str(_order_field(o, "status") or "open").strip().lower() == "open")
+    mandatory = ([(s, CANDIDATE_SOURCE_POSITION) for s in held]
+                 + [(s, CANDIDATE_SOURCE_AMBUSH) for s in pending])
 
+    pools: List[Tuple[str, List[str]]] = [
+        (CANDIDATE_SOURCE_RADAR, _take(_radar_raws())),
+        (CANDIDATE_SOURCE_WATCHLIST, _take(_coach_watchlist_symbols())),
+        (CANDIDATE_SOURCE_EUROPE_POOL, _take(_coach_europe_pool())),
+    ]
+
+    budget = max(0, MAX_COACH_CANDIDATES - len(mandatory))
     # LOT 11 — (e) la découverte, SEULEMENT s'il reste de la place : inutile
     # de faire du réseau pour un candidat qui serait de toute façon coupé.
-    room = MAX_COACH_CANDIDATES - len(entries)
-    if room > 0:
+    discovered_symbols: List[str] = []
+    if budget > 0:
         try:
             discovered = discovery.discovery_candidates(
-                list(seen_symbols), now, cap=min(discovery.DEFAULT_CAP, room))
+                list(seen_symbols), now,
+                cap=min(discovery.DEFAULT_CAP, budget))
         except Exception as e:                  # noqa: BLE001 — best-effort
             logger.warning("paper coach: découverte indisponible (%s)",
                            type(e).__name__)
             discovered = []
-        for candidate in discovered or []:
-            if not isinstance(candidate, dict):
-                continue
-            symbol = quotes.canonical(candidate.get("symbol")) \
-                if isinstance(candidate.get("symbol"), str) else ""
-            if not symbol or symbol in seen_symbols:
-                continue                          # défense en profondeur
-            seen_symbols.add(symbol)
-            entries.append((symbol, CANDIDATE_SOURCE_DISCOVERY))
-            if len(entries) >= MAX_COACH_CANDIDATES:
-                break
+        discovered_symbols = _take(   # _take : défense en profondeur (doublons)
+            c.get("symbol") for c in (discovered or []) if isinstance(c, dict))
+    pools.append((CANDIDATE_SOURCE_DISCOVERY, discovered_symbols))
 
+    # Places GARANTIES, à tour de rôle (une par source et par tour, radar
+    # d'abord) tant que le budget et les minimums le permettent...
+    taken = {source: 0 for source, _ in pools}
+    progressed = True
+    while budget > 0 and progressed:
+        progressed = False
+        for source, symbols in pools:
+            if budget <= 0:
+                break
+            if (taken[source] < MIN_CANDIDATE_PLACES.get(source, 0)
+                    and taken[source] < len(symbols)):
+                taken[source] += 1
+                budget -= 1
+                progressed = True
+    # ... puis le reste, dans l'ordre des sources.
+    for source, symbols in pools:
+        extra = min(budget, len(symbols) - taken[source])
+        taken[source] += extra
+        budget -= extra
+
+    entries = list(mandatory)
+    for source, symbols in pools:
+        entries.extend((symbol, source) for symbol in symbols[:taken[source]])
     return entries
 
 
-def _coach_candidate_symbols(hypotheses: Any, positions: Any = None) -> List[str]:
+def _coach_candidate_symbols(hypotheses: Any, positions: Any = None,
+                             orders: Any = None) -> List[str]:
     """Tickers DISTINCTS de l'univers fusionné du coach (LOT 8b), dans
     l'ordre de priorité de :func:`_coach_candidate_entries` — raccourci pour
     les appelants qui ne veulent pas la provenance."""
-    return [symbol for symbol, _source in _coach_candidate_entries(hypotheses, positions)]
+    return [symbol for symbol, _source
+            in _coach_candidate_entries(hypotheses, positions, orders=orders)]
 
 
 def _coach_candidates(hypotheses: Any, now: Any = None,
-                      positions: Any = None) -> List[Dict[str, Any]]:
+                      positions: Any = None,
+                      orders: Any = None) -> List[Dict[str, Any]]:
     """Le cours ACTUEL, converti en CHF, de chaque candidat de l'univers
     fusionné du coach — un par ticker DISTINCT
     (:func:`_coach_candidate_entries`, LOT 8b).
@@ -1663,12 +1758,16 @@ def _coach_candidates(hypotheses: Any, now: Any = None,
     l'univers (source (a)) — ``None``/absent revient au comportement
     radar-seul historique (aucune position à faire figurer).
 
+    ``orders`` (LOT 14b) : le carnet du coach — tout symbole portant un
+    ordre en attente est OBLIGATOIRE (source ``embuscade``).
+
     Best-effort PAR SYMBOLE (même doctrine que ``_coach_quote``) : une panne
     de cours OMET le candidat plutôt que de lever ou d'inventer un prix, et un
     symbole qui plante N'EMPÊCHE PAS les suivants d'être cotés.
     """
     out: List[Dict[str, Any]] = []
-    for symbol, source in _coach_candidate_entries(hypotheses, positions, now):
+    for symbol, source in _coach_candidate_entries(hypotheses, positions, now,
+                                                   orders=orders):
         try:
             quote = _coach_quote(symbol)
         except Exception as e:                  # noqa: BLE001 — jamais fatal
@@ -2766,7 +2865,8 @@ def _coach_pass_context(portfolio: models.Portfolio,
         # fonction de ``_coach_candidates``). LOT 8b : ses propres positions
         # ouvertes rejoignent l'univers fusionné (source (a), toujours en tête).
         context["candidates"] = _coach_candidates(context["radar"], now_iso,
-                                                  positions=portfolio.positions)
+                                                  positions=portfolio.positions,
+                                                  orders=portfolio.open_orders)
     except Exception:                       # noqa: BLE001 — best-effort
         context["candidates"] = []
     try:
@@ -3012,7 +3112,8 @@ def coach_book() -> Dict[str, Any]:
             # ci-dessus déjà réduites pour l'affichage) rejoignent l'univers
             # fusionné, source (a).
             "candidates": _coach_candidates(_open_radar_hypotheses(), _now_iso(),
-                                            positions=portfolio.positions),
+                                            positions=portfolio.positions,
+                                            orders=portfolio.open_orders),
             # LOT 9 — le digest hérite du même chiffre que la passe : le
             # mandat déployé vit dans le bloc PARTAGÉ, il ne peut pas être
             # renseigné d'un seul côté.

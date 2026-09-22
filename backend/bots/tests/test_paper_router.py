@@ -6779,10 +6779,17 @@ def test_coach_candidates_caps_at_max_coach_candidates_distinct_tickers(
         hyps.append(_open_hyp([symbol], "h%d" % i))
     _seed_radar(hyps)
 
+    # LOT 14b — mis à jour DÉLIBÉRÉMENT : le radar seul ne peut PLUS
+    # monopoliser la liste. Le pool européen a ses places GARANTIES
+    # (NESN.SW, le seul membre coté par le faux marché, passe) ; le radar
+    # prend le reste, 30 tickers pour 20 places au plus.
     candidates = pr._coach_candidates(pr._open_radar_hypotheses())
-    assert len(candidates) == pr.MAX_COACH_CANDIDATES
-    assert ([row["symbol"] for row in candidates]
-            == ["T%d.SW" % i for i in range(pr.MAX_COACH_CANDIDATES)])
+    symbols = [row["symbol"] for row in candidates]
+    assert len(symbols) <= pr.MAX_COACH_CANDIDATES
+    assert "NESN.SW" in symbols
+    radar_rows = [r for r in candidates if r["source"] == "radar"]
+    # 20 places − 2 garanties au pool européen = 18 pour le radar
+    assert len(radar_rows) == pr.MAX_COACH_CANDIDATES - pr.MIN_CANDIDATE_PLACES["europe_pool"]
 
 
 def test_coach_candidates_is_empty_when_literally_nothing_prices(tmp_path, monkeypatch):
@@ -6849,21 +6856,23 @@ def test_coach_candidate_symbols_dedupes_across_all_four_sources(tmp_path, monke
 def test_coach_candidate_symbols_caps_the_fusion_at_max_coach_candidates(
         tmp_path, monkeypatch):
     """Le plafond porte sur le TOTAL fusionné, pas sur chaque source prise
-    séparément : 2 positions + 5 radar + 5 watchlist + 5 pool = 17, coupé à
-    :data:`pr.MAX_COACH_CANDIDATES` (16, LOT 11 -- monté de 14 pour laisser
-    de la place à la découverte) -- le DERNIER membre du pool tombe."""
+    séparément.
+
+    LOT 14b — mis à jour DÉLIBÉRÉMENT (plafond 16 -> 20, places garanties) :
+    2 positions + 15 radar + 5 watchlist + 5 pool = 27. Les deux positions
+    passent d'office ; sur les 18 places restantes, watchlist et pool ont
+    chacun leurs 2 places GARANTIES, le radar prend tout le reste (14)."""
     c, _ = make_client(tmp_path, monkeypatch)
-    assert pr.MAX_COACH_CANDIDATES == 16
+    assert pr.MAX_COACH_CANDIDATES == 20
     positions = [pr.models.Position(symbol="POS1.SW"),
                 pr.models.Position(symbol="POS2.SW")]
-    hyps = [_open_hyp(["RAD%d" % i for i in range(1, 6)], "h1")]
+    hyps = [_open_hyp(["RAD%d" % i for i in range(1, 16)], "h1")]
     _seed_watchlist([{"symbol": "WL%d" % i} for i in range(1, 6)])
 
     symbols = pr._coach_candidate_symbols(hyps, positions=positions)
-    assert symbols == ["POS1.SW", "POS2.SW",
-                       "RAD1", "RAD2", "RAD3", "RAD4", "RAD5",
-                       "WL1", "WL2", "WL3", "WL4", "WL5",
-                       "NESN.SW", "NOVN.SW", "RO.SW", "UBSG.SW"]  # MC.PA coupé
+    assert symbols == (["POS1.SW", "POS2.SW"]
+                       + ["RAD%d" % i for i in range(1, 15)]
+                       + ["WL1", "WL2", "NESN.SW", "NOVN.SW"])
     assert len(symbols) == pr.MAX_COACH_CANDIDATES
 
 
@@ -6885,6 +6894,146 @@ def test_coach_candidate_symbols_tolerates_a_missing_watchlist(tmp_path, monkeyp
     c, _ = make_client(tmp_path, monkeypatch)
     symbols = pr._coach_candidate_symbols([_open_hyp(["AAPL"], "h1")])
     assert "AAPL" in symbols
+
+
+# --- LOT 14b T4 : le coach voit les BONNES idées --------------------------
+#
+#  Mesuré en prod (22/09) : positions -> TOUT le radar du plus ANCIEN au plus
+#  récent -> watchlist -> pool, coupé à 16. Les thèses les plus récentes
+#  (HD, TITAN.NS, BAER.SW, rangs 18-21) étaient coupées, watchlist / pool
+#  européen / découverte ne passaient JAMAIS, et KRE, qui portait une
+#  embuscade armée, n'était dans aucune source.
+
+def _order(symbol, side="short", kind="stop"):
+    return pr.models.Order(id="o-" + symbol, symbol=symbol, side=side,
+                           kind=kind, qty=10, stop_price=50.0,
+                           status="open", created_at=FIXED_NOW)
+
+
+def test_a_symbol_with_a_pending_order_is_ALWAYS_a_candidate(tmp_path, monkeypatch):
+    """Invariant : le coach ne peut jamais avoir un ordre en attente sur un
+    symbole absent de ses candidats — même quand le radar déborde."""
+    c, _ = make_client(tmp_path, monkeypatch)
+    hyps = [_open_hyp(["RAD%d" % i for i in range(40)], "h1")]
+    entries = pr._coach_candidate_entries(
+        hyps, positions=[], orders=[_order("KRE"), _order("TXT", side="buy")])
+    assert ("KRE", pr.CANDIDATE_SOURCE_AMBUSH) in entries
+    assert ("TXT", pr.CANDIDATE_SOURCE_AMBUSH) in entries
+    assert pr.CANDIDATE_SOURCE_AMBUSH == "embuscade"
+
+
+def test_positions_and_orders_pass_even_beyond_the_ceiling(tmp_path, monkeypatch):
+    """Ce qui DOIT être vu n'est jamais coupé, plafond ou pas."""
+    c, _ = make_client(tmp_path, monkeypatch)
+    positions = [pr.models.Position(symbol="P%d.SW" % i)
+                 for i in range(pr.MAX_COACH_CANDIDATES)]
+    symbols = pr._coach_candidate_symbols(
+        [_open_hyp(["RAD1"], "h1")], positions=positions,
+        orders=[_order("KRE")])
+    assert "KRE" in symbols
+    assert all("P%d.SW" % i in symbols for i in range(pr.MAX_COACH_CANDIDATES))
+
+
+def test_a_cancelled_order_is_not_a_reason_to_be_seen(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+    order = _order("KRE")
+    order.status = "cancelled"
+    assert "KRE" not in pr._coach_candidate_symbols([], positions=[],
+                                                    orders=[order])
+
+
+def test_the_pass_context_sees_the_ambushed_symbol(tmp_path, monkeypatch):
+    """Bout en bout : l'embuscade armée sur le livre du coach amène son titre
+    — COTÉ — dans le contexte de la passe."""
+    c, market = make_client(tmp_path, monkeypatch)
+    market.prices["KRE"] = (55.0, "USD", "SPDR Regional Banking")
+    portfolio = pr._ensure_coach_account()
+    portfolio.open_orders.append(_order("KRE"))
+    pr._save(COACH, portfolio)
+    _seed_radar([_open_hyp(["RAD%d" % i for i in range(40)], "h1")])
+
+    context = pr._coach_pass_context(pr._ensure_coach_account(), FIXED_NOW)
+    row = next(r for r in context["candidates"] if r["symbol"] == "KRE")
+    assert row["source"] == "embuscade" and row["price_chf"] > 0
+
+
+def test_the_digest_book_sees_the_ambushed_symbol(tmp_path, monkeypatch):
+    c, market = make_client(tmp_path, monkeypatch)
+    market.prices["KRE"] = (55.0, "USD", "SPDR Regional Banking")
+    portfolio = pr._ensure_coach_account()
+    portfolio.open_orders.append(_order("KRE"))
+    pr._save(COACH, portfolio)
+    assert "KRE" in [r["symbol"] for r in pr.coach_book()["candidates"]]
+
+
+def test_the_radar_goes_from_the_NEWEST_to_the_oldest(tmp_path, monkeypatch):
+    """Toutes les hypothèses ouvertes sont en confiance « basse » : la
+    fraîcheur est le seul critère réel disponible."""
+    c, _ = make_client(tmp_path, monkeypatch)
+    old = _open_hyp(["OLD1", "OLD2"], "h1")
+    old["created_at"] = "2026-08-25T05:45:00.002170"
+    mid = _open_hyp(["MID"], "h2")
+    mid["created_at"] = "2026-09-10T10:00:00"
+    new = _open_hyp(["NEW1", "NEW2"], "h3")
+    new["created_at"] = "2026-09-21T17:00:00"
+    symbols = pr._coach_candidate_symbols([old, mid, new], positions=[])
+    radar_part = [s for s in symbols if s in {"OLD1", "OLD2", "MID", "NEW1", "NEW2"}]
+    assert radar_part == ["NEW1", "NEW2", "MID", "OLD1", "OLD2"]
+
+
+def test_the_newest_radar_ideas_survive_a_crowded_radar(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+    hyps = []
+    for i in range(15):
+        hyp = _open_hyp(["R%dA" % i, "R%dB" % i], "h%d" % i)
+        hyp["created_at"] = "2026-09-%02dT10:00:00" % (i + 1)
+        hyps.append(hyp)
+    symbols = pr._coach_candidate_symbols(hyps, positions=[])
+    assert "R14A" in symbols and "R14B" in symbols      # la plus récente
+    assert "R0A" not in symbols                          # la plus ancienne
+
+
+def test_watchlist_pool_and_discovery_have_GUARANTEED_places(tmp_path, monkeypatch):
+    """LOT 8b (« TOUJOURS candidat ») et LOT 11 vivent à nouveau : un radar
+    de 40 tickers ne les chasse plus."""
+    c, _ = make_client(tmp_path, monkeypatch)
+    monkeypatch.setattr(discovery, "discovery_candidates",
+                        _DiscoverySpy([{"symbol": "D%d" % i, "source": "tendance"}
+                                       for i in range(4)]))
+    _seed_watchlist([{"symbol": "WL%d" % i} for i in range(1, 6)])
+    hyps = [_open_hyp(["RAD%d" % i for i in range(40)], "h1")]
+
+    entries = pr._coach_candidate_entries(hyps, positions=[])
+    by_source = {}
+    for _symbol, source in entries:
+        by_source[source] = by_source.get(source, 0) + 1
+    assert len(entries) == pr.MAX_COACH_CANDIDATES
+    for source in ("watchlist", "europe_pool", "tendance"):
+        assert by_source[source] == pr.MIN_CANDIDATE_PLACES[source]
+    assert by_source["radar"] == pr.MAX_COACH_CANDIDATES - sum(
+        pr.MIN_CANDIDATE_PLACES[s] for s in ("watchlist", "europe_pool", "tendance"))
+
+
+def test_a_source_without_candidates_leaves_its_places_to_the_others(
+        tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+    hyps = [_open_hyp(["RAD%d" % i for i in range(40)], "h1")]
+    entries = pr._coach_candidate_entries(hyps, positions=[])
+    assert len(entries) == pr.MAX_COACH_CANDIDATES          # rien de perdu
+    assert not any(src == "watchlist" for _s, src in entries)
+
+
+def test_guaranteed_places_share_a_small_budget_fairly(tmp_path, monkeypatch):
+    """Peu de place hors lignes obligatoires : chaque source reçoit à tour de
+    rôle, le radar d'abord — personne n'est affamé."""
+    c, _ = make_client(tmp_path, monkeypatch)
+    _seed_watchlist([{"symbol": "WL%d" % i} for i in range(1, 6)])
+    positions = [pr.models.Position(symbol="P%d.SW" % i)
+                 for i in range(pr.MAX_COACH_CANDIDATES - 3)]
+    hyps = [_open_hyp(["RAD%d" % i for i in range(10)], "h1")]
+    entries = pr._coach_candidate_entries(hyps, positions=positions)
+    rest = [src for _s, src in entries if src != "position"]
+    assert rest == ["radar", "watchlist", "europe_pool"]
 
 
 def test_coach_europe_pool_is_exactly_the_known_european_symbols(tmp_path, monkeypatch):
@@ -8399,35 +8548,42 @@ def test_discovery_receives_the_symbols_already_retained_as_existing(
 def test_discovery_is_capped_by_the_room_left_under_the_total_ceiling(
         tmp_path, monkeypatch):
     """Le TOTAL (quatre sources + découverte) ne dépasse jamais
-    :data:`pr.MAX_COACH_CANDIDATES` -- la découverte ne reçoit QUE la place
-    restante, jamais son propre cap par défaut aveuglément."""
+    :data:`pr.MAX_COACH_CANDIDATES`.
+
+    LOT 14b — mis à jour DÉLIBÉRÉMENT : la découverte n'est plus « ce qui
+    reste » (elle ne passait JAMAIS en prod, le radar remplissait tout) ; elle
+    a ses places GARANTIES, et son cap réseau est borné par la place hors
+    positions/ordres. 3 positions + 30 radar + 3 watchlist + 5 pool + 10
+    découvertes : la découverte en garde exactement son minimum."""
     c, _ = make_client(tmp_path, monkeypatch)
-    assert pr.MAX_COACH_CANDIDATES == 16
     spy = _DiscoverySpy([{"symbol": "T%d" % i, "source": "tendance"}
                         for i in range(10)])
     monkeypatch.setattr(discovery, "discovery_candidates", spy)
-    # 3 positions + 4 radar + 3 watchlist + 5 pool (ENTIER, rien coupé) = 15
-    # -- il ne reste qu'UNE place pour la découverte.
     positions = [pr.models.Position(symbol="POS%d.SW" % i) for i in range(3)]
-    hyps = [_open_hyp(["RAD%d" % i for i in range(1, 5)], "h1")]
+    hyps = [_open_hyp(["RAD%d" % i for i in range(1, 31)], "h1")]
     _seed_watchlist([{"symbol": "WL%d" % i} for i in range(1, 4)])
 
     symbols = pr._coach_candidate_symbols(hyps, positions=positions)
     assert len(symbols) == pr.MAX_COACH_CANDIDATES
-    assert spy.calls[0]["cap"] == 1
-    assert symbols[-1] == "T0"
+    assert spy.calls[0]["cap"] <= pr.MAX_COACH_CANDIDATES - 3
+    assert symbols[-2:] == ["T0", "T1"]
 
 
 def test_discovery_is_never_called_once_the_ceiling_is_already_reached(
         tmp_path, monkeypatch):
     """Aucune place restante -> aucune raison d'appeler la découverte (elle
-    ferait du réseau pour rien)."""
+    ferait du réseau pour rien).
+
+    LOT 14b — mis à jour DÉLIBÉRÉMENT : le radar ne « remplit » plus la liste
+    (la découverte a des places garanties) ; seules les lignes OBLIGATOIRES
+    (positions + ordres en attente) peuvent ne rien laisser."""
     c, _ = make_client(tmp_path, monkeypatch)
     spy = _DiscoverySpy([{"symbol": "CHPT", "source": "tendance"}])
     monkeypatch.setattr(discovery, "discovery_candidates", spy)
-    hyps = [_open_hyp(["T%d" % i for i in range(20)], "h1")]
+    positions = [pr.models.Position(symbol="P%d.SW" % i)
+                 for i in range(pr.MAX_COACH_CANDIDATES)]
 
-    symbols = pr._coach_candidate_symbols(hyps)
+    symbols = pr._coach_candidate_symbols([], positions=positions)
     assert len(symbols) == pr.MAX_COACH_CANDIDATES
     assert spy.calls == []
 
