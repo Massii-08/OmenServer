@@ -96,12 +96,21 @@ MAX_OPEN = 12
 # notée par anticipation, verdict « indécis », UNE par passage.
 #
 # Trois choix explicites :
-#   * ``unclear`` TOUJOURS, quel que soit le mouvement mesuré. Déclarer « hit »
-#     avant l'échéance serait choisir sa fenêtre après coup — exactement le
-#     mensonge que le scoring existe pour empêcher. L'aveu « indécise » vaut
-#     mieux que le silence ; il ne vaut pas une réussite ;
+#   * AUCUN verdict au moment de l'éviction, quel que soit le mouvement
+#     mesuré. Déclarer « hit » avant l'échéance serait choisir sa fenêtre après
+#     coup — exactement le mensonge que le scoring existe pour empêcher ;
+#   * ⚠️ LOT 14b — mais l'hypothèse évincée RESTE À JUGER : elle quitte la file
+#     OUVERTE (c'est ce qui rend la place) et reçoit son verdict à sa VRAIE
+#     échéance (``created_at`` + horizon), avec la règle normale et une mesure
+#     BORNÉE à cette échéance (:func:`judge_evicted`). Avant ce lot, l'éviction
+#     collait « unclear » d'office et définitivement : la file étant pleine en
+#     permanence, 20 des 23 verdicts du compte réel (22/09) étaient des
+#     évictions — le bilan ne mesurait plus la qualité des idées mais la
+#     longueur de la file. En attendant l'échéance : ``status: "scored"`` (la
+#     place est rendue, l'écran la range avec les notées) mais ``outcome:
+#     None`` et rien dans le bilan ;
 #   * ``move_pct`` quand même renseigné si les bougies le permettent : le
-#     lecteur a droit au chiffre, même sans verdict ;
+#     lecteur a droit au chiffre (provisoire), même sans verdict ;
 #   * JAMAIS une idée du coach. Elles portent le bilan par niveau de risque
 #     (``stats_by_level``) : les rogner fabriquerait des « indécises » dans un
 #     bilan qu'on lit précisément pour juger ces niveaux-là.
@@ -643,8 +652,11 @@ def build_prompt(events: Any, filings: Any, open_hyps: Any, scored_hyps: Any,
             move = hyp.get("move_pct")
             move_text = ("%+.1f %%" % float(move)) if isinstance(move, (int, float)) \
                 else "mouvement non mesuré"
+            # LOT 14b — une évincée sans verdict le DIT (« ? » se lirait
+            # comme un verdict perdu).
             lines.append("- [%s] %s → chaîne : %s (%s)" % (
-                str(hyp.get("outcome") or "?"),
+                str(hyp.get("outcome") or ("en attente d'échéance"
+                                           if is_pending_eviction(hyp) else "?")),
                 str(hyp.get("thesis") or "").strip() or "(sans thèse)",
                 _chain_text(hyp.get("chain")) or "?",
                 move_text,
@@ -818,13 +830,48 @@ def is_mature(hyp: Optional[Dict[str, Any]], now: Any) -> bool:
     return now_dt >= created + timedelta(days=hypothesis_horizon(hyp))
 
 
-def _move_pct(candles: Any, created: Optional[datetime]) -> Optional[float]:
+# LOT 14b — une série qui DÉMARRE plus de ce délai après la naissance ne
+# connaît pas le prix d'entrée (fenêtre ``SCORE_RANGE`` dépassée : une
+# hypothèse jugée très en retard) — sa première bougie n'est PAS l'entrée.
+# 5 jours couvrent un week-end prolongé ou un jour férié.
+COVERAGE_TOLERANCE_D = 5
+
+
+def expiry_of(hyp: Optional[Dict[str, Any]]) -> Optional[datetime]:
+    """L'échéance d'une hypothèse : ``created_at`` + son horizon EFFECTIF
+    (:func:`hypothesis_horizon`), UTC naïf. ``None`` si la date est illisible."""
+    created = _parse_dt((hyp or {}).get("created_at"))
+    if created is None:
+        return None
+    try:
+        return created + timedelta(days=hypothesis_horizon(hyp))
+    except OverflowError:
+        return None
+
+
+def _move_pct(candles: Any, created: Optional[datetime],
+              until: Optional[datetime] = None) -> Optional[float]:
     """Variation % entre la première clôture postérieure à ``created`` et la
-    dernière clôture connue. ``None`` si la mesure est impossible."""
+    dernière clôture connue — ou, avec ``until`` (LOT 14b), la dernière
+    clôture d'une bougie dont la séance a commencé au plus tard à ``until``.
+    ``None`` si la mesure est impossible.
+
+    ``until`` est ce qui rend un verdict HONNÊTE quand il est calculé en
+    retard : sans borne, la fenêtre s'étirait jusqu'à aujourd'hui, au-delà de
+    l'horizon annoncé — choisir sa fenêtre après coup, par la bande. Une bougie
+    quotidienne est datée du DÉBUT de sa séance : celle qui s'ouvre après
+    l'échéance est exclue, celle qui la contient compte (même convention que
+    l'entrée, prise à la première séance ouverte après la naissance). Une
+    bougie sans date lisible ne peut pas être placée : exclue quand on borne.
+
+    Une série qui commence plus de :data:`COVERAGE_TOLERANCE_D` jours après
+    ``created`` rend ``None`` : elle ne contient pas le prix d'entrée.
+    """
     if not isinstance(candles, (list, tuple)):
         return None
     entry: Optional[float] = None
     last: Optional[float] = None
+    first_seen = False
     for candle in candles:
         if not isinstance(candle, dict):
             continue
@@ -835,8 +882,15 @@ def _move_pct(candles: Any, created: Optional[datetime]) -> Optional[float]:
             close = float(close)
         except (TypeError, ValueError):
             continue
+        when = _parse_dt(candle.get("ts"))
+        if not first_seen:
+            first_seen = True
+            if (created is not None and when is not None
+                    and when > created + timedelta(days=COVERAGE_TOLERANCE_D)):
+                return None
+        if until is not None and (when is None or when > until):
+            continue
         if entry is None:
-            when = _parse_dt(candle.get("ts"))
             if created is None or when is None or when >= created:
                 entry = close
         last = close
@@ -862,9 +916,12 @@ def score_hypothesis(hyp: Optional[Dict[str, Any]],
         return None
 
     created = _parse_dt(hyp.get("created_at"))
+    # LOT 14b — la mesure s'arrête à l'ÉCHÉANCE, quel que soit le moment du
+    # calcul (un radar en panne trois jours ne doit pas élargir la fenêtre).
+    until = expiry_of(hyp)
     moves: Dict[str, float] = {}
     for ticker, candles in (candles_by_ticker or {}).items():
-        pct = _move_pct(candles, created)
+        pct = _move_pct(candles, created, until=until)
         if pct is not None:
             moves[str(ticker)] = pct
 
@@ -940,6 +997,109 @@ def pick_rotation(open_hyps: Any, now: Any) -> Optional[Dict[str, Any]]:
     return min(mine, key=_rotation_key) if mine else None
 
 
+def _is_eviction(hyp: Any) -> bool:
+    """Une hypothèse du RADAR retirée de la file par rotation et pas encore
+    jugée à son échéance (PUR — LOT 14b). Les idées du coach n'en font jamais
+    partie : la rotation les épargne, le rattrapage aussi."""
+    return (isinstance(hyp, dict)
+            and hyp.get("status") == "scored"
+            and str(hyp.get("note") or "").strip() == ROTATION_NOTE
+            and not _is_coach(hyp)
+            and not hyp.get("expiry_verdict_at"))
+
+
+def is_pending_eviction(hyp: Any) -> bool:
+    """Évincée, pas encore échue, donc SANS verdict (``outcome`` vide) — elle
+    n'entre dans aucun bilan tant qu'elle n'a pas été jugée (PUR)."""
+    return _is_eviction(hyp) and not str(hyp.get("outcome") or "").strip()
+
+
+def _unbump(stats: Dict[str, Any], key: str) -> None:
+    """Retire un compte du bilan, sans jamais passer sous zéro."""
+    try:
+        stats[key] = max(0, int(stats.get(key) or 0) - 1)
+    except (TypeError, ValueError):
+        stats[key] = 0
+
+
+_OUTCOME_KEY = {"hit": "hits", "miss": "misses", "unclear": "unclear"}
+
+
+def _judge_evicted(state: Dict[str, Any], fetch_candles: Callable[..., Any],
+                   now_dt: datetime) -> Tuple[Dict[str, int],
+                                              List[Dict[str, Any]]]:
+    """Cf. :func:`judge_evicted` ; rend aussi les hypothèses jugées (pour le
+    carnet)."""
+    counters = {"judged": 0, "pending": 0, "errors": 0}
+    judged: List[Dict[str, Any]] = []
+    hypotheses = state.get("hypotheses") if isinstance(state, dict) else None
+    if not isinstance(hypotheses, list):
+        return counters, judged
+    stats = state.setdefault("stats", {})
+    now_iso = now_dt.isoformat()
+    for hyp in hypotheses:
+        if not _is_eviction(hyp):
+            continue
+        previous = str(hyp.get("outcome") or "").strip().lower()
+        if not hyp.get("evicted_at"):
+            # Éviction d'avant ce lot : sa date d'éviction était ``scored_at``.
+            hyp["evicted_at"] = hyp.get("scored_at")
+        if not is_mature(hyp, now_dt):
+            if previous:
+                # Ancienne éviction pas encore échue : son « unclear »
+                # d'office sort du bilan, le vrai verdict viendra à l'échéance.
+                _unbump(stats, _OUTCOME_KEY.get(previous, "unclear"))
+                hyp["outcome"] = None
+                counters["pending"] += 1
+            continue
+        candles_by_ticker: Dict[str, Any] = {}
+        for ticker in hyp.get("tickers") or []:
+            try:
+                candles_by_ticker[ticker] = fetch_candles(
+                    ticker, SCORE_RANGE, SCORE_INTERVAL)
+            except Exception:  # noqa: BLE001 — un ticker muet est ignoré
+                counters["errors"] += 1
+        verdict = score_hypothesis(hyp, candles_by_ticker, now_dt)
+        if not verdict:
+            continue
+        if previous:
+            _unbump(stats, _OUTCOME_KEY.get(previous, "unclear"))
+        hyp["outcome"] = verdict["outcome"]
+        hyp["move_pct"] = verdict["move_pct"]
+        hyp["scored_at"] = now_iso
+        hyp["expiry_verdict_at"] = now_iso
+        _bump(stats, _OUTCOME_KEY.get(verdict["outcome"], "unclear"))
+        counters["judged"] += 1
+        judged.append(hyp)
+    return counters, judged
+
+
+def judge_evicted(state: Dict[str, Any], fetch_candles: Callable[..., Any],
+                  now: Any) -> Dict[str, int]:
+    """Donne leur VRAI verdict aux hypothèses évincées par rotation (LOT 14b).
+
+    Pour chaque éviction du radar (jamais une idée du coach) pas encore jugée :
+
+    * échue (``created_at`` + horizon ≤ ``now``) -> notée par la règle
+      NORMALE (:func:`score_hypothesis`, ±:data:`MOVE_THRESHOLD_PCT`, mesure
+      BORNÉE à l'échéance) ; ``expiry_verdict_at`` la marque jugée ;
+    * pas encore échue mais portant un « unclear » d'office (évictions
+      d'AVANT ce lot) -> repasse EN ATTENTE (``outcome: None``).
+
+    C'est aussi le RATTRAPAGE des évictions historiques : leur « unclear »
+    était compté dans ``stats`` ; il en sort (−1) quand le vrai verdict entre
+    (+1). **Idempotent** : une hypothèse jugée porte ``expiry_verdict_at`` et
+    n'est plus jamais revue ; une en attente n'a plus de compte à retirer.
+
+    Modifie ``state`` en place ; rend ``{"judged", "pending", "errors"}``.
+    Appelée par le cycle normal (:func:`run_once`) — jamais à la main sur les
+    données de production.
+    """
+    now_dt = _parse_dt(now) or _now()
+    counters, _judged = _judge_evicted(state, fetch_candles, now_dt)
+    return counters
+
+
 # --------------------------------------------------------------------------- #
 # PUR — bilan ventilé par niveau de risque
 # --------------------------------------------------------------------------- #
@@ -981,6 +1141,11 @@ def stats_by_level(hypotheses: Any) -> Dict[str, Dict[str, int]]:
     out: Dict[str, Dict[str, int]] = {}
     for hyp in (hypotheses or []):
         if not isinstance(hyp, dict) or hyp.get("status") != "scored":
+            continue
+        # LOT 14b — une évincée EN ATTENTE de son échéance n'a pas de verdict
+        # (``outcome: None``) : la compter « unclear » referait le mensonge
+        # que ce lot retire.
+        if is_pending_eviction(hyp):
             continue
         row = out.setdefault(level_bucket(hyp),
                              {"hits": 0, "misses": 0, "unclear": 0})
@@ -1088,8 +1253,17 @@ def format_outcome_note(hyp: Dict[str, Any]) -> str:
     hyp = hyp or {}
     date = _short_date(hyp.get("scored_at") or hyp.get("created_at"))
     outcome = _OUTCOME_FR.get(str(hyp.get("outcome") or ""), "indécise")
+    pending = is_pending_eviction(hyp)
+    expiry = expiry_of(hyp)
+    if pending:
+        # LOT 14b — retirée de la file, PAS jugée : aucun mot de verdict.
+        header = "## %s — retirée de la file (mouvement provisoire %s)" % (
+            _short_date(hyp.get("evicted_at") or hyp.get("created_at")),
+            _move_text(hyp))
+    else:
+        header = "## %s — verdict : %s (%s)" % (date, outcome, _move_text(hyp))
     lines = [
-        "## %s — verdict : %s (%s)" % (date, outcome, _move_text(hyp)),
+        header,
         "",
         str(hyp.get("thesis") or "").strip(),
         "",
@@ -1101,7 +1275,16 @@ def format_outcome_note(hyp: Dict[str, Any]) -> str:
             _short_date(hyp.get("created_at")), hypothesis_horizon(hyp)),
     ]
     note = str(hyp.get("note") or "").strip()
-    if note:
+    expiry_text = expiry.date().isoformat() if expiry else "date inconnue"
+    if pending:
+        lines.append("- Retirée de la file (%s), SANS verdict : elle sera "
+                     "jugée à son échéance (%s), mesurée jusqu'à cette date."
+                     % (note, expiry_text))
+    elif hyp.get("expiry_verdict_at"):
+        lines.append("- Retirée de la file (%s) le %s, jugée à sa vraie "
+                     "échéance (%s)." % (note, _short_date(hyp.get("evicted_at")),
+                                         expiry_text))
+    elif note:
         lines.append("- Notée AVANT son échéance (%s) : « indécise » est un "
                      "aveu, pas un verdict." % note)
     lines += ["", "[[Journal]]", ""]
@@ -1374,15 +1557,16 @@ def _bump(stats: Dict[str, Any], key: str) -> None:
 def _rotate(hyp: Dict[str, Any], fetch_candles: Callable[..., Any],
             now_dt: datetime, stats: Dict[str, Any],
             counters: Dict[str, Any]) -> None:
-    """Note UNE hypothèse par ANTICIPATION pour rendre sa place (I/O bougies).
+    """Retire UNE hypothèse de la file OUVERTE pour rendre sa place (I/O
+    bougies) — SANS la juger (LOT 14b).
 
-    Le verdict est ``unclear`` par construction — pas parce que le mouvement
-    serait faible, mais parce qu'on note AVANT l'échéance : appeler « réussite »
-    un pari qu'on interrompt reviendrait à choisir sa fenêtre de mesure après
-    coup. ``move_pct`` est quand même renseigné quand les bougies le permettent
-    (le chiffre appartient au lecteur), et ``note`` dit POURQUOI ce verdict
-    tombe maintenant — sans elle, le bilan afficherait une indécise de plus sans
-    que personne puisse la distinguer d'un vrai match nul.
+    Aucun verdict ici : on est AVANT l'échéance, et appeler « réussite » un
+    pari qu'on interrompt reviendrait à choisir sa fenêtre de mesure après
+    coup. Jusqu'au LOT 14b, on collait « unclear » d'office et pour toujours ;
+    désormais ``outcome`` reste ``None`` et :func:`judge_evicted` la notera à
+    sa VRAIE échéance. ``move_pct`` est quand même renseigné (provisoire) quand
+    les bougies le permettent — le chiffre appartient au lecteur — et ``note``
+    dit POURQUOI elle a quitté la file.
     """
     moves: Dict[str, float] = {}
     created = _parse_dt(hyp.get("created_at"))
@@ -1396,13 +1580,13 @@ def _rotate(hyp: Dict[str, Any], fetch_candles: Callable[..., Any],
         if pct is not None:
             moves[str(ticker)] = pct
 
-    hyp["status"] = "scored"
-    hyp["outcome"] = "unclear"
+    hyp["status"] = "scored"          # hors de la file ouverte
+    hyp["outcome"] = None             # PAS de verdict avant l'échéance
     hyp["move_pct"] = _median(list(moves.values()))
-    hyp["scored_at"] = now_dt.isoformat()
+    hyp["scored_at"] = None
+    hyp["evicted_at"] = now_dt.isoformat()
     hyp["note"] = ROTATION_NOTE
-    _bump(stats, "unclear")
-    counters["scored"] += 1
+    counters["evicted"] += 1
 
 
 def _score_and_generate(now_dt: datetime,
@@ -1417,7 +1601,8 @@ def _score_and_generate(now_dt: datetime,
     être consultée dans TOUS les cas — c'est même quand le radar n'a plus rien
     à produire que ce qui s'est accumulé mérite un regard.
     """
-    counters = {"generated": 0, "notified": 0, "scored": 0, "errors": 0}
+    counters = {"generated": 0, "notified": 0, "scored": 0, "errors": 0,
+                "evicted": 0}
     now_iso = now_dt.isoformat()
 
     state = load_state()
@@ -1448,6 +1633,14 @@ def _score_and_generate(now_dt: datetime,
         counters["scored"] += 1
         # Le verdict va au carnet, PAS sur Telegram (spec §13) : le bilan reste
         # lisible dans l'UI et dans ``Radar.md``, sans réveiller personne.
+        _note_all(users, format_outcome_note(hyp))
+
+    # ---- 1ter) LOT 14b — les ÉVINCÉES reçoivent leur verdict à échéance ---- #
+    # (et les évictions historiques, « unclear » d'office, sont rattrapées).
+    judged_counts, judged = _judge_evicted(state, fetch_candles, now_dt)
+    counters["scored"] += judged_counts["judged"]
+    counters["errors"] += judged_counts["errors"]
+    for hyp in judged:
         _note_all(users, format_outcome_note(hyp))
 
     # ---- 1bis) ROTATION (anti-mutisme) ------------------------------------ #
@@ -1548,7 +1741,10 @@ def run_once(now: Any = None,
     """Un tour de radar : on NOTE d'abord, on génère ensuite, on se tait — puis
     on demande à la convergence si l'accumulation mérite UN message.
 
-    Retourne ``{"generated", "notified", "scored", "errors", "fired"}``.
+    Retourne ``{"generated", "notified", "scored", "errors", "fired",
+    "evicted"}`` — ``evicted`` (LOT 14b) compte les hypothèses retirées de la
+    file par rotation SANS verdict ; ``scored`` ne compte que des verdicts
+    (échéances ordinaires + évictions jugées à leur échéance).
 
     L'ordre du scoring n'est pas anodin : scorer d'abord libère des places dans
     la file et met le bilan à jour AVANT que la nouvelle hypothèse ne l'affiche.

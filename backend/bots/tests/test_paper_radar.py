@@ -586,8 +586,9 @@ def test_run_once_genere_ecrit_les_notes_et_se_tait(sources, alice, tmp_path):
     out = radar.run_once(now=NOW, llm=_llm(TWO_HYPS), notifier=_notifier(sent),
                          tg_cfg=TG, fetch_candles=lambda *a: [])
 
+    # LOT 14b : ``evicted`` rejoint le contrat (évictions SANS verdict).
     assert out == {"generated": 2, "notified": 0, "scored": 0, "errors": 0,
-                   "fired": False}
+                   "fired": False, "evicted": 0}
     assert sent == []            # <- le verrou : plus AUCUN envoi par hypothèse
 
     state = radar.load_state()
@@ -781,18 +782,22 @@ def test_run_once_rote_la_doyenne_et_retrouve_la_parole(sources, alice):
         fetch_candles=lambda *a: _candles(NOW - timedelta(days=13),
                                           [100.0, 108.0]))
 
-    assert out["scored"] == 1 and out["generated"] == 2 and calls
+    # LOT 14b — mis à jour DÉLIBÉRÉMENT : la rotation rend toujours UNE
+    # place (le radar reparle), mais elle ne JUGE plus. Avant : « unclear »
+    # d'office et +1 au bilan, définitivement — 20 des 23 verdicts du compte
+    # réel étaient des évictions. Désormais : aucun verdict, rien au bilan,
+    # jugement à la vraie échéance (cf. tests « LOT 14b T3 » plus bas).
+    assert out["evicted"] == 1 and out["generated"] == 2 and calls
     state = radar.load_state()
     rotated = [h for h in state["hypotheses"]
                if h["id"] == "h%02d" % (radar.MAX_OPEN - 1)][0]
-    assert rotated["status"] == "scored"
-    # « indécise » MÊME avec +8 % : on note avant l'échéance, on ne choisit pas
-    # sa fenêtre de mesure après coup.
-    assert rotated["outcome"] == "unclear"
+    assert rotated["status"] == "scored"         # hors de la file ouverte
+    # PAS de verdict MÊME avec +8 % : on ne note pas avant l'échéance.
+    assert rotated["outcome"] is None
     assert rotated["move_pct"] == pytest.approx(8.0)
     assert rotated["note"] == radar.ROTATION_NOTE
-    assert rotated["scored_at"] == NOW.isoformat()
-    assert state["stats"]["unclear"] == 1
+    assert rotated["evicted_at"] == NOW.isoformat()
+    assert state["stats"]["unclear"] == 0
 
 
 def test_run_once_ne_rote_qu_une_seule_place_par_passage(sources, alice):
@@ -936,7 +941,7 @@ def test_run_once_sans_matiere_n_appelle_pas_le_llm(sources, alice):
                          fetch_candles=lambda *a: [])
     assert calls == []
     assert out == {"generated": 0, "notified": 0, "scored": 0, "errors": 0,
-                   "fired": False}
+                   "fired": False, "evicted": 0}
     assert radar.load_state() == radar.blank_state()
 
 
@@ -1512,3 +1517,224 @@ def test_generated_hypotheses_are_checked_at_birth(sources, alice, monkeypatch):
     hyp = radar.load_state()["hypotheses"][-1]
     assert hyp["tickers"] == ["SAP.TO", "NESN.SW"]
     assert hyp["unquoted"] == ["SAP.TO"]
+
+
+# --------------------------------------------------------------------------- #
+# LOT 14b T3 — évincer de la file ne veut plus dire renoncer à juger
+#
+# Mesuré sur le compte réel (22/09) : 23 hypothèses notées, 0 réussite, 1
+# échec, 22 « indécises » — dont 20 ÉVICTIONS de rotation, collées « unclear »
+# d'office quoi que le prix ait fait. La doctrine (pas de verdict avant
+# l'échéance) est juste ; ce qui ne l'était pas, c'est de ne plus JAMAIS
+# juger ensuite.
+# --------------------------------------------------------------------------- #
+
+def _evicted(**over):
+    """Une éviction à l'ANCIENNE (avant LOT 14b) : « unclear » d'office,
+    comptée dans le bilan."""
+    base = _hyp(id="ev1", status="scored", outcome="unclear",
+                note=radar.ROTATION_NOTE, scored_at=(NOW - timedelta(days=3)).isoformat(),
+                move_pct=1.0, created_at=(NOW - timedelta(days=10)).isoformat(),
+                horizon_days=5)
+    base.update(over)
+    return base
+
+
+def test_move_pct_s_arrete_a_l_echeance():
+    """Une hypothèse notée en RETARD ne doit pas s'offrir une fenêtre plus
+    longue que son horizon : la mesure s'arrête à la dernière clôture ≤
+    échéance, quel que soit le moment du calcul."""
+    created = NOW - timedelta(days=10)
+    # 100 à la naissance, 104 à J+5 (échéance), 130 ensuite
+    candles = _candles(created, [100.0, 101.0, 102.0, 103.0, 103.5, 104.0,
+                                 120.0, 130.0])
+    expiry = created + timedelta(days=5)
+    assert radar._move_pct(candles, created, until=expiry) == pytest.approx(4.0)
+    # sans borne : l'ancien comportement (jusqu'à la dernière clôture)
+    assert radar._move_pct(candles, created) == pytest.approx(30.0)
+
+
+def test_score_hypothesis_mesure_a_l_echeance_meme_notee_en_retard():
+    created = NOW - timedelta(days=10)
+    hyp = _hyp(created_at=created.isoformat(), horizon_days=5)
+    candles = _candles(created, [100.0, 101.0, 101.0, 101.0, 101.0, 102.0,
+                                 120.0, 130.0])
+    out = radar.score_hypothesis(hyp, {"NESN.SW": candles}, NOW)
+    assert out["move_pct"] == pytest.approx(2.0)
+    assert out["outcome"] == "unclear"         # et PAS « hit » à +30 %
+
+
+def test_move_pct_refuse_une_serie_qui_commence_bien_apres_la_naissance():
+    """Une série qui démarre des semaines après la naissance ne connaît pas le
+    prix d'entrée : la première bougie disponible n'est PAS l'entrée."""
+    created = NOW - timedelta(days=40)
+    candles = _candles(NOW - timedelta(days=20), [100.0, 110.0])
+    assert radar._move_pct(candles, created) is None
+
+
+def test_rotation_retire_de_la_file_SANS_verdict(sources, alice):
+    """L'éviction libère la place (inchangé) mais ne juge plus : pas de
+    « unclear » d'office, rien dans le bilan, la mesure intermédiaire reste
+    lisible."""
+    sources.events = [EVENT]
+    radar.save_state({"hypotheses": _full_queue(tickers=["AAA"]),
+                      "stats": {"hits": 0, "misses": 0, "unclear": 0}})
+    out = radar.run_once(
+        now=NOW, llm=_llm('{"hypotheses": []}'), tg_cfg={},
+        fetch_candles=lambda *a: _candles(NOW - timedelta(days=13),
+                                          [100.0, 108.0]))
+    state = radar.load_state()
+    rotated = [h for h in state["hypotheses"]
+               if h["id"] == "h%02d" % (radar.MAX_OPEN - 1)][0]
+    assert rotated["status"] != "open"
+    assert rotated["outcome"] is None
+    assert rotated["note"] == radar.ROTATION_NOTE
+    assert rotated["evicted_at"] == NOW.isoformat()
+    assert rotated["move_pct"] == pytest.approx(8.0)       # chiffre informatif
+    assert state["stats"] == {"hits": 0, "misses": 0, "unclear": 0}
+    assert out["evicted"] == 1 and out["scored"] == 0
+    assert radar.stats_by_level(state["hypotheses"]) == {}
+
+
+def test_une_evincee_est_jugee_a_sa_VRAIE_echeance(sources, alice):
+    created = NOW - timedelta(days=10)
+    radar.save_state({"hypotheses": [_evicted(outcome=None, evicted_at=(
+        NOW - timedelta(days=8)).isoformat())],
+        "stats": {"hits": 0, "misses": 0, "unclear": 0}})
+    # +5 % à l'échéance (J+5), puis retombe : le verdict est « hit »
+    candles = _candles(created, [100.0, 101.0, 102.0, 103.0, 104.0, 105.0,
+                                 99.0, 98.0])
+    out = radar.run_once(now=NOW, llm=_llm('{"hypotheses": []}'), tg_cfg={},
+                         fetch_candles=lambda *a: candles)
+    state = radar.load_state()
+    hyp = state["hypotheses"][0]
+    assert hyp["outcome"] == "hit"
+    assert hyp["move_pct"] == pytest.approx(5.0)
+    assert hyp["expiry_verdict_at"] == NOW.isoformat()
+    assert hyp["note"] == radar.ROTATION_NOTE            # l'histoire reste dite
+    assert state["stats"] == {"hits": 1, "misses": 0, "unclear": 0}
+    assert out["scored"] == 1
+    assert radar.stats_by_level(state["hypotheses"]) == {
+        "radar": {"hits": 1, "misses": 0, "unclear": 0}}
+
+
+def test_une_evincee_pas_encore_echue_attend(sources, alice):
+    radar.save_state({"hypotheses": [_evicted(
+        outcome=None, horizon_days=20, evicted_at=NOW.isoformat())],
+        "stats": {"hits": 0, "misses": 0, "unclear": 0}})
+    radar.run_once(now=NOW, llm=_llm('{"hypotheses": []}'), tg_cfg={},
+                   fetch_candles=lambda *a: _candles(NOW - timedelta(days=10),
+                                                     [100.0, 150.0]))
+    hyp = radar.load_state()["hypotheses"][0]
+    assert hyp["outcome"] is None and "expiry_verdict_at" not in hyp
+
+
+def test_rattrapage_des_anciennes_evictions_echues():
+    """Les évictions d'AVANT ce lot portent « unclear » et sont COMPTÉES dans
+    le bilan : leur vrai verdict remplace ce compte (unclear −1, verdict +1)."""
+    created = NOW - timedelta(days=10)
+    state = {"hypotheses": [_evicted(direction="down")],
+             "stats": {"hits": 0, "misses": 1, "unclear": 22}}
+    candles = _candles(created, [100.0, 99.0, 98.0, 97.0, 96.0, 95.0, 110.0])
+    counters = radar.judge_evicted(state, lambda *a: candles, NOW)
+    hyp = state["hypotheses"][0]
+    assert hyp["outcome"] == "hit"                          # baisse de 5 %
+    assert hyp["move_pct"] == pytest.approx(-5.0)
+    assert state["stats"] == {"hits": 1, "misses": 1, "unclear": 21}
+    assert counters == {"judged": 1, "pending": 0, "errors": 0}
+
+
+def test_rattrapage_est_idempotent():
+    created = NOW - timedelta(days=10)
+    state = {"hypotheses": [_evicted()],
+             "stats": {"hits": 0, "misses": 0, "unclear": 1}}
+    candles = _candles(created, [100.0, 96.0, 95.0, 94.0, 94.0, 94.0])
+    radar.judge_evicted(state, lambda *a: candles, NOW)
+    snapshot = json.dumps(state, sort_keys=True)
+    again = radar.judge_evicted(state, lambda *a: candles,
+                                NOW + timedelta(days=3))
+    assert json.dumps(state, sort_keys=True) == snapshot
+    assert again == {"judged": 0, "pending": 0, "errors": 0}
+    assert state["stats"] == {"hits": 0, "misses": 1, "unclear": 0}
+
+
+def test_rattrapage_d_une_ancienne_eviction_pas_encore_echue():
+    """Une ancienne éviction pas encore échue repasse « en attente » : son
+    « unclear » d'office sort du bilan, son verdict viendra à l'échéance."""
+    state = {"hypotheses": [_evicted(horizon_days=20)],
+             "stats": {"hits": 0, "misses": 0, "unclear": 1}}
+    counters = radar.judge_evicted(state, lambda *a: [], NOW)
+    hyp = state["hypotheses"][0]
+    assert hyp["outcome"] is None
+    assert state["stats"] == {"hits": 0, "misses": 0, "unclear": 0}
+    assert counters == {"judged": 0, "pending": 1, "errors": 0}
+    # et le passage suivant ne re-décrémente RIEN
+    radar.judge_evicted(state, lambda *a: [], NOW)
+    assert state["stats"] == {"hits": 0, "misses": 0, "unclear": 0}
+
+
+def test_rattrapage_ne_touche_jamais_une_idee_du_coach():
+    state = {"hypotheses": [_evicted(source="coach")],
+             "stats": {"hits": 0, "misses": 0, "unclear": 1}}
+    before = json.dumps(state, sort_keys=True)
+    radar.judge_evicted(state, lambda *a: _candles(NOW - timedelta(days=10),
+                                                   [100.0, 120.0]), NOW)
+    assert json.dumps(state, sort_keys=True) == before
+
+
+def test_rattrapage_ne_touche_pas_un_verdict_ordinaire():
+    state = {"hypotheses": [_hyp(status="scored", outcome="unclear",
+                                 scored_at=NOW.isoformat())],
+             "stats": {"hits": 0, "misses": 0, "unclear": 1}}
+    before = json.dumps(state, sort_keys=True)
+    radar.judge_evicted(state, lambda *a: _candles(NOW - timedelta(days=10),
+                                                   [100.0, 120.0]), NOW)
+    assert json.dumps(state, sort_keys=True) == before
+
+
+def test_rattrapage_ticker_muet_compte_une_erreur_et_juge_sur_le_reste():
+    created = NOW - timedelta(days=10)
+    state = {"hypotheses": [_evicted(tickers=["A", "B"])],
+             "stats": {"hits": 0, "misses": 0, "unclear": 1}}
+
+    def fetch(symbol, *a):
+        if symbol == "A":
+            raise RuntimeError("muet")
+        return _candles(created, [100.0, 110.0])
+
+    counters = radar.judge_evicted(state, fetch, NOW)
+    assert counters["errors"] == 1 and counters["judged"] == 1
+    assert state["hypotheses"][0]["outcome"] == "hit"
+
+
+def test_run_once_branche_le_rattrapage(sources, alice):
+    """En production le rattrapage passe par le cycle NORMAL du radar."""
+    created = NOW - timedelta(days=10)
+    radar.save_state({"hypotheses": [_evicted()],
+                      "stats": {"hits": 0, "misses": 0, "unclear": 1}})
+    radar.run_once(now=NOW, llm=_llm('{"hypotheses": []}'), tg_cfg={},
+                   fetch_candles=lambda *a: _candles(created, [100.0, 94.0]))
+    state = radar.load_state()
+    assert state["hypotheses"][0]["outcome"] == "miss"
+    assert state["stats"] == {"hits": 0, "misses": 1, "unclear": 0}
+
+
+def test_le_carnet_d_une_eviction_en_attente_ne_parle_pas_de_verdict():
+    note = radar.format_outcome_note(_evicted(outcome=None,
+                                              evicted_at=NOW.isoformat()))
+    assert "verdict" not in note.splitlines()[0]
+    assert "échéance" in note
+
+
+def test_le_carnet_d_une_eviction_jugee_dit_qu_elle_l_a_ete_a_l_echeance():
+    note = radar.format_outcome_note(_evicted(outcome="hit",
+                                              expiry_verdict_at=NOW.isoformat()))
+    assert "réussie" in note
+    assert "AVANT son échéance" not in note
+
+
+def test_le_prompt_dit_qu_une_evincee_attend_son_echeance():
+    prompt = radar.build_prompt([], [], [], [_evicted(outcome=None)],
+                                {"hits": 0, "misses": 0, "unclear": 0},
+                                NOW.isoformat())
+    assert "[en attente d'échéance]" in prompt
