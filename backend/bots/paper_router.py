@@ -1755,7 +1755,9 @@ def _coach_reject_detail(code: str, decision: Dict[str, Any],
     """
     try:
         # LOT 13 — les trois refus economiques (``no_target``/``edge_thin``/
-        # ``whipsaw``) se CHIFFRENT avec les helpers et les seuils de
+        # ``whipsaw``), et depuis LOT 14 ``too_many_positions`` (fronts =
+        # positions + embuscades) et ``market_closed`` (week-end OU hors
+        # séance OU place inconnue), se CHIFFRENT avec les helpers et les seuils de
         # ``coach_trader`` : on delegue au lieu de recopier le calcul ici,
         # sinon le texte divergerait du garde-fou au premier ajustement.
         # ``None`` pour tout autre code -> la suite de cette fonction.
@@ -1811,9 +1813,6 @@ def _coach_reject_detail(code: str, decision: Dict[str, Any],
             return ("stop %.2f plus loin que le %.2f en place — un stop ne se "
                     "desserre pas"
                     % (stop or 0.0, actuel if actuel is not None else 0.0))
-        if code == "market_closed":
-            return ("%s ne s'échange pas ce jour-là — seules les cryptos cotent "
-                    "le week-end" % symbol)
         if code == "risk_high":
             stop = _num(decision.get("stop"))
             risk_chf = (abs(level - stop * float(quote["fx_rate"])) * qty
@@ -1830,9 +1829,6 @@ def _coach_reject_detail(code: str, decision: Dict[str, Any],
             return ("voulait %.2f CHF, %.0f%% de l'équité (plafond %.0f%%)"
                     % (projected, _pct_of(projected, equity),
                        coach_trader.MAX_POSITION_PCT))
-        if code == "too_many_positions":
-            return ("%d lignes déjà ouvertes (plafond %d)"
-                    % (len(portfolio.positions), coach_trader.MAX_POSITIONS))
         if code == "too_many_crypto":
             return "plafond de %d cryptos atteint" % coach_trader.MAX_CRYPTO
         if code == "cash_floor":

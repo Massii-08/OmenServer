@@ -465,6 +465,25 @@ def fees_view(portfolio: Any, now: Any = None) -> Dict[str, Any]:
     }
 
 
+def _fronts(positions: List[Dict[str, Any]], ambushes: List[Dict[str, Any]],
+            symbol: str) -> set:
+    """Les FRONTS qu'ouvrirait ``symbol`` (PUR — LOT 9, extrait LOT 14) :
+    l'ensemble des SYMBOLES tenus, armés en embuscade, plus le nouveau.
+
+    Un ensemble et pas une somme : renforcer une ligne, ou exécuter le piège
+    déjà armé sur le même titre, n'ouvre pas un front de plus. Partagé par la
+    porte (``too_many_positions``) et par sa phrase (:func:`reject_detail`) —
+    VÉCU 22/09 : le texte ne comptait que les positions (« 3 lignes déjà
+    ouvertes (plafond 6) ») alors que la porte comptait aussi les 3
+    embuscades armées ; deux calculs séparés finissent toujours par mentir.
+    """
+    fronts = {_symbol(p.get("symbol")) for p in positions}
+    fronts |= {_symbol(a.get("symbol")) for a in ambushes}
+    fronts.add(_symbol(symbol))
+    fronts.discard("")
+    return fronts
+
+
 def pending_ambushes(portfolio: Any) -> List[Dict[str, Any]]:
     """Les EMBUSCADES ARMÉES d'un livre (PUR — LOT 9).
 
@@ -1059,11 +1078,7 @@ def gate_decision(decision: Any, portfolio: Any, quote: Any,
     # pièges partaient tous, le livre doit rester dans les règles. Sans ça, le
     # sur-armement serait invisible — on tiendrait 6 lignes après avoir armé
     # 4 pièges sur un livre qui n'en tolère que 6 au total.
-    fronts = {_symbol(p.get("symbol")) for p in positions}
-    fronts |= {_symbol(a.get("symbol")) for a in ambushes}
-    fronts.add(symbol)
-    fronts.discard("")
-    if len(fronts) > MAX_POSITIONS:
+    if len(_fronts(positions, ambushes, symbol)) > MAX_POSITIONS:
         return _reject("too_many_positions")
 
     crypto = _crypto_symbols(positions)
@@ -1268,12 +1283,67 @@ def _fr(value: float, digits: int = 2) -> str:
     return ("%.*f" % (digits, value)).replace(".", ",")
 
 
+_WEEKDAYS_FR = ("lundi", "mardi", "mercredi", "jeudi", "vendredi",
+                "samedi", "dimanche")
+
+# Nom LISIBLE des fenêtres de :data:`_MARKET_WINDOWS`. « horaires US » et pas
+# « Wall Street » : ``.TO`` (Toronto) y est rangé par approximation assumée.
+_MARKET_LABELS = {"europe": "horaires européens", "us": "horaires US"}
+
+
+def _too_many_positions_detail(portfolio: Dict[str, Any],
+                               symbol: str) -> str:
+    """« 3 lignes ouvertes + 3 embuscades armées : ... 7 fronts (plafond 6) »
+    — compte EXACTEMENT ce que compte la porte (:func:`_fronts`)."""
+    positions = _dicts(portfolio.get("positions"))
+    ambushes = pending_ambushes(portfolio)
+    n_lines = len({_symbol(p.get("symbol")) for p in positions} - {""})
+    n_armed = len({_symbol(a.get("symbol")) for a in ambushes} - {""})
+    total = len(_fronts(positions, ambushes, symbol))
+    return ("%d lignes ouvertes + %d embuscades armées : %s porterait le "
+            "livre à %d fronts (plafond %d) — les embuscades comptent, car "
+            "si elles partaient toutes il faudrait les tenir"
+            % (n_lines, n_armed, symbol or "?", total, MAX_POSITIONS))
+
+
+def _market_closed_detail(symbol: str, now: Any) -> Optional[str]:
+    """La VRAIE raison d'un ``market_closed`` — les trois cas où
+    :func:`tradable_now` rend ``False`` : place inconnue, week-end, ou hors
+    séance un jour ouvré. VÉCU 22/09 (mardi 04:26) : le routeur servait « seules
+    les cryptos cotent le week-end » dans tous les cas. Les horaires cités
+    sont ceux de :data:`_MARKET_WINDOWS`, rien d'autre."""
+    shown = symbol or "?"
+    market = market_of(symbol)
+    window = _MARKET_WINDOWS.get(market)
+    if window is None:
+        return ("%s : place de cotation non reconnue — le coach ne trade pas "
+                "un titre dont il ne sait pas dire quand son marché est "
+                "ouvert" % shown)
+    if now is None:
+        return None
+    local = _local(now)
+    if local.weekday() > 4:
+        return ("%s ne s'échange pas ce jour-là — seules les cryptos cotent "
+                "le week-end" % shown)
+    (start_h, start_m), (end_h, end_m) = window
+    return ("%s ne s'échange pas à cette heure — il est %02d:%02d ce %s "
+            "(heure de Rome) et sa place (%s) cote de %02d:%02d à %02d:%02d, "
+            "du lundi au vendredi"
+            % (shown, local.hour, local.minute, _WEEKDAYS_FR[local.weekday()],
+               _MARKET_LABELS.get(market, market), start_h, start_m,
+               end_h, end_m))
+
+
 def reject_detail(code: Any, decision: Any, portfolio: Any, quote: Any,
                   now: Any = None) -> Optional[str]:
-    """La phrase lisible et CHIFFRÉE des trois refus du LOT 13 (PUR).
+    """La phrase lisible et CHIFFRÉE des trois refus du LOT 13 (PUR), et
+    depuis LOT 14 de ``too_many_positions`` et ``market_closed`` — deux
+    phrases que le routeur servait FAUSSES (cf. :func:`_fronts` et
+    :func:`_market_closed_detail`) et qui dépendent de ce que seul ce module
+    sait calculer (fronts, fenêtres horaires).
 
-    Rend ``None`` pour tout autre code — les 25 précédents sont chiffrés par
-    le routeur, et se taire vaut mieux que servir un texte à moitié juste.
+    Rend ``None`` pour tout autre code — les autres sont chiffrés par le
+    routeur, et se taire vaut mieux que servir un texte à moitié juste.
 
     ``portfolio`` est le DICT (``models.Portfolio.to_dict()``), comme pour
     :func:`gate_decision` : ce module ne connaît pas les objets du moteur.
@@ -1284,13 +1354,19 @@ def reject_detail(code: Any, decision: Any, portfolio: Any, quote: Any,
     """
     try:
         code = _text(code)
-        if code not in ("no_target", "edge_thin", "whipsaw"):
+        if code not in ("no_target", "edge_thin", "whipsaw",
+                        "too_many_positions", "market_closed"):
             return None
 
         decision = decision if isinstance(decision, dict) else {}
         portfolio = portfolio if isinstance(portfolio, dict) else {}
         quote = quote if isinstance(quote, dict) else {}
         symbol = _symbol(decision.get("symbol"))
+
+        if code == "too_many_positions":
+            return _too_many_positions_detail(portfolio, symbol)
+        if code == "market_closed":
+            return _market_closed_detail(symbol, now)
 
         if code == "no_target":
             raw = decision.get("target")
