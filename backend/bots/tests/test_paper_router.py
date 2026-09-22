@@ -6638,6 +6638,27 @@ def test_coach_book_donne_la_MEME_equite_que_le_garde_fou(tmp_path, monkeypatch)
         coach_trader._equity_chf(raw["cash_chf"], raw["positions"]), 2)
 
 
+def test_coach_book_et_garde_fou_ont_la_meme_equite_AVEC_un_short(tmp_path, monkeypatch):
+    """LOT 14b — le test ci-dessus ne tenait qu'une ligne LONGUE : il n'a
+    jamais vu que les deux équités divergeaient dès qu'un short était ouvert
+    (le livre montrait l'équité nette, le garde-fou jugeait sur la brute)."""
+    from backend.bots.paper import coach_trader
+
+    c, _ = make_client(tmp_path, monkeypatch)
+    seed_coach_position(qty=10, avg_price=100.0)
+    portfolio = pr._ensure_coach_account()
+    portfolio.positions.append(pr.models.Position(
+        symbol="DAL", qty=25, avg_price=80.0, currency="CHF", fx_rate=1.0,
+        opened_at=FIXED_NOW, side="short", thesis=COACH_THESIS))
+    portfolio.cash_chf = round(portfolio.cash_chf + 25 * 80.0, 2)
+    pr._save(COACH, portfolio)
+    raw = coach_portfolio()
+
+    assert pr.coach_book()["equity_chf"] == pytest.approx(10000.0)
+    assert pr.coach_book()["equity_chf"] == round(
+        coach_trader._equity_chf(raw["cash_chf"], raw["positions"]), 2)
+
+
 def test_coach_book_ne_leve_JAMAIS_et_rend_un_livre_VIDE(tmp_path, monkeypatch):
     """Best-effort : un compte illisible ne doit ni faire tomber le digest, ni
     faire décider le modèle sur un livre inventé. Le dict VIDE est le seul

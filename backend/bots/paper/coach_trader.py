@@ -315,23 +315,56 @@ def _reject(code: str) -> Dict[str, Any]:
     return {"accepted": False, "reason": code, "order": None}
 
 
-def _equity_chf(cash_chf: Any, positions: List[Dict[str, Any]]) -> float:
-    """Équité = trésorerie + valeur au PRIX DE REVIENT de TOUTES les lignes.
+def _line_value_chf(pos: Dict[str, Any]) -> Optional[float]:
+    """Valeur ABSOLUE d'une ligne au prix de revient, en CHF (``None`` si
+    illisible)."""
+    qty = _val(pos.get("qty"))
+    price = _val(pos.get("avg_price"))
+    if qty is None or price is None:
+        return None
+    fx = _val(pos.get("fx_rate"))
+    return abs(qty) * price * (fx if fx and fx > 0 else 1.0)
 
-    Reproduit volontairement la convention de ``risk._positions_cost_basis_chf``
-    (long ET short comptés en valeur absolue : la marge du simulateur traite les
-    deux comme du risque). On ne l'IMPORTE pas — c'est un privé d'un autre
-    module, et un import de privé se casse en silence à la première refonte ;
-    le miroir est documenté ici et épinglé par les tests des deux côtés.
+
+def _short_liability_chf(positions: List[Dict[str, Any]]) -> float:
+    """La DETTE de rachat des lignes courtes, au prix de revient."""
+    total = 0.0
+    for pos in positions:
+        if _pos_side(pos) != "short":
+            continue
+        value = _line_value_chf(pos)
+        if value is not None:
+            total += value
+    return total
+
+
+def _equity_chf(cash_chf: Any, positions: List[Dict[str, Any]]) -> float:
+    """Équité NETTE au prix de revient = trésorerie + lignes longues − lignes
+    courtes.
+
+    LOT 14b — c'était « + TOUTES les lignes en valeur absolue », présenté
+    comme le miroir de ``risk._positions_cost_basis_chf``. C'était confondre
+    EXPOSITION BRUTE (ce que ``risk`` mesure, et qu'il garde pour ses autres
+    appelants) et ÉQUITÉ : le cash porte DÉJÀ le produit d'une vente à
+    découvert, la ligne courte est une DETTE de rachat — l'additionner la
+    compte deux fois. Vécu 22/09 sur le compte réel : ~14 020 CHF rendus pour
+    ~8 760 réels, et tous les seuils « % de l'équité » de :func:`gate_decision`
+    (``risk_high``, ``too_small``, ``oversize``, ``cash_floor``,
+    ``pending_risk_high``) ~60 % plus larges que le mandat. C'est désormais la
+    même règle que ``paper_router._coach_equity_chf`` (corrigée le 30/08, la
+    copie d'ici avait été oubliée) — le livre montré au modèle et le
+    garde-fou qui le juge lisent enfin le même chiffre.
+
+    Aucune règle de ce module n'a besoin de l'exposition BRUTE : chacune
+    compare une taille ou un risque à ce que le compte POSSÈDE. On ne garde
+    donc pas de helper brut ici ; qui en a besoin a ``risk``.
     """
     total = _val(cash_chf) or 0.0
     for pos in positions:
-        qty = _val(pos.get("qty"))
-        price = _val(pos.get("avg_price"))
-        if qty is None or price is None:
+        value = _line_value_chf(pos)
+        if value is None:
             continue
-        fx = _val(pos.get("fx_rate"))
-        total += abs(qty) * price * (fx if fx and fx > 0 else 1.0)
+        total += -value if _pos_side(pos) == "short" else value
     return total
 
 
@@ -361,7 +394,8 @@ def deployment_view(portfolio: Any) -> Dict[str, Any]:
     Rend ``{"cash_pct", "n_positions", "themes_ouverts"}``.
 
     ``cash_pct`` suit la convention du GARDE-FOU (:func:`_equity_chf`, prix de
-    revient, les deux sens en valeur absolue) et non celle de l'affichage : le
+    revient, équité NETTE depuis LOT 14b ; numérateur = trésorerie LIBRE,
+    c'est-à-dire hors produit des shorts) et non celle de l'affichage : le
     prompt lui dit « si ton cash dépasse 50 % de l'équité, justifie-toi », et
     c'est cette équité-là qui le REFUSERA ensuite. Deux chiffres différents
     rendraient la consigne inapplicable.
@@ -380,7 +414,10 @@ def deployment_view(portfolio: Any) -> Dict[str, Any]:
     book = portfolio if isinstance(portfolio, dict) else {}
     positions = _dicts(book.get("positions"))
     equity = _equity_chf(book.get("cash_chf"), positions)
-    cash = _val(book.get("cash_chf")) or 0.0
+    # LOT 14b — la trésorerie LIBRE : le produit d'un short est gagé par sa
+    # dette de rachat, il ne « dort » pas (sinon ``cash / équité nette``
+    # dépasserait 100 % dès qu'un short est ouvert).
+    cash = (_val(book.get("cash_chf")) or 0.0) - _short_liability_chf(positions)
 
     themes: List[str] = []
     for pos in positions:

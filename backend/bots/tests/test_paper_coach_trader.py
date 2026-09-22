@@ -2250,11 +2250,13 @@ def test_deployment_view_compte_les_lignes_et_rend_les_theses():
         ],
     })
     assert view["n_positions"] == 2
-    # Convention du GARDE-FOU (``_equity_chf``) : les deux sens comptent en
-    # valeur ABSOLUE — 6000 + 4000 (short) + 1000 (long) = 11000 d'équité,
-    # dont 6000 dorment en trésorerie.
+    # LOT 14b — mis à jour DÉLIBÉRÉMENT. L'ancienne convention (les deux sens
+    # en valeur absolue : 6000 + 4000 + 1000 = 11000, 54,5 %) comptait la
+    # dette de rachat du short comme un avoir. Équité NETTE du garde-fou :
+    # 6000 + 1000 (long) − 4000 (short) = 3000 ; trésorerie LIBRE = 6000 −
+    # 4000 de produit du short = 2000, soit 66,7 %.
     # arrondi à la décimale : ce chiffre se LIT dans un prompt.
-    assert view["cash_pct"] == 54.5
+    assert view["cash_pct"] == 66.7
     assert view["themes_ouverts"] == [
         "DAL (short) — hausse du kérosène après le blocage d'Ormuz",
         "NESN.SW (long) — défensive sur repli du marché",
@@ -2645,3 +2647,48 @@ def test_une_embuscade_est_perimee_apres_sa_date():
 def test_un_ordre_sans_date_de_peremption_ne_perime_jamais():
     assert coach_trader.is_expired({"symbol": "A"}, "2030-01-01T00:00:00+00:00") \
         is False
+
+
+# --------------------------------------------------------------------------- #
+# LOT 14b T1 — l'équité du garde-fou est NETTE : un short est une DETTE
+# --------------------------------------------------------------------------- #
+
+def test_equity_counts_a_short_as_a_debt_not_an_asset():
+    """Le cash porte DÉJÀ le produit de la vente à découvert : additionner la
+    ligne courte la compterait deux fois. Même règle que
+    ``paper_router._coach_equity_chf`` (corrigée le 30/08)."""
+    positions = [_pos("DAL", qty=25, avg_price=80.0, side="short"),
+                 _pos("NESN.SW", qty=10, avg_price=100.0)]
+    # 12 000 + 1 000 (long) − 2 000 (dette de rachat du short) = 11 000
+    assert coach_trader._equity_chf(12000.0, positions) == pytest.approx(11000.0)
+
+
+def test_equity_applies_the_fx_rate_on_both_sides():
+    positions = [_pos("HSY", qty=10, avg_price=100.0, fx_rate=0.8, side="short"),
+                 _pos("FRO", qty=10, avg_price=50.0, fx_rate=0.8)]
+    assert coach_trader._equity_chf(5000.0, positions) == pytest.approx(
+        5000.0 - 800.0 + 400.0)
+
+
+def test_risk_high_is_measured_against_NET_equity_when_short():
+    """VÉCU (22/09, compte réel) : un short HSY faisait passer l'équité du
+    garde-fou de ~8 760 à ~14 020 CHF — le plafond de risque de 2 % en
+    autorisait ~3,2 %. Ici : cash 12 000 dont 2 000 de produit de short,
+    équité nette 10 000 -> risque max 200. 25 x (100-90) = 250 : refusé.
+    (L'ancienne équité brute, 14 000, laissait passer jusqu'à 280.)"""
+    pf = _pf(cash=12000.0,
+             positions=[_pos("DAL", qty=25, avg_price=80.0, side="short")])
+    out = coach_trader.gate_decision(_buy(qty=25, stop=90.0), pf, _quote(100.0))
+    assert out["reason"] == "risk_high"
+
+
+def test_deployment_view_short_proceeds_do_not_count_as_idle_cash():
+    """Avec un short, ``cash / équité nette`` dépasserait 100 % : la part du
+    cash qui est le produit d'une vente à découvert est GAGÉE par la dette de
+    rachat, elle ne « dort » pas. Le chiffre montré est la trésorerie LIBRE."""
+    view = coach_trader.deployment_view({
+        "cash_chf": 12000.0,
+        "positions": [_pos("DAL", qty=25, avg_price=80.0, side="short")],
+    })
+    # libre = 12 000 − 2 000 = 10 000 ; équité nette = 10 000
+    assert view["cash_pct"] == 100.0
