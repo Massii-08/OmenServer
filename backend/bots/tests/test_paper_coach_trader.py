@@ -444,9 +444,12 @@ def test_gate_widens_the_noise_floor_with_a_large_atr():
 
 
 def test_gate_accepts_a_stop_beyond_half_the_atr():
+    # LOT 15 — une entrée porte un horizon (3 j dans la fabrique) : son
+    # plancher est 0,8 x √3 = 1,39 ATR = 6,9 %, plus seulement 1 ATR. Le stop
+    # passe donc à 7 % (il était à 6 %, au-delà du seul ATR).
     technical = {"atr14_pct": 5.0}
     out = coach_trader.gate_decision(
-        _buy(qty=20, stop=94.0, target=140.0), _pf(), _quote(100.0),
+        _buy(qty=20, stop=93.0, target=140.0), _pf(), _quote(100.0),
         technical=technical)
     assert out["accepted"] is True
 
@@ -526,8 +529,11 @@ def test_un_ATR_entier_refuse_ce_qu_un_demi_ATR_acceptait():
 
 
 def test_un_stop_au_dela_d_un_ATR_entier_passe():
+    # LOT 15 — avec l'horizon minimal (3 j) le plancher d'une ENTRÉE est
+    # 0,8 x √3 = 1,39 ATR (6,9 %) : le stop passe de 6 à 7 %, et la taille de
+    # 30 à 28 pour garder le risque sous 2 % (196 CHF).
     out = coach_trader.gate_decision(
-        _buy(qty=30, stop=94.0, target=140.0), _ibkr(), _quote(100.0),
+        _buy(qty=28, stop=93.0, target=140.0), _ibkr(), _quote(100.0),
         technical={"atr14_pct": 5.0})
     assert out["accepted"] is True
 

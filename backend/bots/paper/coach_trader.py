@@ -803,7 +803,43 @@ _NOISE_ATR_MULT = 1.0
 _NOISE_MIN_PCT = 1.0
 
 
-def _noise_floor_pct(round_trip: float, atr_pct: Optional[float]) -> float:
+# LOT 15 — le bruit d'un titre sur l'HORIZON d'une thèse.
+#
+# ⚠️ POINT DE DÉPART À MESURER, PAS UNE VÉRITÉ. Hypothèse de travail : le
+# cours suit à peu près une marche aléatoire, donc son bruit ordinaire grandit
+# comme la RACINE du temps. ``0,8 x ATR`` approche l'écart-type d'UNE séance
+# (pour une loi normale, l'écart absolu moyen vaut ~0,8 écart-type) ; donc
+# ``0,8 x ATR x √H`` approche un écart-type du mouvement sur H séances, et un
+# stop posé à cette distance survit au bruit à peu près deux fois sur trois.
+# Mesuré sur le compte (23/09) : sur des thèses JUSTES du radar à 15-20 jours
+# (VRT, PINS), des stops à ~1 ATR ont sauté en 3 jours, avant que la thèse
+# ait joué. Borné entre 1 ATR (jamais plus serré qu'avant ce lot) et 4 ATR
+# (jamais une largeur absurde). Les chiffres (0,8, 1, 4) sont à réviser quand
+# T6 (``economics_view``, thèses justes/fausses x trades gagnants/perdants)
+# aura assez de trades pour dire s'ils tiennent.
+#
+# Le RISQUE par trade ne change pas : ``MAX_RISK_PCT`` fait rétrécir la
+# position à mesure que le stop s'élargit — une perte au stop coûte toujours
+# au plus 2 % de l'équité (``too_small`` si la ligne devient trop petite).
+_HORIZON_SIGMA_PER_ATR = 0.8
+_HORIZON_MIN_ATR = 1.0
+_HORIZON_MAX_ATR = 4.0
+
+
+def _horizon_atr_mult(horizon_days: Optional[float]) -> Optional[float]:
+    """``borne(0,8 x √H, 1, 4)`` — le multiple d'ATR exigé pour H jours
+    RESTANTS, ou ``None`` sans horizon exploitable (H <= 0 : échéance passée,
+    le tick fermera la ligne)."""
+    horizon = _val(horizon_days)
+    if horizon is None or horizon <= 0:
+        return None
+    return min(_HORIZON_MAX_ATR,
+               max(_HORIZON_MIN_ATR,
+                   _HORIZON_SIGMA_PER_ATR * math.sqrt(horizon)))
+
+
+def _noise_floor_pct(round_trip: float, atr_pct: Optional[float],
+                     horizon_days: Optional[float] = None) -> float:
     """Le plancher de distance stop↔cours en dessous duquel resserrer revient
     à se faire toucher par le bruit ordinaire du titre plutôt que par une
     vraie invalidation de thèse.
@@ -826,6 +862,12 @@ def _noise_floor_pct(round_trip: float, atr_pct: Optional[float]) -> float:
     floor = max(2.0 * round_trip, _NOISE_MIN_PCT)
     if atr_pct is not None:
         floor = max(floor, _NOISE_ATR_MULT * atr_pct)
+        # LOT 15 — une thèse qui porte un horizon respire sur H jours, pas sur
+        # une séance (cf. :data:`_HORIZON_SIGMA_PER_ATR`). Sans ATR, on ne
+        # devine pas une respiration : le plancher reste celui d'avant.
+        mult = _horizon_atr_mult(horizon_days)
+        if mult is not None:
+            floor = max(floor, mult * atr_pct)
     return floor
 
 
@@ -842,7 +884,8 @@ def _locked_gain_pct(side: str, avg_price: Optional[float],
 
 
 def _stop_in_noise(distance_pct: float, round_trip: float,
-                   atr_pct: Optional[float], locked_gain_pct: float) -> bool:
+                   atr_pct: Optional[float], locked_gain_pct: float,
+                   horizon_days: Optional[float] = None) -> bool:
     """Vrai si ce stop tombe dans le bruit ET ne verrouille pas un gain déjà
     ACQUIS d'au moins 3x le coût d'un aller-retour.
 
@@ -857,7 +900,7 @@ def _stop_in_noise(distance_pct: float, round_trip: float,
     gain DÉJÀ ENCAISSÉ vaut au moins ce plancher : autrement dit, on ne
     s'autorise un stop dans le bruit qu'une fois le bruit déjà payé.
     """
-    floor = _noise_floor_pct(round_trip, atr_pct)
+    floor = _noise_floor_pct(round_trip, atr_pct, horizon_days)
     if locked_gain_pct >= max(3.0 * round_trip, floor):
         return False
     return distance_pct < floor
@@ -1283,7 +1326,7 @@ def gate_decision(decision: Any, portfolio: Any, quote: Any,
 
     if action == "adjust_stop":
         return _gate_adjust_stop(symbol, decision, positions, quote,
-                                 portfolio, technical)
+                                 portfolio, technical, now)
 
     qty_raw = decision.get("qty")
     qty = _as_qty(qty_raw)
@@ -1476,8 +1519,13 @@ def gate_decision(decision: Any, portfolio: Any, quote: Any,
     # Le stop INITIAL d'une entrée n'a encore verrouillé aucun gain (la ligne
     # n'existe pas encore) : l'exception de :func:`_stop_in_noise` ne joue
     # donc jamais ici, seul le plancher de bruit compte.
+    #
+    # LOT 15 — le plancher est celui de l'HORIZON RESTANT de la thèse
+    # (``days_left`` du contrat : jusqu'à l'échéance héritée, ou l'horizon
+    # déclaré entier) — cf. :data:`_HORIZON_SIGMA_PER_ATR`.
     distance_pct = abs(entry - stop) / entry * 100.0
-    if _stop_in_noise(distance_pct, round_trip, _atr_pct(technical), 0.0):
+    if _stop_in_noise(distance_pct, round_trip, _atr_pct(technical), 0.0,
+                      contract.get("days_left")):
         return _reject("stop_in_noise")
 
     # LOT 13 — l'anti-whipsaw en TOUT dernier, et c'est délibéré : c'est le
@@ -1502,10 +1550,22 @@ def _stop_protects(side: str, stop: float, price: float) -> bool:
     return stop < price if side == "long" else stop > price
 
 
+def _line_days_left(line: Dict[str, Any], now: Any) -> Optional[float]:
+    """Jours restants de la thèse d'une ligne OUVERTE (LOT 15) — ``None``
+    pour une ligne sans contrat (d'avant ce lot : plancher inchangé). Sans
+    horloge, l'horizon entier (on ne devine pas une date)."""
+    deadline = _text(line.get("thesis_deadline"))
+    if not deadline:
+        return None
+    if now is None:
+        return _val(line.get("horizon_days"))
+    return days_left(deadline, now)
+
+
 def _gate_adjust_stop(symbol: str, decision: Dict[str, Any],
                       positions: List[Dict[str, Any]],
                       quote: Dict[str, Any], portfolio: Dict[str, Any],
-                      technical: Any = None) -> Dict[str, Any]:
+                      technical: Any = None, now: Any = None) -> Dict[str, Any]:
     """Déplacer le stop d'une ligne ouverte — il ne peut QUE se resserrer.
 
     C'est ce qui rend tenable la consigne « laisse courir les gagnants » : sans
@@ -1555,8 +1615,12 @@ def _gate_adjust_stop(symbol: str, decision: Dict[str, Any],
             locked_gain = _locked_gain_pct(side, _val(line.get("avg_price")),
                                            price)
             distance_pct = abs(price - stop) / price * 100.0
+            # LOT 15 — une ligne de THÈSE respire sur son horizon restant :
+            # sans ça, T2 se contournerait en deux passes (entrer à 3 ATR,
+            # resserrer à 1 ATR à la suivante). Le gain déjà verrouillé garde
+            # son exception, jugée contre ce même plancher.
             if _stop_in_noise(distance_pct, round_trip, _atr_pct(technical),
-                              locked_gain):
+                              locked_gain, _line_days_left(line, now)):
                 return _reject("stop_in_noise")
 
     return _accept(symbol, "adjust_stop", 0, decision)
@@ -1660,6 +1724,76 @@ def _market_closed_detail(symbol: str, now: Any) -> Optional[str]:
                end_h, end_m))
 
 
+def _stop_in_noise_detail(decision: Dict[str, Any], portfolio: Dict[str, Any],
+                          quote: Dict[str, Any], now: Any, technical: Any,
+                          thesis: Any) -> Optional[str]:
+    """La phrase d'un ``stop_in_noise`` qui ENSEIGNE le bon stop (LOT 15) :
+    le plancher exigé, POURQUOI (l'horizon restant de la thèse, quand c'est
+    lui qui borne), le stop qui passerait et — pour une entrée — la taille
+    qui garde le risque sous :data:`MAX_RISK_PCT`. Refait EXACTEMENT le
+    calcul de la porte (mêmes helpers), sinon le texte mentirait."""
+    symbol = _symbol(decision.get("symbol"))
+    action = _text(decision.get("action")).lower()
+    stop = _val(decision.get("stop"))
+    price = _val(quote.get("price"))
+    fx = _val(quote.get("fx_rate")) or 1.0
+    if stop is None or price is None or price <= 0:
+        return None
+    atr = _atr_pct(technical)
+    positions = _dicts(portfolio.get("positions"))
+    if action == "adjust_stop":
+        line = _line_of(positions, symbol)
+        if line is None:
+            return None
+        side = _pos_side(line)
+        entry = price
+        qty = abs(_val(line.get("qty")) or 0.0)
+        horizon = _line_days_left(line, now)
+    else:
+        side = _SIDE_OF_ACTION.get(action, "long")
+        entry = price
+        trigger = _val(decision.get("trigger"))
+        if _text(decision.get("kind")).lower() == "stop" \
+                and trigger is not None and trigger > 0:
+            entry = trigger
+        qty = _as_qty(decision.get("qty")) or 0
+        contract, _code = thesis_contract(decision, thesis, now)
+        horizon = contract.get("days_left") if contract else None
+    round_trip = _round_trip_pct(portfolio.get("fee_profile"),
+                                 qty * entry * fx, symbol)
+    floor = _noise_floor_pct(round_trip, atr, horizon)
+    distance = abs(entry - stop) / entry * 100.0
+    good = entry * (1.0 - floor / 100.0) if side == "long" \
+        else entry * (1.0 + floor / 100.0)
+
+    mult = _horizon_atr_mult(horizon)
+    if atr is not None and mult is not None and mult * atr >= floor - 1e-9 \
+            and mult > _NOISE_ATR_MULT:
+        why = ("pour une thèse à %s jour(s) de son échéance : ATR %s %% x "
+               "0,8 x √%s = %s ATR — le bruit ordinaire d'un titre grandit "
+               "comme la racine du temps, un stop plus serré saute avant que "
+               "la thèse ait joué"
+               % (_fr(horizon, 0), _fr(atr), _fr(horizon, 0), _fr(mult, 1)))
+    else:
+        why = ("le plus exigeant de : 1 ATR (%s), 2 x l'aller-retour (%s %%), "
+               "%s %% absolu"
+               % ("%s %%" % _fr(atr) if atr is not None else "inconnu",
+                  _fr(2.0 * round_trip), _fr(_NOISE_MIN_PCT, 0)))
+    text = ("stop %s à %s %% de %s — plancher exigé %s %% (%s) ; un stop à %s "
+            "passerait"
+            % (_fr(stop), _fr(distance, 1), _fr(entry), _fr(floor, 1), why,
+               _fr(good)))
+    if action != "adjust_stop":
+        equity = _equity_chf(portfolio.get("cash_chf"), positions)
+        unit_risk = entry * fx * floor / 100.0
+        if unit_risk > 0 and equity > 0:
+            max_qty = int(equity * MAX_RISK_PCT / 100.0 / unit_risk)
+            text += (" — et la taille rétrécit d'autant pour garder le risque "
+                     "sous %s %% de l'équité : au plus %d titre(s) à ce stop"
+                     % (_fr(MAX_RISK_PCT, 0), max_qty))
+    return text
+
+
 def reject_detail(code: Any, decision: Any, portfolio: Any, quote: Any,
                   now: Any = None, technical: Any = None,
                   thesis: Any = None) -> Optional[str]:
@@ -1683,7 +1817,7 @@ def reject_detail(code: Any, decision: Any, portfolio: Any, quote: Any,
         code = _text(code)
         if code not in ("no_target", "edge_thin", "whipsaw",
                         "too_many_positions", "market_closed",
-                        "no_horizon", "thesis_expiring"):
+                        "no_horizon", "thesis_expiring", "stop_in_noise"):
             return None
 
         decision = decision if isinstance(decision, dict) else {}
@@ -1731,6 +1865,10 @@ def reject_detail(code: Any, decision: Any, portfolio: Any, quote: Any,
                         "toujours")
             return ("objectif illisible (%s) : une entrée doit dire ce "
                     "qu'elle vise, en chiffres" % (raw,))
+
+        if code == "stop_in_noise":
+            return _stop_in_noise_detail(decision, portfolio, quote, now,
+                                         technical, thesis)
 
         # Le NIVEAU de référence est celui de la porte : le trigger d'une
         # embuscade, le cours sinon (cf. ``gate_decision``).

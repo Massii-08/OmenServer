@@ -6050,7 +6050,10 @@ def test_the_stop_in_noise_refusal_names_the_distance(tmp_path, monkeypatch):
                                     source="daily")
     assert rows[0]["reason"] == "stop_in_noise"
     detail = rows[0]["detail"] or ""
-    assert "99.5" in detail
+    # LOT 15 — le détail vient de ``coach_trader.reject_detail`` (nombres à
+    # la française) et ENSEIGNE le stop qui passerait.
+    assert "99,50" in detail
+    assert "passerait" in detail
 
 
 def test_the_coach_can_sell_what_he_holds(tmp_path, monkeypatch):

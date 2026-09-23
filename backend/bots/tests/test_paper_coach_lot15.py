@@ -230,3 +230,97 @@ def test_a_legacy_file_has_no_contract_never_an_invented_one(cls, extra):
 def test_an_unreadable_horizon_is_none():
     assert models.Position.from_dict({"symbol": "X", "horizon_days": "dix"}
                                      ).horizon_days is None
+
+
+# =========================================================================== #
+# T2 — un stop dimensionné pour l'horizon de la thèse
+# =========================================================================== #
+
+@pytest.mark.parametrize("horizon,expected", [
+    (None, 2.0),                      # sans horizon : le plancher d'avant
+    (1, 2.0),                         # 0,8 x √1 = 0,8 -> borné à 1 ATR
+    (1.5625, 2.0),                    # 0,8 x 1,25 = 1,0 ATR exactement
+    (4, 2.0 * 1.6),                   # 0,8 x 2 = 1,6 ATR
+    (16, 2.0 * 3.2),                  # 0,8 x 4 = 3,2 ATR
+    (25, 2.0 * 4.0),                  # 0,8 x 5 = 4,0 ATR
+    (100, 2.0 * 4.0),                 # borné à 4 ATR : jamais une largeur absurde
+])
+def test_the_noise_floor_grows_like_the_square_root_of_the_horizon(horizon, expected):
+    assert coach_trader._noise_floor_pct(0.1, 2.0, horizon) == pytest.approx(expected)
+
+
+def test_without_atr_the_horizon_changes_nothing():
+    """Sans ATR, on ne DEVINE pas une respiration : plancher d'avant."""
+    assert coach_trader._noise_floor_pct(0.1, None, 20) == pytest.approx(1.0)
+
+
+def test_the_horizon_never_makes_the_floor_tighter():
+    """Plus exigeant que le plancher des frais, jamais moins."""
+    assert coach_trader._noise_floor_pct(3.0, 1.0, 25) == pytest.approx(6.0)
+
+
+def test_an_entry_stop_is_judged_on_the_REMAINING_horizon():
+    """ATR 2 %, thèse héritée à 16 jours de l'échéance : plancher 3,2 ATR =
+    6,4 %. Un stop à 5 % (hier encore largement hors du bruit) est refusé."""
+    tech = {"atr14_pct": 2.0}
+    thesis = _inherited(deadline="2026-10-09T10:00:00", horizon=20)   # J-16
+    out = coach_trader.gate_decision(
+        _buy(qty=10, stop=95.0, target=140.0), _pf(), _quote(), now=NOW,
+        technical=tech, thesis=thesis)
+    assert out["reason"] == "stop_in_noise"
+    ok = coach_trader.gate_decision(
+        _buy(qty=10, stop=93.5, target=140.0), _pf(), _quote(), now=NOW,
+        technical=tech, thesis=thesis)
+    assert ok["accepted"] is True, ok
+
+
+def test_a_declared_horizon_sizes_the_stop_too():
+    tech = {"atr14_pct": 2.0}
+    out = coach_trader.gate_decision(
+        _buy(qty=10, stop=96.0, target=140.0, horizon_days=9), _pf(), _quote(),
+        now=NOW, technical=tech)            # 0,8 x 3 = 2,4 ATR = 4,8 %
+    assert out["reason"] == "stop_in_noise"
+
+
+def test_the_risk_rule_still_caps_the_loss_at_the_stop():
+    """Le stop s'élargit, le RISQUE ne change pas : 2 % de l'équité. Un stop
+    à 6,5 % n'autorise que 30 titres à 100 (195 CHF) ; 40 sont refusés."""
+    tech = {"atr14_pct": 2.0}
+    thesis = _inherited(deadline="2026-10-09T10:00:00", horizon=20)
+    out = coach_trader.gate_decision(
+        _buy(qty=40, stop=93.5, target=140.0), _pf(), _quote(), now=NOW,
+        technical=tech, thesis=thesis)
+    assert out["reason"] == "risk_high"
+
+
+def test_tightening_a_thesis_stop_back_into_its_noise_is_refused():
+    """Sinon T2 serait contourné en deux passes : entrer à 3 ATR, puis
+    resserrer à 1 ATR à la passe suivante."""
+    line = {"symbol": "NESN.SW", "qty": 20, "avg_price": 100.0,
+            "currency": "CHF", "fx_rate": 1.0, "side": "long",
+            "stop_loss": 90.0, "horizon_days": 20, "invalidation": INVALIDATION,
+            "thesis_deadline": "2026-10-09T10:00:00"}
+    tech = {"atr14_pct": 2.0}
+    out = coach_trader.gate_decision(
+        {"action": "adjust_stop", "symbol": "NESN.SW", "stop": 97.0},
+        _pf(positions=[line]), _quote(), now=NOW, technical=tech)
+    assert out["reason"] == "stop_in_noise"
+    legacy = dict(line, thesis_deadline=None, horizon_days=None)
+    out = coach_trader.gate_decision(
+        {"action": "adjust_stop", "symbol": "NESN.SW", "stop": 97.0},
+        _pf(positions=[legacy]), _quote(), now=NOW, technical=tech)
+    assert out["accepted"] is True, out        # ligne d'avant : inchangé
+
+
+def test_the_stop_in_noise_detail_TEACHES_the_stop_for_this_horizon():
+    tech = {"atr14_pct": 2.0}
+    thesis = _inherited(deadline="2026-10-09T10:00:00", horizon=20)
+    decision = _buy(qty=10, stop=95.0, target=140.0)
+    text = coach_trader.reject_detail("stop_in_noise", decision, _pf(),
+                                      _quote(), now=NOW, technical=tech,
+                                      thesis=thesis)
+    assert "6,4" in text                    # le plancher exigé, en %
+    assert "93,60" in text                  # le stop qui passerait
+    assert "16" in text                     # les jours restants
+    assert "√" in text or "racine" in text  # le pourquoi
+    assert "31" in text                     # la taille qui garde 2 % de risque
