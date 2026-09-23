@@ -2254,6 +2254,20 @@ def _coach_origin(symbol: str, side: str, portfolio: models.Portfolio,
     return source, None
 
 
+def _radar_verdicts() -> Dict[str, Any]:
+    """``{hypothesis_id: outcome}`` de TOUTES les hypothèses du radar (LOT 15)
+    — ``outcome`` vaut ``None`` tant que le verdict n'est pas rendu (ouverte,
+    ou évincée en attente de son échéance). Best-effort : radar indisponible
+    -> ``{}``, et chaque trade tombe alors sous « inconnu », jamais sous un
+    verdict inventé."""
+    out: Dict[str, Any] = {}
+    for hyp in _radar_hypotheses():
+        hyp_id = str(hyp.get("id") or "").strip()
+        if hyp_id:
+            out[hyp_id] = hyp.get("outcome")
+    return out
+
+
 def _radar_hypothesis_by_id(hyp_id: Optional[str]) -> Optional[Dict[str, Any]]:
     """L'hypothèse radar d'identifiant ``hyp_id`` (ouverte ou notée), ou
     ``None`` — best-effort, jamais une exception (LOT 15)."""
@@ -4575,7 +4589,10 @@ def paper_coach_trader(
         # LOT 14 — frais / brut / net sur TOUS les trades clos, et le coût
         # d'un aller-retour au profil RÉEL du compte : ce que l'écran n'a
         # jamais montré, alors que la moitié de la perte était des frais.
-        "economics": coach_trader.economics_view(portfolio.to_dict()),
+        # LOT 15 — les verdicts du radar à l'échéance, pour croiser chaque
+        # trade né d'une idée avec ce que l'idée est devenue.
+        "economics": coach_trader.economics_view(portfolio.to_dict(),
+                                                 verdicts=_radar_verdicts()),
         "ledger": store.load_ledger(coach_trader.COACH_USERNAME),
         "equity": {
             "coach": store.load_equity(coach_trader.COACH_USERNAME),

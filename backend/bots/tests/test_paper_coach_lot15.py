@@ -499,3 +499,59 @@ def test_the_guardian_prompt_demands_an_exit_reason_threat_first():
     assert "exit_reason" in prompt
     assert "threat" in prompt
     assert "Une désescalade rapide dans le Golfe" in prompt
+
+
+# =========================================================================== #
+# T6 — la mesure : ce lot marche-t-il ?
+# =========================================================================== #
+
+def _trade(pnl, reason="stop", hyp=None, fees=1.0):
+    return {"symbol": "X", "pnl_chf": pnl, "fees_chf": fees,
+            "exit_reason": reason, "hypothesis_id": hyp,
+            "candidate_source": "radar" if hyp else "watchlist"}
+
+
+def test_economics_by_exit_reason():
+    view = coach_trader.economics_view(_pf(trades=[
+        _trade(-10.0, "stop"), _trade(25.0, "target"), _trade(-5.0, "stop"),
+        _trade(8.0, "threat"), _trade(3.0, ""), _trade(-2.0, None)]))
+    by = view["by_exit_reason"]
+    assert by["stop"] == {"n_trades": 2, "n_wins": 0, "net_pnl_chf": -15.0}
+    assert by["target"] == {"n_trades": 1, "n_wins": 1, "net_pnl_chf": 25.0}
+    assert by["threat"]["n_trades"] == 1
+    assert by["unknown"] == {"n_trades": 2, "n_wins": 1, "net_pnl_chf": 1.0}
+
+
+def test_economics_crosses_the_trade_with_the_radar_verdict():
+    trades = [_trade(40.0, "deadline", "h1"),      # thèse juste, capturée
+              _trade(-106.0, "coach", "h2"),       # thèse juste, MANQUÉE (VRT)
+              _trade(-20.0, "stop", "h3"),         # thèse fausse, perdante
+              _trade(5.0, "target", "h4"),         # thèse fausse, gagnante
+              _trade(-3.0, "stop", "h5"),          # verdict pas encore rendu
+              _trade(7.0, "target", "h6"),         # indécise
+              _trade(9.0, "target", "gone"),       # hypothèse disparue
+              _trade(1.0, "target")]               # pas d'hypothèse : hors mesure
+    verdicts = {"h1": "hit", "h2": "hit", "h3": "miss", "h4": "miss",
+                "h5": None, "h6": "unclear"}
+    view = coach_trader.economics_view(_pf(trades=trades), verdicts=verdicts)
+    cross = view["by_thesis_verdict"]
+    assert cross["hit"] == {"n_trades": 2, "n_wins": 1, "n_losses": 1,
+                            "net_pnl_chf": -66.0}
+    assert cross["miss"] == {"n_trades": 2, "n_wins": 1, "n_losses": 1,
+                             "net_pnl_chf": -15.0}
+    assert cross["pending"] == {"n_trades": 1, "n_wins": 0, "n_losses": 1,
+                                "net_pnl_chf": -3.0}
+    assert cross["unclear"]["n_trades"] == 1
+    assert cross["unknown"]["n_trades"] == 1          # jamais inventé
+    assert sum(r["n_trades"] for r in cross.values()) == 7
+
+
+def test_without_verdicts_every_radar_trade_is_unknown_never_a_verdict():
+    view = coach_trader.economics_view(_pf(trades=[_trade(4.0, "target", "h1")]))
+    assert list(view["by_thesis_verdict"]) == ["unknown"]
+
+
+def test_the_measure_is_empty_without_trades():
+    view = coach_trader.economics_view(_pf())
+    assert view["by_exit_reason"] == {}
+    assert view["by_thesis_verdict"] == {}

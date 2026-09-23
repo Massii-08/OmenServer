@@ -581,7 +581,16 @@ def fees_view(portfolio: Any, now: Any = None) -> Dict[str, Any]:
 UNKNOWN_SOURCE = "unknown"
 
 
-def economics_view(portfolio: Any) -> Dict[str, Any]:
+# LOT 15 — les cases du croisement thèse x trade (cf. :func:`economics_view`).
+# ``hit``/``miss``/``unclear`` sont les verdicts du radar À L'ÉCHÉANCE ;
+# ``pending`` = hypothèse connue, verdict pas encore rendu ; ``unknown`` =
+# hypothèse introuvable dans l'état du radar (ou verdicts non fournis) —
+# jamais un verdict deviné.
+THESIS_VERDICTS = ("hit", "miss", "unclear", "pending", "unknown")
+
+
+def economics_view(portfolio: Any,
+                   verdicts: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """L'ÉCONOMIE du compte sur TOUS ses trades clos (PUR — LOT 14), pour
     l'écran « Coach en action ».
 
@@ -608,6 +617,23 @@ def economics_view(portfolio: Any) -> Dict[str, Any]:
     source a un avantage. Un trade sans provenance (clos avant ce lot) va
     sous :data:`UNKNOWN_SOURCE`, jamais sous une source réelle. Vide sans
     trade.
+
+    LOT 15 — la MESURE du lot « le coach tient ses thèses » :
+      - ``by_exit_reason`` : ``{raison: {n_trades, n_wins, net_pnl_chf}}``
+        (``stop``, ``limit_fill``, ``deadline``, les :data:`EXIT_REASONS` du
+        coach, ``coach`` pour les sorties d'avant ce lot ; vide ->
+        :data:`UNKNOWN_SOURCE`). Dira si les sorties discrétionnaires
+        continuent de perdre ;
+      - ``by_thesis_verdict`` : pour les trades clos nés d'une hypothèse
+        radar (``hypothesis_id``), le croisement avec le VERDICT du radar à
+        l'échéance — ``{verdict: {n_trades, n_wins, n_losses,
+        net_pnl_chf}}`` sur :data:`THESIS_VERDICTS`. ``hit`` x gagnant =
+        thèse CAPTURÉE, ``hit`` x perdant = thèse MANQUÉE (VRT, PINS) ; même
+        lecture pour ``miss``. C'est LE chiffre qui dira si tenir la thèse
+        paie. ``verdicts`` (``{hypothesis_id: outcome}``, fourni par le
+        routeur depuis l'état du radar ; ``None`` = en attente) : sans lui,
+        tout va sous ``unknown`` — un verdict n'est JAMAIS deviné. Seules les
+        cases non vides sont présentes.
     """
     book = portfolio if isinstance(portfolio, dict) else {}
     trades = _dicts(book.get("trades"))
@@ -634,6 +660,7 @@ def economics_view(portfolio: Any) -> Dict[str, Any]:
     for row in by_source.values():
         row["net_pnl_chf"] = round(row["net_pnl_chf"], 2)
         row["gross_pnl_chf"] = round(row["gross_pnl_chf"], 2)
+    by_exit_reason, by_thesis_verdict = _thesis_measure(trades, verdicts)
     n_trades = len(trades)
     gross_pnl = net_pnl + fees_paid
 
@@ -654,7 +681,47 @@ def economics_view(portfolio: Any) -> Dict[str, Any]:
         "round_trip_pct": _round_trip_pct(profile, notional, ""),
         "notional_chf": round(notional, 2),
         "by_source": by_source,
+        "by_exit_reason": by_exit_reason,
+        "by_thesis_verdict": by_thesis_verdict,
     }
+
+
+def _thesis_measure(trades: List[Dict[str, Any]], verdicts: Any):
+    """``(by_exit_reason, by_thesis_verdict)`` de :func:`economics_view`
+    (PUR — LOT 15). Gagnant = ``pnl_chf`` > 0, même règle que partout."""
+    known = verdicts if isinstance(verdicts, dict) else None
+    by_reason: Dict[str, Dict[str, Any]] = {}
+    by_verdict: Dict[str, Dict[str, Any]] = {}
+    for trade in trades:
+        pnl = _val(trade.get("pnl_chf")) or 0.0
+        win = pnl > 0
+        reason = _text(trade.get("exit_reason")).lower() or UNKNOWN_SOURCE
+        row = by_reason.setdefault(reason, {"n_trades": 0, "n_wins": 0,
+                                            "net_pnl_chf": 0.0})
+        row["n_trades"] += 1
+        row["n_wins"] += 1 if win else 0
+        row["net_pnl_chf"] += pnl
+
+        hyp = _text(trade.get("hypothesis_id"))
+        if not hyp:
+            continue
+        if known is None or hyp not in known:
+            verdict = "unknown"
+        else:
+            outcome = _text(known.get(hyp)).lower()
+            verdict = outcome if outcome in ("hit", "miss", "unclear") \
+                else "pending"
+        cell = by_verdict.setdefault(verdict, {"n_trades": 0, "n_wins": 0,
+                                               "n_losses": 0,
+                                               "net_pnl_chf": 0.0})
+        cell["n_trades"] += 1
+        cell["n_wins" if win else "n_losses"] += 1
+        cell["net_pnl_chf"] += pnl
+    for row in list(by_reason.values()) + list(by_verdict.values()):
+        row["net_pnl_chf"] = round(row["net_pnl_chf"], 2)
+    ordered = {key: by_verdict[key] for key in THESIS_VERDICTS
+               if key in by_verdict}
+    return by_reason, ordered
 
 
 def _fronts(positions: List[Dict[str, Any]], ambushes: List[Dict[str, Any]],

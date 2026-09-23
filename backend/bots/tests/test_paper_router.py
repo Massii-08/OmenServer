@@ -9187,3 +9187,25 @@ def test_lot15_a_legacy_line_has_no_thesis_state(tmp_path, monkeypatch):
     c, _ = make_client(tmp_path, monkeypatch)
     seed = seed_coach_position(qty=10)
     assert pr._coach_position_row(seed.positions[0], 100.0, 1.0)["these"] is None
+
+
+# --- T6 — la mesure, servie à l'écran --------------------------------------- #
+
+def test_lot15_the_economics_card_crosses_trades_with_radar_verdicts(
+        tmp_path, monkeypatch):
+    c, market = make_client(tmp_path, monkeypatch)
+    hyp = _hyp15()
+    _seed_radar([hyp])
+    pr.execute_coach_actions([coach_action()], source="daily",
+                             origins=[{"symbol": "NESN.SW", "source": "radar"}])
+    _close_nesn_at(market, 131.0)                         # l'objectif part
+    body = c.get("/api/paper/coach-trader").json()["economics"]
+    assert body["by_exit_reason"]["limit_fill"]["n_wins"] == 1
+    assert body["by_thesis_verdict"] == {
+        "pending": {"n_trades": 1, "n_wins": 1, "n_losses": 0,
+                    "net_pnl_chf": body["net_pnl_chf"]}}
+
+    hyp.update(status="scored", outcome="hit")             # verdict rendu
+    _seed_radar([hyp])
+    body = c.get("/api/paper/coach-trader").json()["economics"]
+    assert list(body["by_thesis_verdict"]) == ["hit"]
