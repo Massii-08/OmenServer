@@ -1226,8 +1226,56 @@ def run_tick(portfolio: models.Portfolio, now_iso: str,
                 cancelled.extend(fill.get("orphans_cancelled") or [])
             break
 
+    # LOT 15 — l'ÉCHÉANCE de la thèse ferme la position, sans attendre le LLM,
+    # exactement comme un stop ou un objectif. Le radar juge ses idées à leur
+    # échéance ; une ligne qui leur survit ne mesure plus la thèse mais le
+    # hasard (et c'est le seul moyen de la comparer à ce verdict, cf. T6).
+    #
+    # APRÈS les stops : une ligne stoppée dans la même fenêtre sort en
+    # « stop », la vraie raison. Uniquement MARCHÉ OUVERT pour CE titre
+    # (``coach_trader.tradable_now``) : pas d'exécution un samedi sous un prix
+    # que personne n'a vu — la clôture attend la prochaine ouverture. Au
+    # dernier cours connu (la dernière bougie de ``TICK_INTERVAL``), par le
+    # chemin normal de clôture (``close_position`` -> ``_close_leg``) : l'objectif
+    # limite devenu orphelin est annulé par le mécanisme du LOT 13.
+    #
+    # Une ligne SANS échéance (d'avant ce lot, ou d'un humain) n'est JAMAIS
+    # concernée.
+    deadlines: List[Dict[str, Any]] = []
+    for position in list(portfolio.positions):
+        if not position.thesis_deadline:
+            continue
+        left = coach_trader.days_left(position.thesis_deadline, now_iso)
+        if left is None or left > 0:
+            continue
+        if not coach_trader.tradable_now(position.symbol, now_iso):
+            continue
+        candles = candles_for(position.symbol)
+        if not candles:
+            continue
+        last = None
+        for candle in _window(candles, None):
+            if _num(candle.get("close")) is not None:
+                last = _num(candle.get("close"))
+        if last is None or last <= 0:
+            continue
+        try:
+            fx_rate = fetch_fx(position.currency)
+        except Exception as e:
+            errors.append({"symbol": position.symbol, "error": str(e)[:200]})
+            continue
+        try:
+            fill = close_position(portfolio, position, position.qty, last,
+                                  fx_rate, now_iso, "deadline")
+        except OrderError as e:
+            errors.append({"symbol": position.symbol, "error": str(e)})
+            continue
+        _attach_trade_extras(portfolio, fill, username)
+        deadlines.append(fill)
+        cancelled.extend(fill.get("orphans_cancelled") or [])
+
     return {"fills": filled, "stopped": stopped, "cancelled": cancelled,
-            "errors": errors}
+            "errors": errors, "deadlines": deadlines}
 
 
 # --------------------------------------------------------------------------- #
@@ -2722,9 +2770,31 @@ def tick_coach_account(now_iso: Optional[str] = None) -> Dict[str, Any]:
 
     result = run_tick(portfolio, now, fetch_candles, quotes.fx_to_chf, username)
     _save(username, portfolio)
-    _push_coach_ledger(_ambush_ledger_rows(armed, result, now))
+    _push_coach_ledger(_ambush_ledger_rows(armed, result, now)
+                       + _deadline_ledger_rows(result, now))
     _sync_coach(username, portfolio.to_dict())
     return result
+
+
+def _deadline_ledger_rows(result: Dict[str, List[Dict[str, Any]]],
+                          now_iso: str) -> List[Dict[str, Any]]:
+    """Les clôtures À ÉCHÉANCE de thèse du tick, au registre (LOT 15) —
+    personne n'est là quand elles partent. Source vide : c'est le MOTEUR qui
+    ferme, aucune passe du coach (inventer « daily » falsifierait la
+    trace, même doctrine que :func:`_ambush_ledger_rows`)."""
+    rows: List[Dict[str, Any]] = []
+    for fill in result.get("deadlines") or []:
+        trade = fill.get("trade") or {}
+        rows.append(coach_trader.ledger_entry(
+            now_iso, "", "deadline", fill.get("symbol") or "", True,
+            detail=("échéance de thèse (%s) : %d x %s clôturé à %.2f %s, "
+                    "résultat %.2f CHF"
+                    % (str(trade.get("thesis_deadline") or "?")[:10],
+                       int(fill.get("qty") or 0), fill.get("symbol") or "?",
+                       float(fill.get("price") or 0.0),
+                       fill.get("currency") or "",
+                       float(trade.get("pnl_chf") or 0.0)))))
+    return rows
 
 
 def _ambush_ledger_rows(armed: Dict[str, models.Order],

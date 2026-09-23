@@ -8448,11 +8448,14 @@ def test_un_ordre_LIMITE_d_objectif_ne_perime_JAMAIS(tmp_path, monkeypatch):
     """L'objectif d'une position ouverte n'a pas de date : il vit aussi
     longtemps que la ligne."""
     c, market = make_client(tmp_path, monkeypatch)
-    pr.execute_coach_actions([coach_action()], source="daily")
+    # LOT 15 — la LIGNE, elle, a désormais une échéance (sa thèse) : on prend
+    # l'horizon maximal (120 j) et on regarde trois mois plus tard, avant
+    # qu'elle ne ferme la position et n'annule l'objectif par ricochet.
+    pr.execute_coach_actions([coach_action(horizon_days=120)], source="daily")
     market.candles["NESN.SW"] = [
         {"ts": _ts(11), "open": 101.0, "high": 105.0, "low": 99.0, "close": 103.0}]
 
-    pr.tick_coach_account(now_iso="2027-12-31T12:00:00+00:00")
+    pr.tick_coach_account(now_iso="2026-12-01T12:00:00+00:00")
     assert len(coach_portfolio()["open_orders"]) == 1
 
 
@@ -9066,3 +9069,67 @@ def test_lot15_a_legacy_line_never_gets_an_invented_contract(tmp_path, monkeypat
     assert position["qty"] == 22
     assert position["thesis_deadline"] is None
     assert position["horizon_days"] is None
+
+
+# --- T3 — l'échéance ferme la position ------------------------------------ #
+
+def _nesn_last_at(market, price):
+    market.candles["NESN.SW"] = [
+        {"ts": _ts(11), "open": price, "high": price, "low": price,
+         "close": price}]
+
+
+def test_lot15_a_past_deadline_closes_the_position_at_market(tmp_path, monkeypatch):
+    c, market = make_client(tmp_path, monkeypatch)
+    pr.execute_coach_actions([coach_action()], source="daily")   # échéance 27/08 10:00
+    assert len(coach_portfolio()["open_orders"]) == 1            # l'objectif limite
+    _nesn_last_at(market, 104.0)
+    result = pr.tick_coach_account("2026-08-27T10:05:00")        # jeudi, SIX ouverte
+    book = coach_portfolio()
+    assert book["positions"] == []
+    trade = book["trades"][0]
+    assert trade["exit_reason"] == "deadline"
+    assert trade["exit_price"] == 104.0
+    assert book["open_orders"] == []                  # l'objectif orphelin annulé
+    assert [f["exit_reason"] for f in result["deadlines"]] == ["deadline"]
+    rows = [r for r in coach_ledger() if r["action"] == "deadline"]
+    assert rows and rows[0]["symbol"] == "NESN.SW" and rows[0]["accepted"] is True
+
+
+def test_lot15_a_deadline_waits_for_the_market_to_open(tmp_path, monkeypatch):
+    """Pas d'exécution un samedi sous un prix que personne n'a vu."""
+    c, market = make_client(tmp_path, monkeypatch)
+    pr.execute_coach_actions([coach_action()], source="daily")
+    _nesn_last_at(market, 104.0)
+    pr.tick_coach_account("2026-08-29T11:00:00")                  # samedi
+    assert len(coach_portfolio()["positions"]) == 1
+    pr.tick_coach_account("2026-08-31T09:30:00")                  # lundi, ouverture
+    assert coach_portfolio()["positions"] == []
+    assert coach_portfolio()["trades"][0]["exit_reason"] == "deadline"
+
+
+def test_lot15_before_the_deadline_nothing_happens(tmp_path, monkeypatch):
+    c, market = make_client(tmp_path, monkeypatch)
+    pr.execute_coach_actions([coach_action()], source="daily")
+    _nesn_last_at(market, 104.0)
+    pr.tick_coach_account("2026-08-27T09:55:00")                  # 5 min avant
+    assert len(coach_portfolio()["positions"]) == 1
+
+
+def test_lot15_a_legacy_position_is_never_closed_by_a_deadline(tmp_path, monkeypatch):
+    c, market = make_client(tmp_path, monkeypatch)
+    seed_coach_position(qty=10)
+    _nesn_last_at(market, 104.0)
+    pr.tick_coach_account("2027-01-04T10:00:00")
+    assert len(coach_portfolio()["positions"]) == 1
+
+
+def test_lot15_the_stop_still_wins_if_it_went_first(tmp_path, monkeypatch):
+    """Un stop touché dans la même fenêtre sort la ligne en « stop » : la
+    boucle d'échéance ne voit plus qu'une position déjà close."""
+    c, market = make_client(tmp_path, monkeypatch)
+    pr.execute_coach_actions([coach_action()], source="daily")
+    _nesn_last_at(market, 85.0)                                   # sous le stop 90
+    pr.tick_coach_account("2026-08-27T10:05:00")
+    trades = coach_portfolio()["trades"]
+    assert [t["exit_reason"] for t in trades] == ["stop"]
