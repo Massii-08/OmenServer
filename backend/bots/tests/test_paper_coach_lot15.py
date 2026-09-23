@@ -411,3 +411,91 @@ def test_the_ledger_carries_the_exit_reason_only_when_there_is_one():
     assert row["exit_reason"] == "threat"
     assert "exit_reason" not in coach_trader.ledger_entry(
         "t", "daily", "buy", "NESN.SW", True)
+
+
+# =========================================================================== #
+# T5 — le mandat : tenir la thèse, pas réagir au bruit
+# =========================================================================== #
+
+from backend.bots.paper import llm  # noqa: E402
+
+_LINE = {"symbol": "FRO", "qty": 46, "side": "long", "avg_price": 51.48,
+         "horizon_days": 20, "invalidation": "Une désescalade rapide dans le Golfe",
+         "thesis_deadline": "2026-10-09T10:00:00"}
+
+
+def test_thesis_state_counts_the_days_of_the_thesis():
+    state = coach_trader.thesis_state(_LINE, NOW)          # J-16 sur 20
+    assert state == {"day": 5, "horizon": 20,
+                     "deadline": "2026-10-09T10:00:00", "days_left": 16.0,
+                     "invalidation": "Une désescalade rapide dans le Golfe"}
+
+
+def test_thesis_state_is_none_for_a_legacy_line():
+    assert coach_trader.thesis_state({"symbol": "X", "qty": 1}, NOW) is None
+
+
+def test_thesis_state_day_is_bounded():
+    late = coach_trader.thesis_state(_LINE, "2026-10-12T10:00:00")
+    assert late["day"] == 20 and late["days_left"] < 0
+
+
+def _book(**over):
+    row = dict(_LINE, these=coach_trader.thesis_state(_LINE, NOW))
+    book = {"cash_chf": 5000.0, "equity_chf": 9000.0, "positions": [row],
+            "open_orders": [], "candidates": []}
+    book.update(over)
+    return book
+
+
+def test_each_thesis_position_is_shown_with_its_state_and_invalidation():
+    block = llm.coach_actions_block(_book())
+    assert "FRO" in block and "jour 5/20" in block and "09/10" in block
+    assert "Une désescalade rapide dans le Golfe" in block
+    low = block.lower()
+    assert "intacte" in low and "invalidée" in low
+
+
+def test_no_thesis_section_without_thesis_positions():
+    block = llm.coach_actions_block(_book(positions=[]))
+    assert "TES THÈSES EN COURS" not in block
+
+
+def test_the_mandate_says_to_hold_the_thesis_not_react_to_noise():
+    low = llm.coach_actions_block(_book()).lower()
+    assert "bruit n'est pas une raison" in low
+    assert "à l'intérieur de ton stop" in low
+    for word in ("invalidation", "menace", "échéance", "objectif", "stop"):
+        assert word in low
+
+
+def test_the_mandate_quotes_his_own_record():
+    block = llm.coach_actions_block(_book())
+    assert "7 sur 7" in block
+    assert "VRT" in block and "PINS" in block
+    assert "3 jours" in block
+
+
+def test_the_mandate_explains_the_contract_and_the_exit_reasons():
+    block = llm.coach_actions_block(_book())
+    assert "horizon_days" in block and "invalidation" in block
+    assert "exit_reason" in block
+    for reason in coach_trader.EXIT_REASONS:
+        assert reason in block
+    assert "threat" in block
+
+
+def test_the_json_example_carries_the_contract_and_an_exit_reason():
+    block = llm.coach_actions_block(_book())
+    example = block.rsplit("```%s" % coach_trader.ACTIONS_MARKER, 1)[1]
+    assert '"horizon_days"' in example and '"invalidation"' in example
+    assert '"exit_reason"' in example
+
+
+def test_the_guardian_prompt_demands_an_exit_reason_threat_first():
+    prompt = llm.build_coach_guardian_prompt(
+        {"symbol": "FRO", "trigger": "stop", "stop_loss": 46.5,
+         "these": coach_trader.thesis_state(_LINE, NOW)})
+    assert "exit_reason" in prompt
+    assert "threat" in prompt
+    assert "Une désescalade rapide dans le Golfe" in prompt

@@ -1236,6 +1236,31 @@ def radar_contract(hyp: Any) -> Optional[Dict[str, Any]]:
             "thesis_deadline": _naive_local_iso(deadline)}
 
 
+def thesis_state(position: Any, now: Any) -> Optional[Dict[str, Any]]:
+    """L'ÉTAT de la thèse d'une ligne ouverte, pour le prompt et l'écran
+    (PUR — LOT 15) : ``{"day", "horizon", "deadline", "days_left",
+    "invalidation"}``, ou ``None`` pour une ligne sans contrat.
+
+    ``day`` compte les jours de la THÈSE, pas de la ligne : une idée du radar
+    née il y a 4 jours et achetée hier est à son 5ᵉ jour — c'est sur cette
+    fenêtre qu'elle sera jugée. Borné à [1, horizon] ; ``days_left`` devient
+    négatif passé l'échéance (le tick fermera la ligne)."""
+    if not isinstance(position, dict):
+        return None
+    deadline = _text(position.get("thesis_deadline"))
+    horizon = _val(position.get("horizon_days"))
+    if not deadline or horizon is None or horizon <= 0:
+        return None
+    left = days_left(deadline, now)
+    if left is None:
+        return None
+    horizon_int = int(round(horizon))
+    day = int(math.floor(horizon - left)) + 1
+    return {"day": max(1, min(horizon_int, day)), "horizon": horizon_int,
+            "deadline": deadline, "days_left": round(left, 1),
+            "invalidation": _text(position.get("invalidation"))}
+
+
 def position_contract(position: Any) -> Optional[Dict[str, Any]]:
     """Le contrat d'une ligne DÉJÀ OUVERTE, pour un renfort (PUR) — ``None``
     si la ligne n'en porte pas (ligne d'avant LOT 15)."""

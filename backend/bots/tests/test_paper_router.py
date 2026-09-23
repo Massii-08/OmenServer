@@ -9166,3 +9166,24 @@ def test_lot15_a_partial_reduce_carries_its_reason(tmp_path, monkeypatch):
         [{"action": "reduce", "symbol": "NESN.SW", "qty": 4,
           "exit_reason": "risk"}], source="daily")
     assert coach_portfolio()["trades"][0]["exit_reason"] == "risk"
+
+
+# --- T5 — l'état de la thèse voyage jusqu'au prompt et à l'écran ----------- #
+
+def test_lot15_every_thesis_line_carries_its_state_in_the_book(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+    pr.execute_coach_actions([coach_action(horizon_days=10)], source="daily")
+    seed = pr._load(COACH)
+    rows = [pr._coach_position_row(p, 100.0, 1.0) for p in seed.positions]
+    assert rows[0]["these"] == {"day": 1, "horizon": 10,
+                                "deadline": "2026-09-03T10:00:00",
+                                "days_left": 10.0,
+                                "invalidation": COACH_INVALIDATION}
+    view = pr._coach_position_view_row(seed.positions[0], 100.0, 1.0)
+    assert view["these"]["horizon"] == 10
+
+
+def test_lot15_a_legacy_line_has_no_thesis_state(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+    seed = seed_coach_position(qty=10)
+    assert pr._coach_position_row(seed.positions[0], 100.0, 1.0)["these"] is None

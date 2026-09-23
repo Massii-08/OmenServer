@@ -944,6 +944,32 @@ def _fees_lines(view: Any) -> list:
     ]
 
 
+def _thesis_lines(positions: Any) -> list:
+    """Les lignes de THÈSE en cours, une par position porteuse d'un contrat
+    (PUR — LOT 15), ou rien. Lit le champ ``these`` que le routeur pose sur
+    chaque ligne (``coach_trader.thesis_state``) : jour X / H, échéance, et
+    le TEXTE de la condition d'invalidation — c'est contre lui, et contre les
+    nouvelles qu'il voit déjà, que le coach juge la thèse intacte ou non."""
+    rows = []
+    for pos in positions if isinstance(positions, list) else []:
+        state = pos.get("these") if isinstance(pos, dict) else None
+        if not isinstance(state, dict) or not state.get("horizon"):
+            continue
+        deadline = str(state.get("deadline") or "")
+        shown = ("%s/%s" % (deadline[8:10], deadline[5:7])
+                 if len(deadline) >= 10 else "?")
+        rows.append("- %s (%s) : jour %s/%s, échéance %s — invalidée si : "
+                    "« %s »" % (pos.get("symbol") or "?",
+                                pos.get("side") or "long", state.get("day"),
+                                state.get("horizon"), shown,
+                                state.get("invalidation") or "(non écrite)"))
+    if not rows:
+        return []
+    return ["TES THÈSES EN COURS — pour CHACUNE, dis dans ton texte si elle "
+            "est INTACTE ou INVALIDÉE, au vu des nouvelles que tu as sous les "
+            "yeux (et seulement d'elles) :\n" + "\n".join(rows)]
+
+
 def coach_actions_block(book: Any) -> str:
     """Le bloc de clôture qui transforme un avis en DÉCISION (PUR).
 
@@ -997,8 +1023,8 @@ def coach_actions_block(book: Any) -> str:
         "variation sur 5 séances. POSE DES STOPS TECHNIQUES : sous un support "
         "ou une moyenne pour un achat, au-dessus d'une résistance ou d'une "
         "moyenne pour une vente à découvert. L'ATR te donne l'ORDRE DE "
-        "GRANDEUR — un stop plus serré que 1 ATR se fait sortir par le bruit "
-        "ordinaire du titre, un stop à 2 ou 3 ATR laisse respirer la thèse. "
+        "GRANDEUR de la respiration du titre — le plancher de ton stop en "
+        "dépend (cf. le contrat d'une entrée, plus bas). "
         "Un champ ``null`` veut dire que la donnée n'a pas pu être calculée "
         "(série trop courte) : ne l'invente pas, sers-toi du reste.",
         # Le mur vécu : quatre refus d'entrer d'affilée, ses meilleures thèses
@@ -1064,11 +1090,43 @@ def coach_actions_block(book: Any) -> str:
             coach_trader.MAX_POSITIONS,
             coach_trader.MAX_CRYPTO,
             _pct(coach_trader.MIN_CASH_PCT)),
-        "Une SORTIE (%s) n'a besoin ni de thèse ni de stop : elle réduit "
-        "l'exposition. Une ENTRÉE (%s) exige une thèse écrite d'au moins %d "
-        "caractères et un stop du BON CÔTÉ du prix — sous lui pour un achat, "
-        "au-dessus pour une vente à découvert — sans quoi elle est refusée."
+        "Une SORTIE (%s) n'a besoin ni de thèse ni de stop — mais d'une "
+        "RAISON (ci-dessous). Une ENTRÉE (%s) exige une thèse écrite d'au "
+        "moins %d caractères et un stop du BON CÔTÉ du prix — sous lui pour "
+        "un achat, au-dessus pour une vente à découvert — sans quoi elle est "
+        "refusée."
         % (sorties, entrees, coach_trader.MIN_THESIS_LEN),
+        # LOT 15 — le coach tient ses thèses. Mesuré sur SON compte (23/09) :
+        # le radar a raison 7 fois sur 11 à l'échéance (12 à 25 jours), lui
+        # ne tenait jamais plus de 6 jours et perdait sur les idées JUSTES.
+        "TU TIENS TES THÈSES. Une position de thèse se tient jusqu'à l'une "
+        "de cinq choses : son INVALIDATION (la condition écrite est remplie), "
+        "une MENACE (un facteur de menace a tiré — celle-là se solde sans "
+        "attendre), son ÉCHÉANCE (le moteur la ferme de lui-même), son "
+        "OBJECTIF, ou son STOP. Le bruit n'est pas une raison ; une "
+        "variation contre toi à l'intérieur de ton stop non plus — ton stop "
+        "est dimensionné pour l'absorber. Pourquoi cette règle : ton propre "
+        "historique. Tes sorties discrétionnaires : 7 sur 7 en perte. Sur les "
+        "idées du radar qui se sont révélées JUSTES, tu as perdu 128 CHF en "
+        "5 trades — VRT : thèse juste sur 15 jours, tenue 3 jours, -106 CHF ; "
+        "PINS : thèse juste sur 20 jours, tenue 3 jours, stoppée, puis le "
+        "titre a fait -9 % dans le sens de la thèse. Le radar pense en "
+        "semaines, tu agissais en jours.",
+        "LE CONTRAT D'UNE ENTRÉE. Née d'une idée du radar, elle HÉRITE de son "
+        "horizon, de son échéance et de sa condition d'invalidation — tu ne "
+        "peux pas les allonger, et à moins de %d jours de l'échéance elle "
+        "n'est plus jouable (``thesis_expiring``). Toute AUTRE entrée "
+        "DÉCLARE ``horizon_days`` (entier de %d à %d : le temps que ta thèse "
+        "met à jouer) et ``invalidation`` (une phrase : ce qui, s'il se "
+        "produit, tue l'idée) — sinon refusée (``no_horizon``). Ton stop se "
+        "dimensionne pour cet horizon : plancher de bruit = ATR x 0,8 x "
+        "racine(jours restants), entre 1 et 4 ATR ; la taille rétrécit "
+        "d'autant, le risque reste sous %s. Une SORTIE porte ``exit_reason`` "
+        "parmi %s — sinon refusée (``no_exit_reason``). ``threat`` passe "
+        "TOUJOURS : une menace ne se discute pas, elle se solde."
+        % (coach_trader.MIN_THESIS_HORIZON_D, coach_trader.MIN_THESIS_HORIZON_D,
+           coach_trader.MAX_THESIS_HORIZON_D, _pct(coach_trader.MAX_RISK_PCT),
+           " | ".join(coach_trader.EXIT_REASONS)),
         # LOT 9 — « on ne peut pas rester à attendre » (directive de Massii,
         # née d'un vécu : UNE ligne tenue, et des passes entières à guetter
         # « une clôture sous la SMA50 » sans jamais rien armer). Le mandat ne
@@ -1105,7 +1163,8 @@ def coach_actions_block(book: Any) -> str:
         "une décision complète ; un trade forcé pour avoir l'air déployé est "
         "une perte chiffrée d'avance."
         % ("%g" % coach_trader.MIN_NET_RR).replace(".", ","),
-    ] + _deployment_lines(book.get("deployment")) + _fees_lines(book.get("fees")) + [
+    ] + _thesis_lines(book.get("positions")) + _deployment_lines(
+        book.get("deployment")) + _fees_lines(book.get("fees")) + [
         # LOT 9 — le vrai « ne plus attendre ». Le coach écrivait « j'attends
         # une clôture sous la SMA50 pour ouvrir un short » : une embuscade
         # MENTALE, re-jugée passivement à chaque passe, que rien n'exécutait.
@@ -1171,7 +1230,9 @@ def coach_actions_block(book: Any) -> str:
         "immédiate) ou « stop » — dans ce dernier cas ``trigger`` devient "
         "OBLIGATOIRE et porte le prix d'armement de l'EMBUSCADE, dans la "
         "devise du titre lui aussi ; ``cancel_pending`` ne prend que "
-        "``symbol``. ``note`` "
+        "``symbol``. Une ENTRÉE porte ``horizon_days`` et ``invalidation`` "
+        "(inutiles si elle vient du radar, qui les lègue) ; une SORTIE porte "
+        "``exit_reason``. ``note`` "
         "est un champ de TÊTE, à côté de ``actions`` (pas dedans) : "
         "FACULTATIF et bienvenu en une phrase de lecture de marché quand tu "
         "agis, OBLIGATOIRE quand tu n'agis pas (cf. ci-dessus)."
@@ -1179,9 +1240,13 @@ def coach_actions_block(book: Any) -> str:
         "```%s\n"
         '{"actions": [{"action": "buy", "symbol": "NESN.SW", "qty": 12, '
         '"stop": 92.5, "target": 118.0, "thesis": "une phrase courte", '
-        '"setup": "news"}, {"action": "short", "symbol": "DAL", '
-        '"qty": 40, "kind": "stop", "trigger": 38.5, "stop": 41.2, '
-        '"target": 32.0, "thesis": "rupture du support sur le kerosene"}], '
+        '"setup": "news", "horizon_days": 15, '
+        '"invalidation": "ce qui tuerait l\'idée"}, {"action": "short", '
+        '"symbol": "DAL", "qty": 40, "kind": "stop", "trigger": 38.5, '
+        '"stop": 41.2, "target": 32.0, "thesis": "rupture du support sur le '
+        'kerosene", "horizon_days": 10, "invalidation": "retour au-dessus de '
+        '40 en clôture"}, {"action": "sell", "symbol": "FRO", '
+        '"exit_reason": "invalidated"}], '
         '"note": "une phrase de lecture de marché"}\n'
         "```" % coach_trader.ACTIONS_MARKER,
     ])
@@ -1357,6 +1422,21 @@ _GUARDIAN_TRIGGER_LINES = {
 }
 
 
+def _guardian_thesis_line(state: Any) -> list:
+    """La thèse de la ligne réveillée, pour le gardien (PUR — LOT 15), ou
+    rien pour une ligne sans contrat. Un mouvement contre soi n'est pas une
+    raison de sortir : seule l'invalidation, une menace, l'échéance,
+    l'objectif ou le stop le sont."""
+    if not isinstance(state, dict) or not state.get("horizon"):
+        return []
+    return ["C'EST UNE LIGNE DE THÈSE (jour %s/%s) : elle se tient jusqu'à "
+            "son invalidation — « %s » —, une menace, son échéance, son "
+            "objectif ou son stop. Le mouvement qui t'a réveillé n'est PAS "
+            "une raison en soi : dis si la thèse est INTACTE ou INVALIDÉE."
+            % (state.get("day"), state.get("horizon"),
+               state.get("invalidation") or "(non écrite)")]
+
+
 def build_coach_guardian_prompt(context: Optional[Dict[str, Any]],
                                 lang: str = "fr") -> str:
     """Prompt de la passe GARDIEN — gestion FOCALISÉE d'UNE SEULE position,
@@ -1412,10 +1492,14 @@ def build_coach_guardian_prompt(context: Optional[Dict[str, Any]],
         "RIEN FAIRE — un choix ARGUMENTÉ, jamais un silence : ``note`` "
         "devient alors OBLIGATOIRE, en une phrase précise (pas « je "
         "surveille », ça ne dit rien).",
+    ] + _guardian_thesis_line(ctx.get("these")) + [
         "Termine IMPÉRATIVEMENT ta réponse par ce bloc, et RIEN après. "
         "``action`` vaut %s ; ``symbol`` est « %s » (rien d'autre n'a de sens "
         "ici, toute autre valeur est refusée) ; un ``sell``/``cover`` SANS "
-        "``qty`` veut dire « solder la ligne entière »." % (kinds, symbol),
+        "``qty`` veut dire « solder la ligne entière ». Toute SORTIE porte "
+        "``exit_reason`` parmi %s — sans raison, elle est REFUSÉE ; si une "
+        "menace a tiré, c'est ``threat``, qui passe toujours."
+        % (kinds, symbol, " | ".join(coach_trader.EXIT_REASONS)),
         "```%s\n"
         '{"actions": [{"action": "adjust_stop", "symbol": "%s", "stop": %s}], '
         '"note": "une phrase courte"}\n'

@@ -3010,6 +3010,11 @@ def _coach_position_row(position: models.Position,
         "stop_loss": position.stop_loss,
         "target": position.target,
         "opened_at": position.opened_at,
+        # LOT 15 — l'état de la THÈSE (jour X / H, échéance, invalidation),
+        # ``None`` pour une ligne sans contrat. Le prompt la présente ligne par
+        # ligne (``llm._thesis_lines``) pour que le coach la juge intacte ou
+        # invalidée ; l'écran l'affiche.
+        "these": coach_trader.thesis_state(position.to_dict(), _now_iso()),
     }
 
 
@@ -3085,6 +3090,7 @@ def _coach_position_view_row(position: models.Position,
         "thesis": row["thesis"],
         "setup": position.setup,
         "opened_at": row["opened_at"],
+        "these": row["these"],
     }
 
 
