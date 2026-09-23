@@ -1332,6 +1332,15 @@ def test_le_prompt_gardien_ne_leve_jamais():
         assert isinstance(llm.build_coach_guardian_prompt(junk), str)
 
 
+def test_le_prompt_gardien_ne_menace_plus_de_refuser_une_sortie_sans_raison():
+    """LOT 16 — doctrine Massii, « Menace = tire seul » : la passe gardien
+    gère justement la réaction à une menace, elle ne doit plus prétendre
+    qu'une sortie sans ``exit_reason`` serait refusée."""
+    prompt = llm.build_coach_guardian_prompt(GUARDIAN_CTX)
+    assert "exit_reason" in prompt and "threat" in prompt
+    assert "elle est REFUSÉE" not in prompt
+
+
 # =========================================================================== #
 # LOT 9 — le RÉGIME DÉPLOYÉ (bloc partagé : les TROIS chemins en héritent)
 # =========================================================================== #

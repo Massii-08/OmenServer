@@ -340,25 +340,48 @@ def _line(**over):
 def test_the_exit_reasons_are_a_closed_list():
     assert coach_trader.EXIT_REASONS == ("invalidated", "threat", "target",
                                          "deadline", "risk", "rebalance")
-    assert "no_exit_reason" in coach_trader.REJECT_CODES
+
+
+def test_no_exit_reason_is_retired_as_a_reject_code():
+    """LOT 16 — inversion DÉLIBÉRÉE : cette fonction affirmait ici
+    ``"no_exit_reason" in coach_trader.REJECT_CODES``. Doctrine Massii :
+    « Menace = tire seul » — un ``exit_reason`` absent n'est plus un motif
+    de refus, le code est RETIRÉ. ``reject_detail`` ne le connaît plus : même
+    repli que n'importe quel code étranger, ``None``."""
+    assert "no_exit_reason" not in coach_trader.REJECT_CODES
+    assert coach_trader.reject_detail(
+        "no_exit_reason", {"action": "sell", "symbol": "NESN.SW"},
+        _pf(), _quote()) is None
 
 
 @pytest.mark.parametrize("action", ["sell", "reduce"])
 @pytest.mark.parametrize("reason", [None, "", "bruit", "je le sens mal", 42])
-def test_an_exit_without_a_listed_reason_is_refused(action, reason):
+def test_an_exit_without_a_listed_reason_is_accepted_and_recorded_unknown(
+        action, reason):
+    """LOT 16 — inversion DÉLIBÉRÉE de l'ancien
+    ``test_an_exit_without_a_listed_reason_is_refused``. Doctrine Massii :
+    « Menace = tire seul » — être le dernier à vendre est le SEUL cas qu'on
+    ne peut pas se permettre, et refuser cette sortie pour un ``exit_reason``
+    oublié y ressemblait trop (la ligne serait restée ouverte jusqu'à la
+    passe suivante, au moins 45 minutes pour le gardien). Absente, vide ou
+    hors liste, la raison n'est plus un motif de refus : elle est MESURÉE."""
     decision = {"action": action, "symbol": "NESN.SW", "qty": 5}
     if reason is not None:
         decision["exit_reason"] = reason
     out = coach_trader.gate_decision(decision, _pf(positions=[_line()]), _quote())
-    assert out["accepted"] is False
-    assert out["reason"] == "no_exit_reason"
+    assert out["accepted"] is True, out
+    assert out["order"]["exit_reason"] == "unknown"
 
 
-def test_a_cover_without_reason_is_refused_too():
+def test_a_cover_without_reason_is_accepted_and_recorded_unknown_too():
+    """LOT 16 — inversion DÉLIBÉRÉE de l'ancien
+    ``test_a_cover_without_reason_is_refused_too`` (même doctrine que
+    ci-dessus : « Menace = tire seul »)."""
     out = coach_trader.gate_decision(
         {"action": "cover", "symbol": "NESN.SW"},
         _pf(positions=[_line(side="short")]), _quote())
-    assert out["reason"] == "no_exit_reason"
+    assert out["accepted"] is True, out
+    assert out["order"]["exit_reason"] == "unknown"
 
 
 @pytest.mark.parametrize("reason", ["invalidated", "threat", "target",
@@ -393,16 +416,6 @@ def test_a_threat_exit_is_never_blocked_by_the_thesis_or_the_noise():
         _pf(positions=[line]), _quote(99.9), now=NOW,
         technical={"atr14_pct": 3.0})
     assert out["accepted"] is True
-
-
-def test_the_no_exit_reason_detail_names_the_list_and_the_threat_rule():
-    text = coach_trader.reject_detail(
-        "no_exit_reason", {"action": "sell", "symbol": "NESN.SW",
-                           "exit_reason": "bruit"}, _pf(), _quote())
-    for reason in coach_trader.EXIT_REASONS:
-        assert reason in text
-    assert "bruit" in text
-    assert "threat" in text and "toujours" in text
 
 
 def test_the_ledger_carries_the_exit_reason_only_when_there_is_one():
@@ -485,6 +498,15 @@ def test_the_mandate_explains_the_contract_and_the_exit_reasons():
     assert "threat" in block
 
 
+def test_the_mandate_no_longer_threatens_to_refuse_a_missing_exit_reason():
+    """LOT 16 — le mandat ne doit pas MENTIR sur ce que fait le moteur : un
+    ``exit_reason`` manquant n'est plus refusé (doctrine Massii, « Menace =
+    tire seul »), le mandat ne doit donc plus dire ``no_exit_reason``."""
+    block = llm.coach_actions_block(_book())
+    assert "no_exit_reason" not in block
+    assert "exit_reason" in block               # la demande, elle, reste
+
+
 def test_the_json_example_carries_the_contract_and_an_exit_reason():
     block = llm.coach_actions_block(_book())
     example = block.rsplit("```%s" % coach_trader.ACTIONS_MARKER, 1)[1]
@@ -499,6 +521,10 @@ def test_the_guardian_prompt_demands_an_exit_reason_threat_first():
     assert "exit_reason" in prompt
     assert "threat" in prompt
     assert "Une désescalade rapide dans le Golfe" in prompt
+    # LOT 16 — doctrine Massii, « Menace = tire seul » : le prompt gardien
+    # gère justement la réaction à une menace ; il affirmait ici qu'une
+    # sortie sans exit_reason serait REFUSÉE — c'est FAUX depuis ce lot.
+    assert "elle est REFUSÉE" not in prompt
 
 
 # =========================================================================== #

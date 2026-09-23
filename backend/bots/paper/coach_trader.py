@@ -252,10 +252,6 @@ REJECT_CODES = (
     #                         :data:`MIN_THESIS_HORIZON_D` jours : il ne reste
     #                         que du bruit de marché à jouer.
     "no_horizon", "thesis_expiring",
-    #   ``no_exit_reason`` — une SORTIE qui ne dit pas pourquoi (hors de
-    #                        :data:`EXIT_REASONS`). Contrôle de FORME, jamais
-    #                        de fond : ``threat`` passe toujours.
-    "no_exit_reason",
 )
 
 # LOT 15 — les raisons d'une SORTIE décidée par le coach, liste FERMÉE. Mesuré
@@ -269,10 +265,25 @@ REJECT_CODES = (
 #   ``deadline``    — l'échéance de la thèse est là ;
 #   ``risk``        — réduction de risque du LIVRE (pas de la ligne) ;
 #   ``rebalance``   — rééquilibrage (concentration, cash).
-# ⚠️ La porte ne JUGE PAS la raison : elle exige qu'elle soit DITE. Une vraie
-# menace ne doit jamais attendre — d'où la tolérance d'écriture ci-dessous.
+# ⚠️ LOT 16 — la porte ne JUGE PAS la raison, et depuis ce lot elle ne
+# l'EXIGE plus non plus. Doctrine Massii : « Menace = tire seul » — être le
+# dernier à vendre est le SEUL cas qu'on ne peut pas se permettre, et
+# refuser une sortie parce que le modèle a oublié d'écrire ``exit_reason``
+# produisait EXACTEMENT ce cas (la ligne restait ouverte jusqu'à la passe
+# suivante — au moins 45 minutes pour le gardien). Une raison absente, vide
+# ou hors liste n'est donc plus un refus : elle est ACCEPTÉE et enregistrée
+# :data:`UNKNOWN_EXIT_REASON` (cf. :func:`gate_decision`), exactement là où
+# une raison valide l'est — pour que la mesure (``economics_view``) dise si
+# le modèle l'oublie souvent. Le code de refus ``no_exit_reason`` a été
+# RETIRÉ de :data:`REJECT_CODES` : il n'a plus aucun appelant.
 EXIT_REASONS = ("invalidated", "threat", "target", "deadline", "risk",
                 "rebalance")
+
+# LOT 16 — la raison d'une sortie qui ne dit pas pourquoi (absente, vide, ou
+# hors de :data:`EXIT_REASONS`) : plus un refus, une case de MESURE. Même
+# valeur que :data:`UNKNOWN_SOURCE` (plus bas) — un seul mot pour « je ne
+# sais pas », dans toute la mesure du compte.
+UNKNOWN_EXIT_REASON = "unknown"
 
 # Les écritures qu'un modèle peut raisonnablement produire pour une raison de
 # la liste (casse, français, italien). Tolérance VOULUE : une sortie défensive
@@ -1504,13 +1515,17 @@ def gate_decision(decision: Any, portfolio: Any, quote: Any,
             qty = int(held)          # « tout solder »
         if qty > held:
             return _reject("qty_over_position")
-        # LOT 15 — une sortie dit POURQUOI (:data:`EXIT_REASONS`). Contrôle de
-        # FORME uniquement, en dernier : rien ici ne juge la raison, et
-        # ``threat`` passe toujours — « être le dernier à vendre est le seul
-        # cas qu'on ne peut pas se permettre ».
-        exit_reason = exit_reason_of(decision.get("exit_reason"))
-        if exit_reason is None:
-            return _reject("no_exit_reason")
+        # LOT 15/16 — une sortie DIT pourquoi (:data:`EXIT_REASONS`), mais ne
+        # bloque plus JAMAIS pour un défaut de forme. Doctrine Massii :
+        # « Menace = tire seul » — être le dernier à vendre est le SEUL cas
+        # qu'on ne peut pas se permettre, et refuser ``no_exit_reason``
+        # produisait EXACTEMENT ce cas (la ligne restait ouverte jusqu'à la
+        # passe suivante). Une raison absente, vide ou hors liste est donc
+        # ACCEPTÉE et enregistrée :data:`UNKNOWN_EXIT_REASON` — exactement là
+        # où une raison valide l'est (l'ordre, puis le trade clos et le
+        # registre) — pour que la mesure dise si le modèle l'oublie souvent.
+        exit_reason = exit_reason_of(decision.get("exit_reason")) \
+            or UNKNOWN_EXIT_REASON
         return _accept(symbol, "sell" if wanted == "long" else "cover",
                        qty, decision, exit_reason=exit_reason)
 
@@ -1964,23 +1979,13 @@ def reject_detail(code: Any, decision: Any, portfolio: Any, quote: Any,
         code = _text(code)
         if code not in ("no_target", "edge_thin", "whipsaw",
                         "too_many_positions", "market_closed",
-                        "no_horizon", "thesis_expiring", "stop_in_noise",
-                        "no_exit_reason"):
+                        "no_horizon", "thesis_expiring", "stop_in_noise"):
             return None
 
         decision = decision if isinstance(decision, dict) else {}
         portfolio = portfolio if isinstance(portfolio, dict) else {}
         quote = quote if isinstance(quote, dict) else {}
         symbol = _symbol(decision.get("symbol"))
-
-        if code == "no_exit_reason":
-            raw = decision.get("exit_reason")
-            got = ("aucune" if raw is None or not _text(raw)
-                   else "« %s »" % _text(raw)[:60])
-            return ("une sortie dit POURQUOI : exit_reason parmi %s (reçu : "
-                    "%s). « threat » (un facteur de menace a tiré) passe "
-                    "toujours — le bruit, lui, n'est pas une raison"
-                    % (", ".join(EXIT_REASONS), got))
 
         # LOT 15 — le contrat de thèse (``thesis`` = le contrat HÉRITÉ que le
         # routeur a passé à la porte, ou ``None``).

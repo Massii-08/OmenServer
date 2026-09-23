@@ -1122,8 +1122,10 @@ def coach_actions_block(book: Any) -> str:
         "dimensionne pour cet horizon : plancher de bruit = ATR x 0,8 x "
         "racine(jours restants), entre 1 et 4 ATR ; la taille rétrécit "
         "d'autant, le risque reste sous %s. Une SORTIE porte ``exit_reason`` "
-        "parmi %s — sinon refusée (``no_exit_reason``). ``threat`` passe "
-        "TOUJOURS : une menace ne se discute pas, elle se solde."
+        "parmi %s — c'est MESURÉ (``economics_view``), jamais un motif de "
+        "refus : une sortie sans raison passe quand même, enregistrée "
+        "« inconnue ». ``threat`` passe TOUJOURS : une menace ne se discute "
+        "pas, elle se solde."
         % (coach_trader.MIN_THESIS_HORIZON_D, coach_trader.MIN_THESIS_HORIZON_D,
            coach_trader.MAX_THESIS_HORIZON_D, _pct(coach_trader.MAX_RISK_PCT),
            " | ".join(coach_trader.EXIT_REASONS)),
@@ -1497,8 +1499,9 @@ def build_coach_guardian_prompt(context: Optional[Dict[str, Any]],
         "``action`` vaut %s ; ``symbol`` est « %s » (rien d'autre n'a de sens "
         "ici, toute autre valeur est refusée) ; un ``sell``/``cover`` SANS "
         "``qty`` veut dire « solder la ligne entière ». Toute SORTIE porte "
-        "``exit_reason`` parmi %s — sans raison, elle est REFUSÉE ; si une "
-        "menace a tiré, c'est ``threat``, qui passe toujours."
+        "``exit_reason`` parmi %s — c'est MESURÉ, jamais un motif de refus : "
+        "rien n'empêche une sortie sans raison. Si une menace a tiré, c'est "
+        "``threat``, qui passe toujours — et qui n'attend jamais."
         % (kinds, symbol, " | ".join(coach_trader.EXIT_REASONS)),
         "```%s\n"
         '{"actions": [{"action": "adjust_stop", "symbol": "%s", "stop": %s}], '

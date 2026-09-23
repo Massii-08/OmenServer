@@ -146,11 +146,13 @@ def test_every_reject_code_is_declared():
         "no_target", "edge_thin", "whipsaw",
         # LOT 15 — le contrat de thèse : absent, ou échéance trop proche.
         "no_horizon", "thesis_expiring",
-        # LOT 15 — une sortie qui ne dit pas pourquoi.
-        "no_exit_reason",
+        # LOT 15 avait ajouté ``no_exit_reason`` (une sortie qui ne dit pas
+        # pourquoi) ; LOT 16 l'a RETIRÉ — inversion DÉLIBÉRÉE, doctrine
+        # Massii « Menace = tire seul » : une sortie ne se refuse plus pour
+        # un défaut de forme, elle se MESURE (cf. coach_trader.py).
     }
     assert set(coach_trader.REJECT_CODES) == expected
-    assert len(coach_trader.REJECT_CODES) == 31
+    assert len(coach_trader.REJECT_CODES) == 30
 
 
 def test_coach_username_survives_the_store_allowlist():

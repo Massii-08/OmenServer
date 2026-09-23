@@ -9149,14 +9149,21 @@ def test_lot15_an_exit_reason_lands_on_the_trade_and_the_ledger(tmp_path, monkey
     assert coach_ledger()[-1]["exit_reason"] == "threat"
 
 
-def test_lot15_an_exit_without_reason_is_refused_and_the_line_stays(tmp_path, monkeypatch):
+def test_lot15_an_exit_without_reason_is_accepted_and_recorded_unknown(
+        tmp_path, monkeypatch):
+    """LOT 16 — inversion DÉLIBÉRÉE de l'ancien
+    ``test_lot15_an_exit_without_reason_is_refused_and_the_line_stays``.
+    Doctrine Massii : « Menace = tire seul » — la ligne ne doit plus JAMAIS
+    rester ouverte parce que le modèle a oublié d'écrire ``exit_reason``."""
     c, _ = make_client(tmp_path, monkeypatch)
     seed_coach_position(qty=10)
     rows = pr.execute_coach_actions([{"action": "sell", "symbol": "NESN.SW"}],
                                     source="daily")
-    assert rows[0]["reason"] == "no_exit_reason"
-    assert "threat" in rows[0]["detail"]
-    assert len(coach_portfolio()["positions"]) == 1
+    assert rows[0]["accepted"] is True, rows[0]
+    assert rows[0]["exit_reason"] == "unknown"
+    assert coach_portfolio()["positions"] == []
+    assert coach_portfolio()["trades"][0]["exit_reason"] == "unknown"
+    assert coach_ledger()[-1]["exit_reason"] == "unknown"
 
 
 def test_lot15_a_partial_reduce_carries_its_reason(tmp_path, monkeypatch):
