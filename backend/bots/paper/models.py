@@ -85,6 +85,18 @@ def _as_opt_text(value: Any) -> Optional[str]:
     return None
 
 
+def _as_opt_int(value: Any) -> Optional[int]:
+    """Entier OPTIONNEL (LOT 15 : horizon d'une thèse, en jours) : ``None``
+    reste ``None``, un illisible aussi — un horizon perdu est INCONNU, jamais
+    un nombre inventé."""
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        return int(float(value))
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
 def _as_dict_list(value: Any) -> List[Dict[str, Any]]:
     """Liste de dictionnaires ; toute entrée qui n'en est pas un est ignorée."""
     if not isinstance(value, list):
@@ -147,6 +159,17 @@ class Position:
     # une source devinée.
     candidate_source: Optional[str] = None
     hypothesis_id: Optional[str] = None
+    # LOT 15 — le CONTRAT DE THÈSE d'une entrée du coach : l'horizon (jours),
+    # la condition d'invalidation (texte) et l'ÉCHÉANCE absolue (ISO naïf,
+    # heure de Rome). Hérité de l'hypothèse radar (échéance = ``created_at`` +
+    # horizon, celle sur laquelle le radar se juge) ou déclaré par le coach ;
+    # posé sur l'ordre, porté à la position puis au ``Trade`` clos, exactement
+    # comme la provenance. ``None``/``""`` = AUCUN contrat (ordre d'avant ce
+    # lot, ou d'un humain) — jamais un contrat inventé : sans échéance, le
+    # tick ne ferme rien (cf. ``paper_router.run_tick``).
+    horizon_days: Optional[int] = None
+    invalidation: str = ""
+    thesis_deadline: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -171,6 +194,9 @@ class Position:
             forced_warnings=_as_str_list(data.get("forced_warnings")),
             candidate_source=_as_opt_text(data.get("candidate_source")),
             hypothesis_id=_as_opt_text(data.get("hypothesis_id")),
+            horizon_days=_as_opt_int(data.get("horizon_days")),
+            invalidation=_as_str(data.get("invalidation")),
+            thesis_deadline=_as_opt_text(data.get("thesis_deadline")),
         )
 
 
@@ -223,6 +249,17 @@ class Order:
     # une source devinée.
     candidate_source: Optional[str] = None
     hypothesis_id: Optional[str] = None
+    # LOT 15 — le CONTRAT DE THÈSE d'une entrée du coach : l'horizon (jours),
+    # la condition d'invalidation (texte) et l'ÉCHÉANCE absolue (ISO naïf,
+    # heure de Rome). Hérité de l'hypothèse radar (échéance = ``created_at`` +
+    # horizon, celle sur laquelle le radar se juge) ou déclaré par le coach ;
+    # posé sur l'ordre, porté à la position puis au ``Trade`` clos, exactement
+    # comme la provenance. ``None``/``""`` = AUCUN contrat (ordre d'avant ce
+    # lot, ou d'un humain) — jamais un contrat inventé : sans échéance, le
+    # tick ne ferme rien (cf. ``paper_router.run_tick``).
+    horizon_days: Optional[int] = None
+    invalidation: str = ""
+    thesis_deadline: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -253,6 +290,9 @@ class Order:
             source=_as_str(data.get("source")),
             candidate_source=_as_opt_text(data.get("candidate_source")),
             hypothesis_id=_as_opt_text(data.get("hypothesis_id")),
+            horizon_days=_as_opt_int(data.get("horizon_days")),
+            invalidation=_as_str(data.get("invalidation")),
+            thesis_deadline=_as_opt_text(data.get("thesis_deadline")),
         )
 
 
@@ -309,6 +349,17 @@ class Trade:
     # une source devinée.
     candidate_source: Optional[str] = None
     hypothesis_id: Optional[str] = None
+    # LOT 15 — le CONTRAT DE THÈSE d'une entrée du coach : l'horizon (jours),
+    # la condition d'invalidation (texte) et l'ÉCHÉANCE absolue (ISO naïf,
+    # heure de Rome). Hérité de l'hypothèse radar (échéance = ``created_at`` +
+    # horizon, celle sur laquelle le radar se juge) ou déclaré par le coach ;
+    # posé sur l'ordre, porté à la position puis au ``Trade`` clos, exactement
+    # comme la provenance. ``None``/``""`` = AUCUN contrat (ordre d'avant ce
+    # lot, ou d'un humain) — jamais un contrat inventé : sans échéance, le
+    # tick ne ferme rien (cf. ``paper_router.run_tick``).
+    horizon_days: Optional[int] = None
+    invalidation: str = ""
+    thesis_deadline: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -343,6 +394,9 @@ class Trade:
             forced_warnings=_as_str_list(data.get("forced_warnings")),
             candidate_source=_as_opt_text(data.get("candidate_source")),
             hypothesis_id=_as_opt_text(data.get("hypothesis_id")),
+            horizon_days=_as_opt_int(data.get("horizon_days")),
+            invalidation=_as_str(data.get("invalidation")),
+            thesis_deadline=_as_opt_text(data.get("thesis_deadline")),
         )
 
 

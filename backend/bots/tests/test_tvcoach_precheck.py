@@ -300,7 +300,10 @@ def test_equivalence_fee_ratio_avec_la_porte_du_coach():
     refuse : même profil, même barème, même seuil (3 x aller-retour)."""
     portfolio = _portfolio(fee_profile="yuh")
     decision = {"action": "buy", "symbol": "AAPL", "qty": 10, "stop": 98.0,
-                "target": 100.5, "thesis": "these assez longue pour passer"}
+                "target": 100.5, "thesis": "these assez longue pour passer",
+                # LOT 15 — une entrée du coach porte un contrat de thèse.
+                "horizon_days": 3,
+                "invalidation": "retour sous le range en clôture"}
     gate = coach_trader.gate_decision(
         decision, portfolio, {"price": 100.0, "currency": "CHF", "fx_rate": 1.0})
     assert gate["reason"] == "fee_ratio"
@@ -312,7 +315,10 @@ def test_equivalence_fee_ratio_avec_la_porte_du_coach():
 def test_equivalence_stop_in_noise_avec_la_porte_du_coach():
     portfolio = _portfolio(fee_profile="yuh")
     decision = {"action": "buy", "symbol": "AAPL", "qty": 10, "stop": 99.95,
-                "target": 130.0, "thesis": "these assez longue pour passer"}
+                "target": 130.0, "thesis": "these assez longue pour passer",
+                # LOT 15 — une entrée du coach porte un contrat de thèse.
+                "horizon_days": 3,
+                "invalidation": "retour sous le range en clôture"}
     gate = coach_trader.gate_decision(
         decision, portfolio, {"price": 100.0, "currency": "CHF", "fx_rate": 1.0})
     assert gate["reason"] == "stop_in_noise"

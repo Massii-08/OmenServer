@@ -25,6 +25,7 @@ import pytest
 from backend.bots.paper import coach_trader, store
 
 THESIS = "cassure du range mensuel sur volume"     # > MIN_THESIS_LEN
+INVALIDATION = "retour sous le range sur une clôture quotidienne"
 
 # Mercredi 26/08/2026, heures LOCALES Rome (CEST = UTC+2).
 WED_0900 = datetime(2026, 8, 26, 7, 0, 0, tzinfo=timezone.utc)    # 09:00 Rome
@@ -80,7 +81,9 @@ def _short(**over):
     """Une vente à découvert VALIDE : 20 x 100 = 2000 CHF (20 % de l'équité),
     stop à 105 -> risque 100 CHF (1 % de l'équité)."""
     base = {"action": "short", "symbol": "NESN.SW", "qty": 20, "stop": 105.0,
-            "target": 80.0, "thesis": THESIS, "setup": "contrarian"}
+            "target": 80.0, "thesis": THESIS, "setup": "contrarian",
+            # LOT 15 — le contrat de thèse d'une entrée (``no_horizon`` sinon).
+            "horizon_days": 3, "invalidation": INVALIDATION}
     base.update(over)
     return base
 
@@ -363,7 +366,8 @@ def test_a_crypto_order_passes_whatever_the_hour():
     # sinon il se ferait refuser pour une raison qui n'est pas la sienne.
     out = coach_trader.gate_decision(
         {"action": "buy", "symbol": "BTC-USD", "qty": 20, "stop": 95.0,
-         "target": 130.0, "thesis": THESIS},
+         "target": 130.0, "thesis": THESIS, "horizon_days": 3,
+         "invalidation": INVALIDATION},
         _pf(), _quote(), now=SUN_1805)
     assert out["accepted"] is True
 

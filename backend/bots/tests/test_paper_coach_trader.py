@@ -36,6 +36,9 @@ FRIDAY_LATE_IS_SATURDAY_LOCAL = datetime(2026, 8, 28, 22, 30, 0, tzinfo=timezone
 WINTER_FRIDAY = datetime(2026, 1, 9, 16, 0, 0, tzinfo=timezone.utc)
 
 THESIS = "cassure du range mensuel sur volume"     # > MIN_THESIS_LEN
+INVALIDATION = "retour sous le range sur une clôture quotidienne"
+# LOT 15 — le contrat de thèse que toute ENTRÉE porte désormais.
+CONTRACT = {"horizon_days": 3, "invalidation": INVALIDATION}
 
 
 @pytest.fixture(autouse=True)
@@ -72,8 +75,11 @@ def _quote(price=100.0, currency="CHF", fx_rate=1.0):
 
 
 def _buy(**over):
+    # LOT 15 — une entrée porte un CONTRAT de thèse (``no_horizon`` sinon) :
+    # la fabrique le déclare, les tests d'autres règles n'ont pas à s'en soucier.
     base = {"action": "buy", "symbol": "NESN.SW", "qty": 20, "stop": 95.0,
-            "target": 130.0, "thesis": THESIS, "setup": "breakout"}
+            "target": 130.0, "thesis": THESIS, "setup": "breakout",
+            "horizon_days": 3, "invalidation": INVALIDATION}
     base.update(over)
     return base
 
@@ -138,9 +144,11 @@ def test_every_reject_code_is_declared():
         # LOT 13 — le regime IBKR : l'objectif obligatoire, l'esperance NETTE,
         # et le rachat plus cher de ce qu'on vient de perdre.
         "no_target", "edge_thin", "whipsaw",
+        # LOT 15 — le contrat de thèse : absent, ou échéance trop proche.
+        "no_horizon", "thesis_expiring",
     }
     assert set(coach_trader.REJECT_CODES) == expected
-    assert len(coach_trader.REJECT_CODES) == 28
+    assert len(coach_trader.REJECT_CODES) == 30
 
 
 def test_coach_username_survives_the_store_allowlist():
@@ -707,7 +715,7 @@ def test_whipsaw_ne_vise_pas_l_AUTRE_sens():
     pf = _ibkr(trades=[_trade(side="long", exit_price=100.0)])
     out = coach_trader.gate_decision(
         {"action": "short", "symbol": "NESN.SW", "qty": 29, "stop": 105.0,
-         "target": 94.0, "thesis": THESIS},
+         "target": 94.0, "thesis": THESIS, **CONTRACT},
         pf, _quote(102.0), now=WED_NOW)
     assert out["accepted"] is True
 
@@ -791,7 +799,7 @@ def test_whipsaw_pour_un_SHORT_refuse_une_re_entree_PLUS_BAS():
     pf = _ibkr(trades=[_trade(side="short", exit_price=100.0)])
     out = coach_trader.gate_decision(
         {"action": "short", "symbol": "NESN.SW", "qty": 30, "stop": 102.0,
-         "target": 90.0, "thesis": THESIS},
+         "target": 90.0, "thesis": THESIS, **CONTRACT},
         pf, _quote(98.0), now=WED_NOW)
     assert out["reason"] == "whipsaw"
 
@@ -800,7 +808,7 @@ def test_whipsaw_laisse_passer_un_SHORT_rouvert_PLUS_HAUT():
     pf = _ibkr(trades=[_trade(side="short", exit_price=100.0)])
     out = coach_trader.gate_decision(
         {"action": "short", "symbol": "NESN.SW", "qty": 28, "stop": 107.0,
-         "target": 94.0, "thesis": THESIS},
+         "target": 94.0, "thesis": THESIS, **CONTRACT},
         pf, _quote(104.0), now=WED_NOW)
     assert out["accepted"] is True
 
@@ -870,6 +878,10 @@ def test_gate_accepts_a_nominal_buy():
         "trigger": None,
         "thesis": THESIS, "stop_loss": 95.0, "target": 130.0,
         "setup": "breakout", "emotion": "calme",
+        # LOT 15 — le contrat de thèse voyage avec l'ordre ; sans horloge
+        # (``now`` absent) l'échéance ne se date pas.
+        "horizon_days": 3, "invalidation": INVALIDATION,
+        "thesis_deadline": None,
     }
 
 
@@ -2375,7 +2387,7 @@ def _piege(**over):
     """Une embuscade LONGUE : « achète si ça casse 110 par le haut »."""
     base = {"action": "buy", "symbol": "NESN.SW", "qty": 20, "kind": "stop",
             "trigger": 110.0, "stop": 104.0, "target": 130.0,
-            "thesis": THESIS, "setup": "breakout"}
+            "thesis": THESIS, "setup": "breakout", **CONTRACT}
     base.update(over)
     return base
 

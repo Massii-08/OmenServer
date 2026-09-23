@@ -5792,14 +5792,17 @@ def test_the_inline_mode_is_not_capped(tmp_path, monkeypatch):
 
 COACH = "coach"
 COACH_THESIS = "cassure du range mensuel sur volume soutenu"
+COACH_INVALIDATION = "retour sous le range sur une clôture quotidienne"
 
 
 def coach_action(**over):
     """Une entrée qui passe TOUT le garde-fou avec le marché par défaut
     (NESN.SW à 100 CHF, équité 10 000) : 1500 CHF = 15 % (plancher 10, plafond
     30), risque 150 CHF = 1,5 % (plafond 2), trésorerie restante 8500."""
+    # LOT 15 — une entrée porte un CONTRAT de thèse (``no_horizon`` sinon).
     base = {"action": "buy", "symbol": "NESN.SW", "qty": 15, "stop": 90.0,
-            "target": 130.0, "thesis": COACH_THESIS, "setup": "breakout"}
+            "target": 130.0, "thesis": COACH_THESIS, "setup": "breakout",
+            "horizon_days": 3, "invalidation": COACH_INVALIDATION}
     base.update(over)
     return base
 
@@ -7458,7 +7461,8 @@ def coach_short(**over):
     défaut (NESN.SW à 100 CHF, équité 10 000) : 1500 CHF = 15 % de l'équité,
     stop à 108 -> risque 120 CHF = 1,2 %."""
     base = {"action": "short", "symbol": "NESN.SW", "qty": 15, "stop": 108.0,
-            "target": 80.0, "thesis": COACH_THESIS, "setup": "contrarian"}
+            "target": 80.0, "thesis": COACH_THESIS, "setup": "contrarian",
+            "horizon_days": 3, "invalidation": COACH_INVALIDATION}
     base.update(over)
     return base
 
@@ -8253,7 +8257,8 @@ def coach_ambush(**over):
     """Une embuscade LONGUE armée à 110 sur NESN.SW (cours 100)."""
     base = {"action": "buy", "symbol": "NESN.SW", "qty": 15, "kind": "stop",
             "trigger": 110.0, "stop": 104.0, "target": 130.0,
-            "thesis": COACH_THESIS, "setup": "breakout"}
+            "thesis": COACH_THESIS, "setup": "breakout",
+            "horizon_days": 3, "invalidation": COACH_INVALIDATION}
     base.update(over)
     return base
 
@@ -8947,3 +8952,114 @@ def test_an_order_behind_an_ambush_tag_without_provenance_stays_unknown(
                              origins=[{"symbol": "NESN.SW", "source": "embuscade"}])
     position = coach_portfolio()["positions"][0]
     assert position["candidate_source"] is None
+
+
+# =========================================================================== #
+#  LOT 15 — le coach tient ses thèses (partie routeur)
+# =========================================================================== #
+
+def _hyp15(hyp_id="h15", created_at=FIXED_NOW, horizon=7,
+           invalidation="le Golfe se désescalade durablement"):
+    hyp = _open_hyp(["NESN.SW"], hyp_id)
+    hyp.update(created_at=created_at, horizon_days=horizon,
+               invalidation=invalidation)
+    return hyp
+
+
+def test_lot15_a_declared_contract_travels_to_the_position_and_the_trade(
+        tmp_path, monkeypatch):
+    c, market = make_client(tmp_path, monkeypatch)
+    rows = pr.execute_coach_actions([coach_action()], source="daily")
+    assert rows[0]["accepted"] is True, rows[0]
+    position = coach_portfolio()["positions"][0]
+    assert position["horizon_days"] == 3
+    assert position["invalidation"] == COACH_INVALIDATION
+    assert position["thesis_deadline"] == "2026-08-27T10:00:00"   # now + 3 j
+
+    _close_nesn_at(market, 131.0)                          # l'objectif part
+    trade = coach_portfolio()["trades"][0]
+    assert (trade["horizon_days"], trade["invalidation"],
+            trade["thesis_deadline"]) == (3, COACH_INVALIDATION,
+                                          "2026-08-27T10:00:00")
+
+
+def test_lot15_a_radar_entry_INHERITS_the_hypothesis_contract(tmp_path, monkeypatch):
+    """L'échéance est celle de l'HYPOTHÈSE (``created_at`` + horizon), pas
+    « maintenant + horizon » — et le coach ne peut pas l'allonger. Le radar
+    écrit ses dates en UTC naïf : l'échéance est ramenée en heure de Rome
+    (convention du module), 10:00 UTC = 12:00 Rome en août."""
+    c, market = make_client(tmp_path, monkeypatch)
+    _seed_radar([_hyp15()])
+    rows = pr.execute_coach_actions(
+        [coach_action(horizon_days=120, invalidation="je tiens pour toujours, quoi qu'il arrive")],
+        source="daily", origins=[{"symbol": "NESN.SW", "source": "radar"}])
+    assert rows[0]["accepted"] is True, rows[0]
+    position = coach_portfolio()["positions"][0]
+    assert position["hypothesis_id"] == "h15"
+    assert position["horizon_days"] == 7
+    assert position["invalidation"] == "le Golfe se désescalade durablement"
+    assert position["thesis_deadline"] == "2026-08-31T12:00:00"
+
+
+def test_lot15_a_nearly_expired_radar_idea_is_refused_with_its_detail(
+        tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+    _seed_radar([_hyp15(created_at="2026-08-19T10:00:00", horizon=7)])  # J-2
+    rows = pr.execute_coach_actions(
+        [coach_action()], source="daily",
+        origins=[{"symbol": "NESN.SW", "source": "radar"}])
+    assert rows[0]["accepted"] is False
+    assert rows[0]["reason"] == "thesis_expiring"
+    assert "26/08" in rows[0]["detail"]            # l'échéance, lisible
+    assert coach_portfolio()["positions"] == []
+
+
+def test_lot15_an_entry_without_contract_is_refused_and_taught(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+    action = coach_action()
+    action.pop("horizon_days")
+    rows = pr.execute_coach_actions([action], source="daily")
+    assert rows[0]["reason"] == "no_horizon"
+    assert "horizon_days" in rows[0]["detail"]
+    assert "invalidation" in rows[0]["detail"]
+
+
+def test_lot15_an_ambush_carries_its_contract_to_the_position(tmp_path, monkeypatch):
+    c, market = make_client(tmp_path, monkeypatch)
+    pr.execute_coach_actions([coach_ambush()], source="daily")
+    armed = coach_ambushes()[0]
+    assert armed["thesis_deadline"] == "2026-08-27T10:00:00"
+    market.candles["NESN.SW"] = [
+        {"ts": _ts(11), "open": 108.0, "high": 114.0, "low": 107.0,
+         "close": 113.0}]
+    pr.tick_coach_account()
+    position = coach_portfolio()["positions"][0]
+    assert (position["horizon_days"], position["thesis_deadline"]) == (
+        3, "2026-08-27T10:00:00")
+
+
+def test_lot15_reinforcing_cannot_lengthen_the_thesis(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+    pr.execute_coach_actions([coach_action(qty=12)], source="daily")
+    rows = pr.execute_coach_actions(
+        [coach_action(qty=12, horizon_days=60,
+                      invalidation="une toute autre idée, bien plus longue")],
+        source="daily", origins=[{"symbol": "NESN.SW", "source": "position"}])
+    assert rows[0]["accepted"] is True, rows[0]
+    position = coach_portfolio()["positions"][0]
+    assert position["qty"] == 24
+    assert position["thesis_deadline"] == "2026-08-27T10:00:00"
+    assert position["invalidation"] == COACH_INVALIDATION
+
+
+def test_lot15_a_legacy_line_never_gets_an_invented_contract(tmp_path, monkeypatch):
+    """Une ligne d'avant ce lot, renforcée : elle garde son comportement
+    (pas d'échéance -> jamais fermée par le tick)."""
+    c, _ = make_client(tmp_path, monkeypatch)
+    seed_coach_position(qty=10)
+    rows = pr.execute_coach_actions([coach_action(qty=12)], source="daily")
+    assert rows[0]["accepted"] is True, rows[0]
+    position = coach_portfolio()["positions"][0]
+    assert position["qty"] == 22
+    assert position["thesis_deadline"] is None
+    assert position["horizon_days"] is None

@@ -1,0 +1,232 @@
+"""LOT 15 — « le coach tient ses thèses » — 100 % hors ligne.
+
+Le radar pense en semaines (thèses de 12 à 25 jours, justes 7 fois sur 11),
+le coach agissait en jours (jamais plus de 6 jours de détention, médiane
+~2 j) : il coupait ses idées à 15 % de leur horizon. Ce lot aligne le coach
+sur la thèse :
+
+  T1 — toute ENTRÉE porte un contrat (horizon, invalidation, échéance),
+       hérité de l'hypothèse radar quand elle en vient ;
+  T2 — le plancher de bruit du stop grandit comme √(jours restants) ;
+  T3 — l'échéance ferme la position (moteur, sans LLM) ;
+  T4 — une SORTIE dit pourquoi (liste fermée, contrôle de FORME) ;
+  T6 — la mesure : par raison de sortie, et thèse juste/fausse x trade
+       gagnant/perdant.
+
+Ce fichier teste la partie PURE (``coach_trader``) ; le routeur est testé
+dans ``test_paper_router.py`` (section LOT 15).
+"""
+import math
+
+import pytest
+
+from backend.bots.paper import coach_trader, radar, store
+
+THESIS = "cassure du range mensuel sur volume"
+INVALIDATION = "clôture sous 92 sur volume (le range tient)"
+NOW = "2026-09-23T10:00:00"          # mercredi, 10:00 Rome : SIX ouverte
+
+
+@pytest.fixture(autouse=True)
+def _isolate_data_dir(tmp_path, monkeypatch):
+    monkeypatch.setattr(store, "DATA_DIR", tmp_path / "paper_trading")
+    yield
+
+
+def _pf(cash=10000.0, positions=None, trades=None):
+    return {"cash_chf": cash, "positions": list(positions or []),
+            "open_orders": [], "trades": list(trades or []),
+            "initial_capital": 10000.0}
+
+
+def _quote(price=100.0):
+    return {"price": price, "currency": "CHF", "fx_rate": 1.0}
+
+
+def _buy(**over):
+    base = {"action": "buy", "symbol": "NESN.SW", "qty": 20, "stop": 90.0,
+            "target": 130.0, "thesis": THESIS, "setup": "breakout",
+            "horizon_days": 10, "invalidation": INVALIDATION}
+    base.update(over)
+    return base
+
+
+def _inherited(deadline="2026-10-08T17:00:00", horizon=15,
+               invalidation="Une désescalade rapide dans le Golfe"):
+    return {"horizon_days": horizon, "invalidation": invalidation,
+            "thesis_deadline": deadline}
+
+
+# =========================================================================== #
+# T1 — le contrat de thèse
+# =========================================================================== #
+
+def test_new_reject_codes_are_declared():
+    for code in ("no_horizon", "thesis_expiring"):
+        assert code in coach_trader.REJECT_CODES
+
+
+def test_the_bounds_are_the_radar_ones():
+    """Pas un second jeu de bornes qui divergerait : celles du radar."""
+    assert coach_trader.MIN_THESIS_HORIZON_D == radar.MIN_HORIZON_D
+    assert coach_trader.MAX_THESIS_HORIZON_D == radar.MAX_HORIZON_COACH_D
+
+
+def test_a_declared_contract_travels_on_the_accepted_order():
+    out = coach_trader.gate_decision(_buy(), _pf(), _quote(), now=NOW)
+    assert out["accepted"] is True, out
+    order = out["order"]
+    assert order["horizon_days"] == 10
+    assert order["invalidation"] == INVALIDATION
+    # déclaré -> l'échéance court à partir de MAINTENANT (heure locale naïve)
+    assert order["thesis_deadline"] == "2026-10-03T10:00:00"
+
+
+@pytest.mark.parametrize("missing", ["horizon_days", "invalidation"])
+def test_an_entry_without_contract_is_refused(missing):
+    decision = _buy()
+    decision.pop(missing)
+    out = coach_trader.gate_decision(decision, _pf(), _quote(), now=NOW)
+    assert out["accepted"] is False
+    assert out["reason"] == "no_horizon"
+
+
+@pytest.mark.parametrize("horizon", [0, 2, 121, 999, "dix", None, True, 7.5])
+def test_a_declared_horizon_out_of_bounds_is_refused_not_clamped(horizon):
+    """On REJETTE, on ne rogne JAMAIS en silence (doctrine de la porte) :
+    un horizon hors [3, 120] n'est pas ramené dans les bornes."""
+    out = coach_trader.gate_decision(_buy(horizon_days=horizon), _pf(),
+                                     _quote(), now=NOW)
+    assert out["reason"] == "no_horizon"
+
+
+def test_a_numeric_string_horizon_is_read():
+    out = coach_trader.gate_decision(_buy(horizon_days="12"), _pf(), _quote(),
+                                     now=NOW)
+    assert out["accepted"] is True
+    assert out["order"]["horizon_days"] == 12
+
+
+def test_a_too_short_invalidation_is_refused():
+    out = coach_trader.gate_decision(_buy(invalidation="baisse"), _pf(),
+                                     _quote(), now=NOW)
+    assert out["reason"] == "no_horizon"
+
+
+def test_an_ambush_needs_a_contract_too():
+    ambush = _buy(kind="stop", trigger=110.0, stop=100.0, target=140.0)
+    ambush.pop("horizon_days")
+    out = coach_trader.gate_decision(ambush, _pf(), _quote(), now=NOW)
+    assert out["reason"] == "no_horizon"
+
+
+def test_an_inherited_contract_wins_over_the_declared_one():
+    """Né d'une idée du radar : horizon, invalidation et ÉCHÉANCE sont ceux
+    de l'hypothèse — le coach ne peut pas allonger."""
+    decision = _buy(horizon_days=120, invalidation="jamais, je tiens pour toujours")
+    out = coach_trader.gate_decision(decision, _pf(), _quote(), now=NOW,
+                                     thesis=_inherited())
+    assert out["accepted"] is True, out
+    order = out["order"]
+    assert order["horizon_days"] == 15
+    assert order["invalidation"] == "Une désescalade rapide dans le Golfe"
+    assert order["thesis_deadline"] == "2026-10-08T17:00:00"
+
+
+def test_an_inherited_contract_needs_nothing_declared():
+    decision = _buy()
+    decision.pop("horizon_days")
+    decision.pop("invalidation")
+    out = coach_trader.gate_decision(decision, _pf(), _quote(), now=NOW,
+                                     thesis=_inherited())
+    assert out["accepted"] is True, out
+
+
+def test_an_inherited_contract_without_invalidation_takes_the_declared_one():
+    """Une hypothèse ancienne dont l'invalidation est « (non précisée) » :
+    l'échéance reste héritée, l'invalidation est celle que le coach dit."""
+    out = coach_trader.gate_decision(
+        _buy(), _pf(), _quote(), now=NOW,
+        thesis=_inherited(invalidation="(non précisée)"))
+    assert out["accepted"] is True, out
+    assert out["order"]["invalidation"] == INVALIDATION
+    assert out["order"]["thesis_deadline"] == "2026-10-08T17:00:00"
+
+
+def test_an_inherited_contract_without_any_invalidation_is_refused():
+    decision = _buy()
+    decision.pop("invalidation")
+    out = coach_trader.gate_decision(decision, _pf(), _quote(), now=NOW,
+                                     thesis=_inherited(invalidation=""))
+    assert out["reason"] == "no_horizon"
+
+
+def test_an_inherited_contract_without_readable_deadline_is_refused():
+    out = coach_trader.gate_decision(_buy(), _pf(), _quote(), now=NOW,
+                                     thesis=_inherited(deadline="n'importe quoi"))
+    assert out["reason"] == "no_horizon"
+
+
+def test_a_thesis_expiring_in_less_than_three_days_is_not_playable():
+    out = coach_trader.gate_decision(
+        _buy(), _pf(), _quote(), now=NOW,
+        thesis=_inherited(deadline="2026-09-26T09:00:00"))   # 2 j 23 h
+    assert out["accepted"] is False
+    assert out["reason"] == "thesis_expiring"
+
+
+def test_a_thesis_three_days_away_is_still_playable():
+    out = coach_trader.gate_decision(
+        _buy(), _pf(), _quote(), now=NOW,
+        thesis=_inherited(deadline="2026-09-26T10:00:00"))
+    assert out["accepted"] is True, out
+
+
+def test_an_already_expired_thesis_is_not_playable():
+    out = coach_trader.gate_decision(
+        _buy(), _pf(), _quote(), now=NOW,
+        thesis=_inherited(deadline="2026-09-01T10:00:00"))
+    assert out["reason"] == "thesis_expiring"
+
+
+def test_exits_need_no_contract():
+    """Une SORTIE n'a pas de thèse à porter : le contrat ne la concerne pas."""
+    pf = _pf(positions=[{"symbol": "NESN.SW", "qty": 10, "avg_price": 100.0,
+                         "currency": "CHF", "fx_rate": 1.0, "side": "long"}])
+    out = coach_trader.gate_decision(
+        {"action": "sell", "symbol": "NESN.SW", "exit_reason": "threat"},
+        pf, _quote(), now=NOW)
+    assert out["accepted"] is True, out
+
+
+# --- T1 — le contrat voyage : ordre -> position -> trade clos (modèles) ---- #
+
+from backend.bots.paper import models  # noqa: E402
+
+
+@pytest.mark.parametrize("cls,extra", [
+    (models.Order, {"id": "o1"}), (models.Position, {}), (models.Trade, {})])
+def test_the_contract_round_trips_on_every_structure(cls, extra):
+    data = dict(extra, symbol="NESN.SW", horizon_days=15,
+                invalidation=INVALIDATION,
+                thesis_deadline="2026-10-08T17:00:00")
+    obj = cls.from_dict(data)
+    assert obj.horizon_days == 15
+    assert obj.invalidation == INVALIDATION
+    assert obj.thesis_deadline == "2026-10-08T17:00:00"
+    again = cls.from_dict(obj.to_dict())
+    assert again.to_dict() == obj.to_dict()
+
+
+@pytest.mark.parametrize("cls,extra", [
+    (models.Order, {"id": "o1"}), (models.Position, {}), (models.Trade, {})])
+def test_a_legacy_file_has_no_contract_never_an_invented_one(cls, extra):
+    obj = cls.from_dict(dict(extra, symbol="NESN.SW"))
+    assert obj.horizon_days is None
+    assert obj.invalidation == ""
+    assert obj.thesis_deadline is None
+
+
+def test_an_unreadable_horizon_is_none():
+    assert models.Position.from_dict({"symbol": "X", "horizon_days": "dix"}
+                                     ).horizon_days is None

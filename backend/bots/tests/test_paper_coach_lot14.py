@@ -10,6 +10,7 @@ from backend.bots.paper import coach_trader, models
 
 THESIS = ("Taux hypothécaires au plus haut : le REIT hypothécaire souffre du "
           "portage, cassure du support des 20 derniers jours.")
+INVALIDATION = "retour sous le range sur une clôture quotidienne"
 
 
 def _pos(symbol, qty=10, avg_price=10.0, side="long"):
@@ -31,7 +32,9 @@ def _pf(positions=(), open_orders=()):
 
 def _short_nly():
     return {"action": "short", "symbol": "NLY", "qty": 80, "stop": 20.5,
-            "target": 18.0, "thesis": THESIS}
+            "target": 18.0, "thesis": THESIS,
+            # LOT 15 — le contrat de thèse d'une entrée (``no_horizon`` sinon).
+            "horizon_days": 3, "invalidation": INVALIDATION}
 
 
 # --- A1 — too_many_positions compte les FRONTS, la phrase aussi ------------ #

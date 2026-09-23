@@ -595,7 +595,12 @@ def _open_long(portfolio, order, price, fx_rate, notional, fee, now_iso) -> None
             setup=order.setup, emotion=order.emotion,
             forced_warnings=list(order.forced_warnings),
             candidate_source=order.candidate_source,
-            hypothesis_id=order.hypothesis_id))
+            hypothesis_id=order.hypothesis_id,
+            # LOT 15 — le contrat de thèse naît avec la ligne ; un RENFORT ne
+            # le touche pas (cf. :func:`_average_into`).
+            horizon_days=order.horizon_days,
+            invalidation=order.invalidation,
+            thesis_deadline=order.thesis_deadline))
     else:
         _average_into(position, order, price, fx_rate)
     portfolio.cash_chf = round(portfolio.cash_chf - cost, 2)
@@ -629,7 +634,12 @@ def _open_short(portfolio, order, price, fx_rate, notional, fee, now_iso) -> Non
             setup=order.setup, emotion=order.emotion,
             forced_warnings=list(order.forced_warnings),
             candidate_source=order.candidate_source,
-            hypothesis_id=order.hypothesis_id))
+            hypothesis_id=order.hypothesis_id,
+            # LOT 15 — le contrat de thèse naît avec la ligne ; un RENFORT ne
+            # le touche pas (cf. :func:`_average_into`).
+            horizon_days=order.horizon_days,
+            invalidation=order.invalidation,
+            thesis_deadline=order.thesis_deadline))
     else:
         _average_into(position, order, price, fx_rate)
     portfolio.cash_chf = round(portfolio.cash_chf + notional - fee["total_chf"], 2)
@@ -674,6 +684,10 @@ def _average_into(position: models.Position, order: models.Order,
     if position.candidate_source is None and order.candidate_source:
         position.candidate_source = order.candidate_source
         position.hypothesis_id = order.hypothesis_id
+    # LOT 15 — le CONTRAT DE THÈSE n'est JAMAIS repris d'un renfort : c'est
+    # celui de l'idée qui a OUVERT la ligne (le coach ne peut pas allonger une
+    # échéance en renforçant), et une ligne d'avant ce lot, sans contrat, le
+    # reste — on ne lui invente pas une échéance que le tick exécuterait.
 
 
 # --------------------------------------------------------------------------- #
@@ -861,6 +875,9 @@ def _close_leg(portfolio, order, price, fx_rate, notional, fee,
         forced_warnings=list(position.forced_warnings),
         candidate_source=position.candidate_source,
         hypothesis_id=position.hypothesis_id,
+        horizon_days=position.horizon_days,
+        invalidation=position.invalidation,
+        thesis_deadline=position.thesis_deadline,
     )
     portfolio.trades.append(trade)
 
@@ -1862,7 +1879,8 @@ def _coach_equity_chf(portfolio: models.Portfolio) -> float:
 def _coach_reject_detail(code: str, decision: Dict[str, Any],
                          portfolio: models.Portfolio,
                          quote: Optional[Dict[str, Any]],
-                         now: Any = None) -> Optional[str]:
+                         now: Any = None, technical: Any = None,
+                         thesis: Any = None) -> Optional[str]:
     """La phrase LISIBLE et CHIFFRÉE qui accompagne un code de refus.
 
     Le code (``oversize``) dit CE QUI a été violé ; ce détail dit DE COMBIEN.
@@ -1880,7 +1898,8 @@ def _coach_reject_detail(code: str, decision: Dict[str, Any],
         # sinon le texte divergerait du garde-fou au premier ajustement.
         # ``None`` pour tout autre code -> la suite de cette fonction.
         extra = coach_trader.reject_detail(code, decision,
-                                          portfolio.to_dict(), quote, now=now)
+                                          portfolio.to_dict(), quote, now=now,
+                                          technical=technical, thesis=thesis)
         if extra is not None:
             return extra
         symbol = str(decision.get("symbol") or "") or "?"
@@ -2187,6 +2206,40 @@ def _coach_origin(symbol: str, side: str, portfolio: models.Portfolio,
     return source, None
 
 
+def _radar_hypothesis_by_id(hyp_id: Optional[str]) -> Optional[Dict[str, Any]]:
+    """L'hypothèse radar d'identifiant ``hyp_id`` (ouverte ou notée), ou
+    ``None`` — best-effort, jamais une exception (LOT 15)."""
+    if not hyp_id:
+        return None
+    for hyp in _radar_hypotheses():
+        if str(hyp.get("id") or "").strip() == hyp_id:
+            return hyp
+    return None
+
+
+def _coach_inherited_contract(symbol: str, action: str,
+                              portfolio: models.Portfolio,
+                              hypothesis_id: Optional[str]) -> Optional[Dict[str, Any]]:
+    """Le contrat de thèse HÉRITÉ par une entrée du coach (LOT 15), que le
+    routeur va chercher pour la porte PURE (``coach_trader.gate_decision``,
+    paramètre ``thesis``) — ``None`` si l'entrée doit déclarer le sien.
+
+    - un RENFORT hérite de la ligne qu'il renforce (on ne rallonge pas une
+      thèse en renforçant) ; une ligne d'avant ce lot n'a rien à léguer : le
+      coach déclare, mais la ligne garde son absence de contrat
+      (cf. :func:`_average_into`) ;
+    - une idée du RADAR lègue celui de son hypothèse
+      (:func:`coach_trader.radar_contract`) ;
+    - tout le reste : rien, le modèle déclare.
+    """
+    side = "short" if action == "short" else "long"
+    line = _find_position(portfolio, symbol, side)
+    if line is not None:
+        return coach_trader.position_contract(line.to_dict())
+    hyp = _radar_hypothesis_by_id(hypothesis_id)
+    return coach_trader.radar_contract(hyp) if hyp is not None else None
+
+
 def _coach_origin_map(candidates: Any) -> Dict[str, str]:
     """``{symbole canonique: source}`` depuis des lignes de candidats."""
     out: Dict[str, str] = {}
@@ -2242,22 +2295,32 @@ def _coach_execute_one(portfolio: models.Portfolio, action: Dict[str, Any],
     # doctrine que ``_coach_quote`` : une panne de bougies rend ``None``.
     technical = (_coach_technical(symbol, price=(quote or {}).get("price"))
                  if symbol else None)
+    # LOT 15 — une ENTRÉE hérite du contrat de thèse de son idée : la
+    # provenance (LOT 14b) est donc résolue AVANT la porte, qui reçoit le
+    # contrat en paramètre (elle reste PURE, comme pour ``technical``).
+    origin = None
+    inherited = None
+    if symbol and kind in coach_trader.ENTRY_ACTIONS:
+        origin = _coach_origin(symbol, kind, portfolio, origins)
+        inherited = _coach_inherited_contract(symbol, kind, portfolio, origin[1])
     verdict = coach_trader.gate_decision(decision, portfolio.to_dict(),
                                          quote or {}, now=now_iso,
-                                         technical=technical)
+                                         technical=technical,
+                                         thesis=inherited)
     if not verdict.get("accepted"):
         code = str(verdict.get("reason") or "")
         return (coach_trader.ledger_entry(
             now_iso, source, kind, symbol, False, reason=code,
             detail=_coach_reject_detail(code, decision, portfolio, quote,
-                                        now=now_iso)), None)
+                                        now=now_iso, technical=technical,
+                                        thesis=inherited)), None)
 
     plan = verdict.get("order") or {}
     price = float(quote["price"])
     fx_rate = float(quote["fx_rate"])
     qty = int(plan.get("qty") or 0)
     # LOT 14b — de quelle IDÉE naît cet ordre (cf. :func:`_coach_origin`).
-    origin_source, origin_hyp = _coach_origin(
+    origin_source, origin_hyp = origin if origin is not None else _coach_origin(
         plan.get("symbol") or symbol, str(plan.get("side") or ""), portfolio,
         origins)
 
@@ -2300,6 +2363,10 @@ def _coach_execute_one(portfolio: models.Portfolio, action: Dict[str, Any],
         emotion=str(plan.get("emotion") or ""),
         candidate_source=origin_source,
         hypothesis_id=origin_hyp,
+        # LOT 15 — le contrat de thèse (``None`` pour une sortie).
+        horizon_days=plan.get("horizon_days"),
+        invalidation=str(plan.get("invalidation") or ""),
+        thesis_deadline=plan.get("thesis_deadline"),
     )
 
     # ⚠️ La porte de confirmation N'EST PAS contournée, elle est CONSIGNÉE.
@@ -2403,6 +2470,12 @@ def _coach_arm_ambush(portfolio: models.Portfolio, plan: Dict[str, Any],
         # déclenchement (des heures ou des jours plus tard).
         candidate_source=origin[0],
         hypothesis_id=origin[1],
+        # LOT 15 — le contrat de thèse, que la position héritera au
+        # déclenchement (la thèse court dès l'ARMEMENT : c'est maintenant
+        # que le coach la formule).
+        horizon_days=plan.get("horizon_days"),
+        invalidation=str(plan.get("invalidation") or ""),
+        thesis_deadline=plan.get("thesis_deadline"),
     )
     portfolio.open_orders.append(order)
     sens = "au-dessus de" if order.side == "buy" else "sous"

@@ -40,13 +40,14 @@ paquet (``newswatch._discover_portfolios``, ``weekly._AUX_SUFFIXES``,
 « traders fantômes » que le dépôt a déjà eu à faire disparaître.
 """
 import json
+import math
 import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from zoneinfo import ZoneInfo
 
-from backend.bots.paper import fees, models, quotes, risk
+from backend.bots.paper import fees, models, quotes, radar, risk
 
 # Nom de compte RÉSERVÉ : aucun utilisateur authentifié ne s'appelle ainsi, et
 # le nom passe l'allowlist de ``store`` (pas de point) — le coach est un compte
@@ -181,6 +182,21 @@ LLM_CALLS_PER_PASS = 2              # tri, puis dossier — jamais davantage
 # poser un second qui divergerait au premier ajustement.
 MIN_THESIS_LEN = risk.PREORDER_MIN_THESIS_LEN
 
+# LOT 15 — les bornes de l'horizon d'une thèse sont CELLES DU RADAR, jamais un
+# second jeu qui divergerait. Plancher : « moins de 3 jours, c'est du bruit de
+# marché » (``radar.MIN_HORIZON_D``). Plafond : celui des idées du COACH
+# (``radar.MAX_HORIZON_COACH_D``, 120 j) et pas les 30 j du radar — une entrée
+# hors radar (watchlist, pool européen, découverte) est une idée PROPRE du
+# coach, exactement la population que le radar borne à 120 jours.
+MIN_THESIS_HORIZON_D = radar.MIN_HORIZON_D
+MAX_THESIS_HORIZON_D = radar.MAX_HORIZON_COACH_D
+# L'invalidation se lit, elle ne s'argumente pas : même seuil minimal que la
+# thèse ; au-delà de ce plafond, le texte (écrit par un LLM) est tronqué pour
+# le STOCKAGE — la décision, elle, n'en dépend pas.
+MAX_INVALIDATION_LEN = 400
+# Ce que le radar écrit quand le LLM a omis l'invalidation : une absence.
+_BLANK_INVALIDATIONS = ("", "(non précisée)", "?")
+
 # Les 18 codes de refus. ``reason`` est TOUJOURS l'un d'eux, JAMAIS une phrase :
 # la traduction (fr/en/it) vit dans ``lang.js``, comme partout ailleurs.
 #
@@ -227,6 +243,15 @@ REJECT_CODES = (
     #                    vient de perdre sur ce même symbole, dans les
     #                    :data:`WHIPSAW_DAYS` jours.
     "no_target", "edge_thin", "whipsaw",
+    # LOT 15 — le coach tient ses thèses :
+    #   ``no_horizon``      — une ENTRÉE sans contrat de thèse exploitable
+    #                         (horizon, condition d'invalidation) : même
+    #                         doctrine que ``no_target``, une entrée qu'on ne
+    #                         peut pas mesurer n'est pas une entrée ;
+    #   ``thesis_expiring`` — l'échéance HÉRITÉE de l'idée est à moins de
+    #                         :data:`MIN_THESIS_HORIZON_D` jours : il ne reste
+    #                         que du bruit de marché à jouer.
+    "no_horizon", "thesis_expiring",
 )
 
 # D'où vient une décision : du digest quotidien, de la passe planifiée (créneau),
@@ -973,11 +998,170 @@ def _is_whipsaw(trades: Any, symbol: str, side: str,
 
 
 # --------------------------------------------------------------------------- #
+# LOT 15 — le CONTRAT DE THÈSE d'une entrée.
+#
+# Mesuré sur le compte réel (23/09) : le radar a raison 7 fois sur 11 à
+# l'échéance de ses thèses (12 à 25 jours), le coach n'a jamais tenu plus de
+# 6 jours (médiane ~2 j) — et sur les idées JUSTES il a perdu 128 CHF en
+# 5 trades (VRT : thèse juste sur 15 j, tenue 3 j). Une entrée porte donc
+# désormais ce qu'elle parie et JUSQU'À QUAND : c'est ce qui permettra de la
+# tenir (T2 : stop dimensionné pour l'horizon ; T3 : l'échéance ferme) et de
+# la juger contre le verdict du radar (T6).
+# --------------------------------------------------------------------------- #
+
+def _horizon_days(value: Any) -> Optional[int]:
+    """Un horizon DÉCLARÉ en jours entiers, ou ``None`` s'il est illisible ou
+    hors [:data:`MIN_THESIS_HORIZON_D`, :data:`MAX_THESIS_HORIZON_D`].
+
+    On REJETTE, on ne rogne pas (doctrine de la porte) : le radar ramène
+    silencieusement un horizon dans ses bornes parce qu'il GÉNÈRE ; ici on
+    JUGE une décision, et un « 1 jour » ramené à 3 serait une thèse que le
+    modèle n'a jamais formulée. Un flottant non entier (7,5) est refusé pour
+    la même raison ; un booléen n'est pas un nombre."""
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(number) or number != int(number):
+        return None
+    days = int(number)
+    if days < MIN_THESIS_HORIZON_D or days > MAX_THESIS_HORIZON_D:
+        return None
+    return days
+
+
+def _invalidation(value: Any) -> Optional[str]:
+    """La condition d'invalidation, texte propre et borné, ou ``None`` si elle
+    est absente, blanche, « (non précisée) » ou trop courte pour être une
+    condition (même seuil que la thèse)."""
+    text = _text(value)
+    if text in _BLANK_INVALIDATIONS or len(text) < MIN_THESIS_LEN:
+        return None
+    return text[:MAX_INVALIDATION_LEN]
+
+
+def _naive_local_iso(moment: datetime) -> str:
+    """Un instant rendu dans la convention MAISON : ISO naïf, heure de Rome,
+    à la seconde."""
+    return moment.astimezone(ZoneInfo(LOCAL_TZ)).replace(
+        tzinfo=None, microsecond=0).isoformat()
+
+
+def days_left(deadline: Any, now: Any) -> Optional[float]:
+    """Jours (flottants) de ``now`` jusqu'à ``deadline`` — négatif une fois
+    l'échéance passée ; ``None`` si l'une des deux dates est illisible (PUR).
+    Les deux passent par :func:`_moment_local` : jamais un naïf comparé à un
+    aware."""
+    end = _moment_local(deadline)
+    start = _moment_local(now)
+    if end is None or start is None:
+        return None
+    return (end - start).total_seconds() / 86400.0
+
+
+def thesis_contract(decision: Any, inherited: Any = None,
+                    now: Any = None):
+    """Le contrat de thèse d'une ENTRÉE (PUR) : ``(contrat, None)`` ou
+    ``(None, code_de_refus)``.
+
+    ``contrat`` = ``{"horizon_days", "invalidation", "thesis_deadline",
+    "days_left"}`` — ``thesis_deadline`` en ISO naïf local (``None`` sans
+    horloge), ``days_left`` = jours restants jusqu'à l'échéance (l'horizon
+    entier pour une thèse déclarée).
+
+    ``inherited`` (le routeur le fournit, cf. ``paper_router``) : le contrat
+    de l'IDÉE dont naît l'entrée — l'hypothèse du radar (échéance =
+    ``created_at`` + horizon, celle sur laquelle le radar se jugera), ou la
+    ligne déjà ouverte qu'on renforce. Il GAGNE sur ce que déclare le modèle :
+    le coach ne peut ni allonger l'échéance, ni changer ce qui invaliderait
+    l'idée. Seule exception : une hypothèse sans invalidation écrite
+    (« (non précisée) ») prend celle que le coach déclare — l'échéance, elle,
+    reste héritée.
+
+    Sans ``inherited`` : le modèle DÉCLARE ``horizon_days`` et
+    ``invalidation`` ; l'échéance court à partir de ``now``.
+
+    Codes : ``no_horizon`` (rien d'exploitable), ``thesis_expiring``
+    (échéance héritée à moins de :data:`MIN_THESIS_HORIZON_D` jours — ou déjà
+    passée). Sans ``now``, ce second contrôle est SAUTÉ (on ne devine pas une
+    date), comme ceux des horaires de marché.
+    """
+    decision = decision if isinstance(decision, dict) else {}
+    declared_inv = _invalidation(decision.get("invalidation"))
+
+    if isinstance(inherited, dict):
+        deadline = _moment_local(inherited.get("thesis_deadline"))
+        horizon = _val(inherited.get("horizon_days"))
+        invalidation = (_invalidation(inherited.get("invalidation"))
+                        or declared_inv)
+        if deadline is None or horizon is None or horizon <= 0 \
+                or invalidation is None:
+            return None, "no_horizon"
+        left = days_left(deadline, now) if now is not None else None
+        if left is not None and left < MIN_THESIS_HORIZON_D:
+            return None, "thesis_expiring"
+        return ({"horizon_days": int(round(horizon)),
+                 "invalidation": invalidation,
+                 "thesis_deadline": _naive_local_iso(deadline),
+                 "days_left": left if left is not None else float(horizon)},
+                None)
+
+    horizon = _horizon_days(decision.get("horizon_days"))
+    if horizon is None or declared_inv is None:
+        return None, "no_horizon"
+    deadline_iso = None
+    if now is not None:
+        start = _moment_local(now)
+        if start is not None:
+            deadline_iso = _naive_local_iso(start + timedelta(days=horizon))
+    return ({"horizon_days": horizon, "invalidation": declared_inv,
+             "thesis_deadline": deadline_iso, "days_left": float(horizon)},
+            None)
+
+
+def radar_contract(hyp: Any) -> Optional[Dict[str, Any]]:
+    """Le contrat de thèse qu'une hypothèse du radar LÈGUE à l'entrée qui en
+    naît (PUR) : ``{"horizon_days", "invalidation", "thesis_deadline"}``, ou
+    ``None`` si elle n'est pas datable.
+
+    L'échéance est EXACTEMENT celle sur laquelle le radar jugera son idée
+    (``radar.expiry_of`` = ``created_at`` + ``radar.hypothesis_horizon``) —
+    une seule définition, sinon le trade et le verdict ne mesureraient pas la
+    même fenêtre. ⚠️ Le radar date en UTC NAÏF (``radar._naive``) alors que
+    ce module parle en naïf LOCAL : l'échéance est convertie ici, une fois,
+    en heure de Rome. L'invalidation est transmise telle quelle (même
+    « (non précisée) ») : c'est :func:`thesis_contract` qui juge si elle est
+    exploitable."""
+    if not isinstance(hyp, dict):
+        return None
+    expiry = radar.expiry_of(hyp)
+    if expiry is None:
+        return None
+    deadline = expiry.replace(tzinfo=timezone.utc)
+    return {"horizon_days": radar.hypothesis_horizon(hyp),
+            "invalidation": _text(hyp.get("invalidation")),
+            "thesis_deadline": _naive_local_iso(deadline)}
+
+
+def position_contract(position: Any) -> Optional[Dict[str, Any]]:
+    """Le contrat d'une ligne DÉJÀ OUVERTE, pour un renfort (PUR) — ``None``
+    si la ligne n'en porte pas (ligne d'avant LOT 15)."""
+    if not isinstance(position, dict) or not _text(position.get("thesis_deadline")):
+        return None
+    return {"horizon_days": position.get("horizon_days"),
+            "invalidation": _text(position.get("invalidation")),
+            "thesis_deadline": _text(position.get("thesis_deadline"))}
+
+
+# --------------------------------------------------------------------------- #
 # PUR — le garde-fou
 # --------------------------------------------------------------------------- #
 
 def gate_decision(decision: Any, portfolio: Any, quote: Any,
-                  now: Any = None, technical: Any = None) -> Dict[str, Any]:
+                  now: Any = None, technical: Any = None,
+                  thesis: Any = None) -> Dict[str, Any]:
     """Une décision du modèle passe-t-elle le mandat ? (PUR)
 
     **On REJETTE, on ne rogne JAMAIS en silence** (cf. tête de fichier) : le
@@ -1045,6 +1229,15 @@ def gate_decision(decision: Any, portfolio: Any, quote: Any,
 
     ``now`` sert AUSSI (LOT 13) à dater la fenêtre anti-``whipsaw`` ; sans lui
     ce contrôle est SAUTÉ, comme celui des horaires de marché.
+
+    ``thesis`` (LOT 15) : le contrat HÉRITÉ de l'idée dont naît une entrée
+    (``{"horizon_days", "invalidation", "thesis_deadline"}``) — l'hypothèse
+    du radar, ou la ligne qu'on renforce — ou ``None`` : le modèle DÉCLARE
+    alors le sien (cf. :func:`thesis_contract`). C'est le ROUTEUR qui va le
+    chercher dans l'état du radar et le passe ici, exactement comme
+    ``technical`` : cette fonction reste PURE. Contrôlé juste après
+    ``no_thesis`` (``no_horizon``, ``thesis_expiring``), et l'ordre accepté
+    d'une ENTRÉE porte ``horizon_days``/``invalidation``/``thesis_deadline``.
     """
     decision = decision if isinstance(decision, dict) else {}
     portfolio = portfolio if isinstance(portfolio, dict) else {}
@@ -1142,9 +1335,16 @@ def gate_decision(decision: Any, portfolio: Any, quote: Any,
         return _reject("wrong_side")
     held = _held(positions, symbol, wanted)
 
-    thesis = _text(decision.get("thesis"))
-    if len(thesis) < MIN_THESIS_LEN:
+    thesis_text = _text(decision.get("thesis"))
+    if len(thesis_text) < MIN_THESIS_LEN:
         return _reject("no_thesis")
+
+    # LOT 15 — le CONTRAT de thèse, juste après la thèse elle-même : ce sont
+    # deux contrôles de FORME (la décision dit-elle ce qu'elle parie, et
+    # jusqu'à quand ?), à trancher avant tout calcul de niveau ou de taille.
+    contract, contract_code = thesis_contract(decision, thesis, now)
+    if contract is None:
+        return _reject(contract_code)
 
     # LOT 9 — le NIVEAU DE RÉFÉRENCE de tous les contrôles qui suivent. Pour un
     # ordre au marché c'est le cours ; pour une EMBUSCADE c'est le TRIGGER,
@@ -1288,7 +1488,7 @@ def gate_decision(decision: Any, portfolio: Any, quote: Any,
         return _reject("whipsaw")
 
     return _accept(symbol, action, qty, decision, kind=plan_kind,
-                   trigger=trigger)
+                   trigger=trigger, contract=contract)
 
 
 def _stop_protects(side: str, stop: float, price: float) -> bool:
@@ -1461,7 +1661,8 @@ def _market_closed_detail(symbol: str, now: Any) -> Optional[str]:
 
 
 def reject_detail(code: Any, decision: Any, portfolio: Any, quote: Any,
-                  now: Any = None) -> Optional[str]:
+                  now: Any = None, technical: Any = None,
+                  thesis: Any = None) -> Optional[str]:
     """La phrase lisible et CHIFFRÉE des trois refus du LOT 13 (PUR), et
     depuis LOT 14 de ``too_many_positions`` et ``market_closed`` — deux
     phrases que le routeur servait FAUSSES (cf. :func:`_fronts` et
@@ -1481,13 +1682,41 @@ def reject_detail(code: Any, decision: Any, portfolio: Any, quote: Any,
     try:
         code = _text(code)
         if code not in ("no_target", "edge_thin", "whipsaw",
-                        "too_many_positions", "market_closed"):
+                        "too_many_positions", "market_closed",
+                        "no_horizon", "thesis_expiring"):
             return None
 
         decision = decision if isinstance(decision, dict) else {}
         portfolio = portfolio if isinstance(portfolio, dict) else {}
         quote = quote if isinstance(quote, dict) else {}
         symbol = _symbol(decision.get("symbol"))
+
+        # LOT 15 — le contrat de thèse (``thesis`` = le contrat HÉRITÉ que le
+        # routeur a passé à la porte, ou ``None``).
+        if code == "no_horizon":
+            if isinstance(thesis, dict):
+                return ("l'idée héritée n'a pas de contrat exploitable (échéance "
+                        "illisible ou aucune condition d'invalidation) : "
+                        "déclare « invalidation » — ce qui, s'il se produit, "
+                        "tue l'idée (au moins %d caractères)" % MIN_THESIS_LEN)
+            return ("aucun contrat de thèse : une entrée déclare "
+                    "« horizon_days » (entier de %d à %d jours — le temps que "
+                    "la thèse met à jouer) et « invalidation » (ce qui, s'il "
+                    "se produit, tue l'idée, au moins %d caractères) ; reçu "
+                    "horizon_days=%s"
+                    % (MIN_THESIS_HORIZON_D, MAX_THESIS_HORIZON_D,
+                       MIN_THESIS_LEN, decision.get("horizon_days")))
+        if code == "thesis_expiring":
+            deadline = _moment_local((thesis or {}).get("thesis_deadline"))
+            left = days_left(deadline, now) if deadline is not None else None
+            if deadline is None or left is None:
+                return None
+            when = ("échue depuis %s jour(s)" % _fr(-left, 1) if left < 0
+                    else "échoit dans %s jour(s)" % _fr(left, 1))
+            return ("l'idée de %s %s (le %s) : moins de %d jours, il ne reste "
+                    "que du bruit de marché à jouer — pas une thèse"
+                    % (symbol or "?", when, deadline.strftime("%d/%m"),
+                       MIN_THESIS_HORIZON_D))
 
         if code == "too_many_positions":
             return _too_many_positions_detail(portfolio, symbol)
@@ -1556,7 +1785,8 @@ def reject_detail(code: Any, decision: Any, portfolio: Any, quote: Any,
 
 def _accept(symbol: str, side: str, qty: int,
             decision: Dict[str, Any], kind: str = "market",
-            trigger: Optional[float] = None) -> Dict[str, Any]:
+            trigger: Optional[float] = None,
+            contract: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """L'ordre normalisé, prêt pour le moteur d'ordres du simulateur.
 
     ``side`` est un sens du MOTEUR (``models.ORDER_SIDES``), pas le nom de
@@ -1592,6 +1822,11 @@ def _accept(symbol: str, side: str, qty: int,
             "target": _val(decision.get("target")),
             "setup": setup,
             "emotion": DEFAULT_EMOTION,
+            # LOT 15 — le contrat de thèse d'une ENTRÉE (cf.
+            # :func:`thesis_contract`) ; ``None`` pour tout le reste.
+            "horizon_days": (contract or {}).get("horizon_days"),
+            "invalidation": (contract or {}).get("invalidation"),
+            "thesis_deadline": (contract or {}).get("thesis_deadline"),
         },
     }
 
