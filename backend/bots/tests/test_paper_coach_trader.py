@@ -146,9 +146,11 @@ def test_every_reject_code_is_declared():
         "no_target", "edge_thin", "whipsaw",
         # LOT 15 — le contrat de thèse : absent, ou échéance trop proche.
         "no_horizon", "thesis_expiring",
+        # LOT 15 — une sortie qui ne dit pas pourquoi.
+        "no_exit_reason",
     }
     assert set(coach_trader.REJECT_CODES) == expected
-    assert len(coach_trader.REJECT_CODES) == 30
+    assert len(coach_trader.REJECT_CODES) == 31
 
 
 def test_coach_username_survives_the_store_allowlist():
@@ -180,7 +182,7 @@ def test_short_and_cover_are_no_longer_unknown_actions():
         {"action": "short", "symbol": "NESN.SW", "qty": 1}, _pf(),
         _quote())["reason"] == "no_thesis"
     assert coach_trader.gate_decision(
-        {"action": "cover", "symbol": "NESN.SW", "qty": 1}, _pf(),
+        {"action": "cover", "exit_reason": "risk", "symbol": "NESN.SW", "qty": 1}, _pf(),
         _quote())["reason"] == "no_position"
 
 
@@ -199,7 +201,7 @@ def test_gate_rejects_bad_qty_on_buy(qty):
 def test_gate_rejects_bad_qty_on_reduce_when_missing():
     """``reduce`` = allègement PARTIEL : sans quantité, il n'y a pas d'ordre."""
     pf = _pf(positions=[_pos("NESN.SW", qty=10, avg_price=100.0)])
-    out = coach_trader.gate_decision({"action": "reduce", "symbol": "NESN.SW"},
+    out = coach_trader.gate_decision({"action": "reduce", "exit_reason": "risk", "symbol": "NESN.SW"},
                                      pf, _quote())
     assert out["reason"] == "bad_qty"
 
@@ -207,7 +209,7 @@ def test_gate_rejects_bad_qty_on_reduce_when_missing():
 def test_gate_rejects_garbage_qty_on_sell_too():
     """« tout solder » c'est une qty ABSENTE, pas une qty illisible."""
     pf = _pf(positions=[_pos("NESN.SW", qty=10, avg_price=100.0)])
-    out = coach_trader.gate_decision({"action": "sell", "symbol": "NESN.SW",
+    out = coach_trader.gate_decision({"action": "sell", "exit_reason": "risk", "symbol": "NESN.SW",
                                       "qty": "beaucoup"}, pf, _quote())
     assert out["reason"] == "bad_qty"
 
@@ -306,14 +308,14 @@ def test_gate_rejects_when_the_cash_floor_would_break():
 
 
 def test_gate_rejects_a_sell_without_position():
-    out = coach_trader.gate_decision({"action": "sell", "symbol": "NESN.SW", "qty": 5},
+    out = coach_trader.gate_decision({"action": "sell", "exit_reason": "risk", "symbol": "NESN.SW", "qty": 5},
                                      _pf(), _quote())
     assert out["reason"] == "no_position"
 
 
 def test_gate_rejects_a_sell_larger_than_the_position():
     pf = _pf(positions=[_pos("NESN.SW", qty=5, avg_price=100.0)])
-    out = coach_trader.gate_decision({"action": "sell", "symbol": "NESN.SW", "qty": 10},
+    out = coach_trader.gate_decision({"action": "sell", "exit_reason": "risk", "symbol": "NESN.SW", "qty": 10},
                                      pf, _quote(100.0))
     assert out["reason"] == "qty_over_position"
 
@@ -321,7 +323,7 @@ def test_gate_rejects_a_sell_larger_than_the_position():
 def test_a_short_line_is_not_a_sellable_position():
     """Aucun short dans ce lot : une ligne ``short`` ne se solde pas par ici."""
     pf = _pf(positions=[_pos("NESN.SW", qty=5, avg_price=100.0, side="short")])
-    out = coach_trader.gate_decision({"action": "sell", "symbol": "NESN.SW", "qty": 1},
+    out = coach_trader.gate_decision({"action": "sell", "exit_reason": "risk", "symbol": "NESN.SW", "qty": 1},
                                      pf, _quote(100.0))
     assert out["reason"] == "no_position"
 
@@ -590,7 +592,7 @@ def test_une_SORTIE_n_a_pas_besoin_d_objectif():
     """Une sortie réduit l'exposition : rien à espérer, rien à mesurer."""
     pf = _pf(positions=[_pos("NESN.SW", qty=10, avg_price=100.0)])
     out = coach_trader.gate_decision(
-        {"action": "sell", "symbol": "NESN.SW", "qty": 10}, pf, _quote(100.0))
+        {"action": "sell", "exit_reason": "risk", "symbol": "NESN.SW", "qty": 10}, pf, _quote(100.0))
     assert out["accepted"] is True
 
 
@@ -652,7 +654,7 @@ def test_edge_thin_arrive_AVANT_stop_in_noise():
 def test_edge_thin_ne_concerne_pas_les_sorties():
     pf = _ibkr(positions=[_pos("NESN.SW", qty=10, avg_price=100.0)])
     out = coach_trader.gate_decision(
-        {"action": "sell", "symbol": "NESN.SW", "qty": 10}, pf, _quote(100.0))
+        {"action": "sell", "exit_reason": "risk", "symbol": "NESN.SW", "qty": 10}, pf, _quote(100.0))
     assert out["accepted"] is True
 
 
@@ -888,6 +890,8 @@ def test_gate_accepts_a_nominal_buy():
         # (``now`` absent) l'échéance ne se date pas.
         "horizon_days": 3, "invalidation": INVALIDATION,
         "thesis_deadline": None,
+        # LOT 15 — la raison d'une SORTIE ; une entrée n'en porte pas.
+        "exit_reason": None,
     }
 
 
@@ -911,7 +915,7 @@ def test_a_missing_setup_falls_back_to_coach_idea():
 
 def test_gate_accepts_a_sell_that_liquidates_everything():
     pf = _pf(positions=[_pos("NESN.SW", qty=7, avg_price=100.0)])
-    out = coach_trader.gate_decision({"action": "sell", "symbol": "NESN.SW"},
+    out = coach_trader.gate_decision({"action": "sell", "exit_reason": "risk", "symbol": "NESN.SW"},
                                      pf, _quote(100.0))
     assert out["accepted"] is True
     assert out["order"]["side"] == "sell"
@@ -921,7 +925,7 @@ def test_gate_accepts_a_sell_that_liquidates_everything():
 @pytest.mark.parametrize("qty", [None, 0, ""])
 def test_a_blank_qty_on_sell_means_liquidate(qty):
     pf = _pf(positions=[_pos("NESN.SW", qty=7, avg_price=100.0)])
-    out = coach_trader.gate_decision({"action": "sell", "symbol": "NESN.SW", "qty": qty},
+    out = coach_trader.gate_decision({"action": "sell", "exit_reason": "risk", "symbol": "NESN.SW", "qty": qty},
                                      pf, _quote(100.0))
     assert out["accepted"] is True
     assert out["order"]["qty"] == 7
@@ -929,7 +933,7 @@ def test_a_blank_qty_on_sell_means_liquidate(qty):
 
 def test_gate_accepts_a_partial_reduce():
     pf = _pf(positions=[_pos("NESN.SW", qty=7, avg_price=100.0)])
-    out = coach_trader.gate_decision({"action": "reduce", "symbol": "NESN.SW", "qty": 3},
+    out = coach_trader.gate_decision({"action": "reduce", "exit_reason": "risk", "symbol": "NESN.SW", "qty": 3},
                                      pf, _quote(100.0))
     assert out["accepted"] is True
     assert out["order"]["side"] == "sell"     # ``reduce`` s'exécute comme une vente
@@ -940,7 +944,7 @@ def test_an_exit_needs_neither_thesis_nor_stop():
     """Une sortie réduit TOUJOURS l'exposition — même restriction que
     ``risk.preorder_warnings`` (qui ne s'applique qu'aux ouvertures)."""
     pf = _pf(positions=[_pos("NESN.SW", qty=7, avg_price=100.0)])
-    out = coach_trader.gate_decision({"action": "sell", "symbol": "NESN.SW", "qty": 2},
+    out = coach_trader.gate_decision({"action": "sell", "exit_reason": "risk", "symbol": "NESN.SW", "qty": 2},
                                      pf, _quote(100.0))
     assert out["accepted"] is True
     assert out["order"]["thesis"] == ""
@@ -951,7 +955,7 @@ def test_an_exit_ignores_the_position_count_and_the_cash_floor():
     """Sortir d'une 7e ligne quand la trésorerie est à sec doit passer."""
     held = [_pos("SYM%d" % i, qty=1, avg_price=100.0) for i in range(6)]
     held.append(_pos("NESN.SW", qty=5, avg_price=100.0))
-    out = coach_trader.gate_decision({"action": "sell", "symbol": "NESN.SW"},
+    out = coach_trader.gate_decision({"action": "sell", "exit_reason": "risk", "symbol": "NESN.SW"},
                                      _pf(cash=0.0, positions=held), _quote(100.0))
     assert out["accepted"] is True
 
@@ -1063,7 +1067,7 @@ def test_too_small_wins_over_too_many_positions():
 def test_an_exit_never_falls_into_the_entry_checks():
     """Une sortie sans thèse ni stop sur une position absente doit dire
     ``no_position`` (le vrai problème), pas ``no_thesis``."""
-    out = coach_trader.gate_decision({"action": "reduce", "symbol": "NESN.SW", "qty": 2},
+    out = coach_trader.gate_decision({"action": "reduce", "exit_reason": "risk", "symbol": "NESN.SW", "qty": 2},
                                      _pf(), _quote(100.0))
     assert out["reason"] == "no_position"
 
@@ -1080,7 +1084,7 @@ def test_every_reason_returned_is_a_declared_code():
         (_buy(stop=10.0, qty=20), _pf(), _quote()),
         (_buy(qty=1, stop=45.0), _pf(), _quote(50.0)),
         (_buy(qty=40, stop=99.0), _pf(), _quote(100.0)),
-        ({"action": "sell", "symbol": "NESN.SW", "qty": 1}, _pf(), _quote(100.0)),
+        ({"action": "sell", "exit_reason": "risk", "symbol": "NESN.SW", "qty": 1}, _pf(), _quote(100.0)),
     ]
     for decision, portfolio, quote in cases:
         out = coach_trader.gate_decision(decision, portfolio, quote)
@@ -1141,9 +1145,9 @@ def test_parse_actions_on_an_unexpected_shape_is_parse_failed():
 
 def test_parse_actions_accepts_a_bare_list():
     out = coach_trader.parse_actions(
-        _digest('```COACH_ACTIONS\n[{"action": "sell", "symbol": "NESN.SW"}]\n```'))
+        _digest('```COACH_ACTIONS\n[{"action": "sell", "exit_reason": "risk", "symbol": "NESN.SW"}]\n```'))
     assert out["error"] is None
-    assert out["actions"] == [{"action": "sell", "symbol": "NESN.SW"}]
+    assert out["actions"] == [{"action": "sell", "exit_reason": "risk", "symbol": "NESN.SW"}]
 
 
 def test_parse_actions_accepts_an_empty_action_list():
@@ -1185,7 +1189,7 @@ def test_parse_actions_finds_a_block_that_is_not_at_the_very_end():
 
 def test_parse_actions_takes_the_first_block_and_removes_them_all():
     second = ('```COACH_ACTIONS\n'
-              '{"actions": [{"action": "sell", "symbol": "ZZZ"}]}\n```')
+              '{"actions": [{"action": "sell", "exit_reason": "risk", "symbol": "ZZZ"}]}\n```')
     out = coach_trader.parse_actions(_digest(BLOCK_OK) + "\n\nEt puis :\n\n" + second)
     assert [a["symbol"] for a in out["actions"]] == ["NESN.SW"]
     assert coach_trader.ACTIONS_MARKER not in out["text"]
@@ -1301,7 +1305,7 @@ def test_parse_actions_note_is_none_on_a_bare_list_payload():
     """Une liste nue n'a pas de clé ``note`` possible — jamais une exception,
     juste ``None``."""
     out = coach_trader.parse_actions(
-        _digest('```COACH_ACTIONS\n[{"action": "sell", "symbol": "X"}]\n```'))
+        _digest('```COACH_ACTIONS\n[{"action": "sell", "exit_reason": "risk", "symbol": "X"}]\n```'))
     assert out["note"] is None
 
 
@@ -1628,7 +1632,7 @@ def test_guardian_gate_accepts_an_exit_on_the_focus_symbol():
 
 
 def test_guardian_gate_rejects_a_different_symbol():
-    decision = {"action": "sell", "symbol": "AAPL"}
+    decision = {"action": "sell", "exit_reason": "risk", "symbol": "AAPL"}
     assert coach_trader.guardian_gate(decision, "NESN.SW") == "out_of_scope"
 
 
@@ -2458,7 +2462,7 @@ def test_un_kind_invente_est_refuse_jamais_degrade_en_marche():
 
 
 def test_une_sortie_ne_s_arme_pas():
-    decision = {"action": "sell", "symbol": "NESN.SW", "qty": 5, "kind": "stop",
+    decision = {"action": "sell", "exit_reason": "risk", "symbol": "NESN.SW", "qty": 5, "kind": "stop",
                 "trigger": 90.0}
     verdict = coach_trader.gate_decision(decision, _pf(
         positions=[_pos("NESN.SW", qty=10, avg_price=100.0)]), _quote(100.0))

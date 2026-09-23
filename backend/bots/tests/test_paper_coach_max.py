@@ -206,7 +206,7 @@ def test_reinforcing_a_short_uses_the_projected_size():
 def test_cover_closes_a_short():
     held = [_pos("NESN.SW", qty=20, avg_price=100.0, side="short")]
     out = coach_trader.gate_decision(
-        {"action": "cover", "symbol": "NESN.SW", "qty": 20},
+        {"action": "cover", "exit_reason": "risk", "symbol": "NESN.SW", "qty": 20},
         _pf(positions=held), _quote())
     assert out["accepted"] is True
     assert out["order"]["side"] == "cover"
@@ -215,14 +215,14 @@ def test_cover_closes_a_short():
 def test_cover_without_a_quantity_buys_the_whole_line_back():
     held = [_pos("NESN.SW", qty=20, avg_price=100.0, side="short")]
     out = coach_trader.gate_decision(
-        {"action": "cover", "symbol": "NESN.SW"}, _pf(positions=held), _quote())
+        {"action": "cover", "exit_reason": "risk", "symbol": "NESN.SW"}, _pf(positions=held), _quote())
     assert out["accepted"] is True and out["order"]["qty"] == 20
 
 
 def test_cover_beyond_the_line_is_refused():
     held = [_pos("NESN.SW", qty=20, avg_price=100.0, side="short")]
     out = coach_trader.gate_decision(
-        {"action": "cover", "symbol": "NESN.SW", "qty": 50},
+        {"action": "cover", "exit_reason": "risk", "symbol": "NESN.SW", "qty": 50},
         _pf(positions=held), _quote())
     assert out["reason"] == "qty_over_position"
 
@@ -230,7 +230,7 @@ def test_cover_beyond_the_line_is_refused():
 def test_cover_without_a_short_is_refused():
     held = [_pos("NESN.SW", qty=20, avg_price=100.0, side="long")]
     out = coach_trader.gate_decision(
-        {"action": "cover", "symbol": "NESN.SW", "qty": 5},
+        {"action": "cover", "exit_reason": "risk", "symbol": "NESN.SW", "qty": 5},
         _pf(positions=held), _quote())
     assert out["reason"] == "no_position"
 
@@ -241,7 +241,7 @@ def test_selling_a_line_held_short_is_refused():
     de la fermer."""
     held = [_pos("NESN.SW", qty=20, avg_price=100.0, side="short")]
     out = coach_trader.gate_decision(
-        {"action": "sell", "symbol": "NESN.SW", "qty": 5},
+        {"action": "sell", "exit_reason": "risk", "symbol": "NESN.SW", "qty": 5},
         _pf(positions=held), _quote())
     assert out["reason"] == "no_position"
 
@@ -252,7 +252,7 @@ def test_reduce_reads_the_side_of_the_line_it_finds():
     sens sur un même titre."""
     held = [_pos("NESN.SW", qty=20, avg_price=100.0, side="short")]
     out = coach_trader.gate_decision(
-        {"action": "reduce", "symbol": "NESN.SW", "qty": 5},
+        {"action": "reduce", "exit_reason": "risk", "symbol": "NESN.SW", "qty": 5},
         _pf(positions=held), _quote())
     assert out["accepted"] is True and out["order"]["side"] == "cover"
 
@@ -260,7 +260,7 @@ def test_reduce_reads_the_side_of_the_line_it_finds():
 def test_reduce_on_a_long_still_sells():
     held = [_pos("NESN.SW", qty=20, avg_price=100.0, side="long")]
     out = coach_trader.gate_decision(
-        {"action": "reduce", "symbol": "NESN.SW", "qty": 5},
+        {"action": "reduce", "exit_reason": "risk", "symbol": "NESN.SW", "qty": 5},
         _pf(positions=held), _quote())
     assert out["accepted"] is True and out["order"]["side"] == "sell"
 
@@ -377,7 +377,7 @@ def test_selling_a_stock_is_refused_too_when_the_market_is_shut():
     une action un dimanche non plus."""
     held = [_pos("NESN.SW", qty=20, avg_price=100.0)]
     out = coach_trader.gate_decision(
-        {"action": "sell", "symbol": "NESN.SW", "qty": 5},
+        {"action": "sell", "exit_reason": "risk", "symbol": "NESN.SW", "qty": 5},
         _pf(positions=held), _quote(), now=SUN_1805)
     assert out["reason"] == "market_closed"
 

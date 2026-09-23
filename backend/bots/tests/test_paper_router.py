@@ -6059,7 +6059,7 @@ def test_the_stop_in_noise_refusal_names_the_distance(tmp_path, monkeypatch):
 def test_the_coach_can_sell_what_he_holds(tmp_path, monkeypatch):
     c, _ = make_client(tmp_path, monkeypatch)
     seed_coach_position(qty=10)
-    rows = pr.execute_coach_actions([{"action": "sell", "symbol": "NESN.SW"}],
+    rows = pr.execute_coach_actions([{"action": "sell", "exit_reason": "risk", "symbol": "NESN.SW"}],
                                    source="daily")
     assert rows[0]["accepted"] is True
     assert coach_portfolio()["positions"] == []
@@ -6282,7 +6282,7 @@ def test_focus_symbol_lets_a_matching_exit_through(tmp_path, monkeypatch):
     c, _ = make_client(tmp_path, monkeypatch)
     seed_coach_position(qty=10)
     rows = pr.execute_coach_actions(
-        [{"action": "sell", "symbol": "NESN.SW", "qty": 5}],
+        [{"action": "sell", "exit_reason": "risk", "symbol": "NESN.SW", "qty": 5}],
         source="guardian", focus_symbol="NESN.SW")
     assert rows[0]["accepted"] is True
 
@@ -7501,7 +7501,7 @@ def test_a_bearish_thesis_that_plays_out_earns_money(tmp_path, monkeypatch):
     pr.execute_coach_actions([coach_short()], source="daily")
     market.prices["NESN.SW"] = (85.0, "CHF", "Nestle SA")
 
-    pr.execute_coach_actions([{"action": "cover", "symbol": "NESN.SW"}],
+    pr.execute_coach_actions([{"action": "cover", "exit_reason": "risk", "symbol": "NESN.SW"}],
                              source="daily")
     trade = coach_portfolio()["trades"][0]
     assert trade["side"] == "short"
@@ -7517,7 +7517,7 @@ def test_a_bearish_thesis_that_fails_loses_money(tmp_path, monkeypatch):
     pr.execute_coach_actions([coach_short()], source="daily")
     market.prices["NESN.SW"] = (106.0, "CHF", "Nestle SA")
 
-    pr.execute_coach_actions([{"action": "cover", "symbol": "NESN.SW"}],
+    pr.execute_coach_actions([{"action": "cover", "exit_reason": "risk", "symbol": "NESN.SW"}],
                              source="daily")
     assert coach_portfolio()["trades"][0]["pnl_chf"] < 0
 
@@ -7543,7 +7543,7 @@ def test_a_short_pays_fees_on_both_legs(tmp_path, monkeypatch):
     c, market = make_client(tmp_path, monkeypatch)
     pr.execute_coach_actions([coach_short()], source="daily")
     market.prices["NESN.SW"] = (90.0, "CHF", "Nestle SA")
-    pr.execute_coach_actions([{"action": "cover", "symbol": "NESN.SW"}],
+    pr.execute_coach_actions([{"action": "cover", "exit_reason": "risk", "symbol": "NESN.SW"}],
                              source="daily")
 
     trade = coach_portfolio()["trades"][0]
@@ -7567,7 +7567,7 @@ def test_the_excursions_of_a_short_are_measured_upside_down(tmp_path, monkeypatc
     market.candles["NESN.SW"] = [
         {"ts": _ts(1), "open": 100.0, "high": 112.0, "low": 84.0, "close": 90.0}]
     market.prices["NESN.SW"] = (90.0, "CHF", "Nestle SA")
-    pr.execute_coach_actions([{"action": "cover", "symbol": "NESN.SW"}],
+    pr.execute_coach_actions([{"action": "cover", "exit_reason": "risk", "symbol": "NESN.SW"}],
                              source="daily")
 
     trade = coach_portfolio()["trades"][0]
@@ -8161,7 +8161,7 @@ def test_guardian_pass_rejects_an_action_on_another_symbol(tmp_path, monkeypatch
     pr.coach_trader.save_guardian_state({"NESN.SW": {"last_price": 100.0}})
     market.prices["NESN.SW"] = (98.0, "CHF", "Nestle SA")
     speaker = _Speaker(_actions_answer(
-        [{"action": "sell", "symbol": "AAPL", "qty": 1}]))
+        [{"action": "sell", "exit_reason": "risk", "symbol": "AAPL", "qty": 1}]))
 
     pr.run_coach_guardian_pass(claude=speaker)
 
@@ -8896,7 +8896,7 @@ def test_an_exit_order_carries_the_origin_of_its_line(tmp_path, monkeypatch):
     c, market = make_client(tmp_path, monkeypatch)
     pr.execute_coach_actions([coach_action()], source="daily",
                              origins=[{"symbol": "NESN.SW", "source": "tendance"}])
-    pr.execute_coach_actions([{"action": "sell", "symbol": "NESN.SW"}],
+    pr.execute_coach_actions([{"action": "sell", "exit_reason": "risk", "symbol": "NESN.SW"}],
                              source="daily")
     trade = coach_portfolio()["trades"][0]
     assert trade["candidate_source"] == "tendance"
@@ -9133,3 +9133,36 @@ def test_lot15_the_stop_still_wins_if_it_went_first(tmp_path, monkeypatch):
     pr.tick_coach_account("2026-08-27T10:05:00")
     trades = coach_portfolio()["trades"]
     assert [t["exit_reason"] for t in trades] == ["stop"]
+
+
+# --- T4 — chaque sortie dit POURQUOI --------------------------------------- #
+
+def test_lot15_an_exit_reason_lands_on_the_trade_and_the_ledger(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+    seed_coach_position(qty=10)
+    rows = pr.execute_coach_actions(
+        [{"action": "sell", "symbol": "NESN.SW", "exit_reason": "threat"}],
+        source="guardian")
+    assert rows[0]["accepted"] is True, rows[0]
+    assert rows[0]["exit_reason"] == "threat"
+    assert coach_portfolio()["trades"][0]["exit_reason"] == "threat"
+    assert coach_ledger()[-1]["exit_reason"] == "threat"
+
+
+def test_lot15_an_exit_without_reason_is_refused_and_the_line_stays(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+    seed_coach_position(qty=10)
+    rows = pr.execute_coach_actions([{"action": "sell", "symbol": "NESN.SW"}],
+                                    source="daily")
+    assert rows[0]["reason"] == "no_exit_reason"
+    assert "threat" in rows[0]["detail"]
+    assert len(coach_portfolio()["positions"]) == 1
+
+
+def test_lot15_a_partial_reduce_carries_its_reason(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+    seed_coach_position(qty=10)
+    pr.execute_coach_actions(
+        [{"action": "reduce", "symbol": "NESN.SW", "qty": 4,
+          "exit_reason": "risk"}], source="daily")
+    assert coach_portfolio()["trades"][0]["exit_reason"] == "risk"

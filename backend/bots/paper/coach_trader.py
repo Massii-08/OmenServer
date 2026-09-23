@@ -252,7 +252,55 @@ REJECT_CODES = (
     #                         :data:`MIN_THESIS_HORIZON_D` jours : il ne reste
     #                         que du bruit de marché à jouer.
     "no_horizon", "thesis_expiring",
+    #   ``no_exit_reason`` — une SORTIE qui ne dit pas pourquoi (hors de
+    #                        :data:`EXIT_REASONS`). Contrôle de FORME, jamais
+    #                        de fond : ``threat`` passe toujours.
+    "no_exit_reason",
 )
+
+# LOT 15 — les raisons d'une SORTIE décidée par le coach, liste FERMÉE. Mesuré
+# sur le compte (23/09) : ses sorties DISCRÉTIONNAIRES étaient 7 sur 7 en
+# perte — il vendait sur le bruit. Une sortie doit désormais nommer ce qui la
+# fonde, pour que la mesure (``economics_view``, ``by_exit_reason``) dise un
+# jour laquelle paie :
+#   ``invalidated`` — la condition d'invalidation de la thèse est remplie ;
+#   ``threat``      — un facteur de menace a tiré (« Menace = tire seul ») ;
+#   ``target``      — l'objectif est atteint (ou suffisamment approché) ;
+#   ``deadline``    — l'échéance de la thèse est là ;
+#   ``risk``        — réduction de risque du LIVRE (pas de la ligne) ;
+#   ``rebalance``   — rééquilibrage (concentration, cash).
+# ⚠️ La porte ne JUGE PAS la raison : elle exige qu'elle soit DITE. Une vraie
+# menace ne doit jamais attendre — d'où la tolérance d'écriture ci-dessous.
+EXIT_REASONS = ("invalidated", "threat", "target", "deadline", "risk",
+                "rebalance")
+
+# Les écritures qu'un modèle peut raisonnablement produire pour une raison de
+# la liste (casse, français, italien). Tolérance VOULUE : une sortie défensive
+# ne doit pas buter sur une langue — « menace » est « threat ».
+_EXIT_REASON_ALIASES = {
+    "menace": "threat", "minaccia": "threat", "danger": "threat",
+    "invalidation": "invalidated", "invalidee": "invalidated",
+    "invalidée": "invalidated", "invalide": "invalidated",
+    "invalidata": "invalidated", "thesis_invalidated": "invalidated",
+    "objectif": "target", "obiettivo": "target", "take_profit": "target",
+    "echeance": "deadline", "échéance": "deadline", "scadenza": "deadline",
+    "expiry": "deadline",
+    "risque": "risk", "rischio": "risk", "risk_reduction": "risk",
+    "reequilibrage": "rebalance", "rééquilibrage": "rebalance",
+    "ribilanciamento": "rebalance",
+}
+
+
+def exit_reason_of(value: Any) -> Optional[str]:
+    """La raison de sortie NORMALISÉE (:data:`EXIT_REASONS`), ou ``None`` si
+    elle est absente ou hors liste (PUR). Tolère la casse, les espaces et les
+    équivalents français/italiens (:data:`_EXIT_REASON_ALIASES`)."""
+    if not isinstance(value, str):
+        return None
+    key = value.strip().lower().replace("-", "_").replace(" ", "_")
+    if key in EXIT_REASONS:
+        return key
+    return _EXIT_REASON_ALIASES.get(key)
 
 # D'où vient une décision : du digest quotidien, de la passe planifiée (créneau),
 # ou du GARDIEN (LOT 8 — la sentinelle déclenchée par un mouvement de marché
@@ -1364,8 +1412,15 @@ def gate_decision(decision: Any, portfolio: Any, quote: Any,
             qty = int(held)          # « tout solder »
         if qty > held:
             return _reject("qty_over_position")
+        # LOT 15 — une sortie dit POURQUOI (:data:`EXIT_REASONS`). Contrôle de
+        # FORME uniquement, en dernier : rien ici ne juge la raison, et
+        # ``threat`` passe toujours — « être le dernier à vendre est le seul
+        # cas qu'on ne peut pas se permettre ».
+        exit_reason = exit_reason_of(decision.get("exit_reason"))
+        if exit_reason is None:
+            return _reject("no_exit_reason")
         return _accept(symbol, "sell" if wanted == "long" else "cover",
-                       qty, decision)
+                       qty, decision, exit_reason=exit_reason)
 
     # ----------------------------------------------------------------- #
     # ENTRÉE
@@ -1817,13 +1872,23 @@ def reject_detail(code: Any, decision: Any, portfolio: Any, quote: Any,
         code = _text(code)
         if code not in ("no_target", "edge_thin", "whipsaw",
                         "too_many_positions", "market_closed",
-                        "no_horizon", "thesis_expiring", "stop_in_noise"):
+                        "no_horizon", "thesis_expiring", "stop_in_noise",
+                        "no_exit_reason"):
             return None
 
         decision = decision if isinstance(decision, dict) else {}
         portfolio = portfolio if isinstance(portfolio, dict) else {}
         quote = quote if isinstance(quote, dict) else {}
         symbol = _symbol(decision.get("symbol"))
+
+        if code == "no_exit_reason":
+            raw = decision.get("exit_reason")
+            got = ("aucune" if raw is None or not _text(raw)
+                   else "« %s »" % _text(raw)[:60])
+            return ("une sortie dit POURQUOI : exit_reason parmi %s (reçu : "
+                    "%s). « threat » (un facteur de menace a tiré) passe "
+                    "toujours — le bruit, lui, n'est pas une raison"
+                    % (", ".join(EXIT_REASONS), got))
 
         # LOT 15 — le contrat de thèse (``thesis`` = le contrat HÉRITÉ que le
         # routeur a passé à la porte, ou ``None``).
@@ -1924,7 +1989,8 @@ def reject_detail(code: Any, decision: Any, portfolio: Any, quote: Any,
 def _accept(symbol: str, side: str, qty: int,
             decision: Dict[str, Any], kind: str = "market",
             trigger: Optional[float] = None,
-            contract: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+            contract: Optional[Dict[str, Any]] = None,
+            exit_reason: Optional[str] = None) -> Dict[str, Any]:
     """L'ordre normalisé, prêt pour le moteur d'ordres du simulateur.
 
     ``side`` est un sens du MOTEUR (``models.ORDER_SIDES``), pas le nom de
@@ -1965,6 +2031,9 @@ def _accept(symbol: str, side: str, qty: int,
             "horizon_days": (contract or {}).get("horizon_days"),
             "invalidation": (contract or {}).get("invalidation"),
             "thesis_deadline": (contract or {}).get("thesis_deadline"),
+            # LOT 15 — la raison d'une SORTIE (:data:`EXIT_REASONS`) ;
+            # ``None`` pour tout le reste.
+            "exit_reason": exit_reason,
         },
     }
 
@@ -2623,7 +2692,8 @@ def guardian_gate(decision: Any, focus_symbol: Any) -> Optional[str]:
 # --------------------------------------------------------------------------- #
 
 def ledger_entry(ts: Any, source: Any, action: Any, symbol: Any, accepted: Any,
-                 reason: Any = None, detail: Any = None) -> Dict[str, Any]:
+                 reason: Any = None, detail: Any = None,
+                 exit_reason: Any = None) -> Dict[str, Any]:
     """Une ligne de registre.
 
     Les REFUS y sont archivés AVEC leur code : c'est le cœur de « voir COMMENT
@@ -2635,7 +2705,7 @@ def ledger_entry(ts: Any, source: Any, action: Any, symbol: Any, accepted: Any,
     ne valide pas — inventer « digest » à la place d'une valeur inattendue
     falsifierait la trace.
     """
-    return {
+    row = {
         "ts": _text(ts),
         "source": _text(source).lower(),
         "action": _text(action).lower(),
@@ -2644,6 +2714,11 @@ def ledger_entry(ts: Any, source: Any, action: Any, symbol: Any, accepted: Any,
         "reason": _text(reason) or None,
         "detail": _text(detail) or None,
     }
+    # LOT 15 — la raison d'une SORTIE (:data:`EXIT_REASONS`), seulement quand
+    # il y en a une : les autres lignes gardent leur forme d'avant.
+    if _text(exit_reason):
+        row["exit_reason"] = _text(exit_reason).lower()
+    return row
 
 
 def push_ledger(rows: Any, entry: Any, cap: int = MAX_LEDGER) -> List[Dict[str, Any]]:

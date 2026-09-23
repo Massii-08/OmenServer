@@ -2430,8 +2430,13 @@ def _coach_execute_one(portfolio: models.Portfolio, action: Dict[str, Any],
          "stop_loss": order.stop_loss, "target": order.target, "qty": order.qty},
         portfolio.to_dict(), price * fx_rate)
 
+    # LOT 15 — une SORTIE porte la raison que la porte a exigée
+    # (``coach_trader.EXIT_REASONS``) ; elle devient l'``exit_reason`` du
+    # trade clos, là où tout sortait jusqu'ici sous un « coach » muet.
+    exit_reason = plan.get("exit_reason") or "coach"
     try:
-        fill = execute_order(portfolio, order, price, fx_rate, now_iso, "coach")
+        fill = execute_order(portfolio, order, price, fx_rate, now_iso,
+                             exit_reason)
     except OrderError as e:
         # Refus du MOTEUR (trésorerie ou marge réelle, frais compris), pas du
         # mandat : le garde-fou est conservateur (il ignore les frais, cf.
@@ -2461,7 +2466,8 @@ def _coach_execute_one(portfolio: models.Portfolio, action: Dict[str, Any],
 
     entry = coach_trader.ledger_entry(
         now_iso, source, kind, order.symbol, True,
-        detail="%d x %.2f %s" % (qty, price, order.currency))
+        detail="%d x %.2f %s" % (qty, price, order.currency),
+        exit_reason=plan.get("exit_reason"))
     return entry, _coach_journal_entry(order, fill, source)
 
 

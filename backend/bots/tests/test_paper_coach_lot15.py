@@ -324,3 +324,90 @@ def test_the_stop_in_noise_detail_TEACHES_the_stop_for_this_horizon():
     assert "16" in text                     # les jours restants
     assert "√" in text or "racine" in text  # le pourquoi
     assert "31" in text                     # la taille qui garde 2 % de risque
+
+
+# =========================================================================== #
+# T4 — chaque sortie dit POURQUOI
+# =========================================================================== #
+
+def _line(**over):
+    base = {"symbol": "NESN.SW", "qty": 10, "avg_price": 100.0,
+            "currency": "CHF", "fx_rate": 1.0, "side": "long"}
+    base.update(over)
+    return base
+
+
+def test_the_exit_reasons_are_a_closed_list():
+    assert coach_trader.EXIT_REASONS == ("invalidated", "threat", "target",
+                                         "deadline", "risk", "rebalance")
+    assert "no_exit_reason" in coach_trader.REJECT_CODES
+
+
+@pytest.mark.parametrize("action", ["sell", "reduce"])
+@pytest.mark.parametrize("reason", [None, "", "bruit", "je le sens mal", 42])
+def test_an_exit_without_a_listed_reason_is_refused(action, reason):
+    decision = {"action": action, "symbol": "NESN.SW", "qty": 5}
+    if reason is not None:
+        decision["exit_reason"] = reason
+    out = coach_trader.gate_decision(decision, _pf(positions=[_line()]), _quote())
+    assert out["accepted"] is False
+    assert out["reason"] == "no_exit_reason"
+
+
+def test_a_cover_without_reason_is_refused_too():
+    out = coach_trader.gate_decision(
+        {"action": "cover", "symbol": "NESN.SW"},
+        _pf(positions=[_line(side="short")]), _quote())
+    assert out["reason"] == "no_exit_reason"
+
+
+@pytest.mark.parametrize("reason", ["invalidated", "threat", "target",
+                                    "deadline", "risk", "rebalance"])
+def test_every_listed_reason_passes_and_travels(reason):
+    out = coach_trader.gate_decision(
+        {"action": "sell", "symbol": "NESN.SW", "exit_reason": reason},
+        _pf(positions=[_line()]), _quote())
+    assert out["accepted"] is True
+    assert out["order"]["exit_reason"] == reason
+
+
+@pytest.mark.parametrize("raw", ["THREAT", " threat ", "Menace", "minaccia"])
+def test_a_threat_passes_whatever_its_spelling(raw):
+    """« Menace = tire seul » : une sortie défensive ne doit JAMAIS buter sur
+    une faute de casse ou de langue."""
+    out = coach_trader.gate_decision(
+        {"action": "sell", "symbol": "NESN.SW", "exit_reason": raw},
+        _pf(positions=[_line()]), _quote())
+    assert out["accepted"] is True
+    assert out["order"]["exit_reason"] == "threat"
+
+
+def test_a_threat_exit_is_never_blocked_by_the_thesis_or_the_noise():
+    """C'est un contrôle de FORME : aucune règle de thèse, d'horizon ni de
+    bruit ne touche une sortie. Une ligne de thèse loin de son échéance, un
+    cours dans le bruit : ``threat`` passe."""
+    line = _line(horizon_days=20, invalidation=INVALIDATION,
+                 thesis_deadline="2026-10-20T10:00:00", stop_loss=90.0)
+    out = coach_trader.gate_decision(
+        {"action": "sell", "symbol": "NESN.SW", "exit_reason": "threat"},
+        _pf(positions=[line]), _quote(99.9), now=NOW,
+        technical={"atr14_pct": 3.0})
+    assert out["accepted"] is True
+
+
+def test_the_no_exit_reason_detail_names_the_list_and_the_threat_rule():
+    text = coach_trader.reject_detail(
+        "no_exit_reason", {"action": "sell", "symbol": "NESN.SW",
+                           "exit_reason": "bruit"}, _pf(), _quote())
+    for reason in coach_trader.EXIT_REASONS:
+        assert reason in text
+    assert "bruit" in text
+    assert "threat" in text and "toujours" in text
+
+
+def test_the_ledger_carries_the_exit_reason_only_when_there_is_one():
+    row = coach_trader.ledger_entry("t", "daily", "sell", "NESN.SW", True,
+                                    exit_reason="threat")
+    assert row["exit_reason"] == "threat"
+    assert "exit_reason" not in coach_trader.ledger_entry(
+        "t", "daily", "buy", "NESN.SW", True)
