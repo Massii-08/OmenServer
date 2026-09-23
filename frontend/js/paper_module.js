@@ -3629,7 +3629,59 @@ const PaperModule = {
               esc(Lang.t('paper.ct_eco_winners') + ' ') +
               '<span style="' + this._mono + 'color:var(--text);">' + esc(wins + ' / ' + n) + '</span>' +
             '</div>' +
+            this._ctEcoBreakdowns(eco) +
             rtLine);
+    },
+
+    // LOT 15 — la MESURE du lot « le coach tient ses thèses » : l'économie par
+    // raison de sortie, et le croisement « verdict du radar à l'échéance x
+    // trade gagnant/perdant » (coach_trader.economics_view). Chaque bloc ne
+    // s'affiche que s'il a du contenu ; un verdict pas encore rendu se lit
+    // « en attente », jamais deviné.
+    _ctCodeLabel(prefix, code) {
+        const key = prefix + code;
+        const text = Lang.t(key) || '';
+        return text.startsWith(prefix) ? String(code) : text;
+    },
+
+    _ctEcoBreakdowns(eco) {
+        const line = (label, cells) =>
+            '<div style="display:flex;gap:10px;flex-wrap:wrap;font-size:13px;margin-top:2px;">' +
+              '<span style="min-width:170px;color:var(--text-muted);">' + esc(label) + '</span>' +
+              '<span style="' + this._mono + 'color:var(--text);">' + esc(cells) + '</span>' +
+            '</div>';
+        const title = (key) =>
+            '<div style="font-size:12px;color:var(--text-dim);margin-top:10px;' +
+                'text-transform:uppercase;letter-spacing:.04em;">' + esc(Lang.t(key)) + '</div>';
+        let out = '';
+        const byExit = (eco.by_exit_reason && typeof eco.by_exit_reason === 'object')
+            ? eco.by_exit_reason : {};
+        const exitKeys = Object.keys(byExit);
+        if (exitKeys.length) {
+            out += title('paper.ct_eco_by_exit');
+            exitKeys.forEach((code) => {
+                const row = byExit[code] || {};
+                out += line(this._ctCodeLabel('paper.ct_exit_', code),
+                    (this._n(row.n_trades) || 0) + ' · ' + Lang.t('paper.ct_eco_won') + ' ' +
+                    (this._n(row.n_wins) || 0) + ' · ' + this._signedChf(row.net_pnl_chf, 2));
+            });
+        }
+        const byVerdict = (eco.by_thesis_verdict && typeof eco.by_thesis_verdict === 'object')
+            ? eco.by_thesis_verdict : {};
+        const verdictKeys = Object.keys(byVerdict);
+        if (verdictKeys.length) {
+            out += title('paper.ct_eco_by_verdict');
+            verdictKeys.forEach((code) => {
+                const row = byVerdict[code] || {};
+                out += line(this._ctCodeLabel('paper.ct_verdict_', code),
+                    Lang.t('paper.ct_eco_won') + ' ' + (this._n(row.n_wins) || 0) + ' · ' +
+                    Lang.t('paper.ct_eco_lost') + ' ' + (this._n(row.n_losses) || 0) + ' · ' +
+                    this._signedChf(row.net_pnl_chf, 2));
+            });
+            out += '<div style="font-size:12px;color:var(--text-dim);margin-top:4px;">' +
+                esc(Lang.t('paper.ct_eco_verdict_hint')) + '</div>';
+        }
+        return out;
     },
 
     // --- La courbe : la sienne, la vôtre, et le capital de départ -----------
@@ -3878,6 +3930,29 @@ const PaperModule = {
             esc(s) + '</button>';
     },
 
+    // LOT 15 — le CONTRAT de thèse d'une ligne (champ « these » de
+    // positions_view, coach_trader.thesis_state) : « thèse : jour X/H ·
+    // échéance JJ/MM · invalidation : … ». Rien pour une ligne sans contrat.
+    // L'invalidation est écrite par un LLM : échappée, toujours.
+    _ctThesisLine(pos) {
+        const st = (pos && pos.these && typeof pos.these === 'object') ? pos.these : null;
+        if (!st || !this._n(st.horizon)) return '';
+        const dl = String(st.deadline || '');
+        const when = dl.length >= 10 ? (dl.slice(8, 10) + '/' + dl.slice(5, 7)) : '—';
+        const inv = String(st.invalidation || '').trim();
+        return '<div style="font-size:13px;margin-top:4px;line-height:1.55;color:var(--text-muted);">' +
+            '<span style="color:var(--text-dim);">' + esc(Lang.t('paper.ct_these')) + '</span> ' +
+            '<span style="' + this._mono + 'color:var(--text);">' +
+              esc(Lang.t('paper.ct_these_day') + ' ' + (this._n(st.day) || 1) + '/' +
+                  this._n(st.horizon)) + '</span>' +
+            ' <span style="color:var(--text-dim);">·</span> ' +
+            esc(Lang.t('paper.ct_these_deadline') + ' ') +
+            '<span style="' + this._mono + 'color:var(--text);">' + esc(when) + '</span>' +
+            ' <span style="color:var(--text-dim);">·</span> ' +
+            esc(Lang.t('paper.ct_these_invalidation') + ' ' + (inv || '—')) +
+        '</div>';
+    },
+
     _ctPositionsCard() {
         const view = this._ctPositionsView();
         const rows = view || this._ctList(this._ctPortfolio().positions);
@@ -3939,6 +4014,7 @@ const PaperModule = {
                 plan('paper.ct_stop', this._n(pos && pos.stop_loss)) +
                 plan('paper.ct_target', this._n(pos && pos.target)) +
               '</div>' +
+              this._ctThesisLine(pos) +
             '</td></tr>';
         }).join('');
         return this._card(head + this._table([
@@ -4071,6 +4147,10 @@ const PaperModule = {
               (action
                 ? '<span style="font-size:14px;font-weight:600;">' +
                   esc(this._label('paper.ct_act_' + action, action)) + '</span>' : '') +
+              // LOT 15 — la raison d'une SORTIE, archivée au registre.
+              (e.exit_reason
+                ? '<span class="badge">' +
+                  esc(this._ctCodeLabel('paper.ct_exit_', String(e.exit_reason))) + '</span>' : '') +
               this._ctSymChip(sym) +
               '<span style="margin-left:auto;font-size:12px;color:var(--text-dim);' +
                    this._mono + '">' + esc(this._dateTime(e.ts)) + '</span>' +
