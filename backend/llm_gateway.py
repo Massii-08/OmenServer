@@ -129,7 +129,7 @@ DEFAULT_MODELS = {
 }
 # Effort par défaut selon le tier DEMANDÉ (la profondeur voulue par l'appelant
 # est conservée même quand le budget fait servir « opus » par « sonnet »).
-DEFAULT_EFFORT = {"opus": "medium", "sonnet": "low", "haiku": "low"}
+DEFAULT_EFFORT = {"opus": "medium", "sonnet": "medium", "haiku": "low"}
 BACKENDS = ("auto", "cli", "api")
 DEFAULT_BUDGET_USD = 90.0
 DEFAULT_DOWNGRADE_AT = 0.6
@@ -1106,8 +1106,11 @@ def complete(prompt: str, *, label: str, cli: Callable[[], str], tier: str = "so
     - ``cli`` : callable SANS argument fourni par l'appelant, qui lance le CLI et
       RENVOIE LE TEXTE (ou lève). Le gateway ne lance jamais le CLI lui-même.
     - ``tier`` (``opus|sonnet|haiku``) ou ``model`` (id complet, prioritaire).
-    - ``effort`` : None -> défaut du tier demandé (opus ``medium``, sonnet/haiku
+    - ``effort`` : None -> défaut du tier demandé (opus et sonnet ``medium``, haiku
       ``low``), jamais envoyé par défaut à un modèle qui ne l'accepte pas.
+      (Sonnet était à ``low`` au départ ; relevé à ``medium`` le 12/10 : l'ancien
+      chemin CLI tournait à l'effort par défaut du modèle, et les appels du coach
+      qui décident ne doivent pas perdre en profondeur au passage à l'API.)
     - ``notify(texte)`` : alertes (crédit épuisé, clé refusée, budget 80/100 %),
       dédoublonnées ; une panne de ``notify`` ne casse jamais l'appel.
     - ``client_factory(api_key=, timeout=, max_retries=)`` et ``now()`` : injectables

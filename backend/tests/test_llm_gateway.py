@@ -975,7 +975,7 @@ def test_typeerror_sans_rapport_pas_de_reessai(env):
 
 # --- 20. effort par défaut, paramètres interdits -----------------------------------------------
 @pytest.mark.parametrize("tier, model, effort", [
-    ("opus", OPUS, "medium"), ("sonnet", SONNET, "low"), ("haiku", HAIKU, "low"),
+    ("opus", OPUS, "medium"), ("sonnet", SONNET, "medium"), ("haiku", HAIKU, "low"),
 ])
 def test_effort_par_defaut_selon_le_tier(env, tier, model, effort):
     env.set(gw.KEY_VAR, KEY)
