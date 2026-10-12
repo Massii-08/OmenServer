@@ -8,7 +8,7 @@ def test_no_file_means_sensible_defaults():
     """Le bot doit tourner dès l'installation, sans rien configurer."""
     prefs, warnings = load("/tmp/n-existe-pas-du-tout.json")
     assert prefs["borse"] == DEFAULT_BORSE
-    assert prefs["opzioni"]["sintesi"] is True
+    assert prefs["opzioni"]["sintesi"] is False  # IA éteinte par défaut = 0 token
     assert warnings == []
 
 
@@ -163,3 +163,10 @@ def test_an_empty_selection_survives_a_round_trip_on_disk(tmp_path):
     save({"borse": []}, path)
     prefs, _warnings = load(path)
     assert prefs["borse"] == []
+
+
+def test_saving_selector_prefs_keeps_sintesi():
+    """Le sélecteur front n'a plus de case sintesi : il renvoie la valeur courante
+    (market_module._collectPrefs). Côté moteur : sintesi=True explicite survit."""
+    prefs, _ = validate({"opzioni": {"sintesi": True, "max_notizie": 5}})
+    assert prefs["opzioni"]["sintesi"] is True

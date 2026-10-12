@@ -187,6 +187,7 @@ const MarketModule = {
         '</div>' +
         // Phase D : le sélecteur, puis une TUILE par bourse. Conteneurs SÉPARÉS
         // de #mkt-body, que le poll de l'horloge réécrit toutes les 60 s.
+        '<div id="mkt-ai"></div>' +
         '<div id="mkt-selector"></div>' +
         '<div id="mkt-briefings"></div>' +
         '<div id="mkt-schedule"></div>' +
@@ -1060,14 +1061,17 @@ const MarketModule = {
     async _loadPrefs() {
         const host = document.getElementById('mkt-selector');
         if (!host) return;
+        const aiHost0 = document.getElementById('mkt-ai');
         let r = null;
         try { r = await Auth.apiCall('/api/bots/market/prefs'); } catch (e) { r = null; }
-        if (!r || !r.ok) { host.innerHTML = ''; return; }
+        if (!r || !r.ok) { host.innerHTML = ''; if (aiHost0) aiHost0.innerHTML = ''; return; }
         let d = null;
         try { d = await r.json(); } catch (e) { d = null; }
-        if (!d) { host.innerHTML = ''; return; }
+        if (!d) { host.innerHTML = ''; if (aiHost0) aiHost0.innerHTML = ''; return; }
         this._prefs = d;
         host.innerHTML = this._selectorHtml(d);
+        const aiHost = document.getElementById('mkt-ai');
+        if (aiHost) aiHost.innerHTML = this._aiSwitchHtml(d);
         // Les briefings s'ordonnent selon les groupes d'ouverture : maintenant
         // qu'on les connaît, on les redessine.
         const bhost = document.getElementById('mkt-briefings');
@@ -1145,7 +1149,6 @@ const MarketModule = {
                   flag('reddit', 'market.opt_reddit') +
                   flag('bluesky', 'market.opt_bluesky') +
                   flag('x', 'market.opt_x') +
-                  flag('sintesi', 'market.opt_sintesi') +
                   flag('scoperte', 'market.opt_scoperte') +
                   flag('quaderno', 'market.opt_quaderno') +
                 '</div>' +
@@ -1179,6 +1182,57 @@ const MarketModule = {
 
     _selectorOpen: false,
 
+    // Interrupteur maître IA = prefs opzioni.sintesi. OFF : le moteur n'appelle
+    // JAMAIS le LLM (0 token), mais cours/news/agenda/Excel continuent.
+    _aiSwitchHtml(d) {
+        const admin = this._isAdmin();
+        const opz = (d && d.prefs && d.prefs.opzioni && typeof d.prefs.opzioni === 'object')
+            ? d.prefs.opzioni : {};
+        const on = !!opz.sintesi;
+        const hint = Lang.t(on ? 'market.ai_switch_on_hint' : 'market.ai_switch_off_hint');
+        const track = 'position:relative;flex:0 0 auto;width:46px;height:26px;padding:0;' +
+            'border-radius:var(--r-pill);border:1px solid ' + (on ? 'var(--accent)' : 'var(--border-strong)') + ';' +
+            'background:' + (on ? 'var(--accent-dim)' : 'var(--bg-elev-3)') + ';' +
+            'cursor:' + (admin ? 'pointer' : 'not-allowed') + ';';
+        const knob = 'position:absolute;top:3px;left:' + (on ? '23px' : '3px') + ';width:18px;height:18px;' +
+            'border-radius:50%;background:' + (on ? 'var(--accent)' : 'var(--text-dim)') + ';' +
+            'transition:left .15s ease;';
+        return '<div class="card" style="margin-bottom:14px;display:flex;align-items:center;gap:14px;">' +
+            '<button type="button" id="mkt-ai-switch" role="switch" aria-checked="' + (on ? 'true' : 'false') + '"' +
+              ' aria-label="' + esc(Lang.t('market.ai_switch_title')) + '"' +
+              (admin ? ' onclick="MarketModule.toggleAi()"' : ' disabled') +
+              ' style="' + track + '"><span style="' + knob + '"></span></button>' +
+            '<div style="min-width:0;">' +
+              '<div style="font-size:15px;font-weight:600;">' + esc(Lang.t('market.ai_switch_title')) +
+                ' <span class="badge' + (on ? ' online' : '') + '" style="margin-left:6px;">' +
+                esc(Lang.t(on ? 'market.ai_state_on' : 'market.ai_state_off')) + '</span></div>' +
+              '<div style="font-size:13px;color:var(--text-muted);margin-top:3px;">' + esc(hint) + '</div>' +
+            '</div></div>';
+    },
+
+    async toggleAi() {
+        if (!this._prefs || !this._isAdmin()) return;
+        const prefs = this._prefs.prefs || {};
+        const borse = Array.isArray(prefs.borse) ? prefs.borse.slice() : [];
+        const titoli = {};
+        Object.keys(prefs.titoli || {}).forEach(k => { titoli[k] = (prefs.titoli[k] || []).slice(); });
+        const opzioni = Object.assign({}, prefs.opzioni || {});
+        opzioni.sintesi = !opzioni.sintesi;
+        let r = null;
+        try {
+            r = await Auth.apiCall('/api/bots/market/prefs', {
+                method: 'POST',
+                body: JSON.stringify({ borse: borse, titoli: titoli, opzioni: opzioni }),
+            });
+        } catch (e) { r = null; }
+        if (!r || !r.ok) {
+            if (typeof Toast !== 'undefined' && Toast.error) Toast.error(Lang.t('market.error'));
+            return;
+        }
+        if (typeof Toast !== 'undefined' && Toast.success) Toast.success(Lang.t('market.ai_switch_saved'));
+        await this._loadPrefs();
+    },
+
     // Lit l'état des cases et l'envoie. Le backend re-valide et RÉINSTALLE les
     // réveils : décocher une bourse éteint vraiment son briefing du matin.
     async savePrefs() {
@@ -1210,6 +1264,10 @@ const MarketModule = {
             if (venue && syms.length && borse.indexOf(venue) >= 0) titoli[venue] = syms;
         });
         const opzioni = {};
+        // sintesi (interrupteur IA) n'a plus de case ici : on conserve sa valeur
+        // courante, sinon la sauvegarde du sélecteur la ferait retomber au défaut.
+        const cur = (this._prefs && this._prefs.prefs && this._prefs.prefs.opzioni) || {};
+        if (typeof cur.sintesi === 'boolean') opzioni.sintesi = cur.sintesi;
         document.querySelectorAll('#mkt-selector .mkt-opt').forEach(el => {
             opzioni[el.getAttribute('data-opt')] = !!el.checked;
         });

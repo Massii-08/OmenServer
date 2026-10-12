@@ -46,7 +46,7 @@ DEFAULT_OPZIONI = {
     # unconscious » sous le nom de la Borsa di Milano. Un fil de rédaction
     # générale n'a pas sa place dans un briefing de marché.
     "x_account": ["CNBC", "MarketWatch"],
-    "sintesi": True,         # la synthèse en italien par le LLM
+    "sintesi": False,        # interrupteur IA : éteint par défaut = 0 token (cours/news/agenda/Excel continuent)
     "scoperte": True,        # la liste de nouveaux titres apparus
     "quaderno": True,        # écrire la note dans le coffre Obsidian
     "max_notizie": 10,
