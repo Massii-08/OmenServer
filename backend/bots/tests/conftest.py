@@ -62,8 +62,9 @@ def pytest_configure(config):
     )
     config.addinivalue_line(
         "markers",
-        "real_llm: le test a le DROIT d'atteindre le vrai CLI Claude "
-        "(llm._claude_text sans run= injecté) -> ne pas poser le garde",
+        "real_llm: le test a le DROIT de traverser le vrai chemin de "
+        "llm._claude_text (sans run= injecté : passerelle LLM puis CLI Claude) "
+        "-> ne pas poser le garde",
     )
 
 
@@ -215,6 +216,31 @@ def _no_real_llm_call(request, monkeypatch):
         return real(*args, **kwargs)
 
     monkeypatch.setattr(llm, "_claude_text", _guarded, raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _isolated_llm_gateway(monkeypatch, tmp_path):
+    """La passerelle LLM (``backend/llm_gateway.py``) est isolée pour TOUTE la suite.
+
+    ``llm._claude_text`` passe désormais par la passerelle dès qu'aucun ``run``
+    n'est injecté, et la passerelle lit une clé API dans l'environnement ou dans
+    ``~/.config/omen-llm.env``, écrit son journal et son état dans
+    ``~/.local/state/llm-gateway``. Un test ne doit JAMAIS pouvoir :
+
+    * atteindre l'API — même si le shell du développeur exporte une clé :
+      ``LLM_BACKEND=cli`` (jamais l'API), les trois variables de clé retirées, et
+      un fichier d'env qui n'existe pas (celui de la machine n'est pas lu) ;
+    * écrire dans le vrai ``~/.local/state`` : dossier d'état dans ``tmp_path``.
+
+    Complète ``_no_real_llm_call`` (qui, lui, refuse l'appel non doublé) : même un
+    test ``@pytest.mark.real_llm`` retombe ici sur le CLI, jamais sur l'API. Un
+    test qui veut l'API pose lui-même ``LLM_BACKEND=auto`` + une clé factice +
+    un faux client — son ``monkeypatch`` passe après celui-ci et l'emporte."""
+    monkeypatch.setenv("LLM_BACKEND", "cli")
+    monkeypatch.setenv("LLM_GATEWAY_STATE_DIR", str(tmp_path / "llm-gateway"))
+    monkeypatch.setenv("LLM_GATEWAY_ENV_FILE", str(tmp_path / "absent.env"))
+    for name in ("LLM_GATEWAY_API_KEY", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"):
+        monkeypatch.delenv(name, raising=False)
 
 
 @pytest.fixture(autouse=True)

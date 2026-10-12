@@ -42,6 +42,13 @@ httpx==0.28.1
 # l'auto-deploy ne réinstalle pas les deps automatiquement.
 curl_cffi>=0.7
 
+# Passerelle LLM (backend/llm_gateway.py) : API Anthropic d'abord, CLI Claude en
+# repli. Le SDK n'est importé que PARESSEUSEMENT, au moment de créer le client :
+# absent => le module s'importe quand même et tous les appels passent par le CLI
+# (repli sûr, rien ne casse). ⚠️ à pip-install sur l'Omen : l'auto-deploy ne
+# réinstalle PAS les dépendances => `pip install anthropic` à la main dans le venv.
+anthropic>=0.109
+
 # Google Drive API (module File & Cloud)
 google-api-python-client>=2.100.0
 google-auth-oauthlib>=1.1.0

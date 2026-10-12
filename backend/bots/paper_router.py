@@ -26,6 +26,7 @@ Le P&L d'un trade est calculé avec UN SEUL taux de change (celui du jour) :
 le simulateur enseigne le mouvement du TITRE, pas la spéculation sur le change.
 Les flux de trésorerie réels, eux, portent bien le taux de chaque transaction.
 """
+import functools
 import hashlib
 import json
 import logging
@@ -3510,7 +3511,8 @@ def run_coach_daily_pass(now_iso: Optional[str] = None,
     if builder is None or screen_builder is None:
         return {"ledger": _coach_llm_failure(now, "prompt indisponible")}
 
-    speak = claude if claude is not None else llm._claude_text
+    speak = (claude if claude is not None
+             else functools.partial(llm._claude_text, label="coach_trader"))
 
     # --- PREMIER TEMPS : le tri ---------------------------------------- #
     answer, speak_err = _coach_speak(speak, screen_builder, context, now)
@@ -3614,7 +3616,8 @@ def run_coach_guardian_pass(now_iso: Optional[str] = None,
     builder = getattr(llm, "build_coach_guardian_prompt", None)
     if builder is None:
         return out
-    speak = claude if claude is not None else llm._claude_text
+    speak = (claude if claude is not None
+             else functools.partial(llm._claude_text, label="coach_guardian"))
 
     for position in list(portfolio.positions):
         symbol = position.symbol

@@ -329,7 +329,7 @@ def _default_llm(prompt: str) -> str:
     """Le CLI Claude via ``paper/llm.py`` (texte brut) -- même patron que
     ``convergence._default_llm``."""
     from backend.bots.paper import llm as llm_mod
-    return llm_mod._claude_text(prompt)
+    return llm_mod._claude_text(prompt, label="translate")
 
 
 def _build_prompt(candidates: List[Tuple[str, str]]) -> str:

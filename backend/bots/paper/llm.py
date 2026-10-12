@@ -1,8 +1,15 @@
 """Le coach qui RÉDIGE — la seule étape non déterministe du module.
 
-Patron repris de ``market-pulse/pulse/analyst.py`` : CLI Claude sur l'abonnement
-(aucune clé d'API), ``subprocess.run`` injectable, chemin du binaire cherché dans
-``CLAUDE_BIN`` puis l'emplacement de l'Omen puis le ``PATH``.
+Patron repris de ``market-pulse/pulse/analyst.py`` : CLI Claude sur l'abonnement,
+``subprocess.run`` injectable, chemin du binaire cherché dans ``CLAUDE_BIN`` puis
+l'emplacement de l'Omen puis le ``PATH``.
+
+**Passerelle LLM** (``backend/llm_gateway.py``) : quand une clé API dédiée est
+configurée, ``_claude_text`` essaie D'ABORD l'API Anthropic et retombe SEUL sur ce
+CLI (crédit épuisé, clé refusée, budget mensuel atteint, API en panne). SANS clé,
+l'appel part directement sur le CLI, exactement comme avant — réponse ET messages
+d'erreur, mot pour mot (cf. ``_API_NOT_TRIED``). Un ``run`` injecté (tous les
+tests) court-circuite la passerelle : chemin CLI historique, intact.
 
 Deux différences avec l'analyste de Market Pulse :
 
@@ -34,6 +41,9 @@ from typing import Any, Callable, Dict, List, Optional
 # Chaîne vérifiée ACYCLIQUE : coach_trader -> {models, quotes, risk}, et aucun
 # des trois n'importe ``llm`` (les quatre modules qui l'utilisent le font par
 # import PARESSEUX). ``backend.bots.paper.__init__`` est vide.
+# S'y ajoute ``backend.llm_gateway`` (la passerelle LLM) : stdlib seule, il
+# n'importe RIEN de ``backend.*`` -> aucun cycle possible.
+from backend import llm_gateway as gw
 from backend.bots.paper import coach_trader, models
 
 DEFAULT_MODEL = "claude-sonnet-5"
@@ -42,6 +52,43 @@ DEFAULT_TIMEOUT = 300   # VECU (02-03/09) : le contexte du coach a grossi
 # ses reponses depassent 120 s — 36 h de « sans reponse » en apparence
 # aleatoire. Un appel PLANIFIE n'a pas besoin d'etre rapide, il a besoin
 # d'ABOUTIR ; le polling frontend des jobs va jusqu'a 5 min, coherent.
+API_TIMEOUT = 180       # Delai de l'API avant repli sur le CLI. Opus avec reflexion
+# sur une longue sortie JSON (idees, scenarios, revue) depasse LEGITIMEMENT 120 s :
+# un delai trop court ferait reessayer (le SDK reessaie une fois, donc on paierait
+# deux fois) puis basculer sur le CLI pour rien. PIRE CAS : une API qui ne repond pas
+# DU TOUT coute 2 x 180 s avant que le CLI — qui garde, lui, ses 300 s — ne parte.
+# C'est rare : une API en panne repond vite, en 5xx/529, et le repli est alors immediat.
+
+# Palier de modele (opus|sonnet|haiku) par USAGE. Le choix est une hypothese :
+# opus pour ce que Massii LIT et interroge (coach interactif, idees, revue,
+# scenarios — qualite d'abord, volume bas), sonnet pour les passes planifiees et
+# les redactions courantes, haiku pour la traduction de titres. Les VOLUMES ne
+# sont pas mesures : le journal du gateway (``python -m backend.llm_gateway
+# summary``) dira ou part l'argent, et ``LLM_TIER_OVERRIDES`` (ex.
+# ``ideas=sonnet,radar=haiku``, dans le fichier d'env du gateway, relu a chaud)
+# permet de changer un palier SANS redeployer.
+TIER_BY_LABEL = {
+    "coach_ask": "opus",
+    "ideas": "opus",
+    "review": "opus",
+    "scenarios": "opus",
+    "postmortem": "sonnet",
+    "weekly": "sonnet",
+    "analysis": "sonnet",
+    "scalp_review": "sonnet",
+    "convergence": "sonnet",
+    "radar": "sonnet",
+    "coach_trader": "sonnet",
+    "coach_guardian": "sonnet",
+    "paper": "sonnet",          # defaut : un appel sans etiquette
+    "translate": "haiku",
+}
+
+
+def tier_for(label: Optional[str]) -> str:
+    """Palier d'un usage (``TIER_BY_LABEL``) ; etiquette vide ou inconnue -> sonnet."""
+    return TIER_BY_LABEL.get(label or "paper", "sonnet")
+
 
 # Position morale du coach (§2 de la spec). Ce bloc préfixe LES TROIS prompts —
 # c'est la seule garantie que le ton et les interdits ne divergent pas d'un
@@ -80,22 +127,33 @@ def claude_bin() -> str:
     return which("claude") or omen      # l'échec dira quel chemin a été tenté
 
 
-def _claude_text(prompt: str, model: str = DEFAULT_MODEL,
-                 timeout: int = DEFAULT_TIMEOUT,
-                 run: Callable = subprocess.run) -> str:
-    """Envoie ``prompt`` au CLI et rend le TEXTE de la réponse.
+# Le VRAI ``subprocess.run``, capturé à l'import : c'est l'objet que
+# ``_claude_text`` a pour défaut. « Personne n'a injecté de double » se reconnaît
+# à son IDENTITÉ avec cet objet, jamais à ``run is subprocess.run`` évalué à
+# l'appel : un test qui remplace ``subprocess.run`` pour doubler le CLI de repli
+# ferait passer le ``run`` par défaut pour un double, l'appel prendrait le chemin
+# historique avec le vrai ``run`` — donc le vrai binaire.
+_REAL_RUN = subprocess.run
 
-    ``run`` est injectable : les tests n'ont jamais besoin du binaire.
-    Lève ``RuntimeError`` — et rien d'autre — en cas de panne.
+
+def _cli_text(prompt: str, model: str, timeout: int, run: Callable,
+              env: Optional[Dict[str, str]] = None) -> str:
+    """Envoie ``prompt`` au CLI Claude et rend le TEXTE de la réponse.
+
+    C'est le chemin HISTORIQUE de ``_claude_text``, sans changement : dossier
+    neutre, enveloppe JSON décodée, ``RuntimeError`` partout, réponse vide
+    refusée. ``env`` n'est transmis à ``run`` que s'il est donné : les doubles de
+    test n'acceptent pas forcément ce mot-clé.
     """
     cmd = [claude_bin(), "-p", "--output-format", "json"]
     if model:
         cmd += ["--model", model]
+    extra = {} if env is None else {"env": env}
 
     try:
         with tempfile.TemporaryDirectory(prefix="paper-coach-llm-") as neutral:
             proc = run(cmd, input=prompt, capture_output=True, text=True,
-                       timeout=timeout, cwd=neutral)
+                       timeout=timeout, cwd=neutral, **extra)
     except subprocess.TimeoutExpired:
         raise RuntimeError("le coach n'a pas répondu dans les %s s" % timeout)
     except OSError as e:
@@ -122,6 +180,78 @@ def _claude_text(prompt: str, model: str = DEFAULT_MODEL,
         # encadré blanc dans l'interface.
         raise RuntimeError("le coach a rendu une réponse vide")
     return text.strip()
+
+
+def _notify(text: str) -> None:
+    """Alerte de la passerelle (crédit épuisé, clé refusée, budget 80/100 %) vers
+    le canal Telegram du bot Oracle, via le point de sortie unique du paper
+    trading. Best-effort de bout en bout : ne lève JAMAIS, et ne logue pas
+    l'exception (elle pourrait citer un jeton)."""
+    try:
+        from backend.bots.paper import alerts
+        alerts.send("[Coach IA] " + str(text))
+    except Exception:      # noqa: BLE001 — une alerte perdue ne coûte jamais un appel
+        pass
+
+
+# Raisons pour lesquelles l'API n'a JAMAIS été en jeu dans un appel : pas de clé,
+# mode « cli », SDK absent. Si le CLI échoue alors, l'erreur qui sort est CELLE DU
+# CLI, mot pour mot comme avant la passerelle (le 502 du router et la ligne « sans
+# réponse » du registre du coach affichent ce texte). Dans tout autre cas — API
+# tentée puis en échec, budget atteint, API bloquée, mode « api » — la
+# ``GatewayError`` complète reste : elle cite les deux causes.
+_API_NOT_TRIED = ("no_key", "backend_cli", "sdk_missing")
+
+
+def _claude_text(prompt: str, model: str = DEFAULT_MODEL,
+                 timeout: int = DEFAULT_TIMEOUT,
+                 run: Callable = _REAL_RUN,
+                 label: str = "", tier: Optional[str] = None) -> str:
+    """Envoie ``prompt`` au modèle et rend le TEXTE de la réponse.
+
+    Deux chemins, choisis par ``run`` :
+
+    * ``run`` est le vrai ``subprocess.run`` (la production) -> PASSERELLE LLM :
+      l'API Anthropic d'abord si une clé dédiée est configurée, repli automatique
+      sur le CLI sinon (ou si l'API échoue). ``label`` nomme l'usage (journal du
+      gateway, surcharges de palier) ; ``tier`` (``opus|sonnet|haiku``) force le
+      palier, à défaut ``tier_for(label)``. L'API a son propre délai
+      (``API_TIMEOUT``) ; le CLI de repli garde ``timeout``.
+    * ``run`` est un double injecté (les tests) -> CLI historique, la passerelle
+      n'est JAMAIS touchée : les tests n'ont besoin ni du binaire, ni d'une clé.
+
+    Lève ``RuntimeError`` — et rien d'autre — en cas de panne. Sur le chemin
+    passerelle : si l'API n'a PAS été en jeu (``_API_NOT_TRIED``) et que le CLI
+    échoue, c'est l'erreur du CLI qui sort, mot pour mot comme avant la passerelle ;
+    sinon une ``GatewayError`` (sous-classe de ``RuntimeError``) qui cite les deux
+    causes (« API: …; CLI: … »).
+    """
+    if run is not _REAL_RUN:
+        return _cli_text(prompt, model, timeout, run)
+
+    cli_error = None        # l'erreur d'origine du CLI, s'il a été lancé et a échoué
+
+    def _cli() -> str:
+        # ``subprocess.run`` est lu ICI, à l'appel (cf. ``_REAL_RUN``), et le CLI
+        # reçoit un environnement SANS clé API : avec ANTHROPIC_API_KEY dans
+        # l'environnement il l'utiliserait À LA PLACE de l'abonnement et brûlerait
+        # le crédit en plein repli.
+        nonlocal cli_error
+        try:
+            return _cli_text(prompt, model, timeout, subprocess.run, env=gw.cli_env())
+        except RuntimeError as e:       # ``_cli_text`` ne lève que RuntimeError
+            cli_error = e
+            raise
+
+    try:
+        res = gw.complete(prompt, label=label or "paper",
+                          tier=tier or tier_for(label), timeout=API_TIMEOUT,
+                          cli=_cli, notify=_notify)
+    except gw.GatewayError as e:
+        if cli_error is not None and e.api_reason in _API_NOT_TRIED:
+            raise cli_error from None
+        raise
+    return res.text
 
 
 def _block(title: str, payload: Any) -> str:
@@ -1672,7 +1802,7 @@ def ask_coach(context: Optional[Dict[str, Any]], question: str = "",
               run: Callable = subprocess.run) -> str:
     """Réponse du coach à une question (ou point général si la question est vide)."""
     return _claude_text(build_coach_prompt(context, question, lang),
-                        model=model, timeout=timeout, run=run)
+                        model=model, timeout=timeout, run=run, label="coach_ask")
 
 
 def write_postmortem(trade: Optional[Dict[str, Any]],
@@ -1682,7 +1812,7 @@ def write_postmortem(trade: Optional[Dict[str, Any]],
                      run: Callable = subprocess.run) -> str:
     """Post-mortem rédigé d'un trade clôturé (destiné au carnet ``Journal.md``)."""
     return _claude_text(build_postmortem_prompt(trade, context, lang),
-                        model=model, timeout=timeout, run=run)
+                        model=model, timeout=timeout, run=run, label="postmortem")
 
 
 def write_weekly_report(context: Optional[Dict[str, Any]] = None,
@@ -1692,7 +1822,7 @@ def write_weekly_report(context: Optional[Dict[str, Any]] = None,
     """Bilan hebdomadaire rédigé (LOT 3, C2) — destiné à Telegram ET au
     carnet ``Journal.md``."""
     return _claude_text(build_weekly_prompt(context, lang),
-                        model=model, timeout=timeout, run=run)
+                        model=model, timeout=timeout, run=run, label="weekly")
 
 
 def write_analysis(facts: Optional[Dict[str, Any]], lang: str = "fr",
@@ -1700,7 +1830,7 @@ def write_analysis(facts: Optional[Dict[str, Any]], lang: str = "fr",
                    run: Callable = subprocess.run) -> str:
     """Fiche d'analyse pédagogique d'un titre — sans opinion d'achat ni de vente."""
     return _claude_text(build_analysis_prompt(facts, lang),
-                        model=model, timeout=timeout, run=run)
+                        model=model, timeout=timeout, run=run, label="analysis")
 
 
 def suggest_scenarios(context: Optional[Dict[str, Any]], lang: str = "fr",
@@ -1709,7 +1839,7 @@ def suggest_scenarios(context: Optional[Dict[str, Any]], lang: str = "fr",
     """Arbre de scénarios du marché (texte d'introduction + bloc JSON final,
     lu par ``parse_scenarios`` puis rangé par ``board.add_scenario``)."""
     return _claude_text(build_scenarios_prompt(context, lang),
-                        model=model, timeout=timeout, run=run)
+                        model=model, timeout=timeout, run=run, label="scenarios")
 
 
 def review_positions(context: Optional[Dict[str, Any]], lang: str = "fr",
@@ -1718,7 +1848,7 @@ def review_positions(context: Optional[Dict[str, Any]], lang: str = "fr",
     """Revue des positions détenues (texte + bloc JSON final lu par
     ``parse_review``) — la « prévision de vente » du portefeuille."""
     return _claude_text(build_review_prompt(context, lang),
-                        model=model, timeout=timeout, run=run)
+                        model=model, timeout=timeout, run=run, label="review")
 
 
 def suggest_ideas(context: Optional[Dict[str, Any]], lang: str = "fr",
@@ -1734,7 +1864,7 @@ def suggest_ideas(context: Optional[Dict[str, Any]], lang: str = "fr",
     ``journal`` = le résumé des séries précédentes (mémoire anti-redite).
     """
     return _claude_text(build_ideas_prompt(context, lang, risk_level, journal),
-                        model=model, timeout=timeout, run=run)
+                        model=model, timeout=timeout, run=run, label="ideas")
 
 
 # --------------------------------------------------------------------------- #
@@ -1799,4 +1929,4 @@ def write_scalp_review(context: Optional[Dict[str, Any]] = None,
     """Bilan rédigé d'une session de scalping (LOT D) — destiné au panneau de
     l'extension ET au carnet ``Journal.md``, comme les six autres."""
     return _claude_text(build_scalp_review_prompt(context, lang),
-                        model=model, timeout=timeout, run=run)
+                        model=model, timeout=timeout, run=run, label="scalp_review")

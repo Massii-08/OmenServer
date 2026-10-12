@@ -1298,7 +1298,7 @@ def format_outcome_note(hyp: Dict[str, Any]) -> str:
 def _default_llm(prompt: str) -> str:
     """Le CLI Claude via ``paper/llm.py`` (texte brut)."""
     from backend.bots.paper import llm as llm_mod
-    return llm_mod._claude_text(prompt)
+    return llm_mod._claude_text(prompt, label="radar")
 
 
 def _default_fetch_candles(symbol: str, range_: str, interval: str) -> Any:

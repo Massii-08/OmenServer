@@ -392,7 +392,7 @@ def test_suggest_ideas_forwards_the_risk_level(monkeypatch):
     seen = {}
 
     def fake_claude(prompt, model=llm.DEFAULT_MODEL, timeout=llm.DEFAULT_TIMEOUT,
-                    run=None):
+                    run=None, label=None):
         seen["prompt"] = prompt
         return "idées"
 
@@ -408,7 +408,7 @@ def test_public_helpers_forward_the_language(monkeypatch):
     seen = {}
 
     def fake_claude(prompt, model=llm.DEFAULT_MODEL, timeout=llm.DEFAULT_TIMEOUT,
-                    run=None):
+                    run=None, label=None):
         seen.setdefault("prompts", []).append(prompt)
         return "risposta"
 
