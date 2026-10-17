@@ -34,6 +34,7 @@ from pydantic import BaseModel
 
 from backend.auth.models import User
 from backend.auth.permissions import require_role
+from backend.bots import _runlog
 
 logger = logging.getLogger(__name__)
 
@@ -194,22 +195,16 @@ async def run_scanner(
             subprocess_env["BRAVE_SEARCH_API_KEY"] = loaded_key
 
     try:
-        proc = subprocess.Popen(
-            cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            bufsize=1,
+        # Sortie dans un FICHIER, jamais un pipe (piège #70) : le lecteur d'un
+        # pipe vit dans uvicorn et meurt au restart de l'auto-deploy, le write
+        # suivant du moteur lèverait BrokenPipeError. Le fil ci-dessous SUIT le
+        # fichier pour la progression ; s'il meurt, le moteur continue.
+        log_path = job_dir / "run.log"
+        log_start = log_path.stat().st_size if log_path.exists() else 0
+        proc = _runlog.launch_to_file(
+            cmd, log_path,
             cwd=str(SCANNER_BOT_DIR),
             env=subprocess_env,
-            # 2026-05-28 : détache le scan dans sa propre session/process group
-            # pour qu'un reload uvicorn (auto-deploy git pull) NE le tue PAS.
-            # Sans ça, un push pendant un scan en cours tuait le subprocess
-            # (le backend est lancé en --reload sur l'Omen). Le scan continue
-            # désormais même si le backend redémarre ; l'Excel est écrit sur
-            # disque indépendamment (le suivi live du panel peut être perdu au
-            # reload, mais le fichier résultat se génère quand même).
-            start_new_session=True,
         )
         job["process"] = proc
 
@@ -218,16 +213,17 @@ async def run_scanner(
             job = _scanner_jobs.get(job_id)
             if not job:
                 return
+            def _on_line(line):
+                stripped = line.rstrip()
+                if stripped:
+                    job["logs"].append(stripped)
+                    # Garder les 500 dernières lignes
+                    if len(job["logs"]) > 500:
+                        job["logs"] = job["logs"][-500:]
+                    # Parser la progression
+                    _parse_scanner_progress(job, stripped)
             try:
-                for line in proc.stdout:
-                    stripped = line.rstrip()
-                    if stripped:
-                        job["logs"].append(stripped)
-                        # Garder les 500 dernières lignes
-                        if len(job["logs"]) > 500:
-                            job["logs"] = job["logs"][-500:]
-                        # Parser la progression
-                        _parse_scanner_progress(job, stripped)
+                _runlog.follow(proc, log_path, _on_line, start=log_start)
             except Exception:
                 pass
 

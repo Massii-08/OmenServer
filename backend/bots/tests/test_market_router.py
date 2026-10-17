@@ -17,6 +17,9 @@ from backend.auth.utils import get_current_user
 from backend.bots import market_router as mr
 from backend.bots import market_schedule as ms
 
+# La vraie implémentation, avant tout monkeypatch de make_client.
+_REAL_LAUNCH = mr._launch_subprocess
+
 
 class FakeUser(object):
     def __init__(self, role="admin"):
@@ -848,3 +851,51 @@ def test_startup_installs_the_opening_jobs_too(tmp_path, monkeypatch):
     monkeypatch.setattr(mr, "catch_up_exchange_groups", lambda *a, **k: [])
     mr.register_startup_job()
     assert "groups" in seen, "les réveils d'ouverture n'ont pas été installés au boot"
+
+
+def test_launch_writes_engine_output_to_a_file_not_a_pipe(tmp_path, monkeypatch):
+    """Piège #70 : un pipe lu par un fil d'uvicorn casse au restart de
+    l'auto-deploy, et le print suivant du moteur lève BrokenPipeError. La sortie
+    doit aller DANS run.log, un vrai fichier, avec stderr fusionné."""
+    import subprocess
+    captured = {}
+
+    def fake_popen(cmd, **kwargs):
+        captured.update(kwargs)
+        return FakeProc()
+
+    monkeypatch.setattr(mr.subprocess, "Popen", fake_popen)
+    rd = tmp_path / ("a" * 32)
+    rd.mkdir()
+    mr._launch_subprocess(str(rd), {"job_id": "a" * 32, "status": "starting",
+                                    "logs": [], "process": None})
+    out = captured["stdout"]
+    assert out is not subprocess.PIPE
+    assert hasattr(out, "fileno") and out.name == str(rd / "run.log")
+    assert captured["stderr"] is subprocess.STDOUT
+    assert captured["start_new_session"] is True
+    assert out.closed, "le parent doit refermer sa copie du descripteur"
+
+
+def test_real_engine_output_lands_in_run_log_and_status_serves_it(tmp_path, monkeypatch):
+    """Lancement RÉEL : le moteur écrit dans run.log, le faucheur le récolte
+    (pas de zombie « running » à vie), /status sert les lignes depuis le disque."""
+    import sys
+    c, _ = make_client(tmp_path, monkeypatch)   # neutralise _launch_subprocess…
+    monkeypatch.setattr(mr, "_build_cmd", lambda run_dir, opts: [
+        sys.executable, "-c",
+        "import sys; print('step 1', flush=True); "
+        "print('oops', file=sys.stderr, flush=True); print('step 2')"])
+    rd = mr._run_dir("b" * 32)
+    rd.mkdir(parents=True)
+    job = {"job_id": "b" * 32, "status": "starting", "logs": [], "process": None}
+    _REAL_LAUNCH(str(rd), job)                   # …on appelle donc la vraie
+    deadline = time.time() + 10
+    while job.get("status") == "running" and time.time() < deadline:
+        time.sleep(0.05)
+    assert job["status"] == "completed"
+    text = (rd / "run.log").read_text(encoding="utf-8")
+    assert "step 1" in text and "oops" in text and "step 2" in text
+    r = c.get("/api/bots/market/status/" + "b" * 32)
+    assert r.status_code == 200
+    assert r.json()["logs"] == ["step 1", "oops", "step 2"]

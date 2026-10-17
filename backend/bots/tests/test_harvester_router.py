@@ -614,3 +614,52 @@ def test_telegram_config_clear(tmp_path, monkeypatch):
            json={"token": "T:K", "chat_id": "1"})
     assert c.post("/api/bots/harvester/telegram-config/clear").json()["configured"] is False
     assert hr.telegram_config.load(str(tmp_path / "tg.json")) == {}
+
+
+# ---- Piège #70 : sortie du moteur dans run.log, jamais dans un pipe --------
+
+class _FakeProc(object):
+    pid = 4242
+    returncode = 0
+
+    def wait(self):
+        return 0
+
+
+def test_launch_writes_engine_output_to_a_file_not_a_pipe(tmp_path, monkeypatch):
+    """Un pipe lu par un fil d'uvicorn casse au restart de l'auto-deploy : le
+    write suivant du moteur (`_emit`) lèverait BrokenPipeError."""
+    import os
+    import subprocess
+    captured = {}
+
+    def fake_popen(cmd, **kwargs):
+        captured.update(kwargs)
+        return _FakeProc()
+
+    monkeypatch.setattr(hr.subprocess, "Popen", fake_popen)
+    job = {"job_id": "a" * 32, "status": "starting", "logs": [], "process": None}
+    hr._launch_subprocess(str(tmp_path), job)
+    out = captured["stdout"]
+    assert out is not subprocess.PIPE
+    import io
+    assert isinstance(out, io.IOBase) and (tmp_path / "run.log").is_file()
+    assert captured["stderr"] is subprocess.STDOUT
+    assert captured["start_new_session"] is True
+    assert out.closed
+    assert (os.stat(str(tmp_path / "run.log")).st_mode & 0o777) == 0o600
+
+
+def test_status_logs_and_awaiting_solve_come_from_run_log(tmp_path, monkeypatch):
+    """Sans lecteur de pipe, /status relit tout sur le disque — même quand le
+    process est encore suivi en mémoire."""
+    c, launched = make_client(tmp_path, monkeypatch)
+    r = c.post("/api/bots/harvester/run", json=GOOD_BODY)
+    assert r.status_code == 200, r.text
+    jid = r.json()["job_id"]
+    hr._harvester_jobs[jid]["process"] = object()     # « suivi vivant »
+    with open(str(tmp_path / jid / "run.log"), "a", encoding="utf-8") as f:
+        f.write(json.dumps({"type": "awaiting_manual_solve", "url": "https://x"}) + "\n")
+    s = c.get("/api/bots/harvester/status/" + jid).json()
+    assert s["awaiting_solve"]["url"] == "https://x"
+    assert any("awaiting_manual_solve" in line for line in s["logs"])

@@ -244,14 +244,22 @@ def _status_from_disk(run_dir, is_alive=_pid_alive) -> str:
     return "interrupted" if _has_pending(run_dir) else "completed"
 
 
-def _read_log_tail(run_dir, limit: int = 200):
+def _read_log_tail(run_dir, limit: int = 200, max_bytes: int = 65536):
+    """Les ``limit`` dernières lignes de run.log, lues dans les derniers
+    ``max_bytes`` seulement (run.log n'est pas borné, l'UI sonde souvent)."""
     p = Path(run_dir) / "run.log"
     if not p.is_file():
         return []
     try:
-        return p.read_text(encoding="utf-8", errors="replace").splitlines()[-limit:]
+        size = p.stat().st_size
+        with open(str(p), "rb") as f:
+            if size > max_bytes:
+                f.seek(size - max_bytes)
+                f.readline()             # jette la 1re ligne partielle
+            data = f.read()
     except OSError:
         return []
+    return data.decode("utf-8", errors="replace").splitlines()[-limit:]
 
 
 def _open_run_log(run_dir):
@@ -344,11 +352,9 @@ def _solve_from_log(run_dir, max_bytes=_RECO_TAIL_BYTES):
 
 
 def _job_awaiting(job):
-    """État `awaiting_solve` d'un job : mémoire (posée par _capture) si le process
-    est suivi vivant, sinon relecture du tail (restart-résilient). NON caché
+    """État `awaiting_solve` d'un job, relu dans le tail de run.log (le disque
+    est la seule source : plus de lecteur de pipe en mémoire). NON caché
     (l'état est transitoire : awaiting -> resolved)."""
-    if job.get("process") is not None:
-        return job.get("awaiting_solve")
     return _solve_from_log(str(_run_dir(job["job_id"])))
 
 
@@ -490,22 +496,46 @@ def purge_old_runs(now=None, max_age_days=RUN_RETENTION_DAYS, is_alive=_pid_aliv
     return purged
 
 
+def _reap(proc, job: Dict[str, Any]) -> None:
+    """Attend la fin du moteur — rien d'autre, aucun pipe à lire.
+
+    Sans ce ``wait()`` un moteur terminé resterait zombie tant qu'uvicorn vit,
+    et ``os.kill(pid, 0)`` le dirait vivant : « running » à vie.
+    """
+    try:
+        proc.wait()
+    except Exception:  # noqa: BLE001 — un fil de fond ne doit jamais lever
+        return
+    if job.get("status") == "running":
+        job["status"] = "completed" if proc.returncode == 0 else "error"
+    job["process"] = None
+    logger.info("[Harvester] Job terminé: %s", job["status"])
+
+
 def _launch_subprocess(run_dir: str, job: Dict[str, Any]) -> None:
-    """Lance `python -m backend.bots.harvester <run_dir>` détaché + thread logs."""
+    """Lance `python -m backend.bots.harvester <run_dir>` détaché, sa sortie
+    écrite directement dans run.log (0o600)."""
     subprocess_env = {**os.environ, "PYTHONUNBUFFERED": "1"}
     cmd = [sys.executable, "-m", "backend.bots.harvester", run_dir]
-    proc = subprocess.Popen(
-        cmd,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        bufsize=1,
-        cwd=str(_project_root),
-        env=subprocess_env,
-        # détache dans sa propre session pour survivre à un reload uvicorn
-        # (auto-deploy git pull) — comme le Bond Scanner.
-        start_new_session=True,
-    )
+    log = _open_run_log(run_dir)
+    try:
+        proc = subprocess.Popen(
+            cmd,
+            stdin=subprocess.DEVNULL,
+            # DIRECTEMENT dans le fichier, jamais un pipe : le lecteur d'un pipe
+            # vit dans uvicorn et meurt au restart de l'auto-deploy ; le write
+            # suivant du moteur lèverait alors BrokenPipeError (piège #70).
+            # counts / reco / résolution manuelle se relisent sur le disque.
+            stdout=log,
+            stderr=subprocess.STDOUT,
+            cwd=str(_project_root),
+            env=subprocess_env,
+            # détache dans sa propre session pour survivre à un reload uvicorn
+            # (auto-deploy git pull) — comme le Bond Scanner.
+            start_new_session=True,
+        )
+    finally:
+        log.close()   # le moteur a sa propre copie du descripteur
     job["process"] = proc
     job["status"] = "running"
     # pidfile : permet de redétecter le run vivant après un restart uvicorn (A)
@@ -513,56 +543,7 @@ def _launch_subprocess(run_dir: str, job: Dict[str, Any]) -> None:
         _pid_path(run_dir).write_text(str(proc.pid), encoding="utf-8")
     except OSError:
         pass
-
-    def _capture(p, j):
-        # logs persistés sur disque -> survivent au restart uvicorn (A)
-        try:
-            logf = _open_run_log(run_dir)
-        except OSError:
-            logf = None
-        try:
-            for line in p.stdout:
-                stripped = line.rstrip()
-                if not stripped:
-                    continue
-                j["logs"].append(stripped)
-                if len(j["logs"]) > 500:
-                    j["logs"] = j["logs"][-500:]
-                if logf:
-                    try:
-                        logf.write(stripped + "\n")
-                        logf.flush()
-                    except OSError:
-                        pass
-                try:
-                    msg = json.loads(stripped)
-                    if msg.get("type") in ("progress", "done") and "counts" in msg:
-                        j["counts"] = msg["counts"]
-                    elif msg.get("type") == "recommend_tier":
-                        j["recommend"] = msg     # surfacé par /status et /active
-                    elif msg.get("type") == "awaiting_manual_solve":
-                        j["awaiting_solve"] = msg
-                    elif msg.get("type") in ("manual_solve_resolved",
-                                             "manual_solve_timeout"):
-                        j["awaiting_solve"] = None
-                except ValueError:
-                    pass
-        except Exception:
-            pass
-        finally:
-            if logf:
-                try:
-                    logf.close()
-                except OSError:
-                    pass
-        p.wait()
-        if j["status"] == "running":
-            j["status"] = "completed" if p.returncode == 0 else "error"
-        j["process"] = None
-        logger.info("[Harvester] Job terminé: %s", j["status"])
-
-    t = threading.Thread(target=_capture, args=(proc, job), daemon=True)
-    t.start()
+    threading.Thread(target=_reap, args=(proc, job), daemon=True).start()
 
 
 def _fetch_full(url):
@@ -656,8 +637,7 @@ def setup_harvester(data: SetupRequest, current_user: User = Depends(get_current
 
 
 def _job_recommend(job):
-    """Reco de tier pour un job : valeur en mémoire (posée par le thread _capture)
-    sinon relecture du tail de run.log. Le résultat positif est CACHÉ sur le job
+    """Reco de tier pour un job : relecture du tail de run.log. Le résultat positif est CACHÉ sur le job
     -> une fois trouvée, plus aucun re-scan disque (revue #2/#6)."""
     rec = job.get("recommend")
     if rec:
@@ -806,7 +786,7 @@ def harvester_status(job_id: str, current_user: User = Depends(get_current_user)
         "job_id": job_id,
         "status": job["status"],
         "counts": counts,
-        "logs": job["logs"][-50:] or _read_log_tail(str(_run_dir(job_id)), 50),
+        "logs": _read_log_tail(str(_run_dir(job_id)), 50),
         "feed_key": job["feed_key"],
         "url": job["url"],
         "tier": job.get("tier", "httpx"),

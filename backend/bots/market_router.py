@@ -180,53 +180,73 @@ def _build_cmd(run_dir: str, opts: Dict[str, Any]) -> List[str]:
     return cmd
 
 
+_LOG_TAIL_BYTES = 64 * 1024
+
+
+def _log_tail(run_dir, limit: int = 50) -> List[str]:
+    """Les ``limit`` dernières lignes non vides de ``run.log``.
+
+    Seuls les derniers ``_LOG_TAIL_BYTES`` sont lus (l'UI sonde toutes les
+    quelques secondes) ; la première ligne du morceau, coupée, est écartée.
+    """
+    try:
+        with open(str(Path(run_dir) / "run.log"), "rb") as f:
+            f.seek(0, os.SEEK_END)
+            start = max(0, f.tell() - _LOG_TAIL_BYTES)
+            f.seek(start)
+            chunk = f.read()
+    except OSError:
+        return []
+    lines = chunk.decode("utf-8", errors="replace").splitlines()
+    if start > 0 and lines:
+        lines = lines[1:]
+    return [line.rstrip() for line in lines if line.strip()][-limit:]
+
+
+def _reap(proc, job: Dict[str, Any]) -> None:
+    """Attend la fin du moteur — rien d'autre, aucun pipe à lire.
+
+    Sans ce ``wait()`` un moteur terminé resterait zombie tant qu'uvicorn vit,
+    et ``os.kill(pid, 0)`` le dirait vivant : « running » à vie.
+    """
+    try:
+        proc.wait()
+    except Exception:  # noqa: BLE001 — un fil de fond ne doit jamais lever
+        return
+    if job.get("status") == "running":
+        job["status"] = "completed" if proc.returncode == 0 else "error"
+
+
 def _launch_subprocess(run_dir: str, job: Dict[str, Any],
                        opts: Optional[Dict[str, Any]] = None) -> None:
-    """Lance le moteur détaché + un thread qui persiste ses logs."""
+    """Lance le moteur DÉTACHÉ, sa sortie écrite directement dans run.log."""
     opts = dict(DEFAULT_OPTS, **(opts or {}))
     env = dict(os.environ, PYTHONUNBUFFERED="1")
-    proc = subprocess.Popen(
-        _build_cmd(run_dir, opts),
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        bufsize=1,
-        cwd=str(MARKET_PULSE_DIR),
-        env=env,
-        # OBLIGATOIRE : sans session propre, le restart uvicorn de
-        # l'auto-deploy (toutes les minutes) tuerait le run en cours.
-        start_new_session=True,
-    )
+    log = open(str(Path(run_dir) / "run.log"), "ab")
+    try:
+        proc = subprocess.Popen(
+            _build_cmd(run_dir, opts),
+            stdin=subprocess.DEVNULL,
+            # DIRECTEMENT dans le fichier, jamais un pipe : le lecteur d'un pipe
+            # vit dans uvicorn et meurt au restart de l'auto-deploy ; le print
+            # suivant du moteur lèverait alors BrokenPipeError (piège #70).
+            stdout=log,
+            stderr=subprocess.STDOUT,
+            cwd=str(MARKET_PULSE_DIR),
+            env=env,
+            # OBLIGATOIRE : sans session propre, le restart uvicorn de
+            # l'auto-deploy (toutes les minutes) tuerait le run en cours.
+            start_new_session=True,
+        )
+    finally:
+        log.close()   # le moteur a sa propre copie du descripteur
     job["process"] = proc
     job["status"] = "running"
     try:
         _pid_path(run_dir).write_text(str(proc.pid), encoding="utf-8")
     except OSError:
         pass
-
-    def _capture(p, j):
-        log_path = Path(run_dir) / "run.log"
-        try:
-            with open(str(log_path), "a", encoding="utf-8") as logf:
-                for line in p.stdout:
-                    line = line.rstrip()
-                    if not line:
-                        continue
-                    j["logs"].append(line)
-                    if len(j["logs"]) > 300:
-                        j["logs"] = j["logs"][-300:]
-                    logf.write(line + "\n")
-                    logf.flush()
-        except Exception:
-            pass
-        try:
-            p.wait()
-        except Exception:
-            pass
-        if j.get("status") == "running":
-            j["status"] = "completed" if p.returncode == 0 else "error"
-
-    threading.Thread(target=_capture, args=(proc, job), daemon=True).start()
+    threading.Thread(target=_reap, args=(proc, job), daemon=True).start()
 
 
 def _live_job_id() -> Optional[str]:
@@ -513,14 +533,12 @@ def market_status(job_id: str,
     run_dir = _run_dir(job_id)
     if not run_dir.is_dir():
         raise HTTPException(status_code=404, detail="Job introuvable")
-    job = _market_jobs.get(job_id) or {}
     status = _status_from_disk(run_dir)
     return {
         "job_id": job_id,
         "status": status,
         "files": _files_of(run_dir),
-        "logs": (job.get("logs") or [])[-50:]
-                or (_read_text(run_dir / "run.log") or "").splitlines()[-50:],
+        "logs": _log_tail(run_dir),
         "meta": _meta(run_dir),
     }
 
