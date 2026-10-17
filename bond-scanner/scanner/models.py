@@ -52,7 +52,7 @@ class ScannedBond:
     # Yield calcolato dal bot
     calculated_yield: Optional[float] = None
 
-    # Task 15 (2026-05-28) : score composito (prezzo + yield + rating)
+    # Task 15 (2026-05-28) : score equilibrato 50% rating / 50% yield (scoring.py)
     # impostato da scanner.scoring.top_n_per_currency() prima di passare al
     # ReportGenerator. Usato per ordinare il foglio Excel per qualità globale.
     composite_score: float = 0.0
