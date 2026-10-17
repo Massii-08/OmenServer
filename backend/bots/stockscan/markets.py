@@ -77,6 +77,35 @@ _FALLBACK_SUFFIX: Dict[str, str] = {
 
 TV_CHART_URL = "https://www.tradingview.com/chart/?symbol="
 
+# Valeur approximative d'UNE unité de devise en EUR, par devise de cotation —
+# pour des SEUILS et des ordres de grandeur, jamais pour un prix affiché.
+# ``GBX`` (pence) vaut un centième de livre : un titre de Londres coté 2450 GBX
+# vaut 24,50 GBP, et sans cette ligne ses échanges seraient surestimés ×100.
+EUR_PER_UNIT: Dict[str, float] = {
+    "EUR": 1.0, "CHF": 1.05, "USD": 0.92, "GBP": 1.17, "GBX": 0.0117,
+    "SEK": 0.087, "NOK": 0.085, "DKK": 0.134, "CAD": 0.67, "PLN": 0.23,
+}
+
+
+def eur_rate(currency: Any, market: Optional[Market] = None) -> Optional[float]:
+    """≈ EUR pour une unité de ``currency`` ; devise inconnue -> taux du marché.
+
+    ``GBp`` (la forme « pence » de certains flux) est lue comme ``GBX``. Une
+    devise inconnue SANS marché de repli rend ``None`` : mieux vaut un montant
+    absent qu'un montant faux d'un facteur cent.
+    """
+    if isinstance(currency, str) and currency.strip():
+        code = currency.strip()
+        # AVANT la mise en majuscules : « GBp » en majuscules deviendrait
+        # « GBP », des livres, soit un montant cent fois trop gros.
+        code = "GBX" if code == "GBp" else code.upper()
+        rate = EUR_PER_UNIT.get(code)
+        if rate is not None:
+            return rate
+    if market is not None:
+        return market.eur_per_unit
+    return None
+
 
 def by_id(market_id: Any) -> Optional[Market]:
     """Le marché de cet identifiant, ou ``None`` (jamais deviné)."""
@@ -171,6 +200,52 @@ def tv_to_yahoo(tv_symbol: Any, market_id: Any = None) -> Optional[str]:
         return _canonical(ticker + ".MC")
     mapped = _reference_tv_to_yahoo("%s:%s" % (exchange, ticker))
     return _canonical(mapped) if mapped else None
+
+
+# Symbole Yahoo -> marché, pour l'univers de REPLI (qui part de symboles Yahoo).
+_SUFFIX_MARKET: Dict[str, str] = {
+    ".MI": "italy", ".DE": "germany", ".F": "germany", ".PA": "france",
+    ".AS": "netherlands", ".MC": "spain", ".SW": "switzerland", ".L": "uk",
+}
+# Symbole Yahoo -> place TradingView, même usage. Un ticker américain nu est
+# un PARI (``NASDAQ:``) : le flux répond 422 s'il est au NYSE, et le titre reste
+# simplement sans news fraîches — jamais une news d'un autre titre.
+_MARKET_TV_PREFIX: Dict[str, str] = {
+    "italy": "MIL", "germany": "XETR", "france": "EURONEXT", "netherlands": "EURONEXT",
+    "spain": "BME", "switzerland": "SIX", "uk": "LSE", "america": "NASDAQ",
+}
+# Alias INVERSES vérifiés (le ticker Yahoo n'est pas le ticker de la place).
+_YAHOO_TV_OVERRIDES: Dict[str, str] = {"RO.SW": "SIX:ROG"}
+
+
+def market_of_yahoo(symbol: Any) -> Optional[str]:
+    """``ENI.MI`` -> ``italy`` ; ticker nu (ou classe ``BRK-B``) -> ``america``."""
+    if not isinstance(symbol, str) or not symbol.strip():
+        return None
+    sym = symbol.strip().upper()
+    if any(ch in sym for ch in "=^"):
+        return None
+    if "." not in sym:
+        return "america"
+    suffix = sym[sym.rfind("."):]
+    return _SUFFIX_MARKET.get(suffix)
+
+
+def yahoo_to_tv(symbol: Any) -> Optional[str]:
+    """Symbole Yahoo d'une action -> ``EXCHANGE:TICKER`` interrogeable, ou ``None``."""
+    if not isinstance(symbol, str) or not symbol.strip():
+        return None
+    sym = symbol.strip().upper()
+    if sym in _YAHOO_TV_OVERRIDES:
+        return _YAHOO_TV_OVERRIDES[sym]
+    market = market_of_yahoo(sym)
+    prefix = _MARKET_TV_PREFIX.get(market or "")
+    if not prefix:
+        return None
+    base = sym if market == "america" else sym[:sym.rfind(".")]
+    if market == "america":
+        base = base.replace("-", ".")
+    return "%s:%s" % (prefix, base)
 
 
 def chart_url(tv_symbol: Any) -> Optional[str]:
