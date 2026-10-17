@@ -77,22 +77,37 @@ const App = {
  const fetchActive = (endpoint) => Auth.apiCall(endpoint)
  .then(r => r && r.ok ? r.json() : { found: false })
  .catch(() => ({ found: false }));
- const [yieldJob, scannerJob] = await Promise.all([
+ const [yieldJob, scannerJob, stocksJob] = await Promise.all([
  fetchActive('/api/bots/yield/active'),
  fetchActive('/api/bots/scanner/active'),
+ fetchActive('/api/bots/stocks/active'),
  ]);
  const newActive = {};
  if (yieldJob.found) newActive.yield = yieldJob;
  if (scannerJob.found) newActive.scanner = scannerJob;
+ // Scanner d'actions : /active rend le run le plus RÉCENT quel que soit son
+ // statut — seul un run en cours compte dans le badge (spec §8).
+ if (stocksJob && stocksJob.found && stocksJob.status === 'running') newActive.stocks = stocksJob;
  // Détection transition running → completed
  const prev = this._activeJobs || {};
  for (const [type, prevJob] of Object.entries(prev)) {
  const cur = newActive[type];
  if (prevJob.status === 'running' && (!cur || cur.status !== 'running')) {
- const label = type === 'yield' ? Lang.t('yield.title') : Lang.t('scanner.title');
- if (typeof Toast !== 'undefined') {
- Toast.success(`${label} — ${Lang.t('bots.completed') || 'terminé'}`);
+ if (typeof Toast === 'undefined') continue;
+ if (type === 'stocks') {
+ // Un arrêt reste un arrêt, une erreur reste une erreur (jamais « terminé »).
+ // /active rend toujours le run le plus récent : sans statut final, c'est
+ // le sondage qui a échoué (403/réseau) — pas de faux « terminé ».
+ const label = Lang.t('stocks.title');
+ const final = (stocksJob && stocksJob.found) ? stocksJob.status : null;
+ if (!final) continue;
+ if (final === 'error') Toast.error(`${label} — ${Lang.t('bots.error')}`);
+ else if (final === 'stopped') Toast.info(`${label} — ${Lang.t('bots.stopped')}`);
+ else Toast.success(`${label} — ${Lang.t('bots.completed')}`);
+ continue;
  }
+ const label = type === 'yield' ? Lang.t('yield.title') : Lang.t('scanner.title');
+ Toast.success(`${label} — ${Lang.t('bots.completed') || 'terminé'}`);
  }
  }
  this._activeJobs = newActive;

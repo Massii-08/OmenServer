@@ -55,6 +55,10 @@ const BotsModule = {
  if (typeof MarketModule !== 'undefined' && MarketModule.unload) {
  MarketModule.unload();
  }
+ // Idem pour le Scanner d'actions (suivi d'un scan en cours + écouteurs)
+ if (typeof StockScanModule !== 'undefined' && StockScanModule.unload) {
+ StockScanModule.unload();
+ }
  },
 
  async loadBots() {
@@ -157,6 +161,23 @@ const BotsModule = {
             sharedWithYou: false,
         }) : '';
 
+        // Scanner d'actions virtual card — 4e bot de la suite finance, frère du
+        // Bond Scanner (catalyseurs sur des marchés entiers). Même audience :
+        // admin + money.
+        const canSeeStocks = u && (u.is_admin || u.role === 'money' || u.role === 'admin');
+        const stocksCard = canSeeStocks ? buildBotCard({
+            icon: 'ACT',
+            name: esc(Lang.t('stocks.title')),
+            type: 'analysis',
+            desc: esc(Lang.t('stocks.subtitle')),
+            status: 'online',
+            statusLabel: Lang.t('modules.active'),
+            onClick: 'BotsModule.openStockScan()',
+            actions: `<button class="btn btn-ghost btn-sm">${esc(Lang.t('stocks.open'))}</button>`,
+            selected: false,
+            sharedWithYou: false,
+        }) : '';
+
         // Oracle virtual card (admin-only — Polymarket × Deribit, monitoring)
         const canSeeOracle = u && u.is_admin;
         const oracleCard = canSeeOracle ? buildBotCard({
@@ -179,6 +200,7 @@ const BotsModule = {
  ${yieldBotCard}
  ${scannerBotCard}
  ${marketCard}
+ ${stocksCard}
  ${mcAgentCard}
  ${harvesterCard}
  ${oracleCard}
@@ -228,6 +250,7 @@ const BotsModule = {
  ${yieldBotCard}
  ${scannerBotCard}
  ${marketCard}
+ ${stocksCard}
  ${mcAgentCard}
  ${harvesterCard}
  ${oracleCard}
@@ -1131,6 +1154,15 @@ const BotsModule = {
         if (this._refreshInterval) { clearInterval(this._refreshInterval); this._refreshInterval = null; }
         if (typeof MarketModule !== 'undefined') {
             MarketModule.render(this._container);
+        }
+    },
+
+    openStockScan() {
+        const u = (typeof Auth !== 'undefined' && Auth.getUser) ? Auth.getUser() : null;
+        if (!u || !(u.is_admin || u.role === 'money')) return;
+        if (this._refreshInterval) { clearInterval(this._refreshInterval); this._refreshInterval = null; }
+        if (typeof StockScanModule !== 'undefined') {
+            StockScanModule.render(this._container);
         }
     },
 
