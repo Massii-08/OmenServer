@@ -1,0 +1,706 @@
+{
+ "source": "Bond Scanner prod, Excel USD du 2026-09-06 (job f76189ed) — 100 bonds livres, classes a l'epoque rating d'abord",
+ "currency": "USD",
+ "bonds": [
+  {
+   "isin": "US298785JV96",
+   "name": "European Investment Bank (EIB) 3,75% - 31.12.33",
+   "price": 95.07,
+   "yield": 0.0462,
+   "rating": "AAA"
+  },
+  {
+   "isin": "XS3276317990",
+   "name": "Landwirtschaftliche Rentenbank 4% - 31.12.33",
+   "price": 96.015,
+   "yield": 0.0471,
+   "rating": "AAA"
+  },
+  {
+   "isin": "US66815M2U00",
+   "name": "Northwestern Mutual Global Funding 4,96% - 31.12.30",
+   "price": 99.66,
+   "yield": 0.0506,
+   "rating": "AAA"
+  },
+  {
+   "isin": "US66815M2Q97",
+   "name": "Northwestern Mutual Global Funding 4,71% - 31.12.29",
+   "price": 99.52,
+   "yield": 0.0488,
+   "rating": "AAA"
+  },
+  {
+   "isin": "US66815M2T37",
+   "name": "Northwestern Mutual Global Funding 4,11% - 31.12.27",
+   "price": 99.38,
+   "yield": 0.0461,
+   "rating": "AAA"
+  },
+  {
+   "isin": "US045167GA55",
+   "name": "Asian Development Bank (ADB) 4,125% - 31.12.27",
+   "price": 99.99,
+   "yield": 0.0413,
+   "rating": "AAA"
+  },
+  {
+   "isin": "US91282CHC82",
+   "name": "United States of America 3,375% - 31.12.33",
+   "price": 92.795,
+   "yield": 0.0462,
+   "rating": "AA+"
+  },
+  {
+   "isin": "US912828YS30",
+   "name": "United States of America 1,75% - 31.12.29",
+   "price": 91.94,
+   "yield": 0.0433,
+   "rating": "AA+"
+  },
+  {
+   "isin": "US91282CPM72",
+   "name": "United States of America 3,75% - 31.12.32",
+   "price": 95.33,
+   "yield": 0.0467,
+   "rating": "AA+"
+  },
+  {
+   "isin": "US912828YB05",
+   "name": "United States of America 1,625% - 31.12.29",
+   "price": 92.32,
+   "yield": 0.0408,
+   "rating": "AA+"
+  },
+  {
+   "isin": "US91282CNW72",
+   "name": "United States of America 3,875% - 31.12.32",
+   "price": 96.21,
+   "yield": 0.0463,
+   "rating": "AA+"
+  },
+  {
+   "isin": "US91282CPY11",
+   "name": "United States of America 4% - 31.12.33",
+   "price": 96.53,
+   "yield": 0.0462,
+   "rating": "AA+"
+  },
+  {
+   "isin": "US91282CNR87",
+   "name": "United States of America 4% - 31.12.32",
+   "price": 96.87,
+   "yield": 0.0462,
+   "rating": "AA+"
+  },
+  {
+   "isin": "US91282CLJ89",
+   "name": "United States of America 3,75% - 31.12.31",
+   "price": 96.475,
+   "yield": 0.0455,
+   "rating": "AA+"
+  },
+  {
+   "isin": "US912828YX25",
+   "name": "United States of America 1,75% - 31.12.26",
+   "price": 99.03,
+   "yield": 0.0483,
+   "rating": "AA+"
+  },
+  {
+   "isin": "US91282CPW54",
+   "name": "United States of America 3,75% - 31.12.31",
+   "price": 96.91,
+   "yield": 0.0445,
+   "rating": "AA+"
+  },
+  {
+   "isin": "US9128286T26",
+   "name": "United States of America 2,375% - 31.12.29",
+   "price": 94.865,
+   "yield": 0.0405,
+   "rating": "AA+"
+  },
+  {
+   "isin": "US91282CLN91",
+   "name": "United States of America 3,5% - 31.12.29",
+   "price": 97.26,
+   "yield": 0.0442,
+   "rating": "AA+"
+  },
+  {
+   "isin": "US91282CHF14",
+   "name": "United States of America 3,75% - 31.12.30",
+   "price": 97.455,
+   "yield": 0.0444,
+   "rating": "AA+"
+  },
+  {
+   "isin": "US91282CJJ18",
+   "name": "United States of America 4,5% - 31.12.33",
+   "price": 99.02,
+   "yield": 0.0468,
+   "rating": "AA+"
+  },
+  {
+   "isin": "US91282CEV90",
+   "name": "United States of America 3,25% - 31.12.29",
+   "price": 96.885,
+   "yield": 0.0429,
+   "rating": "AA+"
+  },
+  {
+   "isin": "US91282CLK52",
+   "name": "United States of America 3,625% - 31.12.29",
+   "price": 97.715,
+   "yield": 0.044,
+   "rating": "AA+"
+  },
+  {
+   "isin": "US91282CFT36",
+   "name": "United States of America 4% - 31.12.29",
+   "price": 98.62,
+   "yield": 0.0447,
+   "rating": "AA+"
+  },
+  {
+   "isin": "US91282CNU17",
+   "name": "United States of America 3,625% - 31.12.28",
+   "price": 98.681,
+   "yield": 0.0424,
+   "rating": "AA+"
+  },
+  {
+   "isin": "US91282CNP22",
+   "name": "United States of America 3,875% - 31.12.27",
+   "price": 99.43,
+   "yield": 0.0433,
+   "rating": "AA+"
+  },
+  {
+   "isin": "US135087Q560",
+   "name": "Canada, Government of... 3,75% - 31.12.28",
+   "price": 98.951,
+   "yield": 0.0424,
+   "rating": "AA+"
+  },
+  {
+   "isin": "US91282CLL36",
+   "name": "United States of America 3,375% - 31.12.27",
+   "price": 98.96,
+   "yield": 0.042,
+   "rating": "AA+"
+  },
+  {
+   "isin": "US91282CHA27",
+   "name": "United States of America 3,5% - 31.12.28",
+   "price": 98.651,
+   "yield": 0.0413,
+   "rating": "AA+"
+  },
+  {
+   "isin": "US91282CLP40",
+   "name": "United States of America 3,5% - 31.12.26",
+   "price": 99.76,
+   "yield": 0.0427,
+   "rating": "AA+"
+  },
+  {
+   "isin": "US91282CLQ23",
+   "name": "United States of America 3,875% - 31.12.27",
+   "price": 99.582,
+   "yield": 0.0421,
+   "rating": "AA+"
+  },
+  {
+   "isin": "XS2408003650",
+   "name": "Swedbank AB 1,538% - 31.12.26",
+   "price": 99.18,
+   "yield": 0.0414,
+   "rating": "AA+"
+  },
+  {
+   "isin": "US91282CEW73",
+   "name": "United States of America 3,25% - 31.12.27",
+   "price": 99,
+   "yield": 0.0404,
+   "rating": "AA+"
+  },
+  {
+   "isin": "US91282CNV99",
+   "name": "United States of America 3,625% - 31.12.27",
+   "price": 99.431,
+   "yield": 0.0408,
+   "rating": "AA+"
+  },
+  {
+   "isin": "US91282CLG41",
+   "name": "United States of America 3,75% - 31.12.27",
+   "price": 99.571,
+   "yield": 0.0409,
+   "rating": "AA+"
+  },
+  {
+   "isin": "US91282CNQ05",
+   "name": "United States of America 3,8898% - 31.12.27",
+   "price": 99.83,
+   "yield": 0.0403,
+   "rating": "AA+"
+  },
+  {
+   "isin": "XS2348658035",
+   "name": "MDGH GMTN (RSC) Ltd. 2,5% - 31.12.31",
+   "price": 88.35,
+   "yield": 0.0502,
+   "rating": "AA"
+  },
+  {
+   "isin": "XS2880093849",
+   "name": "DZ BANK AG Deutsche Zentral-Genossenschaftsbank, Frankfurt am Main 0,01% - 31.12.29",
+   "price": 86.6,
+   "yield": 0.0405,
+   "rating": "AA"
+  },
+  {
+   "isin": "XS2830445727",
+   "name": "MDGH GMTN (RSC) Ltd. 5,294% - 31.12.34",
+   "price": 98.67,
+   "yield": 0.0553,
+   "rating": "AA"
+  },
+  {
+   "isin": "USU75000CT18",
+   "name": "Roche Holdings Inc. 4,075% - 31.12.30",
+   "price": 96.57,
+   "yield": 0.0501,
+   "rating": "AA"
+  },
+  {
+   "isin": "XS3061310101",
+   "name": "Abu Dhabi Developmental Holding Company PJSC 4,5% - 31.12.30",
+   "price": 97.73,
+   "yield": 0.0513,
+   "rating": "AA"
+  },
+  {
+   "isin": "XS3305174172",
+   "name": "DZ BANK AG Deutsche Zentral-Genossenschaftsbank, Frankfurt am Main 3,05% - 31.12.29",
+   "price": 95.38,
+   "yield": 0.0459,
+   "rating": "AA"
+  },
+  {
+   "isin": "XS3282840068",
+   "name": "DZ BANK AG Deutsche Zentral-Genossenschaftsbank, Frankfurt am Main 3,25% - 31.12.29",
+   "price": 96.08,
+   "yield": 0.0456,
+   "rating": "AA"
+  },
+  {
+   "isin": "XS3425729012",
+   "name": "DZ BANK AG Deutsche Zentral-Genossenschaftsbank, Frankfurt am Main 4% - 31.12.28",
+   "price": 98.34,
+   "yield": 0.0478,
+   "rating": "AA"
+  },
+  {
+   "isin": "XS3402831807",
+   "name": "DZ BANK AG Deutsche Zentral-Genossenschaftsbank, Frankfurt am Main 3,85% - 31.12.27",
+   "price": 98.77,
+   "yield": 0.0483,
+   "rating": "AA"
+  },
+  {
+   "isin": "XS3011759068",
+   "name": "DZ BANK AG Deutsche Zentral-Genossenschaftsbank, Frankfurt am Main 4% - 31.12.27",
+   "price": 98.96,
+   "yield": 0.0483,
+   "rating": "AA"
+  },
+  {
+   "isin": "XS3032966544",
+   "name": "DZ BANK AG Deutsche Zentral-Genossenschaftsbank, Frankfurt am Main 3,75% - 31.12.28",
+   "price": 98.13,
+   "yield": 0.0463,
+   "rating": "AA"
+  },
+  {
+   "isin": "XS3455218019",
+   "name": "DZ BANK AG Deutsche Zentral-Genossenschaftsbank, Frankfurt am Main 4,1% - 31.12.28",
+   "price": 98.72,
+   "yield": 0.0471,
+   "rating": "AA"
+  },
+  {
+   "isin": "XS3391836510",
+   "name": "Finnvera PLC 4,25% - 31.12.31",
+   "price": 98.37,
+   "yield": 0.0463,
+   "rating": "AA"
+  },
+  {
+   "isin": "US013051EA13",
+   "name": "Alberta, Provinz 3,3% - 31.12.28",
+   "price": 98.306,
+   "yield": 0.0409,
+   "rating": "AA"
+  },
+  {
+   "isin": "XS2743088184",
+   "name": "DZ BANK AG Deutsche Zentral-Genossenschaftsbank, Frankfurt am Main 4% - 31.12.27",
+   "price": 99.66,
+   "yield": 0.0427,
+   "rating": "AA"
+  },
+  {
+   "isin": "HK0000789823",
+   "name": "Hong Kong Special Administrative Region of the People's Republic of China 1,75% - 31.12.31",
+   "price": 86.12,
+   "yield": 0.0464,
+   "rating": "AA-"
+  },
+  {
+   "isin": "US06051GKD06",
+   "name": "Bank of America Corp. 2,572% - 31.12.32",
+   "price": 87.73,
+   "yield": 0.0487,
+   "rating": "AA-"
+  },
+  {
+   "isin": "US06051GKK49",
+   "name": "Bank of America Corp. 2,972% - 31.12.33",
+   "price": 88.87,
+   "yield": 0.0487,
+   "rating": "AA-"
+  },
+  {
+   "isin": "US302154DD89",
+   "name": "The Export-Import Bank of Korea 1,25% - 31.12.30",
+   "price": 87.13,
+   "yield": 0.0442,
+   "rating": "AA-"
+  },
+  {
+   "isin": "US302154DG11",
+   "name": "The Export-Import Bank of Korea 1,375% - 31.12.31",
+   "price": 86.5,
+   "yield": 0.0413,
+   "rating": "AA-"
+  },
+  {
+   "isin": "US06406RAR84",
+   "name": "The Bank of New York Mellon Corp. 1,65% - 31.12.31",
+   "price": 87.44,
+   "yield": 0.0425,
+   "rating": "AA-"
+  },
+  {
+   "isin": "US023135BS49",
+   "name": "Amazon.com Inc. 1,5% - 31.12.30",
+   "price": 88.71,
+   "yield": 0.0431,
+   "rating": "AA-"
+  },
+  {
+   "isin": "USW8454EBD95",
+   "name": "Skandinaviska Enskilda Banken AB 4,5% - 31.12.30",
+   "price": 97.32,
+   "yield": 0.0524,
+   "rating": "AA-"
+  },
+  {
+   "isin": "US500630DU99",
+   "name": "The Korea Development Bank 4,25% - 31.12.32",
+   "price": 96.395,
+   "yield": 0.0498,
+   "rating": "AA-"
+  },
+  {
+   "isin": "US857477CR20",
+   "name": "State Street Corp. 4,675% - 31.12.32",
+   "price": 97.61,
+   "yield": 0.0517,
+   "rating": "AA-"
+  },
+  {
+   "isin": "US302154DJ59",
+   "name": "The Export-Import Bank of Korea 1,125% - 31.12.26",
+   "price": 98.68,
+   "yield": 0.0531,
+   "rating": "AA-"
+  },
+  {
+   "isin": "XS2865538776",
+   "name": "Abu Dhabi Future Energy Company PJSC Masdar 4,875% - 31.12.29",
+   "price": 98.79,
+   "yield": 0.053,
+   "rating": "AA-"
+  },
+  {
+   "isin": "US48128BAU52",
+   "name": "JPMorgan Chase & Co. 5,041% - 31.12.32",
+   "price": 99.065,
+   "yield": 0.0524,
+   "rating": "AA-"
+  },
+  {
+   "isin": "XS3443185908",
+   "name": "State of Kuwait 5,157% - 31.12.31",
+   "price": 99.55,
+   "yield": 0.0526,
+   "rating": "AA-"
+  },
+  {
+   "isin": "US06051GKH10",
+   "name": "Bank of America Corp. 4,6772% - 31.12.28",
+   "price": 99.01,
+   "yield": 0.0515,
+   "rating": "AA-"
+  },
+  {
+   "isin": "US46647PEQ54",
+   "name": "JPMorgan Chase & Co. 4,603% - 31.12.30",
+   "price": 98.655,
+   "yield": 0.0498,
+   "rating": "AA-"
+  },
+  {
+   "isin": "US78017FZT38",
+   "name": "Royal Bank of Canada 4,65% - 31.12.30",
+   "price": 98.8,
+   "yield": 0.0498,
+   "rating": "AA-"
+  },
+  {
+   "isin": "XS3443185650",
+   "name": "State of Kuwait 5,039% - 31.12.29",
+   "price": 99.81,
+   "yield": 0.0511,
+   "rating": "AA-"
+  },
+  {
+   "isin": "US13607QWB49",
+   "name": "Canadian Imperial Bank of Commerce 4,283% - 31.12.30",
+   "price": 98.1,
+   "yield": 0.0481,
+   "rating": "AA-"
+  },
+  {
+   "isin": "US48128BAV36",
+   "name": "JPMorgan Chase & Co. 4,864% - 31.12.30",
+   "price": 99.505,
+   "yield": 0.05,
+   "rating": "AA-"
+  },
+  {
+   "isin": "US857477CW15",
+   "name": "State Street Corp. 4,729% - 31.12.30",
+   "price": 99.27,
+   "yield": 0.0493,
+   "rating": "AA-"
+  },
+  {
+   "isin": "US89115A3C46",
+   "name": "The Toronto-Dominion Bank 4,783% - 31.12.29",
+   "price": 99.57,
+   "yield": 0.0493,
+   "rating": "AA-"
+  },
+  {
+   "isin": "US78017FZS54",
+   "name": "Royal Bank of Canada 4,522% - 31.12.28",
+   "price": 99.76,
+   "yield": 0.0464,
+   "rating": "AA-"
+  },
+  {
+   "isin": "US857477CU58",
+   "name": "State Street Corp. 4,536% - 31.12.28",
+   "price": 99.81,
+   "yield": 0.0463,
+   "rating": "AA-"
+  },
+  {
+   "isin": "US46647PEP71",
+   "name": "JPMorgan Chase & Co. 4,505% - 31.12.28",
+   "price": 99.84,
+   "yield": 0.0458,
+   "rating": "AA-"
+  },
+  {
+   "isin": "US78017FZQ98",
+   "name": "Royal Bank of Canada 4,51% - 31.12.27",
+   "price": 99.9,
+   "yield": 0.0459,
+   "rating": "AA-"
+  },
+  {
+   "isin": "US857477CP63",
+   "name": "State Street Corp. 4,33% - 31.12.27",
+   "price": 99.8,
+   "yield": 0.0449,
+   "rating": "AA-"
+  },
+  {
+   "isin": "US21688ABM36",
+   "name": "Coöperatieve Rabobank U.A. 4,372% - 31.12.27",
+   "price": 99.86,
+   "yield": 0.0448,
+   "rating": "AA-"
+  },
+  {
+   "isin": "XS1582346968",
+   "name": "State of Kuwait 3,5% - 31.12.27",
+   "price": 99.3,
+   "yield": 0.0406,
+   "rating": "AA-"
+  },
+  {
+   "isin": "USH3698DCW23",
+   "name": "UBS Group AG 4,194% - 31.12.31",
+   "price": 91.22,
+   "yield": 0.0625,
+   "rating": "A+"
+  },
+  {
+   "isin": "XS2262853265",
+   "name": "Saudi Arabian Oil Co. 2,25% - 31.12.30",
+   "price": 88.49,
+   "yield": 0.0521,
+   "rating": "A+"
+  },
+  {
+   "isin": "US61747YEL56",
+   "name": "Morgan Stanley 2,943% - 31.12.33",
+   "price": 88.37,
+   "yield": 0.0492,
+   "rating": "A+"
+  },
+  {
+   "isin": "US404280CY37",
+   "name": "HSBC Holdings PLC 2,871% - 31.12.32",
+   "price": 89.6,
+   "yield": 0.0485,
+   "rating": "A+"
+  },
+  {
+   "isin": "US010392FZ66",
+   "name": "Alabama Power Co. 3,94% - 31.12.32",
+   "price": 93.85,
+   "yield": 0.0517,
+   "rating": "A+"
+  },
+  {
+   "isin": "XS3307434095",
+   "name": "Caisse d'Amortissement de la Dette Sociale 4% - 31.12.33",
+   "price": 94.22,
+   "yield": 0.0504,
+   "rating": "A+"
+  },
+  {
+   "isin": "US637432PC30",
+   "name": "National Rural Utilities Cooperative Finance Corp. 5% - 31.12.34",
+   "price": 97.4,
+   "yield": 0.0545,
+   "rating": "A+"
+  },
+  {
+   "isin": "US639057AX65",
+   "name": "NatWest Group PLC 4,983% - 31.12.32",
+   "price": 98.19,
+   "yield": 0.0536,
+   "rating": "A+"
+  },
+  {
+   "isin": "US404280FE46",
+   "name": "HSBC Holdings PLC 4,619% - 31.12.31",
+   "price": 97.4,
+   "yield": 0.0523,
+   "rating": "A+"
+  },
+  {
+   "isin": "US976656CU00",
+   "name": "Wisconsin Electric Power Co. 4,15% - 31.12.30",
+   "price": 96.65,
+   "yield": 0.0507,
+   "rating": "A+"
+  },
+  {
+   "isin": "US89236TKR58",
+   "name": "Toyota Motor Credit Corp. 4,7% - 31.12.33",
+   "price": 97.38,
+   "yield": 0.0518,
+   "rating": "A+"
+  },
+  {
+   "isin": "US24422EWL90",
+   "name": "John Deere Capital Corp. 4,35% - 31.12.32",
+   "price": 96.68,
+   "yield": 0.0502,
+   "rating": "A+"
+  },
+  {
+   "isin": "US61748UBA97",
+   "name": "Morgan Stanley 5,17% - 31.12.32",
+   "price": 98.975,
+   "yield": 0.0539,
+   "rating": "A+"
+  },
+  {
+   "isin": "US89236TMT96",
+   "name": "Toyota Motor Credit Corp. 4,6% - 31.12.31",
+   "price": 97.83,
+   "yield": 0.0511,
+   "rating": "A+"
+  },
+  {
+   "isin": "XS2987801359",
+   "name": "GACI First Investment Co. 5,25% - 31.12.30",
+   "price": 99.56,
+   "yield": 0.0538,
+   "rating": "A+"
+  },
+  {
+   "isin": "US89236TQB43",
+   "name": "Toyota Motor Credit Corp. 4,55% - 31.12.31",
+   "price": 97.83,
+   "yield": 0.0506,
+   "rating": "A+"
+  },
+  {
+   "isin": "US09659X3B68",
+   "name": "BNP Paribas S.A. 5,085% - 31.12.31",
+   "price": 99.22,
+   "yield": 0.0527,
+   "rating": "A+"
+  },
+  {
+   "isin": "FR0014015YA2",
+   "name": "Agence Française de Développement 4,125% - 31.12.31",
+   "price": 96.81,
+   "yield": 0.0486,
+   "rating": "A+"
+  },
+  {
+   "isin": "US639057AV00",
+   "name": "NatWest Group PLC 5,115% - 31.12.31",
+   "price": 99.54,
+   "yield": 0.0523,
+   "rating": "A+"
+  },
+  {
+   "isin": "US780097BL47",
+   "name": "NatWest Group PLC 4,445% - 31.12.30",
+   "price": 98.24,
+   "yield": 0.0493,
+   "rating": "A+"
+  },
+  {
+   "isin": "US404280CV97",
+   "name": "HSBC Holdings PLC 2,206% - 31.12.29",
+   "price": 94.12,
+   "yield": 0.0412,
+   "rating": "A+"
+  }
+ ]
+}

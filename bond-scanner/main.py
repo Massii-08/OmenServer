@@ -70,7 +70,7 @@ Esempi:
                         help='Target di bond nell\'Excel finale (default: 20, range 1-20). '
                              'Split equilibrato sulle valute selezionate '
                              '(1 valuta=20, 2=10/10, 3=7/7/6). '
-                             'Scoring Defensive 20%% prezzo / 40%% yield / 40%% rating.')
+                             'Classifica 50%% rating / 50%% yield (rango del yield per valuta).')
 
     # Opzioni di output
     parser.add_argument('--output', '-o', type=str, default=None,
