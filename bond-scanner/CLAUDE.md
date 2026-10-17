@@ -81,7 +81,9 @@ bot obbligation/
    (l'enrich page-détail à 5s/bond était le bottleneck → quasi éliminé)
 3. Pré-filtre GRATUIT : found_store + seen_store + prix + yield + maturité
 4. Rating Brave (cache + délai 1.1s anti-429) sur les survivants
-5. Scoring + top-N par devise, trié RATING DÉCROISSANT (best ratings en haut)
+5. Classement 50 % rating / 50 % yield + top-N par devise (2026-10-17 — avant : rating d'abord).
+   Rating = position linéaire min_rating (0) → AAA (1) ; yield = RANG dans le pool de SA devise ;
+   le prix n'est plus dans le score (il reste un filtre). Voir scanner/scoring.py + piège #70.
 6. Excel + enregistrement dédup
 ```
 
@@ -189,9 +191,9 @@ python main.py --usage                            # Stato rate limit
 
 ### Structure (3 fogli)
 ```
-Euro  →  Bonds en EUR, triés par yield décroissant
-USD   →  Bonds en USD, triés par yield décroissant
-GBP   →  Bonds en GBP, triés par yield décroissant
+Euro  →  Bonds en EUR, classés 50 % rating / 50 % yield (meilleur compromis en haut)
+USD   →  Bonds en USD, idem
+GBP   →  Bonds en GBP, idem
 ```
 
 ### Colonnes

@@ -616,7 +616,7 @@ def test_telegram_config_clear(tmp_path, monkeypatch):
     assert hr.telegram_config.load(str(tmp_path / "tg.json")) == {}
 
 
-# ---- Piège #70 : sortie du moteur dans run.log, jamais dans un pipe --------
+# ---- Piège #71 : sortie du moteur dans run.log, jamais dans un pipe --------
 
 class _FakeProc(object):
     pid = 4242

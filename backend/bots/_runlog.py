@@ -1,6 +1,6 @@
 """Moteur détaché dont la sortie va dans un FICHIER, jamais dans un pipe.
 
-Pourquoi (piège #70) : un moteur lancé avec ``start_new_session=True`` survit au
+Pourquoi (piège #71) : un moteur lancé avec ``start_new_session=True`` survit au
 restart d'uvicorn que fait l'auto-deploy, mais si sa sortie est un pipe, le fil
 qui le lit vit dans uvicorn et meurt avec lui. Le bout de lecture se ferme, et
 le write suivant du moteur lève ``BrokenPipeError`` (Python ignore SIGPIPE).

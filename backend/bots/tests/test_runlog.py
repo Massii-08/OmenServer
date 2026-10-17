@@ -1,4 +1,4 @@
-"""Piège #70 : un moteur détaché écrit dans un FICHIER, jamais dans un pipe.
+"""Piège #71 : un moteur détaché écrit dans un FICHIER, jamais dans un pipe.
 
 Couvre le helper ``_runlog`` et les deux routers qui l'utilisent pour garder
 leur progression parsée ligne à ligne (Bond Scanner, Yield Bot).

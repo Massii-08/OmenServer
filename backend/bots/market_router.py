@@ -229,7 +229,7 @@ def _launch_subprocess(run_dir: str, job: Dict[str, Any],
             stdin=subprocess.DEVNULL,
             # DIRECTEMENT dans le fichier, jamais un pipe : le lecteur d'un pipe
             # vit dans uvicorn et meurt au restart de l'auto-deploy ; le print
-            # suivant du moteur lèverait alors BrokenPipeError (piège #70).
+            # suivant du moteur lèverait alors BrokenPipeError (piège #71).
             stdout=log,
             stderr=subprocess.STDOUT,
             cwd=str(MARKET_PULSE_DIR),

@@ -854,7 +854,7 @@ def test_startup_installs_the_opening_jobs_too(tmp_path, monkeypatch):
 
 
 def test_launch_writes_engine_output_to_a_file_not_a_pipe(tmp_path, monkeypatch):
-    """Piège #70 : un pipe lu par un fil d'uvicorn casse au restart de
+    """Piège #71 : un pipe lu par un fil d'uvicorn casse au restart de
     l'auto-deploy, et le print suivant du moteur lève BrokenPipeError. La sortie
     doit aller DANS run.log, un vrai fichier, avec stderr fusionné."""
     import subprocess

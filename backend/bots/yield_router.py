@@ -203,7 +203,7 @@ async def run_yield_bot(
     job["stats"] = {"total": job["bonds_count"], "updated": 0, "skipped": 0, "errors": 0}
 
     try:
-        # Sortie dans un FICHIER, jamais un pipe (piège #70) : le lecteur d'un
+        # Sortie dans un FICHIER, jamais un pipe (piège #71) : le lecteur d'un
         # pipe vit dans uvicorn et meurt au restart de l'auto-deploy, le write
         # suivant du moteur lèverait BrokenPipeError. Le fil ci-dessous SUIT le
         # fichier pour la progression ; s'il meurt, le moteur continue.

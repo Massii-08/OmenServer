@@ -93,7 +93,7 @@ class ScanRequest(BaseModel):
     min_rating: str = "BBB"          # Task 15 (2026-05-28) — default BBB
     currencies: str = "EUR,USD,GBP"
     price_threshold: float = 101.0
-    target_count: int = 50           # Range 1-50 (2026-05-28, best-N triés rating desc)
+    target_count: int = 50           # Range 1-50 — best-N classés 50 % rating / 50 % yield (2026-10-17)
 
 
 # ================================================================
@@ -195,7 +195,7 @@ async def run_scanner(
             subprocess_env["BRAVE_SEARCH_API_KEY"] = loaded_key
 
     try:
-        # Sortie dans un FICHIER, jamais un pipe (piège #70) : le lecteur d'un
+        # Sortie dans un FICHIER, jamais un pipe (piège #71) : le lecteur d'un
         # pipe vit dans uvicorn et meurt au restart de l'auto-deploy, le write
         # suivant du moteur lèverait BrokenPipeError. Le fil ci-dessous SUIT le
         # fichier pour la progression ; s'il meurt, le moteur continue.

@@ -1055,7 +1055,7 @@ const BotsModule = {
  minYield: 3,
  maxMaturity: 9,
  minRating: 'BBB',          // Task 15 (2026-05-28) — default BBB (was BBB-)
- targetCount: 50,            // Range 1-50 (2026-05-28 — best-N triés par rating desc)
+ targetCount: 50,            // Range 1-50 — best-N classés 50 % rating / 50 % yield (2026-10-17)
  currencies: { EUR: true, USD: true, GBP: true },
  priceThreshold: 101,
  ratingKey: null,            // Task 16 — set by _scannerLoadKeyStatus()

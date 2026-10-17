@@ -377,9 +377,10 @@ class BondScanner:
                                 # Best-N (2026-05-28, demande Massii) : PAS
                                 # d'early-stop. On rate tous les survivants
                                 # jusqu'au budget Brave (1500) / timeout / quota,
-                                # puis top_n_per_currency garde les MEILLEURS par
-                                # rating desc. La dédup + cache font que la
-                                # prochaine relance trouve du nouveau sans re-payer.
+                                # puis top_n_per_currency garde les meilleurs
+                                # compromis rating/yield (2026-10-17). La dédup
+                                # + cache font que la prochaine relance trouve
+                                # du nouveau sans re-payer.
                             else:
                                 currency_stats['discarded'] += 1
                                 self.stats['total_discarded'] += 1  # ← Aggiornamento IMMEDIATO
@@ -405,18 +406,25 @@ class BondScanner:
             # (pour le garde-fou de pré-lancement côté backend).
             self.stats['brave_remaining'] = scraper.brave_remaining
 
-        # 4. Task 15 — scoring composito + top-N per valuta
-        # Si calcola il punteggio Defensive (20% prezzo / 40% yield / 40% rating)
-        # per ogni bond del pool. Poi si prende i top-K per valuta secondo la
-        # quota equilibrata di compute_quotas(target_count, n_valute).
+        # 4. Task 15 — classifica equilibrata + top-N per valuta
+        # Dal 2026-10-17 (richiesta Massii) : score = 50% rating / 50% yield,
+        # calcolato PER VALUTA — il rango del yield è nel pool della stessa
+        # valuta, il rating è misurato tra il rating minimo dello scan e AAA.
+        # Il prezzo non entra nella classifica : resta solo un filtro (prezzo
+        # max). Poi si prende i top-K per valuta secondo la quota equilibrata
+        # di compute_quotas(target_count, n_valute).
         if all_filtered_bonds and self.target_count > 0:
             logger.info(f"\n{'='*60}")
-            logger.info(f"⚖️  Scoring composito + top-{self.target_count} per valuta...")
+            logger.info(
+                f"⚖️  Classement 50 % rating / 50 % yield + "
+                f"top-{self.target_count} par devise..."
+            )
             logger.info(f"{'='*60}")
             top_by_currency = top_n_per_currency(
                 bonds=all_filtered_bonds,
                 target_count=self.target_count,
                 currencies=list(self.criteria.currencies),
+                rating_floor=self.criteria.min_rating,
             )
             # Flatten preservando l'ordine delle valute (= ordine di iterazione
             # in self.criteria.currencies), e dentro ogni valuta l'ordine
