@@ -76,6 +76,7 @@ const {
   zoneVerdict, verdictTelemetry, pickMigrationTarget, migrationLeg, legHeading, LEG_STUCK_MIN, legIsGood, minDistFor,
   zoneFailureKind, zoneStateInit, zoneStateLoad, zoneStateAfterMigration, MAX_LEGS, MIGRATE_MIN_PROGRESS, LOADED_RADIUS,
   LOGS_NOT_FOUND_MAX, windowAdd, windowSum, windowPrune, ZONE_WINDOW_MS,
+  zoneStateAfterFailedMigration, migrationEarlyExitOk, pruneFailedTargets,
 } = require('./zone');
 const { recordWorkDrown, noteDrownedSite, isDrownedNear, offsetFromDrowned } = require('./workDrown'); // chantier adjacent à un aquifère → abandon + BANNISSEMENT du lieu (3a)
 const { createDeathSpots } = require('./deathspots');
@@ -1804,9 +1805,21 @@ let _zoneWaterWin = [];       // échecs eau des ZONE_WINDOW_MS dernières minut
 let _zoneLogsWin = [];        // échecs bois de la fenêtre
 let _zoneIronWin = [];        // fers récoltés dans la fenêtre = LE rendement courant
 let _lastMigrationAt = 0;     // cooldown anti-nomadisme
+// MÉMOIRE D'ÉCHEC DE MIGRATION (fix 18/08 : 917 `zone_migration_start` → 72 `zone_migrated`).
+// Persistée dans le mémo de base avec le reste de l'état de zone (le bot meurt toutes les 3 min).
+let _lastMigrationFailed = false; // dernière migration ratée → cooldown 5 min au lieu de 20
+let _failedTargets = [];          // cibles ratées [{x,z,at}] : écartées 45 min (la cible est déterministe)
 let _lastZoneVerdictReason = null; // dedup télémétrie : dernière raison de verdict tracée
 let _migrating = false;       // marche de migration en cours → l'enforcement confine est SUSPENDU
 let _migrationLegs = 0;       // jambes déjà parcourues (marche à l'aveugle)
+// MIGRATION EXCLUSIVE (fix 18/08) — gardes lues par migrateZone, écrites ailleurs : niveau MODULE
+// obligatoire (piège #56 : un `let` dans onSpawn compile, passe les tests, et tue le bot en prod).
+// Des COMPTEURS et non des booléens : deux exécutions peuvent se chevaucher (un skill expiré par
+// withTimeout continue de tourner en fond ; une vieille startAutonomous finit de se dérouler
+// pendant que la nouvelle démarre) — un booléen remis à false par la première mentirait.
+let _skillInFlight = 0;       // runGoalSkill en cours (cf. runSkillWithTelemetry)
+let _autoRunners = 0;         // startAutonomous en cours (planner, ressource, récup post-mort)
+const MIGRATION_PREEMPT_WAIT_MS = 30000;   // attente max que le planner rende la main
 
 /** Applique un état de zone (pur → variables de module). */
 function _applyZoneState(s) {
@@ -1819,6 +1832,9 @@ function _applyZoneState(s) {
   _zoneWaterWin = s.waterFailsWin || [];
   _zoneLogsWin = s.logsNotFoundWin || [];
   _zoneIronWin = s.ironMinedWin || [];
+  // ⚠️ Aller-retour complet (piège #61) : lus ICI, réécrits par _zoneStateNow, relus par zoneStateLoad.
+  _lastMigrationFailed = s.lastMigrationFailed === true;
+  _failedTargets = Array.isArray(s.failedTargets) ? s.failedTargets : [];
 }
 
 /** Sérialise l'état de zone courant pour le mémo de base.
@@ -1833,6 +1849,8 @@ function _zoneStateNow() {
     waterFailsWin: windowPrune(_zoneWaterWin, now),
     logsNotFoundWin: windowPrune(_zoneLogsWin, now),
     ironMinedWin: windowPrune(_zoneIronWin, now),
+    lastMigrationFailed: _lastMigrationFailed,
+    failedTargets: pruneFailedTargets(_failedTargets, now),
   };
 }
 
@@ -1931,20 +1949,64 @@ function currentAnchor() {
  *
  * Pendant la marche, l'enforcement confine est SUSPENDU (`_migrating`) — sinon il ramènerait le
  * marcheur à l'ancre qu'on essaie justement de quitter.
+ *
+ * ⚠️ MIGRATION EXCLUSIVE (fix 18/08 — 360 sessions des 17-18/08 : 917 `zone_migration_start` pour
+ * 72 `zone_migrated`, l'écrasante majorité des échecs à `moved: 0..27`). Lancée par le timer, elle
+ * tournait EN PARALLÈLE du planner : pendant ses jambes, celui-ci exécutait ses buts
+ * (`explore_waypoint` ×13, `help_pick`/`pick_recovery` → /home safe, `work_return` → /home work =
+ * retour au VIEUX chantier). Le pathfinder n'a qu'un but : chaque but posé annulait la jambe, chaque
+ * /home ramenait le bot en arrière. Elle PRÉEMPTE donc le planner (taskCtl), attend qu'il ait rendu
+ * la main, marche seule, puis le relance.
  */
 async function migrateZone(reason) {
   if (_migrating) return;
+  // Uniquement par-dessus le planner AUTONOME : jamais par-dessus un ordre joueur (follow/guard/…)
+  // ni sur un bot sans tâche — dans ces cas ni migration ni cooldown. Et pas sans objectif en cours :
+  // un planner FINI (objectif soldé) n'a rien à relancer derrière nous.
+  if (taskCtl.active !== 'autonomous') return;
+  if (!(world.objective && world.objective.status === 'in_progress')) return;
   const from = currentAnchor();
   if (!from) return;
   _migrating = true;
   _migrationLegs = 0;
   const t0 = Date.now();
+  // PRÉEMPTION : `begin` annule le jeton du planner (cleanup = stopMotion) et nous rend le NÔTRE,
+  // capturé LOCALEMENT. On ne lit JAMAIS le global : une tâche lancée pendant la migration (mort →
+  // onSpawn → startAutonomous, ordre joueur, évasion) annule `tok`, et la migration doit alors
+  // s'arrêter — pas continuer en parallèle sous le jeton neuf (classe du « jeton de génération »).
+  const tok = taskCtl.begin('migration', stopMotion);
+  let target = null;
   try {
+    // ATTENDRE QUE LE PLANNER RENDE LA MAIN avant de marcher (≤30 s). Pendant cette attente le global
+    // `taskToken` reste VOLONTAIREMENT sur le jeton annulé du planner : le code en vol qui le relit
+    // entre deux étapes d'un skill (`if (taskToken.cancelled)` de huntCook, de la descente, de
+    // startResource…) voit l'annulation et sort, au lieu de repartir sous le jeton VIVANT de la
+    // migration (la descente reprendrait 600 s de creusage pendant qu'on essaie de marcher).
+    const w0 = Date.now();
+    while ((_skillInFlight > 0 || _autoRunners > 0) && !tok.cancelled
+        && Date.now() - w0 < MIGRATION_PREEMPT_WAIT_MS) {
+      await sleep(250);
+    }
+    if (tok.cancelled) {
+      // Préemptés AVANT d'avoir fait un pas (mort, ordre) : ce n'est pas un échec du trek → pas de
+      // cooldown, le prochain verdict re-jugera depuis la position réelle.
+      emit({ type: 'zone_migration_aborted', reason, phase: 'preempt_wait', waited_ms: Date.now() - w0 });
+      return;
+    }
+    const waitedMs = Date.now() - w0;
+    const waitTimeout = _skillInFlight > 0 || _autoRunners > 0;   // un skill zombie traîne encore
+    // La migration possède le bot : le global la suit (watchdog PV, secureSpot de safeWarpHome…).
+    taskToken = tok;
     const cells = loadWorldCells();
     // « Si une zone a été vidée de ses minerais, il s'éloigne de BEAUCOUP » (Massii) : pour un
     // épuisement, la cellule d'à côté est le même sous-sol déjà fouillé → plancher bien plus haut.
     const minDist = minDistFor(reason);
-    let target = pickMigrationTarget({ from, biomes: cells.biomes, depleted: cells.depleted, minDist, reason });
+    // `avoid` : les cibles RATÉES depuis < 45 min — la cible est déterministe, sans ça le re-essai
+    // visait exactement la cellule qui venait d'échouer (fix 18/08).
+    target = pickMigrationTarget({
+      from, biomes: cells.biomes, depleted: cells.depleted, minDist, reason,
+      avoid: _failedTargets, now: Date.now(),
+    });
     // Claim PARTAGÉ : si un coéquipier a déjà fixé la cible, on adopte la sienne — l'escouade doit
     // atterrir au MÊME endroit même si les cartes divergent d'un bot à l'autre.
     if (target && _teamClaims) {
@@ -1956,6 +2018,7 @@ async function migrateZone(reason) {
       fromX: Math.round(from.x), fromZ: Math.round(from.z),
       toX: target ? target.x : null, toZ: target ? target.z : null,
       source: target ? target.source : 'blind', biome: target ? target.biome : null,
+      waited_ms: waitedMs, wait_timeout: waitTimeout,
     });
 
     let travelFrom = { x: from.x, z: from.z };   // origine RÉELLE du voyage (mise à jour après la remontée)
@@ -1973,14 +2036,14 @@ async function migrateZone(reason) {
     // ce qui manquait au trek souterrain que la veille avait diagnostique (5db0192).
     {
       const pUp = bot.entity && bot.entity.position;
-      if (pUp && pUp.y < SAFE_HOME_MIN_Y) {
+      if (pUp && pUp.y < SAFE_HOME_MIN_Y && !tok.cancelled) {
         emit({ type: 'zone_migration_surfacing', from_y: Math.round(pUp.y), via: 'home_safe' });
         try {
           await safeWarpHome(HOME_SAFE);
         } catch (e) { /* best-effort */ }
         // Repli : si le home a ete refuse (teleport-safety) on tente quand meme la remontee a pied.
         const pAfterWarp = bot.entity && bot.entity.position;
-        if (pAfterWarp && pAfterWarp.y < SAFE_HOME_MIN_Y) {
+        if (pAfterWarp && pAfterWarp.y < SAFE_HOME_MIN_Y && !tok.cancelled) {
           emit({ type: 'zone_migration_surfacing', from_y: Math.round(pAfterWarp.y), via: 'walk' });
           try {
             await withTimeout(bot.pathfinder.goto(new pfGoals.GoalY(SAFE_HOME_MIN_Y + 4)),
@@ -2007,7 +2070,7 @@ async function migrateZone(reason) {
       const hops = dFar > LOADED_RADIUS ? 0 : 6;
       if (!hops) emit({ type: 'zone_migration_legs', dist: Math.round(dFar), reason: 'beyond_loaded' });
       // Trajet borné et découpé : un goto unique de 1500 blocs ne rend jamais la main proprement.
-      for (let hop = 0; hop < hops && !taskToken.cancelled; hop++) {
+      for (let hop = 0; hop < hops && !tok.cancelled; hop++) {
         const p = bot.entity && bot.entity.position;
         if (!p) break;
         if (Math.hypot(p.x - target.x, p.z - target.z) <= 32) break;
@@ -2034,13 +2097,13 @@ async function migrateZone(reason) {
         // (`legHeading`) au lieu de re-percuter l'obstacle. Le cap de base est re-calcule vers la
         // cible a chaque jambe : des qu'on progresse, `stuck` retombe a 0 et on repointe droit dessus.
         let stuck = 0;
-        for (let i = 0; i < MAX_LEGS && !taskToken.cancelled; i++) {
+        for (let i = 0; i < MAX_LEGS && !tok.cancelled; i++) {
           const pl = bot.entity && bot.entity.position;
           const base = pl ? { x: pl.x, z: pl.z } : from;
           const heading = legHeading(Math.atan2(target.z - base.z, target.x - base.x), stuck);
           const leg = migrationLeg({ from: base, heading, legs: i });
           if (!leg) break;
-          await migrationLegTo(leg, yRef);
+          await migrationLegTo(leg, yRef, tok);
           _migrationLegs = i + 1;
           const pn = bot.entity && bot.entity.position;
           const legMoved = (base && pn) ? Math.hypot(pn.x - base.x, pn.z - base.z) : 0;
@@ -2051,8 +2114,13 @@ async function migrateZone(reason) {
           // depart le bot est a sa base, souvent avec des arbres en vue → `legIsGood` etait vrai
           // des la premiere iteration et cassait la marche AVANT le moindre pas. Or la zone vient
           // precisement d etre jugee sans bois : ce qu il voit ne suffit pas, il doit partir.
+          // ⚠️ ET LE PLANCHER DÉPEND DU MOTIF (fix 18/08 : les 43 `depleted` « réussies » ont dist
+          // 50-250) : un épuisement (plancher 600) ne s'arrête plus au premier bosquet à 64 blocs —
+          // c'était déménager dans le même secteur vidé. Le bois, lui, garde ses 64 blocs.
           const gone = pn ? Math.hypot(pn.x - travelFrom.x, pn.z - travelFrom.z) : 0;
-          if (pn && gone >= MIGRATE_MIN_PROGRESS && legIsGood(probeTerrain())) break;
+          const distToTarget = pn ? Math.hypot(pn.x - target.x, pn.z - target.z) : Infinity;
+          if (pn && migrationEarlyExitOk({ reason, gone, minDist, distToTarget })
+              && legIsGood(probeTerrain())) break;
         }
       }
     } else {
@@ -2061,18 +2129,23 @@ async function migrateZone(reason) {
       // re-percuter le même point — on dévie le cap (`legHeading`) tant qu'on n'avance pas.
       const heading0 = basecamp.headingForName(bot.username, 3);
       let stuck = 0;
-      for (let i = 0; i < MAX_LEGS && !taskToken.cancelled; i++) {
+      for (let i = 0; i < MAX_LEGS && !tok.cancelled; i++) {
         const p = bot.entity && bot.entity.position;
         const base = p ? { x: p.x, z: p.z } : from;
         const heading = legHeading(heading0, stuck);
         const leg = migrationLeg({ from: base, heading, legs: i });
         if (!leg) break;
-        await migrationLegTo(leg, yRef);
+        await migrationLegTo(leg, yRef, tok);
         _migrationLegs = i + 1;
         const pn = bot.entity && bot.entity.position;
         const legMoved = (base && pn) ? Math.hypot(pn.x - base.x, pn.z - base.z) : 0;
         stuck = legMoved < LEG_STUCK_MIN ? stuck + 1 : 0;
-        if (legIsGood(probeTerrain())) break;      // « le bon endroit » : arbres, au sec, pas d'océan
+        // Même règle que la marche ciblée (fix 18/08) : ce test cassait SANS AUCUN plancher — au
+        // départ, à la base, dès la 1re jambe s'il y avait un arbre en vue. Pas de cible ici :
+        // seule la distance parcourue compte (distToTarget infini).
+        const gone = pn ? Math.hypot(pn.x - travelFrom.x, pn.z - travelFrom.z) : 0;
+        if (pn && migrationEarlyExitOk({ reason, gone, minDist, distToTarget: Infinity })
+            && legIsGood(probeTerrain())) break;      // « le bon endroit » : arbres, au sec, pas d'océan
       }
     }
 
@@ -2087,13 +2160,25 @@ async function migrateZone(reason) {
     // remonte À PIED, ce qui est possible maintenant que les chunks locaux sont chargés.
     {
       const pArr = bot.entity && bot.entity.position;
-      if (pArr && pArr.y < SAFE_HOME_MIN_Y) {
+      if (pArr && pArr.y < SAFE_HOME_MIN_Y && !tok.cancelled) {
         emit({ type: 'zone_migration_surfacing', from_y: Math.round(pArr.y), via: 'walk_arrival' });
         try {
           await withTimeout(bot.pathfinder.goto(new pfGoals.GoalY(SAFE_HOME_MIN_Y + 4)),
             60000, () => { try { stopMotion(); } catch (e) {} });
         } catch (e) { /* best-effort : on juge l'arrivée telle qu'elle est */ }
       }
+    }
+    // PRÉEMPTÉS EN ROUTE (mort → onSpawn, ordre joueur, évasion) : la position n'est plus le fruit
+    // de notre marche (respawn au spawnpoint, TP) — surtout ne rien ancrer, ne rien re-pathfinder
+    // par-dessus la tâche qui a pris la main. C'est un échec du trek (les morts en route faisaient
+    // échouer la migration, fix 18/08) : cooldown court + cible écartée, comme les autres échecs.
+    if (tok.cancelled) {
+      noteMigrationFailed(target);
+      emit({
+        type: 'zone_migration_failed', reason, cancelled: true, legs: _migrationLegs,
+        toX: target ? target.x : null, toZ: target ? target.z : null,
+      });
+      return;
     }
     const p2 = bot.entity && bot.entity.position;
     const p2wet = !!(p2 && isInWater(bot));
@@ -2128,7 +2213,8 @@ async function migrateZone(reason) {
       _anchorSet = true;
       bot._mcaExploreBounds = { x: base.x, z: base.z, radius: Math.max(_confineDyn.radius * 2, 128) };
       _workSet = false;                            // l'ancien chantier est à l'autre bout du monde
-      _applyZoneState(zoneStateAfterMigration(Date.now()));
+      // `_zoneStateNow()` en 2e argument : les cibles RATÉES survivent au déménagement (45 min).
+      _applyZoneState(zoneStateAfterMigration(Date.now(), _zoneStateNow()));
       _descendWaterFails = 0;
       persistZoneState();
       emit({
@@ -2141,20 +2227,43 @@ async function migrateZone(reason) {
     } else {
       // Arrivée dans l'eau, SOUS TERRE, ou position illisible : on NE pose PAS la base (un home
       // mouillé/souterrain rend `/home safe` mortel). Le cooldown court quand même — on ne relance
-      // pas un trek dans la foulée, et le bot garde son safe de surface précédent.
-      _lastMigrationAt = Date.now();
+      // pas un trek dans la foulée, et le bot garde son safe de surface précédent. Mais COURT
+      // (5 min, fix 18/08) et vers une AUTRE cible : 20 min puis la même cellule = re-échec garanti.
+      noteMigrationFailed(target);
       emit({
         type: 'zone_migration_failed', reason, wet: p2wet,
         underground: !!(p2 && !p2wet && p2.y < SAFE_HOME_MIN_Y),
         moved: p2 ? Math.round(Math.hypot(p2.x - travelFrom.x, p2.z - travelFrom.z)) : 0,
+        toX: target ? target.x : null, toZ: target ? target.z : null,
       });
     }
   } catch (e) {
-    _lastMigrationAt = Date.now();
-    emit({ type: 'zone_migration_failed', reason, error: String((e && e.message) || e) });
+    noteMigrationFailed(target);
+    emit({
+      type: 'zone_migration_failed', reason, error: String((e && e.message) || e),
+      toX: target ? target.x : null, toZ: target ? target.z : null,
+    });
   } finally {
     _migrating = false;
+    // RELANCE DU PLANNER : la migration l'a préempté, c'est donc à elle de le rallumer (succès comme
+    // échec) — SAUF si une autre tâche nous a préemptés à notre tour (mort → onSpawn, ordre, évasion) :
+    // celle-là gère la suite. Re-vérifié au déclenchement : on peut être préemptés pendant les 500 ms.
+    if (!tok.cancelled) {
+      setTimeout(() => {
+        if (tok.cancelled) return;
+        if (!(world.objective && world.objective.status === 'in_progress')) return;
+        try {
+          startAutonomous(null).catch((e) => emit({ type: 'error', message: String((e && e.message) || e) }));
+        } catch (e) { /* best-effort */ }
+      }, 500);
+    }
   }
+}
+
+/** Migration ratée : cooldown COURT, cible écartée 45 min, horloge de zone intacte — persisté. */
+function noteMigrationFailed(target) {
+  _applyZoneState(zoneStateAfterFailedMigration(_zoneStateNow(), Date.now(), target));
+  persistZoneState();
 }
 
 /** Lecture du terrain sous le bot pour `legIsGood` (arbres visibles, pieds au sec, biome). */
@@ -2185,7 +2294,10 @@ function probeTerrain() {
  * Puis on RE-REMONTE apres chaque jambe si on a quand meme fini sous terre : court (30 s) et
  * local, au lieu des 50 blocs de roche a percer une fois arrive au bout.
  */
-async function migrationLegTo(leg, yRef) {
+async function migrationLegTo(leg, yRef, tok) {
+  // `tok` = jeton LOCAL de la migration (fix 18/08) : préemptés (mort, ordre), on ne pose plus aucun
+  // but pathfinder — il écraserait celui de la tâche qui vient de prendre la main.
+  if (tok && tok.cancelled) return;
   // ⚠️ `GoalNear(leg.x, yRef, leg.z, 16)` NE MARCHE PAS SUR DU TERRAIN VALLONNE (mesure live
   // world_mn12, 28/07 : les migrations longues echouent `moved:0 underground:false wet:false`
   // en 7-19 events = NoPath INSTANTANE, pas un timeout). Un yRef FIGE + rayon 16 est inatteignable
@@ -2208,6 +2320,7 @@ async function migrationLegTo(leg, yRef) {
         90000, () => { try { stopMotion(); } catch (e) {} });
     } catch (e) { /* best-effort : la jambe suivante retentera */ }
   });
+  if (tok && tok.cancelled) return;   // préemptés PENDANT la jambe : pas de remontée par-dessus
   const p = bot.entity && bot.entity.position;
   if (p && p.y < SAFE_HOME_MIN_Y) {
     try {
@@ -2220,6 +2333,9 @@ async function migrationLegTo(leg, yRef) {
 /** Le verdict de zone, évalué périodiquement. Migre si la zone ne vaut plus le temps qu'on y passe. */
 function checkZoneVerdict() {
   if (_migrating || taskToken.cancelled || IS_MAPPER) return;   // les cartographes DOIVENT bouger, ils ne migrent pas
+  // MIGRATION EXCLUSIVE (fix 18/08) : on ne juge — donc ne migre — que pendant le planner autonome.
+  // Un ordre joueur (follow/guard/…) ou un bot sans tâche ne doit ni migrer ni armer de cooldown.
+  if (taskCtl.active !== 'autonomous') return;
   // ⚠️ NE PAS exiger `_anchorSet` : sur une zone rasée le bot ne s'ancre jamais (pickAnchorNow
   // refusait sans arbre) — exiger l'ancre rendait donc la migration IMPOSSIBLE précisément dans
   // le cas qu'elle doit résoudre. L'horloge de zone démarre au spawn, pas à l'ancrage.
@@ -2252,6 +2368,10 @@ function checkZoneVerdict() {
     depletedNear,
     dryCellKnown,
     lastMigrationAt: _lastMigrationAt,
+    lastMigrationFailed: _lastMigrationFailed,   // échec → cooldown 5 min au lieu de 20 (fix 18/08)
+    // Pas de trek de nuit (fix 18/08). `bot.time` peut manquer juste après un spawn : `null` =
+    // heure inconnue → pas de gate (comme mapperNightGuard), plutôt que de conclure « il fait jour ».
+    isNight: (bot.time && bot.time.timeOfDay != null) ? isNight(bot) : null,
     now,
   });
   // TRACE : sans elle, un 'stay' est muet → on ne peut pas voir QUELLE porte bloque la migration
@@ -2269,19 +2389,38 @@ function checkZoneVerdict() {
     waterFailsTotal: _zoneWaterFails, logsNotFoundTotal: _zoneLogsNotFound, ironMinedTotal: _zoneIronMined,
     miningMinutes: Math.round(_zoneMiningMs / 60000),
     depletedNear, dryCellKnown,
+    lastMigrationFailed: _lastMigrationFailed, failedTargets: _failedTargets.length,
   });
   persistZoneState();          // les compteurs accumulés doivent survivre au prochain respawn
   if (v.verdict === 'migrate') migrateZone(v.reason).catch(() => {});
 }
 
+// MIGRATION EXCLUSIVE (fix 18/08) : aucun pas de planner ne DÉMARRE pendant une migration. Dès
+// qu'elle possède le bot, le global `taskToken` est le SIEN (vivant) : un planner en retard qui
+// arrive dans runSkillWithTelemetry n'y verrait pas d'annulation et repartirait (combat de
+// settleSurvivalKit, skill) par-dessus les jambes de migration.
+// ⚠️ `taskCtl.active`, PAS `_migrating` : une migration préemptée à son tour (mort → onSpawn →
+// nouveau planner) garde `_migrating` vrai le temps de se dérouler (safeWarpHome : plusieurs s).
+// Le NOUVEAU planner recevrait alors {ok:false} en rafale instantanée → failStreak 4 → stalled.
+function migrationOwnsBot() { return taskCtl.active === 'migration'; }
+
 async function runSkillWithTelemetry(g) {
+  if (migrationOwnsBot()) return { ok: false, reason: 'cancelled' };
   await settleSurvivalKit();                                  // survie d'abord, le craft ensuite
-  if (taskToken.cancelled) return { ok: false, reason: 'cancelled' };
+  if (taskToken.cancelled || migrationOwnsBot()) return { ok: false, reason: 'cancelled' };
   // NUIT + (mort récente OU PV bas) pendant le kit → ABRI jusqu'à l'aube (vécu Surv4 : 7 morts
   // nocturnes en boucle ; un trou couvert coûte 2 blocs et sauve le kit).
   if (await maybeNightShelter() && taskToken.cancelled) return { ok: false, reason: 'cancelled' };
+  if (migrationOwnsBot()) return { ok: false, reason: 'cancelled' };   // l'abri peut durer : re-vérifier
   const _t0 = Date.now();
-  const r = await withTimeout(runGoalSkill(g), timeoutFor(g.skill), () => { try { stopMotion(); } catch (e) {} });
+  // `_skillInFlight` encadre l'exécution RÉELLE du skill, à l'intérieur du withTimeout : un skill
+  // expiré continue de tourner en fond (withTimeout ne l'annule pas), et migrateZone doit attendre
+  // qu'il ait vraiment rendu la main avant de marcher.
+  const run = (async () => {
+    _skillInFlight++;
+    try { return await runGoalSkill(g); } finally { _skillInFlight--; }
+  })();
+  const r = await withTimeout(run, timeoutFor(g.skill), () => { try { stopMotion(); } catch (e) {} });
   // Temps de MINAGE effectif : c'est le dénominateur du rendement de la zone (verdict 'exhausted').
   if (MINING_GOALS.has(g.name)) _zoneMiningMs += (Date.now() - _t0);
   if (!r || r.ok === false) {
@@ -4156,6 +4295,22 @@ async function startAutonomous(sender) {
   setObjective(world, { type: objType, status: 'in_progress' });
   saveWorld(worldFile, world);
   taskToken = taskCtl.begin('autonomous', stopMotion);
+  // ⚠️ JETON CAPTURÉ (fix 18/08) : `taskToken` est un GLOBAL relu TARD. Si une autre tâche fait
+  // `taskCtl.begin()` pendant qu'on attend (pause de retry NO_GIVE, récupération post-mort), le
+  // global pointe sur le jeton NEUF, non annulé : ce vieux planner le prenait pour le sien et
+  // repartait EN PARALLÈLE (runChain passait le global à runPlanner). Même classe que le « jeton de
+  // génération » de startMapper. Plus AUCUNE lecture du global après cette ligne : myTok.
+  const myTok = taskToken;
+  // Ce runner est vivant jusqu'à son dernier await : migrateZone attend qu'il ait rendu la main
+  // avant de marcher — sinon un startResource en retard, relisant le global, prendrait le jeton
+  // VIVANT de la migration pour le sien (et irait jusqu'à clearObjective + resource_idle).
+  _autoRunners++;
+  try { return await runAutonomousBody(sender, objType, myTok); } finally { _autoRunners--; }
+}
+
+/** Corps de startAutonomous, séparé pour que `_autoRunners` l'encadre de bout en bout.
+ *  Ne lit JAMAIS le global `taskToken` : uniquement `myTok`, le jeton de CE runner. */
+async function runAutonomousBody(sender, objType, myTok) {
   emit({ type: 'autonomous_start', objective: objType });
   // RÉCUPÉRATION POST-MORT (vécu Surv4 : chaque mort = kit perdu = re-kit de zéro = spirale) :
   // les items restent 5 min au sol → on retourne les ramasser AVANT de reprendre (borné, best-effort).
@@ -4185,7 +4340,7 @@ async function startAutonomous(sender) {
       warped = !!(r && r.warped);
       if (warped) emit({ type: 'death_recovery_back' });
     } catch (e) { warped = false; }
-    if (!warped) {
+    if (!warped && !myTok.cancelled) {   // préemptés pendant le /back : pas de marche par-dessus
       await withTimeout(
         bot.pathfinder.goto(new pfGoals.GoalNear(d.x, d.y, d.z, 1)),
         90000, () => { try { stopMotion(); } catch (e) {} });
@@ -4194,6 +4349,9 @@ async function startAutonomous(sender) {
   } else if (lastDeath) {
     lastDeath = null; // inventaire conservé (keepInventory) → reprise directe
   }
+  // Préemptés pendant la récupération (migration, ordre, nouveau spawn) : ne lancer AUCUN runner —
+  // celui qui a pris la main gère la suite (startMapper/startResource relisent le global).
+  if (myTok.cancelled) return;
   if (objType === 'mapper') return startMapper(); // rôle continu : jamais « done »
   if (objType === 'resource') return startResource(); // mine les ores EXPOSÉS de la carte du groupe
   const chain = chainFor(objType);               // pioche pierre (MVP) ou pioche fer (IRON_CHAIN)
@@ -4202,18 +4360,20 @@ async function startAutonomous(sender) {
     runSkill: (g) => runSkillWithTelemetry(g),
     ctxExtra,
     onStep: (g) => emit({ type: 'goal', name: g.name }),
-  }, taskToken);
+  }, myTok);
   let res = await runChain();
   // Run nether (mode sans-give uniquement, rétro-compat) : un stall (not_found passager, zone
   // momentanément stérile, proie absente) ne doit PAS figer le bot à vie — pause 90 s puis le
   // planner re-dérive depuis l'état RÉEL. Les morts/exits restent couverts par le self-healing.
-  while (NO_GIVE && res && res.stalled && !taskToken.cancelled) {
+  while (NO_GIVE && res && res.stalled && !myTok.cancelled) {
     emit({ type: 'autonomous_retry', goal: res.goal, in_s: 90 });
-    await sleep(90000);
-    if (taskToken.cancelled) return;
+    // Pause INTERRUPTIBLE (fix 18/08) : une préemption pendant ces 90 s (migration, ordre) doit
+    // libérer le runner tout de suite — migrateZone attend qu'il ait rendu la main pour marcher.
+    for (let s = 0; s < 90 && !myTok.cancelled; s++) await sleep(1000);
+    if (myTok.cancelled) return;
     res = await runChain();
   }
-  if (taskToken.cancelled) return; // préempté par une commande
+  if (myTok.cancelled) return; // préempté par une commande
   if (res.done) {
     // DIAG done-immédiat (nuit 16/07 : done <1 s post-start, reproductible, cause introuvable à
     // l'œil) : dumper le CTX exact qui a rendu firstUnmet nul — inventaire, armure portée, y.

@@ -83,6 +83,57 @@ function minDistFor(reason) {
 // brûlé, toujours dans la zone morte). En deçà, ce n'est pas un déménagement.
 const MIGRATE_MIN_PROGRESS = 64;
 
+// ─── SORTIE ANTICIPÉE SUR « BON TERRAIN » (fix 18/08) ──────────────────────────────────────────
+// Mesuré sur 360 sessions des 17-18/08 : les 43 migrations `depleted` « réussies » ont dist 50-250.
+// Les deux boucles de jambes cassaient dès MIGRATE_MIN_PROGRESS si `legIsGood` (arbres en vue +
+// pieds au sec) — vrai presque partout — alors que le plancher d'un épuisement est de 600 blocs :
+// le bot « déménageait » dans le même secteur vidé. Pour le BOIS, 64 blocs reste correct (on veut
+// la forêt la plus proche, cf. MIGRATE_WOOD_MIN_DIST).
+const FAR_EARLY_EXIT_FRACTION = 0.75;   // un trek « loin » accepte le bon terrain à 3/4 du plancher
+const MIGRATE_ARRIVED_RADIUS = 48;      // == le « arrivé » de la boucle ciblée d'index.js
+
+/**
+ * Peut-on s'arrêter ICI sur « bon terrain » ? (PUR)
+ * @param {{reason:string, gone:number, minDist?:number, distToTarget?:number}} o
+ *   gone = distance horizontale déjà parcourue depuis le départ du voyage ;
+ *   distToTarget = distance à la cible (Infinity en marche à l'aveugle).
+ */
+function migrationEarlyExitOk({ reason, gone, minDist, distToTarget } = {}) {
+  if (!Number.isFinite(gone)) return false;          // position illisible → on continue de marcher
+  if (_FAR_REASONS.has(reason)) {
+    const floor = Number.isFinite(minDist) && minDist > 0 ? minDist : MIGRATE_FAR_MIN_DIST;
+    const dt = Number.isFinite(distToTarget) ? distToTarget : Infinity;
+    return gone >= FAR_EARLY_EXIT_FRACTION * floor || dt <= MIGRATE_ARRIVED_RADIUS;
+  }
+  return gone >= MIGRATE_MIN_PROGRESS;
+}
+
+// ─── CIBLES RATÉES (fix 18/08) ──────────────────────────────────────────────────────────────────
+// `pickMigrationTarget` est DÉTERMINISTE (c'est ce qui groupe l'escouade) : après un échec, le
+// re-essai visait donc exactement la même cellule — re-échec garanti au même endroit. On écarte
+// une cible ratée pendant 45 min, dans un rayon d'une cellule de carte (128 blocs).
+const FAILED_TARGET_TTL_MS = 45 * 60 * 1000;
+const FAILED_TARGET_RADIUS = 128;
+const FAILED_TARGETS_CAP = 8;          // borné : la liste voyage dans le mémo de base
+
+/**
+ * Élague une liste de cibles ratées `[{x,z,at}]` : entrées valides seulement, ni expirées ni
+ * datées du FUTUR (même paranoïa que windowPrune : une entrée future exclurait la cible à vie),
+ * les FAILED_TARGETS_CAP plus récentes, triées par ancienneté. (pur, ne mute jamais l'entrée)
+ */
+function pruneFailedTargets(list, now) {
+  const t = Number.isFinite(now) ? now : Date.now();
+  const out = [];
+  for (const e of Array.isArray(list) ? list : []) {
+    if (!e || typeof e !== 'object') continue;
+    if (!Number.isFinite(e.x) || !Number.isFinite(e.z) || !Number.isFinite(e.at)) continue;
+    if (e.at > t || (t - e.at) >= FAILED_TARGET_TTL_MS) continue;
+    out.push({ x: e.x, z: e.z, at: e.at });
+  }
+  out.sort((a, b) => a.at - b.at);
+  return out.slice(-FAILED_TARGETS_CAP);
+}
+
 // Marche par JAMBES : la seule facon d'aller loin. ⚠️ Une jambe doit tenir DANS LES CHUNKS
 // CHARGES, sinon le pathfinder ne voit pas le terrain et rend NoPath immediatement.
 // Mesure decisive (world_mn11, 28/07) : `view-distance=6` = 96 blocs cote serveur — or les
@@ -197,7 +248,9 @@ function _horiz(ax, az, bx, bz) { return Math.hypot(ax - bx, az - bz); }
  *   • minutesInZone = horloge d'hystérésis, cumulée elle aussi — c'est sa raison d'être.
  *
  * @param {object} s minutesInZone, waterFails, logsNotFound, ironMined, miningMinutes, depletedNear,
- *   dryCellKnown (une cellule sèche mappée est-elle atteignable ?), lastMigrationAt, now.
+ *   dryCellKnown (une cellule sèche mappée est-elle atteignable ?), lastMigrationAt, now,
+ *   lastMigrationFailed (la DERNIÈRE migration a échoué → cooldown court),
+ *   isNight (true = nuit ; null/absent = heure inconnue → pas de gate).
  * @returns {{verdict:'stay'|'migrate', reason:string}}
  */
 function zoneVerdict(s, opts = {}) {
@@ -206,11 +259,16 @@ function zoneVerdict(s, opts = {}) {
   const damning = _num(s.logsNotFound) >= LOGS_NOT_FOUND_MAX * OVERWHELMING_FACTOR
     || _num(s.depletedNear) >= DEPLETED_NEAR_MAX * OVERWHELMING_FACTOR
     || (_num(s.waterFails) >= WATER_FAILS_MAX * OVERWHELMING_FACTOR && !s.dryCellKnown);
+  // ⚠️ UN ÉCHEC NE DOIT PAS COÛTER 20 MIN (fix 18/08 : 917 départs → 72 arrivées, 917 `cooldown`).
+  // Le cooldown long protège d'un nomadisme après un VRAI déménagement ; après un échec le bot n'a
+  // pas bougé, la zone est toujours aussi morte — on garde juste l'anti-boucle-chaude de 5 min.
+  // Booléen STRICT : un mémo bizarre (« yes ») ne doit pas raccourcir le cooldown.
+  const failedLast = s.lastMigrationFailed === true;
 
   const minMinutes = opts.minMinutes != null ? opts.minMinutes
     : (damning ? MIN_MINUTES_URGENT : MIN_MINUTES_IN_ZONE);
   const cooldownMs = opts.cooldownMs != null ? opts.cooldownMs
-    : (damning ? COOLDOWN_URGENT_MS : MIGRATION_COOLDOWN_MS);
+    : ((damning || failedLast) ? COOLDOWN_URGENT_MS : MIGRATION_COOLDOWN_MS);
 
   const inZone = s.minutesInZone;
   if (!Number.isFinite(inZone) || inZone < minMinutes) return { verdict: 'stay', reason: 'too_soon' };
@@ -219,6 +277,12 @@ function zoneVerdict(s, opts = {}) {
   if (_num(s.lastMigrationAt) > 0 && (now - _num(s.lastMigrationAt)) < cooldownMs) {
     return { verdict: 'stay', reason: 'cooldown' };
   }
+
+  // NUIT : un trek de 600-1200 blocs en hard, souvent sans armure, finit en mort — et la mort fait
+  // échouer la migration (fix 18/08). On attend le jour, même sur une preuve écrasante. Placé APRÈS
+  // too_soon/cooldown (raisons plus anciennes, télémétrie inchangée) et AVANT toute raison de
+  // partir. `null`/absent = heure inconnue (bot.time pas encore livré) → pas de gate.
+  if (s.isNight === true) return { verdict: 'stay', reason: 'night' };
 
   // 1) EAU — mais seulement si on n'a pas déjà mieux à portée : une cellule sèche mappée est une
   //    bien meilleure réponse qu'un trek de 1500 blocs (et le code sait déjà y aller, cf. driestCell).
@@ -282,16 +346,22 @@ function verdictTelemetry(v, prevReason) {
  * Priorité : cellule BOISÉE (le bois est le goulot n°1) > autre terre ; à rang égal, la plus
  * proche ; à distance égale, l'ordre lexicographique de (x,z) — jamais l'ordre du tableau.
  *
- * @returns {{x,z,source:'mapped',biome:string}|null} — null = carte inutilisable, le caller
- *          bascule sur la marche à l'aveugle (migrationLeg).
+ * `avoid` = cibles RATÉES `[{x,z,at}]` (cf. FAILED_TARGET_*) : toute candidate à
+ * ≤ FAILED_TARGET_RADIUS d'une entrée de moins de 45 min est écartée — le déterminisme renvoyait
+ * sinon le re-essai droit sur la cellule qui venait d'échouer. `now` = horloge (injectable).
+ *
+ * @returns {{x,z,source:'mapped',biome:string}|null} — null = carte inutilisable (ou toutes les
+ *          candidates ratées), le caller bascule sur la marche à l'aveugle (migrationLeg).
  */
 function pickMigrationTarget({
   from, biomes, depleted, minDist = MIGRATE_MIN_DIST, maxDist = MIGRATE_MAX_DIST,
-  depletedRadius = DEPLETED_RADIUS, reason,
+  depletedRadius = DEPLETED_RADIUS, reason, avoid, now = Date.now(),
 } = {}) {
   if (!from || !Number.isFinite(from.x) || !Number.isFinite(from.z)) return null;
   const list = Array.isArray(biomes) ? biomes : [];
   if (!list.length) return null;
+  const avoids = pruneFailedTargets(avoid, now);
+  const isAvoided = (x, z) => avoids.some((a) => _horiz(a.x, a.z, x, z) <= FAILED_TARGET_RADIUS);
   const wooded = vanillaHint('log');
   const dep = Array.isArray(depleted) ? depleted : [];
   // ⚠️ world_mn12 (28/07) : `depleted` traque l'épuisement du MINERAI (#66a), pas les arbres. Une
@@ -312,6 +382,7 @@ function pickMigrationTarget({
     const d = _horiz(from.x, from.z, b.x, b.z);
     if (d < minDist || d > maxDist) continue;               // trop près = déjà exploité ; trop loin = suicide
     if (isDepleted(b.x, b.z)) continue;
+    if (isAvoided(b.x, b.z)) continue;                      // ratée il y a < 45 min : ne pas y retourner
     const score = [wooded.includes(b.name) ? 0 : 1, d, b.x, b.z];
     if (!bestScore || _lex(score, bestScore) < 0) { best = b; bestScore = score; }
   }
@@ -389,6 +460,9 @@ function legHeading(baseHeading, stuckStreak) {
 //     — deadlock world_mn12). Les fenêtrer aurait changé ces comportements-là aussi (piège #55b).
 //   • `miningMs` reste un CHRONOMÈTRE cumulé : ce n'est pas un flux d'événements, et le fenêtrer à
 //     20 min exigerait de miner 100 % du temps pour atteindre EXHAUSTED_MINING_MIN → règle morte.
+//   • `lastMigrationFailed` / `failedTargets` = MÉMOIRE D'ÉCHEC DE MIGRATION (fix 18/08). Elle doit
+//     survivre au respawn exactement comme le reste : un bot qui meurt pendant son trek (cas
+//     nominal la nuit) reviendrait sinon au cooldown de 20 min et à la MÊME cible.
 
 /** Compteurs de zone vierges, horloge démarrée maintenant. (pur) */
 function zoneStateInit(now) {
@@ -396,6 +470,7 @@ function zoneStateInit(now) {
     anchoredAt: now, waterFails: 0, logsNotFound: 0,
     ironMined: 0, miningMs: 0, lastMigrationAt: 0,
     waterFailsWin: [], logsNotFoundWin: [], ironMinedWin: [],
+    lastMigrationFailed: false, failedTargets: [],
   };
 }
 
@@ -423,12 +498,46 @@ function zoneStateLoad(saved, now) {
     waterFailsWin: windowPrune(saved.waterFailsWin, now),
     logsNotFoundWin: windowPrune(saved.logsNotFoundWin, now),
     ironMinedWin: windowPrune(saved.ironMinedWin, now),
+    // Mémo d'avant le fix 18/08 : champs absents → défauts (rétro-compat). Booléen STRICT.
+    lastMigrationFailed: saved.lastMigrationFailed === true,
+    failedTargets: pruneFailedTargets(saved.failedTargets, now),
   };
 }
 
-/** Après une migration : compteurs à zéro, et le cooldown court à partir de maintenant. (pur) */
-function zoneStateAfterMigration(now) {
-  return Object.assign(zoneStateInit(now), { lastMigrationAt: now });
+/**
+ * Après une migration RÉUSSIE : compteurs à zéro, le cooldown (long) court à partir de maintenant,
+ * le drapeau d'échec tombe. (pur)
+ * `prev` (optionnel) = l'état d'avant : on en garde les CIBLES RATÉES — une cible ratée reste ratée
+ * 45 min, même après un déménagement réussi ailleurs. Sans `prev` (appel historique) : liste vide.
+ */
+function zoneStateAfterMigration(now, prev = null) {
+  return Object.assign(zoneStateInit(now), {
+    lastMigrationAt: now,
+    lastMigrationFailed: false,
+    failedTargets: pruneFailedTargets(prev && prev.failedTargets, now),
+  });
+}
+
+/**
+ * Après une migration RATÉE (arrivée noyée/souterraine, pas de progrès, exception, ou préemptée
+ * en route — mort, ordre, évasion). (pur, ne mute jamais l'entrée)
+ *
+ * ⚠️ L'horloge et les compteurs de zone NE repartent PAS de zéro : le bot n'a pas déménagé, la zone
+ * jugée est toujours la même — la remettre à zéro rouvrirait 15 min d'hystérésis pour rien. On arme
+ * le cooldown (court, via `lastMigrationFailed`) et on mémorise la cible pour ne pas y retourner.
+ * @param {object|null} state état courant ; @param {number} now ; @param {{x,z}|null} target
+ */
+function zoneStateAfterFailedMigration(state, now, target) {
+  const base = (state && typeof state === 'object') ? state : zoneStateInit(now);
+  const ft = Array.isArray(base.failedTargets) ? base.failedTargets.slice() : [];
+  if (target && Number.isFinite(target.x) && Number.isFinite(target.z)) {
+    ft.push({ x: Math.round(target.x), z: Math.round(target.z), at: now });
+  }
+  return Object.assign({}, base, {
+    lastMigrationAt: now,
+    lastMigrationFailed: true,
+    failedTargets: pruneFailedTargets(ft, now),
+  });
 }
 
 // ─── Quel échec accuse la ZONE, et pas le bot ? (PUR) ───────────────────────────────────────────
@@ -476,7 +585,9 @@ function legIsGood({ treesNear = 0, inWater = false, biome = null } = {}) {
 
 module.exports = {
   zoneVerdict, verdictTelemetry, pickMigrationTarget, migrationLeg, legHeading, LEG_STUCK_MIN, legIsGood, isWetBiome, minDistFor, zoneFailureKind,
-  zoneStateInit, zoneStateLoad, zoneStateAfterMigration,
+  zoneStateInit, zoneStateLoad, zoneStateAfterMigration, zoneStateAfterFailedMigration,
+  migrationEarlyExitOk, pruneFailedTargets, FAR_EARLY_EXIT_FRACTION, MIGRATE_ARRIVED_RADIUS,
+  FAILED_TARGET_TTL_MS, FAILED_TARGET_RADIUS, FAILED_TARGETS_CAP,
   windowAdd, windowSum, windowPrune, windowLoad, ZONE_WINDOW_MS, ZONE_BUCKET_MS,
   MIN_MINUTES_IN_ZONE, MIGRATION_COOLDOWN_MS, WATER_FAILS_MAX, LOGS_NOT_FOUND_MAX,
   EXHAUSTED_MINING_MIN, EXHAUSTED_IRON_MIN, DEPLETED_NEAR_MAX,

@@ -733,3 +733,337 @@ test('fenetre : une horloge qui RECULE oublie, elle n empile pas (jamais de seau
   assert.deepStrictEqual(w.map((e) => e.t), [T0, T0 + 5 * 60000], 'et la liste reste triee');
   assert.strictEqual(windowSum(w, T0 + 5 * 60000), 7);
 });
+
+// ════════════════════════════════════════════════════════════════════════════════════════════════
+// MIGRATION QUI ABOUTIT (360 sessions des 17-18/08 : 917 `zone_migration_start` → 72 `zone_migrated`)
+// ════════════════════════════════════════════════════════════════════════════════════════════════
+// Trois causes pures, testées ici (la préemption du planner, elle, vit dans index.js) :
+//   (a) une migration « loin » (depleted/exhausted, plancher 600) cassait la marche dès 64 blocs
+//       sur le premier bosquet venu → les 43 `depleted` « réussies » ont dist 50-250 : même secteur ;
+//   (b) un ÉCHEC coûtait 20 min de cooldown, et la cible déterministe suivante était LA MÊME ;
+//   (c) migrer de NUIT = un bot souvent nu qui marche 600-1200 blocs en hard → mort → échec.
+
+const {
+  migrationEarlyExitOk, zoneStateAfterFailedMigration, pruneFailedTargets,
+  FAILED_TARGET_TTL_MS, FAILED_TARGET_RADIUS, FAILED_TARGETS_CAP,
+} = require('./zone');
+
+// ─── (a) Sortie anticipée sur « bon terrain » ────────────────────────────────────────────────────
+
+test('sortie anticipee : BOIS => 64 blocs suffisent (la foret la plus proche)', () => {
+  assert.strictEqual(migrationEarlyExitOk({ reason: 'wood', gone: MIGRATE_MIN_PROGRESS, minDist: minDistFor('wood') }), true);
+  assert.strictEqual(migrationEarlyExitOk({ reason: 'wood', gone: MIGRATE_MIN_PROGRESS - 1, minDist: minDistFor('wood') }), false);
+});
+
+test('sortie anticipee : EAU (raison non-far) => meme plancher que le bois', () => {
+  assert.strictEqual(migrationEarlyExitOk({ reason: 'water', gone: MIGRATE_MIN_PROGRESS, minDist: minDistFor('water') }), true);
+  assert.strictEqual(migrationEarlyExitOk({ reason: 'water', gone: 10, minDist: minDistFor('water') }), false);
+});
+
+test('LE BUG : zone videe => 64-250 blocs ne suffisent PLUS (meme secteur deja fouille)', () => {
+  for (const reason of ['depleted', 'exhausted']) {
+    const minDist = minDistFor(reason);
+    for (const gone of [64, 128, 250]) {
+      assert.strictEqual(migrationEarlyExitOk({ reason, gone, minDist, distToTarget: 500 }), false,
+        `${reason} : s arreter a ${gone} blocs = demenager dans la piece d a cote`);
+    }
+  }
+});
+
+test('zone videe : on accepte le bon terrain a partir de 3/4 du plancher', () => {
+  const minDist = minDistFor('depleted');
+  assert.strictEqual(migrationEarlyExitOk({ reason: 'depleted', gone: 0.75 * minDist, minDist, distToTarget: 300 }), true);
+  assert.strictEqual(migrationEarlyExitOk({ reason: 'depleted', gone: 0.75 * minDist - 1, minDist, distToTarget: 300 }), false);
+});
+
+test('zone videe : ARRIVE a la cible (<=48) => on s arrete, quelle que soit la distance faite', () => {
+  assert.strictEqual(migrationEarlyExitOk({ reason: 'exhausted', gone: 10, minDist: 600, distToTarget: 48 }), true);
+  assert.strictEqual(migrationEarlyExitOk({ reason: 'exhausted', gone: 10, minDist: 600, distToTarget: 49 }), false);
+});
+
+test('zone videe sans minDist fourni => plancher far par defaut (pas 0)', () => {
+  assert.strictEqual(migrationEarlyExitOk({ reason: 'depleted', gone: 100 }), false);
+  assert.strictEqual(migrationEarlyExitOk({ reason: 'depleted', gone: 0.75 * MIGRATE_FAR_MIN_DIST }), true);
+});
+
+test('marche a l aveugle (pas de cible : distToTarget infini) => seule la distance faite compte', () => {
+  assert.strictEqual(migrationEarlyExitOk({ reason: 'depleted', gone: 300, minDist: 600, distToTarget: Infinity }), false);
+  assert.strictEqual(migrationEarlyExitOk({ reason: 'depleted', gone: 460, minDist: 600, distToTarget: Infinity }), true);
+  assert.strictEqual(migrationEarlyExitOk({ reason: 'wood', gone: 70, minDist: 64, distToTarget: Infinity }), true);
+});
+
+test('sortie anticipee : entrees absurdes => on continue de marcher (jamais de sortie sur du bruit)', () => {
+  assert.strictEqual(migrationEarlyExitOk({ reason: 'wood', gone: NaN }), false);
+  assert.strictEqual(migrationEarlyExitOk({ reason: 'depleted', gone: undefined, distToTarget: NaN }), false);
+  assert.strictEqual(migrationEarlyExitOk(), false);
+});
+
+// ─── (b) Un échec ne doit plus coûter 20 min ────────────────────────────────────────────────────
+
+test('apres un ECHEC de migration, le cooldown est court (5 min), pas 20', () => {
+  const r = zoneVerdict(healthy({
+    waterFails: WATER_FAILS_MAX, lastMigrationAt: NOW - COOLDOWN_URGENT_MS, lastMigrationFailed: true,
+  }));
+  assert.strictEqual(r.verdict, 'migrate');
+  assert.strictEqual(r.reason, 'water');
+});
+
+test('apres un echec, le cooldown court existe quand meme (anti boucle chaude)', () => {
+  const r = zoneVerdict(healthy({
+    waterFails: WATER_FAILS_MAX, lastMigrationAt: NOW - (COOLDOWN_URGENT_MS - 1), lastMigrationFailed: true,
+  }));
+  assert.strictEqual(r.verdict, 'stay');
+  assert.strictEqual(r.reason, 'cooldown');
+});
+
+test('apres une migration REUSSIE, le cooldown long reste de 20 min', () => {
+  const r = zoneVerdict(healthy({
+    waterFails: WATER_FAILS_MAX, lastMigrationAt: NOW - COOLDOWN_URGENT_MS, lastMigrationFailed: false,
+  }));
+  assert.strictEqual(r.verdict, 'stay');
+  assert.strictEqual(r.reason, 'cooldown');
+});
+
+test('un opts.cooldownMs explicite prime sur le cooldown court d echec', () => {
+  const r = zoneVerdict(healthy({
+    waterFails: WATER_FAILS_MAX, lastMigrationAt: NOW - COOLDOWN_URGENT_MS, lastMigrationFailed: true,
+  }), { cooldownMs: MIGRATION_COOLDOWN_MS });
+  assert.strictEqual(r.reason, 'cooldown');
+});
+
+test('lastMigrationFailed non booleen (memo bizarre) => traite comme une reussite (prudent)', () => {
+  const r = zoneVerdict(healthy({
+    waterFails: WATER_FAILS_MAX, lastMigrationAt: NOW - COOLDOWN_URGENT_MS, lastMigrationFailed: 'yes',
+  }));
+  assert.strictEqual(r.reason, 'cooldown');
+});
+
+// ─── (c) Pas de trek de nuit ─────────────────────────────────────────────────────────────────────
+
+test('NUIT : une zone noyee ne declenche PAS de migration (bot nu, 600-1200 blocs en hard)', () => {
+  const r = zoneVerdict(healthy({ waterFails: WATER_FAILS_MAX, isNight: true }));
+  assert.strictEqual(r.verdict, 'stay');
+  assert.strictEqual(r.reason, 'night');
+});
+
+test('NUIT : evaluee APRES too_soon et cooldown (on garde la raison la plus ancienne)', () => {
+  const soon = zoneVerdict(healthy({ minutesInZone: 1, waterFails: WATER_FAILS_MAX, isNight: true }));
+  assert.strictEqual(soon.reason, 'too_soon');
+  const cool = zoneVerdict(healthy({ waterFails: WATER_FAILS_MAX, isNight: true, lastMigrationAt: NOW - 1000 }));
+  assert.strictEqual(cool.reason, 'cooldown');
+});
+
+test('NUIT : meme une preuve ecrasante attend le jour', () => {
+  const r = zoneVerdict(healthy({ minutesInZone: MIN_MINUTES_URGENT, logsNotFound: LOGS_NOT_FOUND_MAX * 5, isNight: true }));
+  assert.strictEqual(r.verdict, 'stay');
+  assert.strictEqual(r.reason, 'night');
+});
+
+test('JOUR (isNight false) ou heure inconnue (null/absent) => pas de gate', () => {
+  assert.strictEqual(zoneVerdict(healthy({ waterFails: WATER_FAILS_MAX, isNight: false })).verdict, 'migrate');
+  assert.strictEqual(zoneVerdict(healthy({ waterFails: WATER_FAILS_MAX, isNight: null })).verdict, 'migrate');
+  assert.strictEqual(zoneVerdict(healthy({ waterFails: WATER_FAILS_MAX })).verdict, 'migrate');
+});
+
+// ─── (b bis) La cible ratée est écartée 45 min ──────────────────────────────────────────────────
+// `pickMigrationTarget` est DÉTERMINISTE : sans mémoire d'échec, le re-essai visait exactement la
+// même cellule — re-échec garanti au même endroit.
+
+const T_AVOID = 50 * 3600 * 1000;
+const NEAR_FOREST = { name: 'forest', x: 0, z: 400 };
+const FAR_FOREST = { name: 'forest', x: 0, z: 900 };
+
+test('cible ratee recemment => ecartee, on prend la suivante', () => {
+  const avoid = [{ x: 0, z: 400, at: T_AVOID - 10 * 60000 }];
+  const t = pickMigrationTarget({ from: FROM, biomes: [NEAR_FOREST, FAR_FOREST], avoid, now: T_AVOID });
+  assert.deepStrictEqual({ x: t.x, z: t.z }, { x: 0, z: 900 });
+});
+
+test('cible ratee : l exclusion couvre un rayon (une cellule voisine de la cible ratee aussi)', () => {
+  const avoid = [{ x: 0, z: 400 + FAILED_TARGET_RADIUS, at: T_AVOID }];
+  const t = pickMigrationTarget({ from: FROM, biomes: [NEAR_FOREST, FAR_FOREST], avoid, now: T_AVOID });
+  assert.strictEqual(t.z, 900, 'a FAILED_TARGET_RADIUS pile : encore ecartee');
+  const avoidFar = [{ x: 0, z: 400 + FAILED_TARGET_RADIUS + 1, at: T_AVOID }];
+  const t2 = pickMigrationTarget({ from: FROM, biomes: [NEAR_FOREST, FAR_FOREST], avoid: avoidFar, now: T_AVOID });
+  assert.strictEqual(t2.z, 400, 'au-dela du rayon : la cible proche redevient valable');
+});
+
+test('cible ratee il y a plus de 45 min => redevient valable (la carte a pu changer)', () => {
+  const avoid = [{ x: 0, z: 400, at: T_AVOID - FAILED_TARGET_TTL_MS }];
+  const t = pickMigrationTarget({ from: FROM, biomes: [NEAR_FOREST, FAR_FOREST], avoid, now: T_AVOID });
+  assert.strictEqual(t.z, 400);
+  assert.strictEqual(FAILED_TARGET_TTL_MS, 45 * 60 * 1000);
+});
+
+test('toutes les cibles ratees => null (le caller bascule sur la marche a l aveugle)', () => {
+  const avoid = [{ x: 0, z: 400, at: T_AVOID }, { x: 0, z: 900, at: T_AVOID }];
+  assert.strictEqual(pickMigrationTarget({ from: FROM, biomes: [NEAR_FOREST, FAR_FOREST], avoid, now: T_AVOID }), null);
+});
+
+test('cible ratee : horloge par defaut = Date.now()', () => {
+  const avoid = [{ x: 0, z: 400, at: Date.now() }];
+  const t = pickMigrationTarget({ from: FROM, biomes: [NEAR_FOREST, FAR_FOREST], avoid });
+  assert.strictEqual(t.z, 900);
+});
+
+test('cible ratee : entrees invalides ou datees du FUTUR ignorees (jamais d exclusion a vie)', () => {
+  const avoid = [null, 3, { x: 'a', z: 400, at: T_AVOID }, { x: 0, z: 400 }, { x: 0, z: 400, at: T_AVOID + 3600000 }];
+  const t = pickMigrationTarget({ from: FROM, biomes: [NEAR_FOREST, FAR_FOREST], avoid, now: T_AVOID });
+  assert.strictEqual(t.z, 400);
+});
+
+test('cible ratee : le choix reste deterministe (ordre des cellules sans effet)', () => {
+  const avoid = [{ x: 0, z: 400, at: T_AVOID }];
+  const biomes = [NEAR_FOREST, FAR_FOREST, { name: 'plains', x: 300, z: 0 }];
+  const a = pickMigrationTarget({ from: FROM, biomes, avoid, now: T_AVOID });
+  const b = pickMigrationTarget({ from: FROM, biomes: biomes.slice().reverse(), avoid, now: T_AVOID });
+  assert.deepStrictEqual(a, b);
+});
+
+// ─── L'état d'échec est PERSISTÉ (le bot meurt toutes les 3 min : pièges #52, #63b, #66a) ─────────
+
+test('etat de zone : un etat frais n a ni echec ni cible ratee', () => {
+  const s = zoneStateInit(T_AVOID);
+  assert.strictEqual(s.lastMigrationFailed, false);
+  assert.deepStrictEqual(s.failedTargets, []);
+});
+
+test('etat de zone : un memo d avant le fix (sans ces champs) se charge avec les defauts', () => {
+  const s = zoneStateLoad({ anchoredAt: T_AVOID - 1000, waterFails: 3, lastMigrationAt: 7 }, T_AVOID);
+  assert.strictEqual(s.lastMigrationFailed, false);
+  assert.deepStrictEqual(s.failedTargets, []);
+  assert.strictEqual(s.waterFails, 3, 'le reste du memo est repris tel quel');
+});
+
+test('etat de zone : l echec et les cibles ratees SURVIVENT au respawn', () => {
+  const saved = {
+    anchoredAt: T_AVOID - 3600000, lastMigrationFailed: true,
+    failedTargets: [{ x: 10, z: 20, at: T_AVOID - 60000 }],
+  };
+  const s = zoneStateLoad(saved, T_AVOID);
+  assert.strictEqual(s.lastMigrationFailed, true);
+  assert.deepStrictEqual(s.failedTargets, [{ x: 10, z: 20, at: T_AVOID - 60000 }]);
+});
+
+test('etat de zone : au chargement, les cibles expirees, futures ou corrompues sont elaguees', () => {
+  const saved = {
+    anchoredAt: T_AVOID - 3600000, lastMigrationFailed: 'oui',
+    failedTargets: [
+      { x: 1, z: 1, at: T_AVOID - FAILED_TARGET_TTL_MS },      // expiree (pile au bord)
+      { x: 2, z: 2, at: T_AVOID - FAILED_TARGET_TTL_MS + 1 },  // encore valable
+      { x: 3, z: 3, at: T_AVOID + 60000 },                    // datee du futur
+      { x: 'x', z: 4, at: T_AVOID }, null, 'nope',
+    ],
+  };
+  const s = zoneStateLoad(saved, T_AVOID);
+  assert.deepStrictEqual(s.failedTargets, [{ x: 2, z: 2, at: T_AVOID - FAILED_TARGET_TTL_MS + 1 }]);
+  assert.strictEqual(s.lastMigrationFailed, false, 'un drapeau non booleen ne compte pas comme un echec');
+});
+
+test('etat de zone : la liste des cibles ratees est bornee aux plus RECENTES', () => {
+  const failedTargets = [];
+  for (let i = 0; i < 12; i++) failedTargets.push({ x: i, z: i, at: T_AVOID - (12 - i) * 60000 });
+  const s = zoneStateLoad({ anchoredAt: T_AVOID - 3600000, failedTargets: failedTargets.slice().reverse() }, T_AVOID);
+  assert.strictEqual(FAILED_TARGETS_CAP, 8);
+  assert.strictEqual(s.failedTargets.length, FAILED_TARGETS_CAP);
+  assert.deepStrictEqual(s.failedTargets.map((e) => e.x), [4, 5, 6, 7, 8, 9, 10, 11], 'les 8 plus recentes, triees');
+});
+
+test('pruneFailedTargets : ne mute pas son entree (module pur)', () => {
+  const list = [{ x: 1, z: 1, at: T_AVOID }, { x: 2, z: 2, at: 0 }];
+  const snap = JSON.parse(JSON.stringify(list));
+  pruneFailedTargets(list, T_AVOID);
+  assert.deepStrictEqual(list, snap);
+  assert.deepStrictEqual(pruneFailedTargets('nope', T_AVOID), []);
+});
+
+function _richState() {
+  return Object.assign(zoneStateInit(T_AVOID - 3600000), {
+    waterFails: 9, logsNotFound: 4, ironMined: 30, miningMs: 600000, lastMigrationAt: 0,
+    waterFailsWin: [{ t: T_AVOID - 60000, n: 5 }],
+    ironMinedWin: [{ t: T_AVOID - 120000, n: 2 }],
+  });
+}
+
+test('echec de migration : l horloge et les compteurs de zone NE repartent PAS de zero', () => {
+  const before = _richState();
+  const s = zoneStateAfterFailedMigration(before, T_AVOID, { x: 0, z: 900 });
+  assert.strictEqual(s.anchoredAt, before.anchoredAt, 'la zone n a pas change : l hysteresis continue');
+  assert.strictEqual(s.waterFails, 9);
+  assert.strictEqual(s.logsNotFound, 4);
+  assert.strictEqual(s.ironMined, 30);
+  assert.strictEqual(s.miningMs, 600000);
+  assert.deepStrictEqual(s.waterFailsWin, before.waterFailsWin);
+  assert.deepStrictEqual(s.ironMinedWin, before.ironMinedWin);
+});
+
+test('echec de migration : cooldown arme maintenant, drapeau d echec, cible memorisee', () => {
+  const s = zoneStateAfterFailedMigration(_richState(), T_AVOID, { x: 12.4, z: 899.6, source: 'mapped' });
+  assert.strictEqual(s.lastMigrationAt, T_AVOID);
+  assert.strictEqual(s.lastMigrationFailed, true);
+  assert.deepStrictEqual(s.failedTargets, [{ x: 12, z: 900, at: T_AVOID }]);
+});
+
+test('echec de migration a l aveugle (cible null) : echec note, aucune cible memorisee', () => {
+  const s = zoneStateAfterFailedMigration(_richState(), T_AVOID, null);
+  assert.strictEqual(s.lastMigrationFailed, true);
+  assert.strictEqual(s.lastMigrationAt, T_AVOID);
+  assert.deepStrictEqual(s.failedTargets, []);
+});
+
+test('echec de migration : les cibles ratees s accumulent, bornees, et les expirees tombent', () => {
+  let s = Object.assign(_richState(), { failedTargets: [{ x: -1, z: -1, at: T_AVOID - FAILED_TARGET_TTL_MS - 1 }] });
+  for (let i = 0; i < 10; i++) s = zoneStateAfterFailedMigration(s, T_AVOID + i, { x: i * 200, z: 0 });
+  assert.strictEqual(s.failedTargets.length, FAILED_TARGETS_CAP);
+  assert.ok(!s.failedTargets.some((e) => e.x === -1), 'la cible expiree est elaguee');
+  assert.strictEqual(s.failedTargets[s.failedTargets.length - 1].x, 1800, 'la plus recente est gardee');
+});
+
+test('echec de migration : ne mute pas l etat d entree (module pur)', () => {
+  const before = _richState();
+  const snap = JSON.parse(JSON.stringify(before));
+  zoneStateAfterFailedMigration(before, T_AVOID, { x: 0, z: 900 });
+  assert.deepStrictEqual(before, snap);
+});
+
+test('echec de migration sur un etat absent => etat frais marque en echec (jamais de crash)', () => {
+  const s = zoneStateAfterFailedMigration(null, T_AVOID, { x: 5, z: 5 });
+  assert.strictEqual(s.lastMigrationFailed, true);
+  assert.strictEqual(s.lastMigrationAt, T_AVOID);
+  assert.deepStrictEqual(s.failedTargets, [{ x: 5, z: 5, at: T_AVOID }]);
+});
+
+test('migration REUSSIE : le drapeau d echec tombe, mais les cibles ratees restent 45 min', () => {
+  const failed = zoneStateAfterFailedMigration(_richState(), T_AVOID, { x: 0, z: 900 });
+  const s = zoneStateAfterMigration(T_AVOID + 60000, failed);
+  assert.strictEqual(s.lastMigrationFailed, false);
+  assert.strictEqual(s.lastMigrationAt, T_AVOID + 60000);
+  assert.strictEqual(s.anchoredAt, T_AVOID + 60000, 'nouvelle zone : l horloge repart');
+  assert.deepStrictEqual(s.failedTargets, [{ x: 0, z: 900, at: T_AVOID }]);
+  // Sans etat precedent (appel historique), aucune cible ratee — retro-compat.
+  assert.deepStrictEqual(zoneStateAfterMigration(T_AVOID).failedTargets, []);
+});
+
+test('ALLER-RETOUR memo (piege #61) : ce que l echec ecrit, le respawn le relit a l identique', () => {
+  const failed = zoneStateAfterFailedMigration(_richState(), T_AVOID, { x: 0, z: 900 });
+  const reloaded = zoneStateLoad(JSON.parse(JSON.stringify(failed)), T_AVOID + 1000);
+  assert.strictEqual(reloaded.lastMigrationFailed, true);
+  assert.deepStrictEqual(reloaded.failedTargets, failed.failedTargets);
+  assert.strictEqual(reloaded.lastMigrationAt, T_AVOID);
+});
+
+test('CHAINE COMPLETE : echec → 5 min plus tard on re-tente, VERS UNE AUTRE cible', () => {
+  // La reproduction du bug en deux temps : avant, le re-essai attendait 20 min puis visait la MEME
+  // cellule (pickMigrationTarget est deterministe) → re-echec garanti au meme endroit.
+  const first = pickMigrationTarget({ from: FROM, biomes: [NEAR_FOREST, FAR_FOREST], now: T_AVOID });
+  assert.strictEqual(first.z, 400);
+  const st = zoneStateAfterFailedMigration(_richState(), T_AVOID, first);
+  const later = T_AVOID + COOLDOWN_URGENT_MS;
+  const v = zoneVerdict(healthy({
+    waterFails: WATER_FAILS_MAX, lastMigrationAt: st.lastMigrationAt,
+    lastMigrationFailed: st.lastMigrationFailed, now: later,
+  }));
+  assert.strictEqual(v.verdict, 'migrate', '5 min apres l echec, on re-tente');
+  const second = pickMigrationTarget({ from: FROM, biomes: [NEAR_FOREST, FAR_FOREST], avoid: st.failedTargets, now: later });
+  assert.strictEqual(second.z, 900, '... et pas vers la cellule qui vient d echouer');
+});
