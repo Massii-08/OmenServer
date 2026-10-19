@@ -297,10 +297,12 @@ const StockScanModule = {
           '<div style="font-size:13px;color:var(--text-muted);line-height:1.5;margin-bottom:12px;">' +
             esc(Lang.t('stocks.desc')) + '</div>' +
           '<div style="display:flex;gap:8px;flex-wrap:wrap;">' +
-            '<button class="btn btn-primary" id="stk-new-btn" data-stk-act="new" style="display:none;">' +
-              esc(Lang.t('stocks.new_scan')) + '</button>' +
-            '<button class="btn btn-ghost" id="stk-dl-btn" data-stk-act="download" style="display:none;">' +
+            // Comme le Bond Scanner : une fois le relevé fini, l'Excel est
+            // l'action principale (bouton plein), le nouveau scan vient après.
+            '<button class="btn btn-primary" id="stk-dl-btn" data-stk-act="download" style="display:none;">' +
               esc(Lang.t('stocks.download_excel')) + '</button>' +
+            '<button class="btn btn-secondary" id="stk-new-btn" data-stk-act="new" style="display:none;">' +
+              esc(Lang.t('stocks.new_scan')) + '</button>' +
             '<button class="btn btn-ghost" data-stk-act="back">' + esc(Lang.t('stocks.back')) + '</button>' +
           '</div>' +
         '</div>' +

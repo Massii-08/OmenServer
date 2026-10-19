@@ -1,8 +1,13 @@
 """Le classeur Excel du scanner — UN lecteur de ``results.json``, rien de plus.
 
-Styles et formats repris du Bond Scanner et de Market Pulse (même famille de
-bots, même rendu). Deux feuilles : les candidats classés, puis les infos du
-relevé (critères, compteurs, avertissements, sources).
+MÊME PRÉSENTATION QUE LE BOND SCANNER (demande Massii du 19/10 : « le action
+scanner doit donner des excel comme le bond scanner ») : UNE FEUILLE PAR
+MARCHÉ comme le Bond Scanner en fait une par devise, le nom du marché en titre
+au-dessus du tableau, l'en-tête bleu, une première colonne « PAPY » vide pour
+cocher à la main, les lignes à surveiller en rouge, le fichier nommé
+``Opportunita_Azioni_<date>.xlsx`` comme ``Opportunita_Bond_<date>.xlsx``. Une
+dernière feuille « Infos » garde les critères, compteurs, avertissements et
+sources du relevé.
 
 Les pourcentages sont rangés tels que publiés (2,31 = 2,31 %) avec un ``%``
 littéral dans le format — jamais le format natif ``0.00%`` qui multiplierait
@@ -43,21 +48,26 @@ FMT_INT = "#,##0"
 FMT_ONE = "#,##0.0"
 FMT_DATE = "DD/MM/YYYY"
 
-DATA_START_ROW = 6
+NOTE_FONT = Font(name="Calibri", size=9, italic=True, color="7F7F7F")
+
+# Comme le Bond Scanner : ligne 1 (note), ligne 2 = titre, ligne 3 = en-tête.
+HEADER_ROW = 3
+DATA_START_ROW = 4
 
 LABELS: Dict[str, Dict[str, Any]] = {
     "fr": {
-        "file": "scanner_actions",
+        "file": "Opportunites_Actions",
         "sheet": "Candidats", "info_sheet": "Infos",
+        "name_header": "{date} Actions (Scanner d'actions)",
+        "price_header": "Cours - {cur}",
         "title": "Scanner d'actions — candidats à étudier",
         "disclaimer": ("Outil d'étude, pas un conseil d'investissement. "
                        "Données différées d'environ 15 minutes."),
         "summary": ("Univers : {universe} titres · présélection : {shortlist} · retenus : {kept}"
                     " · exclus : {no_cat} sans catalyseur, {red} en rouge"),
-        "headers": ["Rang", "Titre", "Nom", "Marché", "Cours", "Devise", "Var. jour",
-                    "Vol. relatif", "Score", "Signaux", "Raisons", "News principale",
-                    "Nb news", "Résultats", "Capitalisation (M€)", "Échanges moy. (M€)",
-                    "Graphique", "Séance"],
+        "headers": ["PAPY", "{name}", "Titre", "{price}", "Var. jour", "Vol. relatif",
+                    "Score", "Alertes", "Pourquoi", "News principale", "Résultats",
+                    "Séance", "Graphique"],
         "chart": "TradingView",
         "reasons": {
             "news": "{v} news en {h} h", "sources": "{v} sources distinctes",
@@ -103,15 +113,16 @@ LABELS: Dict[str, Dict[str, Any]] = {
         },
     },
     "en": {
-        "file": "stock_scanner",
+        "file": "Stock_Opportunities",
         "sheet": "Candidates", "info_sheet": "Info",
+        "name_header": "{date} Stocks (Stock scanner)",
+        "price_header": "Price - {cur}",
         "title": "Stock scanner — candidates to study",
         "disclaimer": "Study tool, not investment advice. Data delayed by about 15 minutes.",
         "summary": ("Universe: {universe} stocks · shortlist: {shortlist} · kept: {kept}"
                     " · excluded: {no_cat} without catalyst, {red} flagged red"),
-        "headers": ["Rank", "Ticker", "Name", "Market", "Price", "Currency", "Day chg",
-                    "Rel. volume", "Score", "Flags", "Reasons", "Top news", "News",
-                    "Earnings", "Market cap (M€)", "Avg traded (M€)", "Chart", "Session"],
+        "headers": ["PAPY", "{name}", "Ticker", "{price}", "Day chg", "Rel. volume",
+                    "Score", "Alerts", "Why", "Top news", "Earnings", "Session", "Chart"],
         "chart": "TradingView",
         "reasons": {
             "news": "{v} news in {h} h", "sources": "{v} distinct sources",
@@ -157,17 +168,18 @@ LABELS: Dict[str, Dict[str, Any]] = {
         },
     },
     "it": {
-        "file": "scanner_azioni",
+        "file": "Opportunita_Azioni",
         "sheet": "Candidati", "info_sheet": "Info",
+        "name_header": "{date} Azioni (Scanner azioni)",
+        "price_header": "Prezzo - {cur}",
         "title": "Scanner azioni — candidati da studiare",
         "disclaimer": ("Strumento di studio, non un consiglio di investimento. "
                        "Dati ritardati di circa 15 minuti."),
         "summary": ("Universo: {universe} titoli · preselezione: {shortlist} · tenuti: {kept}"
                     " · esclusi: {no_cat} senza catalizzatore, {red} in rosso"),
-        "headers": ["Pos.", "Titolo", "Nome", "Mercato", "Prezzo", "Valuta", "Var. giorno",
-                    "Vol. relativo", "Punteggio", "Segnali", "Motivi", "Notizia principale",
-                    "N. notizie", "Risultati", "Capitalizzazione (M€)", "Scambi medi (M€)",
-                    "Grafico", "Seduta"],
+        "headers": ["PAPY", "{name}", "Titolo", "{price}", "Var. giorno", "Vol. relativo",
+                    "Punteggio", "Avvisi", "Perché", "Notizia principale", "Risultati",
+                    "Seduta", "Grafico"],
         "chart": "TradingView",
         "reasons": {
             "news": "{v} notizie in {h} h", "sources": "{v} fonti distinte",
@@ -214,7 +226,9 @@ LABELS: Dict[str, Dict[str, Any]] = {
     },
 }
 
-WIDTHS = [6, 10, 30, 22, 11, 8, 10, 11, 8, 26, 46, 60, 8, 12, 17, 17, 13, 16]
+# A PAPY · B nom · C titre · D cours · E var. · F vol. · G score · H alertes ·
+# I pourquoi · J news · K résultats · L séance · M graphique
+WIDTHS = [7, 40, 10, 14, 11, 11, 9, 24, 46, 52, 12, 16, 12]
 
 
 # --------------------------------------------------------------------------- #
@@ -336,60 +350,113 @@ def file_name(results: Dict[str, Any], lang: str) -> str:
 # Feuilles
 # --------------------------------------------------------------------------- #
 
-def _candidates_sheet(ws, results: Dict[str, Any], lang: str) -> None:
-    lab = labels(lang)
-    counts = results.get("counts") or {}
-    ws.title = lab["sheet"]
-    stamp = str(results.get("generated_at") or "")[:16].replace("T", " ")
-    ws.cell(row=1, column=1, value=_safe_text("%s — %s UTC" % (lab["title"], stamp))).font = TITLE_FONT
-    ws.cell(row=2, column=1, value=lab["disclaimer"]).font = WARNING_FONT
-    ws.cell(row=3, column=1, value=lab["summary"].format(
-        universe=counts.get("universe", 0), shortlist=counts.get("shortlist", 0),
-        kept=counts.get("kept", 0), no_cat=counts.get("excluded_no_catalyst", 0),
-        red=counts.get("excluded_red", 0))).font = DATA_FONT
+def _market_name(market_id: Any, lang: str, short: bool = False) -> str:
+    """« Italie (Borsa Italiana) » ; en version courte (onglet) : « Italie »."""
+    market = mk.by_id(market_id)
+    if market is None:
+        return str(market_id or "?")
+    label = market.labels.get(lang, market.labels["fr"])
+    return label.split(" (")[0] if short else label
 
-    header_row = DATA_START_ROW - 1
-    for col, (title, width) in enumerate(zip(lab["headers"], WIDTHS), start=1):
-        cell = ws.cell(row=header_row, column=col, value=title)
-        cell.font, cell.fill, cell.alignment, cell.border = HEADER_FONT, HEADER_FILL, CENTER, THIN_BORDER
+
+def _sheet_title(name: str, taken: List[str]) -> str:
+    """Nom d'onglet valide (31 caractères, sans []:*?/\\) et unique."""
+    clean = "".join("-" if ch in '[]:*?/\\' else ch for ch in name).strip()[:31] or "?"
+    title, n = clean, 2
+    while title.lower() in (t.lower() for t in taken):
+        suffix = " (%d)" % n
+        title = clean[:31 - len(suffix)] + suffix
+        n += 1
+    return title
+
+
+def _sheet_currency(rows: List[Dict[str, Any]], market_id: Any) -> str:
+    """La devise de l'en-tête « Cours - EUR » : la plus fréquente des lignes,
+    sinon celle du marché (comme le Bond Scanner, une devise par feuille)."""
+    counts: Dict[str, int] = {}
+    for row in rows:
+        cur = str(row.get("currency") or "").strip()
+        if cur:
+            counts[cur] = counts.get(cur, 0) + 1
+    if counts:
+        return max(sorted(counts), key=lambda c: counts[c])
+    market = mk.by_id(market_id)
+    return market.currency if market else ""
+
+
+def _market_sheet(ws, market_id: Any, rows: List[Dict[str, Any]],
+                  results: Dict[str, Any], lang: str) -> None:
+    """Une feuille par marché, présentée comme celles du Bond Scanner."""
+    lab = labels(lang)
+    for col, width in enumerate(WIDTHS, start=1):
         ws.column_dimensions[get_column_letter(col)].width = width
 
+    # Ligne 1 : le rappel « outil d'étude » (discret). Ligne 2 : le titre.
+    ws.cell(row=1, column=2, value=lab["disclaimer"]).font = NOTE_FONT
+    ws.merge_cells(start_row=2, start_column=3, end_row=2, end_column=7)
+    title = ws.cell(row=2, column=3, value=_safe_text(_market_name(market_id, lang)))
+    title.font, title.alignment = TITLE_FONT, CENTER
+
+    # Ligne 3 : l'en-tête bleu (« 19.10.26 Azioni (Scanner azioni) », « Prezzo - EUR »).
+    stamp = _date(results.get("generated_at"))
+    currency = _sheet_currency(rows, market_id)
+    for col, header in enumerate(lab["headers"], start=1):
+        text = header.replace("{name}", lab["name_header"].replace(
+            "{date}", stamp.strftime("%d.%m.%y") if stamp else "")).strip()
+        text = text.replace("{price}", lab["price_header"].replace("{cur}", currency)).strip(" -")
+        cell = ws.cell(row=HEADER_ROW, column=col, value=text)
+        cell.font, cell.fill, cell.alignment, cell.border = HEADER_FONT, HEADER_FILL, CENTER, THIN_BORDER
+
     row_idx = DATA_START_ROW
-    for row in results.get("rows") or []:
-        if not isinstance(row, dict):
-            continue
+    for row in rows:
         news = [n for n in row.get("news") or [] if isinstance(n, dict)]
         top = news[0] if news else {}
+        flags = [f for f in row.get("flags") or [] if isinstance(f, str)]
+        # Comme le prix trop cher du Bond Scanner : une ligne à surveiller
+        # (mauvaise nouvelle) s'écrit en rouge d'un bout à l'autre.
+        font = RED_FONT if "red" in flags else DATA_FONT
         change = _num(row.get("change_pct"))
-        market = mk.by_id(row.get("market"))
-        market_label = market.labels.get(lang, market.labels["fr"]) if market else row.get("market")
-        _put(ws, row_idx, 1, row.get("rank"), fmt=FMT_INT)
-        _put(ws, row_idx, 2, row.get("ticker") or row.get("tv_symbol"), align=LEFT)
-        _put(ws, row_idx, 3, row.get("name"), align=LEFT)
-        _put(ws, row_idx, 4, market_label, align=LEFT)
-        _put(ws, row_idx, 5, _num(row.get("price")), fmt=FMT_NUM)
-        _put(ws, row_idx, 6, row.get("currency"))
-        _put(ws, row_idx, 7, change, font=_sign_font(change), fmt=FMT_PCT)
-        _put(ws, row_idx, 8, _num(row.get("rel_volume")), fmt=FMT_RATIO)
-        _put(ws, row_idx, 9, _num(row.get("score")), fmt=FMT_INT)
-        flags = [flag_text(f, lang) for f in row.get("flags") or []]
-        _put(ws, row_idx, 10, ", ".join(flags) or None,
-             font=RED_FONT if "red" in (row.get("flags") or []) else DATA_FONT, align=WRAP)
-        _put(ws, row_idx, 11, " · ".join(reason_text(r, lang) for r in row.get("reasons") or [])
-             or None, align=WRAP)
-        _put(ws, row_idx, 12, top.get("title"), align=WRAP, link=_http(top.get("url")))
-        _put(ws, row_idx, 13, len(news), fmt=FMT_INT)
-        _put(ws, row_idx, 14, _date(row.get("earnings_next")), fmt=FMT_DATE)
-        _put(ws, row_idx, 15, _num(row.get("market_cap_meur")), fmt=FMT_INT)
-        _put(ws, row_idx, 16, _num(row.get("avg_value_meur")), fmt=FMT_ONE)
+        price = _num(row.get("price"))
+        row_currency = str(row.get("currency") or "")
+        price_fmt = FMT_NUM if not row_currency or row_currency == currency \
+            else FMT_NUM + ' "%s"' % row_currency.replace('"', "")
+        _put(ws, row_idx, 1)                                           # PAPY : à la main
+        _put(ws, row_idx, 2, row.get("name") or row.get("ticker"), font=font, align=LEFT)
+        _put(ws, row_idx, 3, row.get("ticker") or row.get("tv_symbol"), font=font)
+        _put(ws, row_idx, 4, price, font=font, fmt=price_fmt)
+        _put(ws, row_idx, 5, change, font=font if "red" in flags else _sign_font(change), fmt=FMT_PCT)
+        _put(ws, row_idx, 6, _num(row.get("rel_volume")), font=font, fmt=FMT_RATIO)
+        _put(ws, row_idx, 7, _num(row.get("score")), font=font, fmt=FMT_INT)
+        _put(ws, row_idx, 8, ", ".join(flag_text(f, lang) for f in flags) or None,
+             font=font, align=WRAP)
+        _put(ws, row_idx, 9, " · ".join(reason_text(r, lang) for r in row.get("reasons") or []
+                                        if isinstance(r, dict)) or None, font=font, align=WRAP)
+        _put(ws, row_idx, 10, top.get("title"), font=font, align=WRAP, link=_http(top.get("url")))
+        _put(ws, row_idx, 11, _date(row.get("earnings_next")), font=font, fmt=FMT_DATE)
+        _put(ws, row_idx, 12, session_text(row.get("session"), lang), font=font, align=LEFT)
         chart = _http((row.get("links") or {}).get("chart"))
-        _put(ws, row_idx, 17, lab["chart"] if chart else None, link=chart)
-        _put(ws, row_idx, 18, session_text(row.get("session"), lang), align=LEFT)
+        _put(ws, row_idx, 13, lab["chart"] if chart else None, link=chart)
         row_idx += 1
 
     ws.freeze_panes = "A%d" % DATA_START_ROW
     last_col = get_column_letter(len(lab["headers"]))
-    ws.auto_filter.ref = "A%d:%s%d" % (header_row, last_col, max(header_row, row_idx - 1))
+    ws.auto_filter.ref = "A%d:%s%d" % (HEADER_ROW, last_col, max(HEADER_ROW, row_idx - 1))
+    ws.page_setup.orientation = "landscape"
+    ws.page_setup.fitToWidth = 1
+    ws.page_setup.fitToHeight = 0
+    ws.sheet_properties.pageSetUpPr.fitToPage = True
+
+
+def _stamp_text(value: Any, lang: str) -> str:
+    """« 17/10/2026 07:45 UTC » (anglais : « 2026-10-17 07:45 UTC ») — jamais
+    l'ISO brut avec ses secondes et son fuseau."""
+    if not isinstance(value, str) or not value:
+        return ""
+    try:
+        moment = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return value
+    return moment.strftime("%Y-%m-%d %H:%M UTC" if lang == "en" else "%d/%m/%Y %H:%M UTC")
 
 
 def _info_sheet(ws, results: Dict[str, Any], lang: str) -> None:
@@ -401,7 +468,13 @@ def _info_sheet(ws, results: Dict[str, Any], lang: str) -> None:
     ws.cell(row=r, column=1, value=lab["title"]).font = TITLE_FONT
     r += 1
     ws.cell(row=r, column=1, value=info["generated"]).font = DATA_FONT
-    ws.cell(row=r, column=2, value=_safe_text(str(results.get("generated_at") or ""))).font = DATA_FONT
+    ws.cell(row=r, column=2, value=_safe_text(_stamp_text(results.get("generated_at"), lang))).font = DATA_FONT
+    r += 1
+    counts = results.get("counts") or {}
+    ws.cell(row=r, column=1, value=lab["summary"].format(
+        universe=counts.get("universe", 0), shortlist=counts.get("shortlist", 0),
+        kept=counts.get("kept", 0), no_cat=counts.get("excluded_no_catalyst", 0),
+        red=counts.get("excluded_red", 0))).font = DATA_FONT
     r += 2
 
     cfg = results.get("config") or {}
@@ -464,13 +537,33 @@ def _info_sheet(ws, results: Dict[str, Any], lang: str) -> None:
 
 
 def write_workbook(results: Dict[str, Any], out_dir: Any, lang: Optional[str] = None) -> Path:
-    """Écrit le classeur dans ``out_dir`` et rend son chemin."""
+    """Écrit le classeur dans ``out_dir`` et rend son chemin.
+
+    Une feuille par marché demandé (même vide, comme les feuilles Euro/USD/GBP
+    du Bond Scanner), dans l'ordre des réglages, lignes dans l'ordre du
+    classement ; puis la feuille « Infos ».
+    """
     lang = lang or (results.get("config") or {}).get("lang") or "fr"
     if lang not in LABELS:
         lang = "fr"
+    rows = [r for r in results.get("rows") or [] if isinstance(r, dict)]
+    markets: List[Any] = list((results.get("config") or {}).get("markets") or [])
+    for row in rows:                                   # un marché hors réglages (repli)
+        if row.get("market") not in markets:
+            markets.append(row.get("market"))
+
     wb = Workbook()
-    _candidates_sheet(wb.active, results, lang)
-    _info_sheet(wb.create_sheet(labels(lang)["info_sheet"]), results, lang)
+    wb.remove(wb.active)
+    taken: List[str] = []
+    for market_id in markets:
+        title = _sheet_title(_market_name(market_id, lang, short=True), taken)
+        taken.append(title)
+        _market_sheet(wb.create_sheet(title), market_id,
+                      [r for r in rows if r.get("market") == market_id], results, lang)
+    if not markets:
+        _market_sheet(wb.create_sheet(labels(lang)["sheet"]), None, [], results, lang)
+    _info_sheet(wb.create_sheet(_sheet_title(labels(lang)["info_sheet"], taken)), results, lang)
+    wb.properties.creator = "Scanner d'actions — OmenServer"
     path = Path(out_dir) / file_name(results, lang)
     tmp = path.with_name("." + path.name + ".tmp")
     wb.save(str(tmp))

@@ -170,7 +170,7 @@ def test_full_scan_ranks_catalysts_and_writes_files(tmp_path):
     assert json.loads((tmp_path / "progress.json").read_text(encoding="utf-8"))["phase"] == "done"
     assert results["excel"] and (tmp_path / results["excel"]).is_file()
     wb = load_workbook(str(tmp_path / results["excel"]))
-    assert wb.sheetnames == ["Candidats", "Infos"]
+    assert wb.sheetnames == ["Italie", "Royaume-Uni", "Infos"]     # une feuille par marché
     assert any("Coach :" in line for line in logs)
 
 
@@ -310,7 +310,7 @@ def test_main_reads_config_and_returns_codes(tmp_path):
     assert code == 0
     results = json.loads((run_dir / "results.json").read_text(encoding="utf-8"))
     assert results["config"]["lang"] == "it"
-    assert results["excel"].startswith("scanner_azioni_")
+    assert results["excel"].startswith("Opportunita_Azioni_")
 
 
 def test_main_previous_run_feeds_new_flag(tmp_path):
