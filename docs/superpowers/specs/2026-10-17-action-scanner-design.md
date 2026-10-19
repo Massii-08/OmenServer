@@ -106,7 +106,7 @@ son dossier est `data/stock_scanner/`.
 |---|---|---|
 | `universe` | 1 POST / marché | screener TradingView, filtres côté serveur (action ordinaire, cotation principale, capitalisation ≥ seuil), tri par volume échangé, ≤ 400 lignes (US) / 200 (autres) ; filtre local d'échanges moyens. Tous les marchés en échec → **repli** grandes valeurs (bougies Yahoo) |
 | `coach` | 0 | lecture seule : carnets news de tous les comptes (dédup par lien), cache TradingView, tendances Reddit, dépôts SEC, hypothèses ouvertes du radar, positions + watchlist du demandeur |
-| `shortlist` | 0 | pré-score (volume relatif, variation, résultats proches, signaux du coach) → les `shortlist` meilleurs |
+| `shortlist` | 0 | volume relatif « à l'heure » rapporté à la médiane de SON marché (`normalize_volume`) ; pré-score (ce volume comparable, variation, résultats proches, signaux du coach) → `shortlist` titres : la MOITIÉ des places est réservée à parts égales aux marchés demandés (leurs meilleurs pré-scores), le reste va au mérite toutes places confondues (révision du 19/10, cf. §6) |
 | `news` | ≤ shortlist × langues | news TradingView fraîches de la présélection (cache du coach réutilisé s'il a < 15 min), disjoncteur |
 | `scoring` | 0 | score 0-100, raisons, drapeaux ; exclusions `no_catalyst` (et `red` si demandé) |
 | `output` | 0 | `results.json` puis l'Excel |
@@ -124,7 +124,7 @@ Chaque composante produit une raison lisible. Poids v1 (verrouillés par test) :
 | Au moins une bonne nouvelle (`pos`) | +10 |
 | Au moins un catalyseur annoncé (`watch`) | +8 |
 | Résultats dans les 7 jours (screener) | +10 (+ drapeau `earnings_soon`) |
-| Volume relatif ≥ 1,5 / 2,5 / 4 | +8 / +15 / +20 |
+| Volume relatif COMPARABLE ≥ 1,5 / 2,5 / 4 : volume « à l'heure » (`relative_volume_intraday|5`, sinon le 10 j) divisé par la médiane de SON marché, bornée [0,5 ; 2] — révision du 19/10 | +8 / +15 / +20 |
 | Le cours confirme (variation > 0 avec une news pos/watch) | +5 |
 | Hypothèse « hausse » ouverte du radar du coach | +10 |
 | Buzz Reddit (≥ 5 mentions et ≥ 2× la veille) | +5 (+ drapeau `crowd`) |
@@ -132,6 +132,24 @@ Chaque composante produit une raison lisible. Poids v1 (verrouillés par test) :
 | News négative dans la fenêtre | **−25** + drapeau `red` (exclu si `exclude_red`) |
 | Hypothèse « baisse » ouverte du coach | −10 + drapeau `coach_down` |
 | Déjà parti (variation ≥ 8 % en valeur absolue ou semaine ≥ 20 %) | −10 + drapeau `late` |
+
+**Révision du 19/10 — biais horaire (tests réels).** Le volume relatif v1
+(`relative_volume_10d_calc`) rapporte le volume DU JOUR à la moyenne 10 j :
+partiel pendant une séance, complet pour une place pas encore ouverte. Au
+premier scan réel (Europe en séance, États-Unis en pré-ouverture), 0 titre
+européen n'atteignait ×1,5 contre 83 américains, et la liste rendait 21-22
+lignes américaines sur 25 ; une heure plus tard (États-Unis ouverts depuis
+45 min), l'ancien code basculait à 5/25. Trois corrections : le volume « à
+l'heure » de TradingView (cumulé, rapporté à la moyenne À LA MÊME HEURE), la
+division par la médiane du marché (dès 8 valeurs), et le quota de la
+présélection — c'est elle qui décide qui a droit à ses news fraîches. Rejeu
+du même relevé avant/après : présélection 39 US / 1 CH → 24 US / 4 par marché
+européen ; liste rendue 24/25 US → 16/25. Ce qui reste américain vient des
+catalyseurs (en pleine saison des résultats du T3, 60 sociétés US publient
+sous 7 jours contre 1 à 4 par marché européen), et non plus de l'heure du
+relevé. Chaque
+ligne porte aussi l'état de séance de sa place (§7.3) : la variation d'une
+place pas encore ouverte est celle de la VEILLE.
 
 Score borné 0-100. **Catalyseur obligatoire** : au moins une news admise, des
 résultats dans les 7 jours, une hypothèse du coach ou un dépôt SEC — sinon la
@@ -165,9 +183,15 @@ jetterait « X to sell its unit to Y » (une cession = un fait).
 ```
 
 Bornes : `min_cap_meur` 50-500000, `min_value_meur` 0-10000, `window_h` ∈ {24,
-48, 72}, `top_n` 5-100, `shortlist` 10-80, `lang` ∈ {fr, en, it}.
-`config.validate(raw) -> (clean, warnings)` ne lève jamais ; marché inconnu →
-avertissement ; liste vide ou que des inconnus → marchés par défaut.
+48, 72}, `top_n` 5-80, `shortlist` 10-80, `lang` ∈ {fr, en, it}. `top_n` et
+`shortlist` partagent le même plafond (`SHORTLIST_MAX` = 80, budget de news
+partagé avec le coach) : la liste rendue est prélevée dans la présélection,
+que `validate` remonte au besoin jusqu'à `top_n` — avec deux plafonds
+distincts (100 / 80, v1), cette règle sortait de ses bornes et `validate`
+n'était plus idempotente (révision du 19/10).
+`config.validate(raw) -> (clean, warnings)` ne lève jamais et est
+IDEMPOTENTE (`validate(clean)` rend `clean` sans avertissement) ; marché
+inconnu → avertissement ; liste vide ou que des inconnus → marchés par défaut.
 
 ### 7.2 Catalogue des marchés (`markets.py`)
 
@@ -198,7 +222,8 @@ puis `quotes.canonical` (`ROG.SW` → `RO.SW`).
   "generated_at": "2026-10-17T07:45:12+00:00",
   "config": {"…": "config propre"},
   "source": "screener | fallback",
-  "markets": [{"id": "italy", "ok": true, "rows": 200, "error": null}],
+  "markets": [{"id": "italy", "ok": true, "rows": 200, "error": null,
+               "volume_median": 0.725, "shortlisted": 4}],
   "counts": {"universe": 1180, "shortlist": 40, "news_requests": 52,
              "news_failed": 0, "kept": 18, "excluded_no_catalyst": 19,
              "excluded_red": 3, "filtered_advice": 4, "dropped_irrelevant": 7,
@@ -209,7 +234,9 @@ puis `quotes.canonical` (`ROG.SW` → `RO.SW`).
     "tv_symbol": "MIL:ENI", "symbol": "ENI.MI", "ticker": "ENI",
     "name": "Eni S.p.A.", "market": "italy", "exchange": "MIL",
     "currency": "EUR", "price": 15.48, "change_pct": 2.31, "gap_pct": 1.1,
-    "rel_volume": 2.4, "avg_value_meur": 120.5, "market_cap_meur": 50210,
+    "rel_volume": 0.9, "rel_volume_time": 2.4, "rel_volume_adj": 3.3,
+    "session_state": "open", "session_date": "2026-10-17", "session_stale": false,
+    "avg_value_meur": 120.5, "market_cap_meur": 50210,
     "sector": "Energy Minerals", "perf_w": 4.1,
     "earnings_next": "2026-10-24",
     "score": 72,
@@ -224,6 +251,17 @@ puis `quotes.canonical` (`ROG.SW` → `RO.SW`).
   }]
 }
 ```
+
+Volume (révision du 19/10) : `rel_volume` = le 10 j brut de TradingView,
+`rel_volume_time` = le volume « à l'heure », `rel_volume_adj` = le volume
+comparable que le score utilise (à l'heure ÷ médiane bornée de son marché ;
+`volume_median` de chaque marché dans `markets`). État de séance :
+`session_state` ∈ {`open`, `pre_open`, `closed`, null} (depuis
+`current_session` : `market`, `pre_market`, `post_market`/`out_of_session`),
+`session_date` = date LOCALE de la séance que décrivent variation, gap et
+volume (ouverture de la barre journalière, fuseau de la place),
+`session_stale` = vrai quand ces chiffres ne sont pas ceux du jour de la place
+(pré-ouverture, week-end, férié). Univers de repli Yahoo : ces champs à null.
 
 Raisons et drapeaux sont des CODES (langue neutre) : l'UI les traduit
 (`stocks.reason.*`, `stocks.flag.*`), l'Excel aussi (table fr/en/it du moteur).
@@ -255,7 +293,7 @@ Tout en `require_role("admin", "money")`.
 | Méthode | Chemin | Rôle |
 |---|---|---|
 | GET | `/config` | `{defaults, markets, limits}` |
-| POST | `/run` | config partielle → validée, enregistrée comme défauts, run lancé (refuse d'en empiler deux) → `{job_id, already_running, warnings}` |
+| POST | `/run` | config partielle → validée → run lancé (refuse d'en empiler deux) → enregistrée comme défauts SEULEMENT si le run a vraiment démarré → `{job_id, already_running, warnings, config}`. Refus (`already_running`) : `config` = le `config.json` du run vivant tel qu'écrit (null s'il est illisible), `warnings` = [] — ni défauts écrasés, ni réponse qui décrit un scan inexistant (révision du 19/10) |
 | GET | `/status/{job_id}` | `{job_id, status, progress, logs (60 dernières lignes), meta, files}` |
 | GET | `/active` | run le plus récent `{found, job_id, status, progress, meta}` — le badge de l'onglet ne compte QUE `running` |
 | POST | `/stop/{job_id}` | `stop.flag` + `os.killpg` du pid (la session détachée a pgid = pid) |
