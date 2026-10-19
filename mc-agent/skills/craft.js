@@ -67,6 +67,61 @@ function _invMap(bot) {
   return out;
 }
 
+// ─── EFFET DU CRAFT (19/10) ───────────────────────────────────────────────────────────────────
+// NethBot2, mesuré en live : juste après une téléportation, `goal planks` émis 111× en 2,2 s (un
+// toutes les ~20 ms), AUCUN `goal_failed`, puis le serveur expulse le bot (flood de paquets : chaque
+// tour envoyait un craft). `craftItem` rendait `{ok:true}` dès que `bot.craft` ne levait pas — or
+// `bot.craft` ne lève que sur une erreur CLIENT (ingrédient absent de l'inventaire local, table
+// requise mais non fournie) : un craft que le SERVEUR ignore (fenêtre périmée, état désynchronisé
+// après un tp) « réussit » en silence, et le planner relance le même but à l'infini.
+// Deux façons connues (lues dans mineflayer) d'obtenir « craft réussi, produit absent » :
+//   1. le serveur ignore les clics (fenêtre périmée, état désynchronisé après un tp) ;
+//   2. l'inventaire est PLEIN : `putSelectedItemRange` n'a ni case vide ni pile à compléter et JETTE
+//      le résultat au sol (« no room => drop it ») — `bot.craft` rend la main normalement, les
+//      ingrédients sont consommés, le produit est par terre. Un worker qui hoarde bûches + pierres
+//      (une pile par roche : deepslate, tuff, diorite…) y arrive vite. Piste probable de l'incident
+//      ci-dessus, NON confirmée en live : dans ce cas `craft_no_effect` est le bon verdict, et le
+//      remède de fond (libérer une case avant de crafter) reste à faire en amont.
+// On exige donc de VOIR le produit arriver : la quantité en inventaire doit AUGMENTER par rapport à
+// l'avant-craft. Sondage toutes les 50 ms, 600 ms au plus — de quoi absorber un inventaire local en
+// retard sans geler le planner plus d'une demi-seconde par tour. Sinon `craft_no_effect`, qui sort
+// par le chemin des échecs explicites ({ok:false} → failStreak 4× → stalled) au lieu de tourner.
+//   ⚠️ Cette raison est volontairement DISTINCTE de 'no_recipe' / 'craft_failed' : `craftSmart`
+//   (index.js) teste ces deux chaînes EXACTES pour décider d'aller chercher une table de craft 3×3.
+//   Une désync n'est pas une recette 3×3 manquante — poser une table n'y changerait rien.
+const EFFECT_POLL_MS = 50;       // pas du sondage
+const EFFECT_TIMEOUT_MS = 600;   // au-delà : craft_no_effect
+
+const _realSleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+// Quantité de `itemName` en inventaire (somme des piles) ; `null` si l'inventaire est illisible
+// (vieux stub sans `inventory.items`, ou qui lève) — l'appelant ne peut alors RIEN vérifier.
+function _countOf(bot, itemName) {
+  try {
+    const list = bot.inventory && typeof bot.inventory.items === 'function' ? bot.inventory.items() : null;
+    if (!Array.isArray(list)) return null;
+    let n = 0;
+    for (const it of list) if (it && it.name === itemName) n += (it.count || 0);
+    return n;
+  } catch (e) { return null; }
+}
+
+// Attend de voir `itemName` dépasser `before` en inventaire. La 1re lecture a lieu SANS attendre :
+// d'après le code de mineflayer, quand il y a de la place le résultat est déjà déposé dans
+// l'inventaire local quand `bot.craft` rend la main (grabResult → putAway ; pour une table,
+// copyInventory à la fermeture de la fenêtre) — le chemin normal ne coûte donc rien, et aucune
+// autre tâche n'a pu s'intercaler entre la fin du craft et cette lecture (un équipement concurrent
+// ne peut pas fausser le constat). Les attentes ne servent qu'au cas où l'inventaire local serait
+// en retard sur le serveur.
+async function _awaitCraftEffect(bot, itemName, before, sleep) {
+  for (let waited = 0; ; waited += EFFECT_POLL_MS) {
+    const now = _countOf(bot, itemName);
+    if (now === null || now > before) return true;     // null : devenu illisible en route → on ne bloque pas
+    if (waited >= EFFECT_TIMEOUT_MS) return false;
+    await sleep(EFFECT_POLL_MS);
+  }
+}
+
 // PLANCHES HÉTÉROGÈNES — le blocage du bouclier (world_mn14 : 235 `craft_failed:table_present`,
 // 5 `no_recipe`, 0 succès en 3 h alors que 3 boucliers étaient sortis plus tôt dans le run).
 //
@@ -85,7 +140,7 @@ function _invMap(bot) {
 // `reason` n'est renseigné QUE quand le bois était réellement en cause : sur tous les autres
 // chemins le retour de craftItem reste octet pour octet celui d'avant (des tests le figent en
 // deepStrictEqual, et un champ surprise dans un résultat d'échec est une dette, pas un service).
-async function _homogenizePlanks(bot, id, table) {
+async function _homogenizePlanks(bot, id, table, sleep) {
   // Vieux stub / bot partiel : on ne tente rien plutôt que de planter (contrat inchangé).
   if (typeof bot.recipesAll !== 'function') return { ok: false };
   const items = bot.registry && bot.registry.items;
@@ -107,22 +162,25 @@ async function _homogenizePlanks(bot, id, table) {
   const plan = planksPlan(inv, need);
   if (plan.action === 'none') return { ok: false };                          // l'échec vient d'ailleurs
   if (plan.action !== 'craft_planks') return { ok: false, reason: plan.reason };
-  const r = await craftItem(bot, { name: plan.plankName, count: plan.logs, _fixPlanks: false });
+  const r = await craftItem(bot, { name: plan.plankName, count: plan.logs, _fixPlanks: false, _sleep: sleep });
   return r.ok ? { ok: true, reason: 'crafted' } : { ok: false, reason: 'planks_craft_failed' };
 }
 
 // `_fixPlanks: false` = garde-fou anti-récursion pour le craft des planches lui-même. Il est
 // redondant (la recette des planches n'en CONSOMME pas → `plankNeed` rend 0), mais deux crans
 // valent mieux qu'un sur un chemin qui tourne en boucle 3 h dans le noir.
-async function craftItem(bot, { name, count = 1, _fixPlanks = true } = {}) {
+// `_sleep` = attente injectable du sondage d'effet (tests) ; défaut setTimeout. Même convention
+// « sous-tiret = réservé aux tests / à la récursion » que `_fixPlanks`.
+async function craftItem(bot, { name, count = 1, _fixPlanks = true, _sleep } = {}) {
   const id = _itemId(bot, name);
   if (id == null) return { ok: false, reason: 'unknown_item' };
+  const sleep = typeof _sleep === 'function' ? _sleep : _realSleep;
   const table = _nearestTable(bot);
   let recipes = bot.recipesFor(id, null, 1, table) || [];
   if (!recipes.length && !table) recipes = bot.recipesFor(id, null, 1, null) || []; // recette 2x2 sans table
   if (!recipes.length) {
     if (!_fixPlanks) return { ok: false, reason: 'no_recipe' };
-    const fix = await _homogenizePlanks(bot, id, table);
+    const fix = await _homogenizePlanks(bot, id, table, sleep);
     if (fix.ok) recipes = bot.recipesFor(id, null, 1, table) || [];
     // ⚠️ `reason` reste EXACTEMENT 'no_recipe' : `craftSmart` (index.js) teste cette chaîne pour
     // décider d'aller chercher une table. Le détail voyage à côté, dans `planks`, et seulement
@@ -133,9 +191,17 @@ async function craftItem(bot, { name, count = 1, _fixPlanks = true } = {}) {
       return out;
     }
   }
+  // Le produit est celui DEMANDÉ : `recipesFor(id, …)` ne rend que des recettes qui le fabriquent.
+  // Lu AVANT le craft — un stock préexistant ne doit pas passer pour un effet.
+  const produced = String(name).toLowerCase();
+  const before = _countOf(bot, produced);
   try { await bot.craft(recipes[0], count, table || undefined); }
   catch (e) { return { ok: false, reason: 'craft_failed' }; }
-  return { ok: true };
+  // Inventaire illisible (vieux stub partiel) : rien à constater, contrat historique `{ok:true}`.
+  if (before === null) return { ok: true };
+  return (await _awaitCraftEffect(bot, produced, before, sleep))
+    ? { ok: true }
+    : { ok: false, reason: 'craft_no_effect' };
 }
 
 // Décision PURE : que faire quand un craft 3×3 a échoué ?
@@ -158,4 +224,4 @@ function tablePlan({ tableInReach = false, tableSeen = false, hasTableItem = fal
   return 'craft_then_place';
 }
 
-module.exports = { craftItem, _nearestTable, tableKey, tablePlan, TABLE_REACH, TABLE_SEEK };
+module.exports = { craftItem, _nearestTable, tableKey, tablePlan, TABLE_REACH, TABLE_SEEK, EFFECT_POLL_MS, EFFECT_TIMEOUT_MS };
