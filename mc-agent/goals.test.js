@@ -229,19 +229,42 @@ test('MAPPER_KIT : kit COMPLET (outils+four+torches+nourriture) -> firstUnmet nu
   assert.strictEqual(firstUnmet(MAPPER_KIT, ctx), null);
 });
 
-test('MAPPER_KIT MAINTENANCE : nourriture mangée -> food_stock redevient le but (re-chasse)', () => {
-  const full = { inv: { stone_pickaxe: 1, stone_sword: 1, stone_axe: 1, crafting_table: 1, furnace: 1, torch: 8, cooked_beef: 4, stick: 2 } };
+test('MAPPER_KIT MAINTENANCE : nourriture mangée -> food_stock redevient le but (re-chasse) tant qu on VOIT du gibier', () => {
+  const full = { inv: { stone_pickaxe: 1, stone_sword: 1, stone_axe: 1, crafting_table: 1, furnace: 1, torch: 8, cooked_beef: 4, stick: 2 }, passiveNear: true };
   assert.strictEqual(firstUnmet(MAPPER_KIT, full), null);
-  const hungry = { inv: { ...full.inv, cooked_beef: 1 } };       // stock tombé à 1
+  const hungry = { inv: { ...full.inv, cooked_beef: 1 }, passiveNear: true };       // 8 points < 12
   assert.strictEqual(firstUnmet(MAPPER_KIT, hungry).name, 'food_stock');
+  // champ passiveNear ABSENT (inconnu) : comportement d avant, le but reste dû
+  assert.strictEqual(firstUnmet(MAPPER_KIT, { inv: { ...full.inv, cooked_beef: 1 } }).name, 'food_stock');
 });
 
-test('MAPPER_KIT : food_stock accepte toute nourriture CUITE (somme), pas le cru', () => {
+// 19/10 — « COMPTER, pas manger, était le problème » : la réserve se mesure en POINTS DE FAIM.
+test('MAPPER_KIT : food_stock compte en POINTS — le cuit, le cru ET la chair putréfiée', () => {
   const g = MAPPER_KIT.find((x) => x.name === 'food_stock');
   const base = { stone_pickaxe: 1, stone_sword: 1, stone_axe: 1, crafting_table: 1, furnace: 1, torch: 8, stick: 2 };
-  assert.ok(g.met({ inv: { ...base, cooked_porkchop: 2, cooked_chicken: 2 } }));
-  assert.ok(g.met({ inv: { ...base, bread: 4 } }));
-  assert.ok(!g.met({ inv: { ...base, beef: 6 } }));              // cru ≠ stock
+  assert.ok(g.met({ inv: { ...base, cooked_porkchop: 1, cooked_chicken: 1 } }));    // 8 + 6 = 14
+  assert.ok(g.met({ inv: { ...base, bread: 3 } }));                                  // 15
+  assert.ok(g.met({ inv: { ...base, beef: 4 } }), 'du cru qui fait 12 points : assez');
+  assert.ok(g.met({ inv: { ...base, rotten_flesh: 6 } }), '6 chairs putréfiées = 12 points : assez (le bot les mange)');
+  assert.ok(!g.met({ inv: { ...base, rotten_flesh: 5 } }), '10 points : pas encore');
+  assert.ok(!g.met({ inv: { ...base, cooked_beef: 1 } }), '8 points : pas assez');
+  assert.ok(g.met({ inv: { ...base, cooked_beef: 1, beef: 2 } }), '8 + 6 = 14');
+});
+
+test('MAPPER_KIT : food_stock NE BLOQUE PLUS quand il n y a rien à chasser (passiveNear === false)', () => {
+  // MapBot2 tournait sur `no_prey:no_rod` au lieu d aller cartographier : la zone était vidée.
+  const g = MAPPER_KIT.find((x) => x.name === 'food_stock');
+  const base = { stone_pickaxe: 1, stone_sword: 1, stone_axe: 1, crafting_table: 1, furnace: 1, torch: 8, stick: 2 };
+  assert.ok(g.met({ inv: { ...base }, passiveNear: false }), 'sac vide mais aucun gibier : le kit avance');
+  assert.ok(!g.met({ inv: { ...base }, passiveNear: true }), 'sac vide ET du gibier en vue : on chasse');
+  assert.ok(!g.met({ inv: { ...base } }), 'inconnu : on ne suppose pas qu il n y a rien');
+  assert.ok(!g.met({ inv: { ...base }, passiveNear: undefined }));
+  assert.ok(!g.met({ inv: { ...base }, passiveNear: null }), 'null n est PAS false : lecture ratée ≠ zone vide');
+  assert.ok(!g.met({ inv: { ...base }, passiveNear: 0 }));
+  // …et la suite du kit devient joignable
+  const ctx = { inv: { ...base, torch: 0 }, passiveNear: false };
+  assert.strictEqual(firstUnmet(MAPPER_KIT, ctx).name, 'charcoal', 'après food_stock vient le charbon');
+  assert.strictEqual(firstUnmet(MAPPER_KIT, { inv: { ...base, torch: 0 }, passiveNear: true }).name, 'food_stock');
 });
 
 test('MAPPER_KIT : torches via charbon de bois — charcoal met si coal OU charcoal >= 2, torches >= 8', () => {

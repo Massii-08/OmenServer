@@ -375,10 +375,11 @@ const FN = (c) => invCount(c.inv, 'furnace') >= 1;       // four en poche
 const TORCH = (c) => invCount(c.inv, 'torch') >= 8;      // stock de torches
 const K = (c) => S(c) && SS(c);                          // outils de défense de base (héritage)
 
-// Nourriture CUITE comptant dans le stock de survie (le cru ne compte pas — il se cuit).
-const COOKED_FOODS = ['cooked_beef', 'cooked_porkchop', 'cooked_chicken', 'cooked_mutton',
-  'cooked_rabbit', 'cooked_cod', 'cooked_salmon', 'bread', 'baked_potato'];
-function cookedCount(inv) { return COOKED_FOODS.reduce((s, n) => s + invCount(inv, n), 0); }
+// La réserve de nourriture se compte en POINTS DE FAIM (food.js), cuit OU cru OU chair putréfiée :
+// l'ancien compteur « viande cuite seulement » faisait repartir chasser un bot qui avait 10 chairs
+// putréfiées en poche, alors que le réflexe de faim les mange déjà (19/10 : manger n'était pas le
+// problème, COMPTER l'était). NB : l'ancien compteur « cuit seulement » n'existe plus — ne pas le recréer.
+const { foodPoints, STOCK_POINTS } = require('./food');
 
 // Besoin RESTANT en sticks selon les artefacts manquants (2 pioche bois, 2 pioche pierre, 1 épée,
 // 2 hache, 2 torches). Cap à 8 (un craft de 2 lots en produit 8 — évite la double-itération inutile).
@@ -425,9 +426,14 @@ const MAPPER_KIT = [
     skill: 'gather',        args: { name: 'stone', count: 8 } },
   { name: 'furnace',        met: (c) => FN(c),
     skill: 'craft',         args: { name: 'furnace', count: 1 } },
-  // stock de nourriture CUITE AVANT les torches (vécu Surv8 : le stall charbon bloquait la cuisson
-  // — la viande restait crue en poche). Consommable : redevient unmet quand mangé → re-chasse.
-  { name: 'food_stock',     met: (c) => cookedCount(c.inv) >= 4,
+  // stock de nourriture AVANT les torches (vécu Surv8 : le stall charbon bloquait la cuisson — la
+  // viande restait crue en poche). Compté en POINTS (cru et chair putréfiée comprises). Consommable :
+  // redevient unmet quand mangé → re-chasse.
+  // ⚠️ NON BLOQUANT quand il n'y a RIEN À CHASSER (19/10, MapBot2 coincé sur `no_prey:no_rod` au lieu
+  // d'aller cartographier) : `c.passiveNear` (ctxExtra : un passif à ≤ 32 blocs) à FALSE ⇒ satisfait,
+  // le kit avance et la faim sera traitée plus tard (timer « food run », chair de zombie). Strictement
+  // `=== false` : champ ABSENT (tests, ancien appelant) = inconnu = comportement d'avant (unmet).
+  { name: 'food_stock',     met: (c) => foodPoints(c.inv) >= STOCK_POINTS || c.passiveNear === false,
     skill: 'huntCook',      args: { target: 4 } },
   // charbon : MINE du coal_ore si visible (commun), sinon charbon de BOIS (bûches fondues au four)
   { name: 'charcoal',       met: (c) => (invCount(c.inv, 'charcoal') + invCount(c.inv, 'coal')) >= 2 || TORCH(c),
@@ -717,4 +723,4 @@ function firstUnmet(chain, ctx) {
 
 module.exports = {
   nextObjectiveAfter, chainAfterDone, CHAIN_EMPTY_WINDOW_MS, CHAIN_BASE_DELAY_MS, CHAIN_BACKOFF_MS, CHAIN_FALLBACK,
-  IRON_HELP_CHAIN, HELP_STOCK, MAPPER_ARMOR_CHAIN, GIFT_SET_INGOTS, DIAMOND_TARGET, hasShield, posableCount, hasSword, hasAxe, buildCtxInv, invCount, anyLog, anyPlanks, cookedCount, COOKED_FOODS, MVP_CHAIN, IRON_CHAIN, DIAMOND_CHAIN, IRON_ARMOR_CHAIN, DIAMOND_ARMOR_CHAIN, MAPPER_KIT, chainFor, firstUnmet, armorNeed, armorWornOk, wantsOpportunisticArmor, ARMOR_FORGE_OBJECTIVES };
+  IRON_HELP_CHAIN, HELP_STOCK, MAPPER_ARMOR_CHAIN, GIFT_SET_INGOTS, DIAMOND_TARGET, hasShield, posableCount, hasSword, hasAxe, buildCtxInv, invCount, anyLog, anyPlanks, MVP_CHAIN, IRON_CHAIN, DIAMOND_CHAIN, IRON_ARMOR_CHAIN, DIAMOND_ARMOR_CHAIN, MAPPER_KIT, chainFor, firstUnmet, armorNeed, armorWornOk, wantsOpportunisticArmor, ARMOR_FORGE_OBJECTIVES };

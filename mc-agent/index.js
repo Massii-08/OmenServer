@@ -43,7 +43,7 @@ const { equipItem, eat } = require('./skills/equip');
 const { loiter } = require('./skills/loiter');
 const fs = require('fs');
 const { runPlanner } = require('./planner');
-const { chainFor, buildCtxInv, firstUnmet, cookedCount, armorNeed, chainAfterDone, wantsOpportunisticArmor, GIFT_SET_INGOTS } = require('./goals');
+const { chainFor, buildCtxInv, firstUnmet, armorNeed, chainAfterDone, wantsOpportunisticArmor, GIFT_SET_INGOTS } = require('./goals');
 const { isForbiddenCheat } = require('./nogive');
 const homewarp = require('./homewarp'); // couche warp LÉGITIME sans-give (/sethome+/home ; goSpawn=/home safe)
 const { secureSpot } = require('./skills/secureSpot'); // secure-then-warp : pilier/se murer/flotter AVANT le /home
@@ -56,7 +56,7 @@ const { nearestPassive, survivalTick, nearbyHostiles, lavaNearby, armorPoints, w
 const { loadWorld, saveWorld, setObjective, clearObjective } = require('./worldModel');
 const { _nearestTable, tableKey, tablePlan, TABLE_REACH, TABLE_SEEK } = require('./skills/craft'); // craftItem déjà importé plus haut
 const { placeBlockNear } = require('./skills/placeBlockNear');
-const { smelt, logsToConvert } = require('./skills/smelt');
+const { smelt, logsToConvert, fuelUnits } = require('./skills/smelt');
 const { descendDiagonal } = require('./skills/descendDiagonal');
 const { pickWornOutToReport } = require('./wornOut');
 const { branchMine, floodFillVein } = require('./skills/branchMine');
@@ -130,23 +130,30 @@ const {
   mapperCaution, regroupCaution, migrationCaution, equipRetryPlan, isEquipPickup, normalizeSmeltResult, PICKUP_EQUIP_DELAY_MS,
   sprintAllowed,
   // FAMINE (run world_mn15, 18/08 — 5 « starved to death » en 10 min sur des bots BLINDÉS) :
-  // la porte de la chasse à la ficelle, et le déclencheur PRÉCOCE de la quête de nourriture.
-  stringHuntNeeded, foodRunNeeded,
-  // v7 « ALLER LÀ OÙ LA NOURRITURE EST » (run world_mn15 : les mécanismes v6 tournaient tous, mais
-  // À VIDE — 385 chasses à la ficelle pour 0 ficelle, 737 pêches pour 0 poisson, 392 quêtes
-  // stériles). Ces quatre décisions ajoutent la question qui manquait : « y a-t-il seulement
-  // quelque chose à aller chercher ici et maintenant ? ».
-  spiderHuntWindow, spiderHuntStreak, foodRunCooldownAfter, FOOD_RUN_COOLDOWN_MS,
-  surfaceTripNeeded, FOOD_SURFACE_Y,
+  // le déclencheur PRÉCOCE de la quête de nourriture, et son rationnement adaptatif (v7).
+  foodRunNeeded, foodRunCooldownAfter, FOOD_RUN_COOLDOWN_MS,
+  // Plancher de surface de la chasse — lu par `fishAtKnownWater` (mode « expédition », non appelé).
+  FOOD_SURFACE_Y,
 } = require('./caution');
-// LA FICELLE — la pêche exige une canne (3 bâtons + 2 ficelles) et `no_rod` sortait 444 fois :
-// la ficelle ne se ramasse pas au sol, elle se prend sur l'araignée. Cf. skills/huntSpiders.js.
-// `nearestSpider`/`HUNT_RADIUS` : la SONDE de visibilité qui ouvre la fenêtre de chasse — même
-// rayon que la chasse elle-même, sinon on part chercher ce qu'on n'a pas vu.
-const { huntSpiders, nearestSpider, HUNT_RADIUS } = require('./skills/huntSpiders');
+// LA FICELLE — la pêche exige une canne (3 bâtons + 2 ficelles) et `no_rod` sortait 444 fois : la
+// ficelle ne se ramasse pas au sol, elle se prend sur l'araignée (cf. skills/huntSpiders.js). Depuis
+// le 19/10 la chasse dédiée n'est plus appelée (trop longue) ; la ficelle vient du ramassage après
+// combat (wireCombatLoot). `huntSpidersGoal` / `fishAtKnownWater` restent définis, non appelés.
+const { huntSpiders } = require('./skills/huntSpiders');
 // L'EAU CONNUE — de la carte du groupe (cellules océan/rivière peintes par les cartographes) vers
-// un point où marcher. Cf. waterfind.js.
+// un point où marcher. Cf. waterfind.js (lu par `fishAtKnownWater`, non appelé depuis le 19/10).
 const { nearestWater, WATER_TRIP_MAX } = require('./waterfind');
+// NOURRITURE EN POINTS DE FAIM + BUDGET DE TEMPS (Massii 19/10 : « l'important c'est la VITESSE : pas de
+// choix qui font trop durer, et dans le pire des cas il y a la viande de zombie »). `food.js` = la
+// table de points, les plafonds et les décisions pures ; `foodRun.js` = les deux orchestrateurs
+// (ensureFood, huntCookGoal) testés avec des dépendances fausses. L'ancien compteur « viande CUITE
+// seulement » n'existe plus : une seule mesure, `foodPoints`.
+const {
+  foodPoints, STOCK_POINTS, ENSURE_SKIP_POINTS, HUNT_SIGHT_RADIUS, HUNT_COOK_TIMEOUT_MS, FOOD_RUN_TIMEOUT_MS, HUNT_WAVE_MS,
+  FISH_RADIUS, FISH_TARGET, boundedToken, shouldLootAfterCombat,
+  COMBAT_LOOT_RADIUS, COMBAT_LOOT_ITEMS, COMBAT_LOOT_MS, COMBAT_LOOT_HOSTILE_RADIUS, COMBAT_LOOT_SETTLE_MS,
+} = require('./food');
+const { runEnsureFood, runHuntCook } = require('./foodRun');
 
 function parseArgs(argv) {
   const o = {};
@@ -378,6 +385,13 @@ let _goalTraceInstalled = false;   // le wrapper ne se pose qu'UNE fois par proc
 // écouter deux fois stoppedAttacking, doublerait les restaurations). NIVEAU MODULE, comme ses sœurs.
 let _pluginMovesInstalled = false;
 let _movesKeeper = null;
+// BUTIN APRÈS COMBAT (19/10, cf. food.shouldLootAfterCombat) : état lu et écrit par des écouteurs
+// d'events, donc HORS de onSpawn → NIVEAU MODULE comme ses sœurs (piège #56 : un `let` posé dans
+// onSpawn compile, passe les tests, et lève une ReferenceError au premier event). Les écouteurs ne se
+// posent qu'UNE fois par process (deux `stoppedAttacking` écoutés = deux ramassages concurrents).
+let _combatLootWired = false;
+let _combatLootBusy = false;      // un seul ramassage post-combat à la fois
+let _combatTarget = null;         // {name,kind,type} de la cible du combat en cours (relevé à startedAttacking)
 setInterval(() => {
   try {
     const d = _goalTrace.drain();
@@ -758,9 +772,16 @@ function ctxExtra() {
   // le bot re-tente, re-échoue, le verrou revient : du churn pour rien. Le verdict pose une question
   // de DÉBIT, ce verrou une question de FAIT ÉTABLI (piège #55b : identifier le consommateur).
   const noWood = _zoneLogsNotFound >= LOGS_NOT_FOUND_MAX;
+  // passiveNear : un animal chassable à ≤ 32 blocs (même rayon que la chasse elle-même). Lu par le but
+  // `food_stock` du kit mappeur : sans rien à chasser il est SATISFAIT et le kit avance (19/10 : MapBot2
+  // coincé sur `no_prey:no_rod` au lieu d'aller cartographier). Lecture du monde impossible → false : on
+  // préfère laisser avancer le kit que le bloquer sur une donnée qu'on n'a pas su lire (la faim a ses
+  // propres filets : réflexe, timer « food run », chair de zombie).
+  let passiveNear = false;
+  try { passiveNear = !!nearestPassive(bot, HUNT_SIGHT_RADIUS); } catch (e) { passiveNear = false; }
   return {
     hasTable: !!_nearestTable(bot), y: pos ? pos.y : undefined, worn: [..._wornArmor()], offhand,
-    mapperTarget: gift.target, giftReady: gift.ready, noWood,
+    mapperTarget: gift.target, giftReady: gift.ready, noWood, passiveNear,
   };
 }
 
@@ -1050,17 +1071,19 @@ function fuelNames() {
 // le reprend → le bot garde 1 four en poche et fond où qu'il soit (surface OU fond du tunnel à fer).
 // `fuelOverride` : liste de combustibles imposée (ex. charbon de bois : EXCLURE les bûches, sinon
 // le four brûle l'input qu'on veut fondre).
-async function smeltWithFurnace(input, output, count, fuelOverride) {
+// `opts.maxMs` : plafond du poll du four (défaut de smelt : 3 min). La cuisson de VIANDE le réduit à
+// ce que le budget « nourriture » peut payer (10 s la pièce) — cf. food.cookPlan.
+async function smeltWithFurnace(input, output, count, fuelOverride, opts = {}) {
   _stillBusy = true;    // immobilité LÉGITIME (poll du four ≤3 min) — le desync-watchdog ne doit pas tirer
   // RAISON TOUJOURS RENSEIGNÉE (vu en session vivante : `armor_smelt ok:false reason:"?"`, un échec
   // à la cause PERDUE sur le chemin qui fabrique l'armure). Le trou est dans `smelt` lui-même
   // (skills/smelt.js) qui rend `{ok: got >= want, got}` — donc SANS `reason` dès qu'il fond moins
   // que demandé. On normalise ICI, point de passage UNIQUE de tous les appelants ; les raisons
   // amont (no_furnace/no_fuel/no_input/open_failed…) ne sont jamais écrasées.
-  try { return normalizeSmeltResult(await _smeltWithFurnaceInner(input, output, count, fuelOverride), count); }
+  try { return normalizeSmeltResult(await _smeltWithFurnaceInner(input, output, count, fuelOverride, opts), count); }
   finally { _stillBusy = false; }
 }
-async function _smeltWithFurnaceInner(input, output, count, fuelOverride) {
+async function _smeltWithFurnaceInner(input, output, count, fuelOverride, opts = {}) {
   const fdef = bot.registry.blocksByName.furnace;
   let near = fdef ? bot.findBlock({ matching: [fdef.id], maxDistance: 4 }) : null;
   // Four PERDU (reclaim raté lors d'une fonte précédente — vécu live Surv1) : avant d'échouer ou
@@ -1095,7 +1118,7 @@ async function _smeltWithFurnaceInner(input, output, count, fuelOverride) {
       emit({ type: 'logs_to_planks', from: lp.name, logs: lp.logs || 1 });
     }
   } catch (e) { /* best-effort : on fond quand même */ }
-  const r = await smelt(bot, { input, output, count, fuel: fuelOverride || fuelNames() }, taskToken);
+  const r = await smelt(bot, { input, output, count, fuel: fuelOverride || fuelNames(), maxMs: opts.maxMs }, taskToken);
   if (pos) {
     await sleep(250);
     await reclaimBlock(pos, 'furnace');            // garder le four PORTABLE
@@ -1112,14 +1135,15 @@ async function _smeltWithFurnaceInner(input, output, count, fuelOverride) {
 const SKILL_TIMEOUT_MS = Number(args.skillTimeout || 90000);
 // Skills DIAMANT longs par nature : descente y=64→-54 (118 blocs × ~4s avec pathfinder = trop juste
 // à 6 min) + branch mining 48 + 2×8 branches (~64 blocs avec pathfinder entre chaque dig). 15 min/chacun.
-// huntCook = 3 vagues de chasse + cuisson au four (vécu Surv5 : tué à 90s en pleine chasse) ;
+// huntCook = UNE vague de chasse ≤ 45 s + cuisson + pêche locale, le tout dans un budget de 60 s
+// (food.js, 19/10 : « la VITESSE ») — 90 s de garde-fou, plus les 8 min des 3 vagues de 120 s ;
 // smeltCharcoal = gather bûches éventuel + fonte (180s de smelt max).
 // gather/gatherLog : 8 min — un trajet DIRIGÉ légitime peut faire ≤1500 blocs (mémoire de monde) ;
 // sûr car chaque goto interne d'explore est borné individuellement (directed 240s / waypoint 90s).
 // gatherLog 180s (phase 3) : une chasse au bois honnête (biais dirigé + anneaux ≤128) tient en
 // <3 min — au-delà la zone est déforestée et le kit-relocate forêt est plus rentable que d'insister
 // (vécu V3Res1/4 : 480s × 4 tentatives = 32 min d'anneaux stériles avant le stall).
-const SKILL_TIMEOUTS = { descendDiagonal: 900000, branchMine: 900000, caveHunt: 900000, huntCook: 480000, smeltCharcoal: 300000, gather: 480000, gatherLog: 180000, ensurePick: 480000, fish: 300000 };
+const SKILL_TIMEOUTS = { descendDiagonal: 900000, branchMine: 900000, caveHunt: 900000, huntCook: 90000, smeltCharcoal: 300000, gather: 480000, gatherLog: 180000, ensurePick: 480000, fish: 300000 };
 function timeoutFor(skill) { return SKILL_TIMEOUTS[skill] || SKILL_TIMEOUT_MS; }
 function withTimeout(promise, ms, onTimeout) {
   return new Promise((resolve) => {
@@ -1188,109 +1212,84 @@ async function smeltCharcoalGoal(count) {
   return smeltWithFurnace(top[0], 'charcoal', Math.min(count, top[1]), fuel);
 }
 
-// Stock de nourriture CUITE : chasse des passifs proches (jusqu'à 3 vagues) puis cuit tout le cru.
-// Pas de proie → on cuit ce qu'on a ; rien du tout → échec propre (le planner re-tentera ailleurs
-// via la re-tentative périodique du kit — le bot aura bougé).
-async function huntCookGoal(target) {
-  const cooked = () => cookedCount(buildCtxInv(bot));
-  const raw = () => _invTotal((i) => RAW2COOKED[i.name]);
-  for (let wave = 0; wave < 3 && cooked() + raw() < target; wave++) {
-    const r = await withTimeout(
-      huntPassive(bot, { count: target - cooked() - raw(), maxDistance: 32 }, taskToken),
-      120000, () => { try { stopMotion(); } catch (e) {} });
-    if (taskToken.cancelled) return { ok: false, reason: 'cancelled' };
-    if (!r || !r.ok) break;
-  }
-  let cookedAny = false;
-  for (const [rawName, cookedName] of Object.entries(RAW2COOKED)) {
-    const n = _invTotal((i) => i.name === rawName);
-    if (!n) continue;
-    const s = await smeltWithFurnace(rawName, cookedName, n);
-    if (s.ok) cookedAny = true;
-    if (taskToken.cancelled) return { ok: false, reason: 'cancelled' };
-  }
-  if (cooked() >= target || cookedAny) return { ok: true, got: cooked() };
-  // PLAN B — pêche (#55a) : la chasse a échoué (zone vidée de gibier), tentative bornée AVANT
-  // d'abandonner. Le poisson ne s'épuise pas, contrairement au gibier (20+ « starved to death »
-  // en 3 h de run réel avec huntCook comme SEUL plan nourriture).
-  // (`fishTry` = pêche ici, et si l'eau manque, pêche à l'eau CONNUE — cf. PLAN B-bis ci-dessous.)
-  let fishR = await fishTry(target - cooked());
-  if (taskToken.cancelled) return { ok: false, reason: 'cancelled' };
-  // ── PLAN C — LA FICELLE (18/08, run world_mn15). Le plan B ne s'ouvrait jamais : `no_rod` ×444
-  // parce qu'une canne coûte 3 bâtons + 2 FICELLES et qu'il n'y a pas de ficelle. La chaîne
-  // mourait donc là — chasse `no_prey` → pêche `no_rod` → RIEN — pendant que 5 bots BLINDÉS
-  // mouraient de faim en 10 minutes. La ficelle ne se ramasse pas au sol : elle se prend sur
-  // l'araignée, qui pullule autour du camp (ils la tuaient déjà quand ils étaient nus).
-  // `stringHuntNeeded` est la porte : blindé (≥2 pièces), armé, et un déficit de FICELLE (un
-  // déficit de BÂTONS veut dire du bois, pas une araignée). UNE seule re-tentative de pêche
-  // derrière — jamais de boucle (piège #47d).
-  if (fishR && fishR.reason === 'no_rod' && stringHuntNeeded({
-    // LISTE `[{name,count}]`, surtout pas `buildCtxInv` qui rend une CARTE `{nom: nombre}` : la
-    // lecture du déficit itère la liste, et un objet nu n'est pas itérable (piège #61).
-    inventory: (bot.inventory && bot.inventory.items()) || [],
-    worn: _wornArmor().size,
-    hasWeapon: !!bestWeapon(bot),
-  })) {
-    // v7 — LA FENÊTRE : `stringHuntNeeded` dit « j'ai le DROIT » ; elle ne dit rien de la PRÉSENCE
-    // d'une araignée. D'où 376 `no_spider` sur 385 tentatives : on partait en plein jour, dans une
-    // zone qui n'en avait pas. On ne part donc que si on en VOIT une, ou si c'est l'heure où elles
-    // sortent — et trois zones vides d'affilée coupent la chasse pour 15 minutes.
-    let spiderSeen = false;
-    try { spiderSeen = !!nearestSpider(bot, HUNT_RADIUS); } catch (e) { /* lecture du monde KO */ }
-    const nightKnown = !!(bot && bot.time && bot.time.timeOfDay != null);
-    const win = spiderHuntWindow({
-      spiderVisible: spiderSeen,
-      isNight: nightKnown ? isNight(bot) : null,
-      timeOfDay: nightKnown ? bot.time.timeOfDay : null,
-      noSpiderStreak: _noSpiderStreak,
-      lastNoSpiderAt: _lastNoSpiderAt,
-      now: Date.now(),
-    });
-    if (!win.go) {
-      // Un refus TRACÉ : sans ça on ne saurait pas distinguer « la porte a fermé » de « la chasse a
-      // échoué » — c'est exactement ce qui a rendu les 376 no_spider si longs à comprendre (#55a).
-      emit({ type: 'string_hunt_skipped', reason: win.reason, streak: _noSpiderStreak });
-    } else {
-      const sh = await withTimeout(huntSpidersGoal(), 90000, () => { try { stopMotion(); } catch (e) {} });
-      if (taskToken.cancelled) return { ok: false, reason: 'cancelled' };
-      _noSpiderStreak = spiderHuntStreak(sh, _noSpiderStreak);
-      if (sh && sh.reason === 'no_spider') _lastNoSpiderAt = Date.now();
-      if (sh && sh.strings > 0) {
-        // `fishTry` et NON `fishGoal` : la canne vient d'être débloquée, mais rien ne dit qu'il y a
-        // de l'eau ICI — sans le repli, la chaîne rouvrirait pour se refermer aussitôt sur
-        // `no_water`, c'est-à-dire exactement le mécanisme-qui-tourne-à-vide qu'on répare.
-        fishR = await fishTry(target - cooked());
-        if (taskToken.cancelled) return { ok: false, reason: 'cancelled' };
-      }
-    }
-  }
-  if (fishR && fishR.caught > 0) {
-    // cuit le poisson cru — MÊME mécanisme que ci-dessus (cod/salmon sont déjà dans RAW2COOKED :
-    // bot.fish() les dépose crus dans l'inventaire, exactement comme une proie chassée).
-    for (const [rawName, cookedName] of Object.entries(RAW2COOKED)) {
-      const n = _invTotal((i) => i.name === rawName);
-      if (!n) continue;
-      const s = await smeltWithFurnace(rawName, cookedName, n);
-      if (s.ok) cookedAny = true;
-      if (taskToken.cancelled) return { ok: false, reason: 'cancelled' };
-    }
-    if (cooked() >= target || cookedAny) return { ok: true, got: cooked() };
-  }
-  return { ok: false, reason: `no_prey:${(fishR && fishR.reason) || 'no_fish'}` };
+// Stock de nourriture : chasse (UNE vague ≤ 45 s, SEULEMENT si une proie est EN VUE) → cuisson (four EN
+// POCHE, ≥ 2 crus, du temps) → pêche locale (canne EN POCHE, eau ≤ 16 blocs, ≤ 40 s), le tout dans UN
+// budget de 60 s. Massii 19/10 : « l'important c'est la VITESSE : pas de choix qui font trop durer, et
+// dans le pire des cas il y a la viande de zombie ». L'enchaînement (quoi, dans quel ordre, sous quel
+// plafond) vit dans foodRun.runHuntCook, testé avec des dépendances fausses ; ici, le câblage sur le
+// vrai bot.
+//
+// RETIRÉ de cette chaîne (trop long pour ce qu'ils rapportent) : les 3 vagues de 120 s, le trajet vers
+// l'eau connue (`fishTry` / `fishAtKnownWater`, jusqu'à 300 s ×2) et la chasse à la ficelle
+// (`huntSpidersGoal`, 90 s). Ces fonctions restent définies plus bas, testées, simplement plus appelées
+// d'ici (réutilisables pour un mode « expédition »). La ficelle vient désormais du ramassage
+// opportuniste APRÈS un combat contre une araignée (cf. wireCombatLoot).
+//
+// `opts` : { budget?, budgetMs?, waves=1, huntMs=45000, goalPoints? }. `waves` reste réglable pour qui
+// veut EXPLICITEMENT davantage ; aucun appelant actuel (kit, hook de descente, démarrage mappeur,
+// ensureFood) n'a jamais justifié les 3 vagues par un commentaire → tous passent à 1.
+async function huntCookGoal(target, opts = {}) {
+  // JETON CAPTURÉ à l'entrée (fix 18/08) : `taskToken` est un GLOBAL relu tard. Si une migration prend
+  // la main pendant la chasse, le relire donnerait le jeton VIVANT de la migration — et la chasse
+  // repartirait par-dessus ses jambes.
+  const tok = taskToken;
+  return runHuntCook({
+    token: tok,
+    inventory: () => buildCtxInv(bot),
+    passiveInView: () => { try { return !!nearestPassive(bot, HUNT_SIGHT_RADIUS); } catch (e) { return false; } },
+    // Le plafond est RÉEL : à l'expiration `cancel()` coupe le jeton dérivé que huntPassive relit à
+    // chaque proie (withTimeout seul rend la main mais laisse la chasse tourner en fond).
+    hunt: ({ count, token, ms, cancel }) => withTimeout(
+      huntPassive(bot, { count, maxDistance: HUNT_SIGHT_RADIUS }, token),
+      ms, () => { try { cancel(); } catch (e) {} try { stopMotion(); } catch (e) {} }),
+    // Piles de viande crue, la plus abondante d'abord : le four se pose (puis se reprend) une fois par
+    // TYPE de viande, on cuit donc le plus gros tas en premier.
+    rawStacks: () => Object.entries(RAW2COOKED)
+      .map(([name, out]) => ({ name, out, count: _invTotal((i) => i.name === name) }))
+      .filter((st) => st.count > 0)
+      .sort((a, b) => b.count - a.count),
+    hasFurnace: () => _invTotal((i) => i.name === 'furnace') > 0,
+    cook: async ({ name, out, count, maxMs }) => {
+      // Sans combustible, la fonte est impossible : ne pas poser puis reprendre un four (~5-8 s) pour
+      // rien. Même mesure que `smelt` (fuelUnits : charbon 8, bois 1,5).
+      let fuel = 0;
+      try { fuel = fuelUnits(bot.inventory.items(), fuelNames()); } catch (e) { fuel = 0; }
+      if (!(fuel >= 1)) return 0;
+      const r = await smeltWithFurnace(name, out, count, undefined, { maxMs });
+      return (r && (r.got || (r.ok ? count : 0))) || 0;
+    },
+    hasRod: () => _invTotal((i) => i.name === 'fishing_rod') > 0,
+    // Pêche LOCALE : eau à ≤ FISH_RADIUS (sinon `no_water` aussitôt, sans voyage), trajet vers la berge
+    // ≤ 12 s, une prise ≤ 20 s, le tout ≤ ms.
+    fish: ({ ms, token, cancel }) => withTimeout(
+      fishGoal(FISH_TARGET, { token, maxDistance: FISH_RADIUS, totalMs: ms, perCatchMs: 20000, gotoMs: 12000 }),
+      ms + 3000, () => { try { cancel(); } catch (e) {} try { stopMotion(); } catch (e) {} }),
+    emit,
+  }, target, opts);
 }
 
 // PÊCHE — plan B nourriture quand la zone est vidée de ses proies (20+ « starved to death » en 3 h
 // de run réel : huntCook était le SEUL plan et échoue à 100 % une fois le gibier épuisé). Le poisson
 // ne s'épuise pas, mord la nuit, ne rend pas les coups. Borné/annulable (#47d).
-async function fishGoal(target = 4) {
+// `o` : options de fishCatch qui surchargent les défauts (rayon, durées, jeton) — la sortie
+// « nourriture » les resserre (eau ≤ 16 blocs, ≤ 40 s) ; le skill `fish` garde les défauts.
+async function fishGoal(target = 4, o = {}) {
   return fishCatch(bot, {
     craft: (a) => craftSmart(a),
     goto: (p) => bot.pathfinder.goto(new pfGoals.GoalNear(p.x, p.y, p.z, 1)),
     emit,
     sleep,
-  }, { target, token: taskToken });
+  }, Object.assign({ target, token: taskToken }, o));
 }
 
+// ═══ LES TROIS MAILLONS CI-DESSOUS (`fishTry`, `fishAtKnownWater`, `huntSpidersGoal`) NE SONT PLUS
+// APPELÉS depuis le 19/10 (Massii : « l'important c'est la VITESSE : pas de choix qui font trop durer »).
+// Dans la sortie nourriture ils coûtaient jusqu'à 300 s (pêche) + 300 s (trajet vers l'eau connue) +
+// 90 s (chasse à la ficelle) pour un bot qui ne travaille pas ; la chaîne actuelle (huntCookGoal) ne
+// pêche plus que LOCALEMENT, avec une canne déjà en poche. Gardés ici — testés via leurs modules purs
+// (skills/huntSpiders.js, waterfind.js, caution.js) — pour un éventuel mode « expédition » : si on les
+// rebranche, la mémoire des zones sans araignée (spiderHuntStreak) devra vivre au NIVEAU MODULE
+// (piège #56/#52a : un back-off dans une variable locale ne se déclenche jamais).
 // ── PLAN B-bis (v7) — PÊCHER, ET SI L'EAU MANQUE, ALLER LÀ OÙ ELLE EST.
 // Le plan B a été appelé 737 fois sur le run world_mn15 pour ZÉRO poisson : `fishCatch` ne cherche
 // l'eau qu'à 24 blocs, et un puits de mine n'est presque jamais au bord d'une rivière (`no_water`).
@@ -1353,15 +1352,6 @@ async function fishAtKnownWater(target = 4) {
   }, { target, token: taskToken, maxDistance: 48, totalMs: 120000 });
 }
 
-// v7 — MÉMOIRE DES ZONES SANS ARAIGNÉE. Au niveau MODULE, comme ses sœurs (`_foodRunBusy`,
-// `_baseBusy`, …) : ces deux compteurs sont écrits dans `huntCookGoal` et relus par la fenêtre au
-// tour suivant. Un `let` posé dans une fonction compilerait, passerait tous les tests, et tuerait
-// le bot au premier tick (piège #56) ou, plus sournois ici, remettrait le compteur à zéro à chaque
-// passe — c'est-à-dire un back-off qui ne se déclenche jamais (piège #52a : une mémoire d'échec
-// qui vit dans le process ne capitalise rien).
-let _noSpiderStreak = 0;
-let _lastNoSpiderAt = 0;
-
 // FICELLE — le maillon qui manquait entre « la chasse ne donne plus rien » et « la pêche ne peut
 // pas démarrer ». `lootNearby` est branché en balayage de butin : sans lui la ficelle reste au sol
 // et l'araignée aura été tuée pour rien (c'est exactement ce qui laissait `no_rod` éternel).
@@ -1413,12 +1403,14 @@ async function runGoalSkill(goal) {
   // avant une descente/branche, tente armure+bouclier (best-effort, borné, idempotent si déjà armé).
   if (goal.skill === 'descendDiagonal' || goal.skill === 'branchMine') {
     try { await withTimeout(armorUp(), 120000, () => { try { stopMotion(); } catch (e) {} }); } catch (e) {}
-    // Sans-give : chasse best-effort AVANT la descente (bornée 90 s, jamais bloquante — cf. goals.js,
-    // le but food_stock bloquant stallait à vie sur no_prey). Surface seulement.
+    // Sans-give : chasse best-effort AVANT la descente (bornée à 70 s, jamais bloquante — cf. goals.js,
+    // le but food_stock bloquant stallait à vie sur no_prey). Surface seulement. Compté en POINTS
+    // (cru et chair putréfiée comprises) : 12 points en poche, on descend sans chasser. Et sans proie
+    // en vue, huntCookGoal rend la main aussitôt (il ne lance plus de pêche ni de trajet lointain).
     if (NO_GIVE && goal.skill === 'descendDiagonal') {
       const _y = bot.entity && bot.entity.position ? bot.entity.position.y : 0;
-      if (_y >= 45 && cookedCount(buildCtxInv(bot)) < 4) {
-        try { await withTimeout(huntCookGoal(4), 90000, () => { try { stopMotion(); } catch (e) {} }); } catch (e) {}
+      if (_y >= 45 && foodPoints(buildCtxInv(bot)) < STOCK_POINTS) {
+        try { await withTimeout(huntCookGoal(4), HUNT_COOK_TIMEOUT_MS, () => { try { stopMotion(); } catch (e) {} }); } catch (e) {}
       }
       // ⭐ Steering STRATÉGIQUE vers le SEC (mur de l'eau, run water-wall) : descendre « où on
       // est » en zone aquifère = fuite permanente = 0 minage (vécu homedeath : smelt:0 après des
@@ -2666,7 +2658,10 @@ async function startMapper() {
   if (mapperToken.cancelled) return;
   // filet survie : buffer de terre pour sceller l'abri + bouffe pour régén PV (best-effort, bornés)
   try { if (needDirtBuffer(bot.inventory.items(), 8)) await gather(bot, { name: ['dirt', 'grass_block', 'gravel'], count: 8, maxDistance: 48 }, mapperToken); } catch (e) {}
-  try { await huntCookGoal(6); } catch (e) {}
+  // BORNÉ (19/10 : ce démarrage — qui se rejoue à CHAQUE respawn — pouvait durer des minutes entre
+  // 3 vagues de chasse et la pêche) : ≤ 70 s au pire, immédiat s'il y a déjà de quoi manger ou aucune
+  // proie en vue.
+  try { await withTimeout(huntCookGoal(6), HUNT_COOK_TIMEOUT_MS, () => { try { stopMotion(); } catch (e) {} }); } catch (e) {}
   emit({ type: 'mapper_started', world: bot._worldKey, sector: mapperSector });
   // ── /locate RETIRÉ (Massii 2026-07-26 : « les bots ne doivent pas utiliser de commandes comme
   // /locate »). C'est une commande d'opérateur qui RÉVÈLE la position de structures qu'un joueur ne
@@ -2769,19 +2764,20 @@ async function startMapper() {
       try { await mapperNightGuard(); } catch (e) {}              // hole §1.4 : abri nocturne en roaming
     },
     // CHASSE OPPORTUNISTE (vécu Surv1 : le retry périodique coïncide rarement avec des proies à
-    // portée → stock jamais constitué) : à chaque arrivée, si le stock cuit est bas ET qu'une proie
-    // passe à ≤24 blocs → on la tue MAINTENANT (cru en poche ; la cuisson se fait au retry du kit).
+    // portée → stock jamais constitué) : à chaque arrivée, si la réserve est basse ET qu'une proie
+    // passe à ≤24 blocs → on la tue MAINTENANT (cru en poche : il se mange, la cuisson se fait au retry
+    // du kit). Réserve comptée en POINTS DE FAIM (19/10 : cru et chair putréfiée comptent), chasse ≤ 45 s
+    // dont le jeton s'arrête DÈS que le seuil est atteint.
     onArrive: async () => {
       // Fix fable1 : abri nocturne PROACTIF à CHAQUE arrivée (onPeriodic = 1/10 arrivées, trop rare —
       // les mappeurs se faisaient sniper en surface la nuit avant le prochain check). No-op le jour.
       if (await mapperNightGuard()) return; // aube : on reprend au prochain cycle (pas de chasse de nuit)
-      const inv = buildCtxInv(bot);
-      const rawHave = Object.keys(RAW2COOKED).reduce((s, n) => s + (inv[n] || 0), 0);
-      const missing = 4 - cookedCount(inv) - rawHave;
-      if (missing <= 0) return;
+      if (foodPoints(buildCtxInv(bot)) >= STOCK_POINTS) return;
       if (!nearestPassive(bot, 24)) return;
-      const r = await withTimeout(huntPassive(bot, { count: Math.min(missing, 2), maxDistance: 24 }, mapperToken),
-        60000, () => { try { stopMotion(); } catch (e) {} });
+      const ctl = boundedToken(mapperToken, () => foodPoints(buildCtxInv(bot)) >= STOCK_POINTS);
+      const r = await withTimeout(huntPassive(bot, { count: 2, maxDistance: 24 }, ctl.token),
+        HUNT_WAVE_MS, () => { ctl.cancel(); try { stopMotion(); } catch (e) {} });
+      ctl.cancel();                                         // rien ne court en fond après la vague
       if (r && r.kills) emit({ type: 'opportunistic_hunt', kills: r.kills });
     },
     // chaque jambe bornée (anti-freeze pathfinder, cf. withTimeout) ; timeout → virage + jambe suivante.
@@ -3658,6 +3654,7 @@ async function survivalKitUp() {
 // difficulté HARD la famine TUE (+ bloque la régen). Filet de survie : (1) en surface, chasse RÉELLE
 // bornée (huntCook) ; (2) sinon (sous terre) /give déterministe (bot OP serveur de test, cohérent avec
 // les warps/tp/spawnpoint déjà utilisés ; no-op silencieux si non-OP → le kit huntCook prend le relais).
+// Depuis le 19/10 : borné à 60 s au total et compté en points de faim — cf. ensureFood plus bas.
 // Stock de COMESTIBLES en poche (FOODS ∪ EMERGENCY_FOODS) — la mesure que lisent le déclencheur de
 // quête, la décision de remontée et le back-off stérile. UNE seule définition : trois lectures
 // divergentes du même mot (« a-t-il de quoi manger ? ») finiraient par se contredire.
@@ -3675,49 +3672,39 @@ function foodStock() {
 // deux warps). Niveau MODULE, comme `_baseBusy`/`_armorBusy` (piège #56).
 let _surfaceTripBusy = false;
 
+// ensureFood — ravitaillement BORNÉ À 60 s AU TOTAL (Massii 19/10 : « l'important c'est la VITESSE »).
+// Avant : balayage de butin 20 s + remontée 90 s + 3 vagues de 120 s + cuisson + pêche jusqu'à 300 s
+// = ~6 min d'un bot qui ne travaille pas. Maintenant (enchaînement dans foodRun.runEnsureFood, testé) :
+// sortie anticipée dès 20 points → butin (rayon 10, ≤ 8 s) → remontée /home safe SEULEMENT si sous
+// terre, affamé et à sec (< 6 points) → chasse avec ce qui reste du budget (une vague ≤ 45 s, seulement
+// si une proie est en vue) → /give hors sans-give. Tout est compté en POINTS DE FAIM (cru et chair
+// putréfiée comprises) : un bot qui a 10 chairs ne repart plus chasser.
 async function ensureFood() {
   try {
-    if (cookedCount(buildCtxInv(bot)) >= 4) return;            // assez de cuit en poche
-    let y = bot.entity && bot.entity.position ? bot.entity.position.y : 64;
-    // BUTIN D'ABORD (Massii 2026-07-26 : « ils meurent beaucoup de faim aussi » — 7 morts de faim
-    // sur les 20 premières minutes du run). Le bot tue des dizaines de mobs et LAISSE tout au sol :
-    // `attackNearest` ne ramasse rien. Or la chair putréfiée et la viande crue nourrissent
-    // (cf. EMERGENCY_FOODS) — c'est de la nourriture gratuite, déjà tuée, à quelques blocs.
-    // Court et borné : on ne transforme pas la faim en expédition.
-    try {
-      const got = await lootNearby({ radius: 12, maxItems: 6, budgetMs: 20000 });
-      if (got) emit({ type: 'food_loot_swept', items: got });
-    } catch (e) { /* best-effort */ }
-    if (cookedCount(buildCtxInv(bot)) >= 4) return;
-    // ── v7 : SOUS TERRE, REMONTER D'ABORD (le point BORGNE de la v6). Le seul plan ci-dessous est
-    // gated `y >= 45` — « la chasse est impossible sous terre », ce qui est vrai ; mais la
-    // conclusion tirée était « alors on ne fait rien » : un bot affamé à y=12 y restait jusqu'à
-    // mourir, et c'est une part des morts de faim du run. Le home `safe` est EN SURFACE : remonter
-    // est un warp, pas une expédition — et une fois là-haut TOUTE la quête (chasse → pêche → eau
-    // connue) redevient disponible. Placé APRÈS le balayage de butin : si de la chair putréfiée
-    // traîne à trois blocs, on ne remonte pas pour rien. Borné, une seule remontée par passe.
-    if (!_surfaceTripBusy && surfaceTripNeeded({ y, food: bot.food, foodItems: foodStock() })) {
-      _surfaceTripBusy = true;
-      try {
-        emit({ type: 'food_surface_trip', y: Math.round(y), food: bot.food });
-        await withTimeout(safeWarpHome(HOME_SAFE), 90000, () => { try { stopMotion(); } catch (e) {} });
-        // RELIRE l'altitude : sans ça le gate ci-dessous jugerait sur la position d'AVANT le warp
-        // et la remontée n'aurait servi à rien (piège #61 — un champ lu au mauvais moment ne plante
-        // jamais, il rend la fonctionnalité morte).
-        y = bot.entity && bot.entity.position ? bot.entity.position.y : y;
-      } catch (e) { /* best-effort : à défaut on retombe sur le comportement d'avant */ }
-      finally { _surfaceTripBusy = false; }
-    }
-    // FOOD_SURFACE_Y et non « 45 » en dur : c'est LE MÊME plancher que celui de la décision de
-    // remontée ci-dessus. Les laisser diverger, c'est un bot qui remonte à 44 pour se voir refuser
-    // la chasse à 44 — un aller-retour pour rien, invisible dans les logs.
-    if (y >= FOOD_SURFACE_Y) {                                 // surface → chasse réaliste bornée
-      try { await withTimeout(huntCookGoal(6), 120000, () => { try { stopMotion(); } catch (e) {} }); } catch (e) {}
-    }
-    if (cookedCount(buildCtxInv(bot)) >= 4) return;
-    if (NO_GIVE) return;   // sans-give : la chasse en surface reste le SEUL ravitaillement
-    // Sous terre la chasse est impossible (pas de passifs à Y-58) → filet déterministe anti-mort.
-    try { bot.chat('/give ' + bot.username + ' cooked_beef 32'); emit({ type: 'food_resupply', via: 'give' }); } catch (e) {}
+    await runEnsureFood({
+      inventory: () => buildCtxInv(bot),
+      y: () => (bot.entity && bot.entity.position ? bot.entity.position.y : 64),
+      hunger: () => bot.food,
+      foodItems: () => foodStock(),
+      loot: (o) => lootNearby(o),
+      // Une seule remontée à la fois : un appel concurrent ne déclenche pas un 2e warp (il continue
+      // simplement vers la chasse avec l'altitude du moment).
+      surfaceTrip: async ({ ms, y, food }) => {
+        if (_surfaceTripBusy) return;
+        _surfaceTripBusy = true;
+        try {
+          emit({ type: 'food_surface_trip', y: Math.round(y), food });
+          await withTimeout(safeWarpHome(HOME_SAFE), ms, () => { try { stopMotion(); } catch (e) {} });
+        } finally { _surfaceTripBusy = false; }
+      },
+      hunt: ({ budget }) => huntCookGoal(6, { budget, goalPoints: ENSURE_SKIP_POINTS }),   // même seuil que la sortie anticipée
+      canGive: !NO_GIVE,
+      give: () => {
+        bot.chat('/give ' + bot.username + ' cooked_beef 32');
+        emit({ type: 'food_resupply', via: 'give' });
+      },
+      emit,
+    });
   } catch (e) { /* best-effort */ }
 }
 
@@ -5078,6 +5065,10 @@ async function onSpawn() {
       } catch (e) { /* best-effort : sans gardien, on retombe sur l'ancien comportement */ }
       emit({ type: 'moves_keeper_on', collect, pvp: pvpWatch, copied });
     }
+    // BUTIN APRÈS COMBAT : posé APRÈS le gardien de Movements (watchPvp ci-dessus) — les écouteurs d'un
+    // même event s'exécutent dans l'ordre d'enregistrement, la nominale est donc déjà rendue quand on
+    // lance lootNearby. Une seule fois par process (garde de NIVEAU MODULE `_combatLootWired`).
+    try { wireCombatLoot(); } catch (e) { /* best-effort : sans ça, comportement d'avant */ }
     bot.pathfinder.setMovements(moves);
     // ANTI-OOM (crash live 25/07 : NethBot2 → 2 Go de heap en 38 s → FATAL heap out of memory,
     // juste après `survival:flee`). mineflayer-pathfinder livre `searchRadius = -1` = espace de
@@ -5659,6 +5650,15 @@ async function onSpawn() {
 }
 
 // Ramasse les items tombés autour de la position courante. Borné (temps + nb) pour ne pas geler.
+// Le goto de CHAQUE objet est rogné par ce qui reste du budget (19/10 : un balayage de 8 s dont le
+// dernier goto pouvait durer 15 s n'était pas borné à 8 s).
+// `opts.abortOnFail` (défaut FAUX = comportement historique) : un goto qui ÉCHOUE (inatteignable, ou un
+// autre système a pris le pathfinder) abandonne le ramassage. `withTimeout` ne rejette jamais, le
+// `catch` d'origine ne servait donc à rien et on re-tentait le MÊME objet (toujours le plus proche)
+// jusqu'à maxItems fois. Les appels BUDGÉTÉS de la sortie nourriture (balayage, butin après combat)
+// l'activent : s'acharner sur un objet inatteignable y mange tout le budget, et se battre pour le
+// pathfinder avec un autre système est exactement le bug de classe n°1 du 19/10. La récupération des
+// objets de mort garde l'ancien comportement : un échec passager n'y doit pas abandonner le butin.
 async function lootNearby(opts = {}) {
   const radius = opts.radius || 20;
   const maxItems = opts.maxItems || 20;
@@ -5672,16 +5672,80 @@ async function lootNearby(opts = {}) {
       if (!drops.length) break;
       const e = drops[0].entity;
       if (!e || !e.position) break;
+      const gotoMs = Math.max(1500, Math.min(15000, deadline - Date.now()));
+      let r;
       try {
-        await withTimeout(
+        r = await withTimeout(
           bot.pathfinder.goto(new pfGoals.GoalNear(e.position.x, e.position.y, e.position.z, 1)),
-          15000, () => { try { stopMotion(); } catch (er) {} });
+          gotoMs, () => { try { stopMotion(); } catch (er) {} });
       } catch (er) { break; }   // inatteignable → on abandonne le ramassage (best-effort)
+      if (opts.abortOnFail && r && r.ok === false) break;
       await sleep(600);          // laisse la collecte auto (proximité) opérer
       got++;
     }
   } catch (e) { /* best-effort */ }
   return got;
+}
+
+// ── BUTIN APRÈS UN COMBAT (Massii 19/10 : « dans le pire des cas, il y a la viande de zombie »).
+// `bot.pvp` ne ramasse RIEN : la chair putréfiée d'un zombie (2 points de faim, de quoi tenir) et la
+// ficelle d'une araignée (la canne qui débloque la pêche) restaient au sol. À la fin d'un combat contre
+// un HOSTILE, si la voie est libre, on ramasse ce qui est tombé autour (≤ 6 blocs, 4 objets, 5 s).
+// La décision « maintenant ? » est PURE et testée (food.shouldLootAfterCombat). Le pathfinder n'a qu'UN
+// but : poser le nôtre vole le trajet en cours (GoalChanged, la classe de bug n°1 du 19/10), d'où
+// les gardes — jamais pendant une migration, jamais avec un hostile à ≤ 8 blocs, et si un AUTRE trajet
+// est en cours seulement pour un objet à ≤ 4 blocs. Seul un HOSTILE tué ouvre la porte : le gibier
+// chassé a déjà son propre ramassage (huntPassive), lui faire concurrence = deux goto qui se volent la
+// place. NB : `stoppedAttacking` part aussi de stopMotion() — la cible relevée à `startedAttacking`
+// (et non lue à l'arrivée de l'event : mineflayer-pvp l'a déjà vidée) dit de QUEL combat il s'agit.
+function wireCombatLoot() {
+  if (_combatLootWired) return false;
+  _combatLootWired = true;
+  bot.on('startedAttacking', () => {
+    try {
+      const t = bot.pvp && bot.pvp.target;
+      _combatTarget = t ? { name: t.name, kind: t.kind, type: t.type } : null;
+    } catch (e) { _combatTarget = null; }
+  });
+  bot.on('stoppedAttacking', () => {
+    const target = _combatTarget;
+    _combatTarget = null;
+    lootAfterCombat(target).catch(() => { /* best-effort */ });
+  });
+  return true;
+}
+
+async function lootAfterCombat(target) {
+  if (_combatLootBusy) return;
+  _combatLootBusy = true;                       // posé AVANT l'attente : deux fins de combat rapprochées n'en lancent qu'un
+  try {
+    // Court délai : les objets du mort sont arrivés, le gardien de Movements a rendu la nominale, et
+    // l'appelant qui possédait le combat (huntSpiders, recoverDeathDebt…) a déjà posé son propre but
+    // s'il en avait un — `goalActive` reflète alors la réalité.
+    await sleep(COMBAT_LOOT_SETTLE_MS);
+    const me = bot.entity && bot.entity.position;
+    if (!me || bot.isAlive === false) return;            // mort pendant l'attente : la dette de mort ramassera
+    let drops = [];
+    try { drops = homewarp.dropsWithin(bot.entities, me, COMBAT_LOOT_RADIUS); } catch (e) { drops = []; }
+    let hostilesNear = false;
+    try { hostilesNear = nearbyHostiles(bot, COMBAT_LOOT_HOSTILE_RADIUS).length > 0; } catch (e) { hostilesNear = true; }   // illisible → prudence
+    let inWater = false;
+    try { inWater = isInWater(bot); } catch (e) { inWater = false; }
+    const owner = taskCtl.active;               // 'autonomous' (planner ET mappeur) ou rien ; les ordres directs (follow, guard…) gardent la main
+    const verdict = shouldLootAfterCombat({
+      target,
+      hostilesNear,
+      migrating: _migrating,
+      busy: !!(_imminentBusy || panicInFlight || _armorBusy || _baseBusy || _escaping || _deathDebtBusy || inWater
+        || (bot.pvp && bot.pvp.target)                   // un NOUVEAU combat a déjà commencé (attack() enchaîne stop puis start)
+        || (owner && owner !== 'autonomous')),
+      goalActive: !!(bot.pathfinder && bot.pathfinder.goal),
+      dropDist: drops.length ? drops[0].dist : null,
+    });
+    if (!verdict.go) return;
+    const got = await lootNearby({ radius: COMBAT_LOOT_RADIUS, maxItems: COMBAT_LOOT_ITEMS, budgetMs: COMBAT_LOOT_MS, abortOnFail: true });
+    if (got) emit({ type: 'combat_loot', items: got, target: target && target.name });
+  } finally { _combatLootBusy = false; }
 }
 
 // Post-mort (cible keepInventory OFF) : keepInv ON → dropsWithin renvoie [] → no-op immédiat.
@@ -6301,18 +6365,23 @@ setInterval(async () => {
     })) return;
     _foodRunBusy = true;
     _lastFoodRunAt = Date.now();
+    const runStartedAt = Date.now();
     emit({
       type: 'food_run', food: bot.food,
       y: bot.entity.position ? Math.round(bot.entity.position.y) : null,
       wait_min: Math.round(_foodRunCooldownMs / 60000),
     });
-    await withTimeout(ensureFood(), 240000, () => { try { stopMotion(); } catch (e) {} });
+    // 70 s (19/10 : « la VITESSE ») et non plus 240 s : ensureFood tient dans un budget de 60 s dont
+    // chaque phase est rognée, ces 10 s de marge ne sont qu'un garde-fou d'exécution.
+    await withTimeout(ensureFood(), FOOD_RUN_TIMEOUT_MS, () => { try { stopMotion(); } catch (e) {} });
     // Le VERDICT de la passe : ce qu'on a RAMENÉ, pas ce qu'on a tenté. Tracé, parce qu'un
-    // rationnement muet est indistinguable d'un mécanisme mort (#55a).
+    // rationnement muet est indistinguable d'un mécanisme mort (#55a). `points` (réserve en points
+    // de faim après la passe) et `took_ms` MESURENT la vitesse en live.
     const after = foodStock();
     _foodRunCooldownMs = foodRunCooldownAfter({ before: stock, after });
     emit({
       type: 'food_run_done', before: stock, after, gained: after - stock,
+      points: foodPoints(buildCtxInv(bot)), took_ms: Date.now() - runStartedAt,
       next_min: Math.round(_foodRunCooldownMs / 60000),
     });
   } catch (e) { /* watchdog : ne crash jamais */ }
