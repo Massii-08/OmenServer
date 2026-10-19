@@ -29,6 +29,7 @@ const { createTaskController } = require('./tasks');
 const { createMemory } = require('./memory');
 const { bestWeapon, bestToolFor } = require('./tools');
 const { shouldSprint, applyPathfinderBounds, withTempMovements } = require('./movement');   // sprint « vrai joueur » ON par défaut (Massii 2026-06-22) + bornage A* (anti-OOM 2026-07-25)
+const { createGoalTrace, installGoalTrace } = require('./goalTrace');   // DIAG GoalChanged : qui pose un but pendant un goto ? (aucun effet sur le bot)
 const vec3Lib = require('vec3'); // watchdog anti-jam (blocs barrants)
 const { gather, woodExpeditionCount } = require('./skills/gather');
 const { mineDown } = require('./skills/mineDown');
@@ -359,6 +360,22 @@ let panicInFlight = false;    // garde de ré-entrée onPanic. DOIT rester au ni
                               // survie (l. ~3713/3792/3811) la lisent HORS de onSpawn — déclarée en
                               // `let` dans onSpawn elle levait un ReferenceError qui TUAIT le process
                               // au 1er tick du timer (vécu : les 3 workers morts en boucle, run Minestrator)
+
+// DIAG « GoalChanged » (live : les trajets explore / migration de zone échouent en < 1 s avec « The goal
+// was changed before it could be completed! ») — QUI pose un but pendant qu'un goto tourne ? On enveloppe
+// bot.pathfinder.setGoal (goalTrace.js, posé dans onSpawn) et on vide les compteurs toutes les 60 s dans
+// un event `goal_trace` { windowS, top:[{ by, calls, interrupted }] } : la tête de liste avec un
+// `interrupted` élevé est le coupable. Pur diagnostic : aucun effet sur le comportement du bot.
+// ATTENTION : NIVEAU MODULE, comme panicInFlight ci-dessus — le timer lit `_goalTrace` HORS de onSpawn ;
+// déclarée dans onSpawn, elle lèverait une ReferenceError au 1er tick (le smoke test ne le voit pas).
+const _goalTrace = createGoalTrace({});
+let _goalTraceInstalled = false;   // le wrapper ne se pose qu'UNE fois par process (cf. onSpawn)
+setInterval(() => {
+  try {
+    const d = _goalTrace.drain();
+    if (d.top.length) emit({ type: 'goal_trace', ...d });
+  } catch (e) { /* diagnostic : ne crash jamais */ }
+}, _goalTrace.windowMs);
 
 // Attend l'atterrissage d'un /home : saut de position >16 blocs = warpé ; message « cancelled »
 // (teleport-delay : le bot a bougé/pris un coup pendant le warmup) = échec explicite ; sinon
@@ -4984,6 +5001,16 @@ async function onSpawn() {
     // l'OOM. Le think-timeout de 5 s ne protège pas : 5 s suffisent à allouer des Go.
     // Budget de détour, pas rayon absolu (cf. movement.js) → les longs trajets restent intacts.
     applyPathfinderBounds(bot.pathfinder);
+    // DIAG GoalChanged (cf. goalTrace.js) : on compte QUI appelle setGoal et si l'appel INTERROMPT un but
+    // actif. Une seule fois par process (garde de NIVEAU MODULE, la 1re tentative suffit). `goal_trace_on`
+    // dit si le wrapper est réellement posé : sans lui, l'absence d'event `goal_trace` serait ambiguë
+    // (aucun setGoal posé vs instrumentation absente).
+    if (!_goalTraceInstalled) {
+      _goalTraceInstalled = true;
+      let traced = false;
+      try { traced = installGoalTrace(bot.pathfinder, _goalTrace); } catch (e) { /* diag : jamais bloquant */ }
+      emit({ type: 'goal_trace_on', ok: traced });
+    }
     // SPRINT « vrai joueur » (Massii 2026-06-22) : `allowSprinting` laisse pathfinder sprinter
     // SEULEMENT sur de longs trajets droits → en minage (déplacements courts) le bot ne sprintait
     // quasi jamais (lent + tell). Garde tick : on FORCE le sprint dès qu'on avance sur la terre
