@@ -119,6 +119,52 @@ def test_parse_gbx_value_traded_is_in_pounds_not_pence():
     assert rr["market_cap_meur"] == round(111914036139 * 1.17 / 1e6, 2)
 
 
+# Chiffres RÉELS du snapshot du 19/10 à 13:30 UTC. ``Value.Traded`` est rendu
+# dans la devise COMPTABLE (``fundamental_currency_code``), pas dans celle du
+# cours : ratio Value.Traded / (volume × cours) mesuré à 0,01 pour RR. (cours
+# en pence, comptes en livres), 0,7503 pour CPG (cours en USD, comptes en
+# livres) et 0,8899 pour TFG (cours en USD, comptes en euros).
+@pytest.mark.parametrize("market_id,tv_symbol,currency,accounting,close,volume,traded", [
+    ("uk", "LSE:RR.", "GBX", "GBP", 1332.6, 13635755, 181710071.13),
+    ("uk", "LSE:CPG", "USD", "GBP", 32.49, 308584, 7522428.388247999),
+    # À l'échelle réelle (4 746 titres, 63 143 €), l'arrondi au centième de
+    # million ne distingue pas l'euro du dollar : volume et montant × 1000.
+    ("netherlands", "EURONEXT:TFG", "USD", "EUR", 14.95, 4746 * 1000,
+     63143.1491691 * 1000),
+], ids=["RR-pence-livres", "CPG-dollars-livres", "TFG-dollars-euros"])
+def test_parse_value_traded_is_in_the_accounting_currency(
+        market_id, tv_symbol, currency, accounting, close, volume, traded):
+    payload = {"totalCount": 1, "data": [{"s": tv_symbol, "d": _values(
+        name=tv_symbol.split(":")[1], currency=currency,
+        fundamental_currency_code=accounting, close=close, volume=volume,
+        **{"Value.Traded": traded})}]}
+    rows, _ = sc.parse_response(payload, mk.by_id(market_id))
+    assert rows[0]["value_traded_meur"] == round(traded * mk.eur_rate(accounting) / 1e6, 2)
+
+
+def test_parse_average_value_stays_in_the_quote_currency():
+    # Le montant MOYEN se calcule depuis le cours (en pence pour RR.) : la
+    # devise comptable ne le concerne pas.
+    payload = {"totalCount": 1, "data": [{"s": "LSE:RR.", "d": _values(
+        name="RR.", currency="GBX", fundamental_currency_code="GBP", close=1332.6,
+        volume=13635755, average_volume_10d_calc=20780949.8,
+        **{"Value.Traded": 181710071.13})}]}
+    rows, _ = sc.parse_response(payload, mk.by_id("uk"))
+    assert rows[0]["avg_value_meur"] == round(
+        20780949.8 * 1332.6 * mk.eur_rate("GBX") / 1e6, 2)
+
+
+def test_parse_value_traded_is_never_in_pence_without_accounting_currency():
+    # Devise comptable absente : un titre coté en pence garde la règle de la
+    # PR #4 (``Value.Traded`` n'est jamais rendu en pence) au lieu de
+    # retomber sur la devise du cours, cent fois trop petite.
+    payload = {"totalCount": 1, "data": [{"s": "LSE:RR.", "d": _values(
+        name="RR.", currency="GBX", close=1332.6, volume=13635755,
+        **{"Value.Traded": 181710071.13})}]}
+    rows, _ = sc.parse_response(payload, mk.by_id("uk"))
+    assert rows[0]["value_traded_meur"] == round(181710071.13 * mk.eur_rate("GBP") / 1e6, 2)
+
+
 def test_parse_dedups_symbols_and_tolerates_short_rows():
     payload = {"totalCount": 2, "data": [
         {"s": "MIL:ENI", "d": ["ENI", "Eni", "stock", ["common"], "MIL", "EUR", 15.0]},
