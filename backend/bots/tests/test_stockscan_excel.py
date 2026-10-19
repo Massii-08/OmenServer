@@ -120,3 +120,16 @@ def test_empty_results_still_write(tmp_path):
     path = xo.write_workbook({"generated_at": "2026-10-17T07:00:00+00:00", "rows": []}, tmp_path, "fr")
     wb = load_workbook(str(path))
     assert wb["Candidats"].cell(row=xo.DATA_START_ROW, column=1).value is None
+
+
+def test_session_column_and_session_warnings():
+    assert xo.session_text({"state": "open", "elapsed": 0.735}, "fr") == "en séance (74 %)"
+    assert xo.session_text({"state": "closed", "elapsed": None}, "en") == "closed"
+    assert xo.session_text({"state": "???"}, "it") == "sconosciuta"
+    assert xo.session_text(None, "fr") is None
+    for lang in ("fr", "en", "it"):
+        lab = xo.labels(lang)
+        assert len(lab["headers"]) == len(xo.WIDTHS) == 18
+        assert "awaiting_open" in lab["flags"] and "awaiting_open" in lab["reasons"]
+    text = xo.warning_text({"code": "volume_adjusted", "markets": ["italy", "uk"]}, "fr")
+    assert "italy, uk" in text and "{markets}" not in text

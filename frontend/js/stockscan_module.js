@@ -1006,6 +1006,7 @@ const StockScanModule = {
         const vars = {
             columns: Array.isArray(o.columns) ? o.columns.map(String).join(', ') : this._plain(o.columns),
             market: o.market ? this._marketLabel(o.market) : '',
+            markets: Array.isArray(o.markets) ? o.markets.map(m => this._marketLabel(m)).join(', ') : '',
             error: err.length > 160 ? err.slice(0, 157) + '…' : err,
             code: code,
         };
@@ -1040,6 +1041,18 @@ const StockScanModule = {
         const cls = c === 'red' ? 'badge danger'
             : ((c === 'late' || c === 'earnings_soon' || c === 'coach_down') ? 'badge warn' : 'badge muted');
         return '<span class="' + cls + '">' + esc(label) + '</span>';
+    },
+
+    // État de la bourse au moment du scan : une place fermée a des cours figés
+    // à sa dernière clôture, une place ouverte n'a qu'une partie de sa séance.
+    _sessionHtml(session) {
+        const st = (session && typeof session === 'object') ? String(session.state || '') : '';
+        if (st === 'open') {
+            const pct = this._isNum(session.elapsed) ? this._num(Number(session.elapsed) * 100, 0) : '?';
+            return '<span class="badge online">' + esc(this._tr('stocks.session.open', { p: pct })) + '</span>';
+        }
+        if (st === 'closed') return '<span class="badge muted">' + esc(Lang.t('stocks.session.closed')) + '</span>';
+        return '';
     },
 
     _reasonText(r, res) {
@@ -1150,7 +1163,13 @@ const StockScanModule = {
             : (chgN > 0 ? 'var(--accent)' : 'var(--danger)');
         const nums = [];
         if (this._isNum(row.gap_pct)) nums.push(this._tr('stocks.gap', { v: this._pct(row.gap_pct, 2, true) }));
-        if (this._isNum(row.rel_volume)) nums.push(this._tr('stocks.rel_volume', { v: this._num(row.rel_volume, 1) }));
+        if (this._isNum(row.rel_volume)) {
+            // Séance en cours : le volume affiché est ramené à une journée
+            // entière ; le brut (partiel) reste visible pour pouvoir vérifier.
+            nums.push(this._isNum(row.rel_volume_raw)
+                ? this._tr('stocks.rel_volume_adj', { v: this._num(row.rel_volume, 1), raw: this._num(row.rel_volume_raw, 2) })
+                : this._tr('stocks.rel_volume', { v: this._num(row.rel_volume, 1) }));
+        }
         if (this._isNum(row.perf_w)) nums.push(this._tr('stocks.week', { v: this._pct(row.perf_w, 1, true) }));
 
         // --- place, secteur, taille, résultats à venir ---
@@ -1164,7 +1183,8 @@ const StockScanModule = {
             meta.push(this._tr('stocks.earnings_next', { date: this._date(row.earnings_next) }));
         }
 
-        const flags = (Array.isArray(row.flags) ? row.flags : []).map(f => this._flagHtml(f)).join('');
+        const flags = this._sessionHtml(row.session) +
+            (Array.isArray(row.flags) ? row.flags : []).map(f => this._flagHtml(f)).join('');
         const reasons = (Array.isArray(row.reasons) ? row.reasons : [])
             .map(r => this._reasonText(r, res)).filter(Boolean)
             .map(txt => '<span style="' + this._CHIP + '">' + esc(txt) + '</span>').join('');

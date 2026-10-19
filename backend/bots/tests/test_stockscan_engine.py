@@ -136,7 +136,14 @@ def test_full_scan_ranks_catalysts_and_writes_files(tmp_path):
 
     eni = results["rows"][0]
     assert "earnings_soon" in eni["flags"]
-    assert {"positive", "earnings", "volume", "aligned", "sources"} <= set(eni["components"])
+    # Samedi : Milan a clôturé vendredi, les news d'ENI sont postérieures ->
+    # le volume et la variation de vendredi ne les confirment pas (sessions.py).
+    assert {"positive", "earnings", "sources"} <= set(eni["components"])
+    assert "volume" not in eni["components"] and "aligned" not in eni["components"]
+    assert "awaiting_open" in eni["flags"]
+    assert eni["session"]["state"] == "closed"
+    assert eni["session"]["last_close"] == "2026-10-16T15:30:00+00:00"
+    assert results["sessions"]["italy"]["state"] == "closed"
     assert eni["links"]["chart"] == "https://www.tradingview.com/chart/?symbol=MIL%3AENI"
     assert len(eni["news"]) == 2
 
@@ -357,3 +364,16 @@ def test_probe_writes_raw_responses(tmp_path):
 def test_probe_reports_screener_failure(tmp_path):
     assert cli.probe(str(tmp_path), "italy", None, screener=FakeScreener(fail={"italy"})) == 1
     assert cli.probe(str(tmp_path), "japan", None, screener=FakeScreener()) == 1
+
+
+def test_open_session_volume_is_scaled_and_reported(tmp_path):
+    # Mercredi 21/10 13:15 UTC = 15:15 à Milan : 6 h 15 sur 8 h 30 écoulées.
+    wednesday = datetime(2026, 10, 21, 13, 15, tzinfo=timezone.utc)
+    deps = _deps()
+    deps.now = lambda: wednesday
+    results = engine.run_scan(_cfg(), "massii", tmp_path, deps, log=lambda m: None)
+    assert {"code": "volume_adjusted", "markets": ["italy"]} in results["warnings"]
+    row = results["rows"][0]
+    assert row["session"]["state"] == "open"
+    fraction = 6.25 / 8.5
+    assert abs(row["rel_volume"] - round(row["rel_volume_raw"] / fraction, 4)) < 1e-9

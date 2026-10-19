@@ -22,6 +22,7 @@ from backend.bots.stockscan import markets as mk
 from backend.bots.stockscan import news as nw
 from backend.bots.stockscan import scoring as sg
 from backend.bots.stockscan import screener as sc
+from backend.bots.stockscan import sessions as ss
 
 RESULTS_VERSION = 1
 STOP_FILE = "stop.flag"
@@ -217,9 +218,18 @@ def _coach_summary(slot: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _session_summary(state: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    state = state or {}
+    elapsed = state.get("elapsed")
+    return {"state": state.get("state") or "unknown",
+            "elapsed": round(elapsed, 3) if isinstance(elapsed, float) else None,
+            "local_time": state.get("local_time"),
+            "last_close": state.get("last_close")}
+
+
 _ROW_KEYS = ("tv_symbol", "symbol", "ticker", "name", "market", "exchange", "currency",
-             "price", "change_pct", "gap_pct", "rel_volume", "avg_value_meur",
-             "market_cap_meur", "sector", "perf_w", "earnings_next")
+             "price", "change_pct", "gap_pct", "rel_volume", "rel_volume_raw",
+             "avg_value_meur", "market_cap_meur", "sector", "perf_w", "earnings_next")
 
 
 def run_scan(cfg: Dict[str, Any], username: str, out_dir: Any, deps: Deps,
@@ -283,6 +293,15 @@ def run_scan(cfg: Dict[str, Any], username: str, out_dir: Any, deps: Deps,
             warnings.append({"code": "fallback_failed"})
     counts["universe"] = len(universe)
 
+    # Séances : une bourse ouverte n'a qu'une PARTIE de sa journée de volume,
+    # une bourse fermée a ses cours figés à sa dernière clôture (sessions.py).
+    states = ss.states_for(cfg["markets"], now)
+    vol_report = ss.adjust_rel_volume(universe, states)
+    if vol_report["adjusted"]:
+        warnings.append({"code": "volume_adjusted", "markets": vol_report["adjusted"]})
+    if vol_report["skipped"]:
+        warnings.append({"code": "session_uncertain", "markets": vol_report["skipped"]})
+
     # --- 2. signaux du coach (zéro réseau) ---------------------------------------
     check()
     progress.update("coach", 0, 1, universe=len(universe))
@@ -301,7 +320,9 @@ def run_scan(cfg: Dict[str, Any], username: str, out_dir: Any, deps: Deps,
     check()
     ranked = sorted(universe, key=lambda r: (-sg.pre_score(r, by_symbol.get(r.get("symbol")), today),
                                              -(r.get("avg_value_meur") or 0.0)))
-    shortlist = ranked[:int(cfg["shortlist"])]
+    # Une part de la présélection RÉSERVÉE à chaque marché : sans elle, le
+    # marché dont la séance est la plus avancée (ou finie) prend toutes les places.
+    shortlist = ss.shortlist_with_quota(ranked, int(cfg["shortlist"]), cfg["markets"])
     counts["shortlist"] = len(shortlist)
     progress.update("shortlist", 1, 1, shortlist=len(shortlist))
 
@@ -341,7 +362,8 @@ def run_scan(cfg: Dict[str, Any], username: str, out_dir: Any, deps: Deps,
         counts["filtered_advice"] += advice
         verified = fresh_items is not None or deps.news_fetch is None
         scored = sg.score_row(row, items, slot, view["followed"], now, window,
-                              exclude_red=bool(cfg["exclude_red"]), news_verified=verified)
+                              exclude_red=bool(cfg["exclude_red"]), news_verified=verified,
+                              price_asof=ss.price_asof(states.get(row.get("market"))))
         if scored["excluded"] == "no_catalyst":
             counts["excluded_no_catalyst"] += 1
             continue
@@ -355,6 +377,7 @@ def run_scan(cfg: Dict[str, Any], username: str, out_dir: Any, deps: Deps,
         out.update({"score": scored["score"], "components": scored["components"],
                     "reasons": scored["reasons"], "flags": flags, "news": scored["news"],
                     "coach": _coach_summary(slot),
+                    "session": _session_summary(states.get(row.get("market"))),
                     "links": {"chart": mk.chart_url(row.get("tv_symbol"))}})
         candidates.append(out)
     candidates.sort(key=lambda r: (-r["score"], -(r.get("rel_volume") or 0.0),
@@ -376,6 +399,7 @@ def run_scan(cfg: Dict[str, Any], username: str, out_dir: Any, deps: Deps,
         "config": dict(cfg),
         "source": source,
         "markets": markets_status,
+        "sessions": states,
         "counts": counts,
         "warnings": warnings,
         "rows": top,

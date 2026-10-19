@@ -155,3 +155,45 @@ def test_missing_values_never_crash():
     assert out["excluded"] == "no_catalyst"
     assert sg.volume_points("abc") == 0
     assert sg.is_late(None, None) is False
+
+
+# --------------------------------------------------------------------------- #
+# Cours figés AVANT la news (bourse fermée) — rapport de test réel du 19/10 :
+# CRWV −11,9 % (vendredi) affiché « en retard » à côté de « CoreWeave jumps
+# as Goldman upgrades » (lundi). Un cours figé avant une news ne peut ni la
+# confirmer ni dire qu'elle est déjà dans le prix.
+# --------------------------------------------------------------------------- #
+
+FRIDAY_CLOSE = NOW - timedelta(hours=40)
+
+
+def test_closed_market_news_after_the_close_awaits_the_open():
+    row = _row(rel_volume=3.0, change_pct=-11.9, perf_w=-15.0)
+    out = _score(row, [_news("CoreWeave jumps as Goldman upgrades", "pos", hours=3)],
+                 price_asof=FRIDAY_CLOSE)
+    c = out["components"]
+    assert "volume" not in c and "aligned" not in c and "late" not in c
+    assert "late" not in out["flags"] and "awaiting_open" in out["flags"]
+    assert {"code": "awaiting_open"} in out["reasons"]
+    assert out["catalyst"] is True and out["excluded"] is None
+
+
+def test_closed_market_news_before_the_close_is_still_confirmed():
+    row = _row(rel_volume=2.6, change_pct=1.5)
+    out = _score(row, [_news("Eni beats estimates", "pos", hours=48)], price_asof=FRIDAY_CLOSE)
+    assert out["components"]["volume"] == 15 and out["components"]["aligned"] == 5
+    assert "awaiting_open" not in out["flags"]
+
+
+def test_closed_market_without_news_keeps_its_volume():
+    # catalyseur = résultats proches, pas une news : le volume de la dernière
+    # séance reste un fait utile, il n'est pas « antérieur » à une news
+    row = _row(rel_volume=2.6, earnings_next=(NOW + timedelta(days=2)).date().isoformat())
+    out = _score(row, [], price_asof=FRIDAY_CLOSE)
+    assert out["components"]["volume"] == 15 and "awaiting_open" not in out["flags"]
+
+
+def test_live_prices_are_unchanged_by_default():
+    row = _row(rel_volume=3.0, change_pct=-11.9)
+    out = _score(row, [_news("x", "pos", hours=3)])
+    assert "late" in out["flags"] and "awaiting_open" not in out["flags"]

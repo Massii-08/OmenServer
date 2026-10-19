@@ -57,7 +57,7 @@ LABELS: Dict[str, Dict[str, Any]] = {
         "headers": ["Rang", "Titre", "Nom", "Marché", "Cours", "Devise", "Var. jour",
                     "Vol. relatif", "Score", "Signaux", "Raisons", "News principale",
                     "Nb news", "Résultats", "Capitalisation (M€)", "Échanges moy. (M€)",
-                    "Graphique"],
+                    "Graphique", "Séance"],
         "chart": "TradingView",
         "reasons": {
             "news": "{v} news en {h} h", "sources": "{v} sources distinctes",
@@ -65,11 +65,13 @@ LABELS: Dict[str, Dict[str, Any]] = {
             "earnings": "résultats le {v}", "volume": "volume ×{v}",
             "aligned": "le cours confirme ({v} %)", "coach_up": "hypothèse du coach : hausse",
             "crowd": "buzz Reddit ({v} mentions)", "filing": "dépôt SEC {v}",
+            "awaiting_open": "news après la dernière clôture : pas encore dans le cours",
         },
         "flags": {
             "red": "news négative", "late": "déjà parti", "earnings_soon": "résultats proches",
             "coach_down": "coach : baisse", "crowd": "foule", "followed": "suivi",
             "new": "nouveau", "news_unverified": "news non vérifiées",
+            "awaiting_open": "attend l'ouverture",
         },
         "warnings": {
             "coach_empty": "Carnet du coach vide (veille inactive ?)",
@@ -80,6 +82,11 @@ LABELS: Dict[str, Dict[str, Any]] = {
             "stopped_early": "Relevé arrêté avant la fin",
             "fallback_failed": "Repli abandonné : Yahoo ne répond pas non plus",
             "excel_failed": "Classeur Excel non produit",
+            "volume_adjusted": "Séance en cours : volume relatif ramené à une journée entière ({markets})",
+            "session_uncertain": "Séance incertaine (jour férié ?) : volume non ajusté ({markets})",
+        },
+        "session": {
+            "open": "en séance ({p} %)", "closed": "fermée", "unknown": "inconnue",
         },
         "info": {
             "criteria": "Critères", "counts": "Compteurs", "markets": "Marchés",
@@ -104,7 +111,7 @@ LABELS: Dict[str, Dict[str, Any]] = {
                     " · excluded: {no_cat} without catalyst, {red} flagged red"),
         "headers": ["Rank", "Ticker", "Name", "Market", "Price", "Currency", "Day chg",
                     "Rel. volume", "Score", "Flags", "Reasons", "Top news", "News",
-                    "Earnings", "Market cap (M€)", "Avg traded (M€)", "Chart"],
+                    "Earnings", "Market cap (M€)", "Avg traded (M€)", "Chart", "Session"],
         "chart": "TradingView",
         "reasons": {
             "news": "{v} news in {h} h", "sources": "{v} distinct sources",
@@ -112,11 +119,13 @@ LABELS: Dict[str, Dict[str, Any]] = {
             "earnings": "earnings on {v}", "volume": "volume ×{v}",
             "aligned": "price confirms ({v} %)", "coach_up": "coach hypothesis: up",
             "crowd": "Reddit buzz ({v} mentions)", "filing": "SEC filing {v}",
+            "awaiting_open": "news after the last close: not in the price yet",
         },
         "flags": {
             "red": "negative news", "late": "already moved", "earnings_soon": "earnings soon",
             "coach_down": "coach: down", "crowd": "crowd", "followed": "followed",
             "new": "new", "news_unverified": "news not checked",
+            "awaiting_open": "awaiting the open",
         },
         "warnings": {
             "coach_empty": "Coach notebook empty (news watch inactive?)",
@@ -127,6 +136,11 @@ LABELS: Dict[str, Dict[str, Any]] = {
             "stopped_early": "Scan stopped before the end",
             "fallback_failed": "Fallback abandoned: Yahoo is not answering either",
             "excel_failed": "Excel workbook not produced",
+            "volume_adjusted": "Session in progress: relative volume scaled to a full day ({markets})",
+            "session_uncertain": "Uncertain session (holiday?): volume not scaled ({markets})",
+        },
+        "session": {
+            "open": "in session ({p}%)", "closed": "closed", "unknown": "unknown",
         },
         "info": {
             "criteria": "Criteria", "counts": "Counts", "markets": "Markets",
@@ -153,7 +167,7 @@ LABELS: Dict[str, Dict[str, Any]] = {
         "headers": ["Pos.", "Titolo", "Nome", "Mercato", "Prezzo", "Valuta", "Var. giorno",
                     "Vol. relativo", "Punteggio", "Segnali", "Motivi", "Notizia principale",
                     "N. notizie", "Risultati", "Capitalizzazione (M€)", "Scambi medi (M€)",
-                    "Grafico"],
+                    "Grafico", "Seduta"],
         "chart": "TradingView",
         "reasons": {
             "news": "{v} notizie in {h} h", "sources": "{v} fonti distinte",
@@ -161,11 +175,13 @@ LABELS: Dict[str, Dict[str, Any]] = {
             "earnings": "risultati il {v}", "volume": "volume ×{v}",
             "aligned": "il prezzo conferma ({v} %)", "coach_up": "ipotesi del coach: rialzo",
             "crowd": "buzz Reddit ({v} menzioni)", "filing": "deposito SEC {v}",
+            "awaiting_open": "notizia dopo l'ultima chiusura: non ancora nel prezzo",
         },
         "flags": {
             "red": "notizia negativa", "late": "già partito", "earnings_soon": "risultati vicini",
             "coach_down": "coach: ribasso", "crowd": "folla", "followed": "seguito",
             "new": "nuovo", "news_unverified": "notizie non verificate",
+            "awaiting_open": "in attesa dell'apertura",
         },
         "warnings": {
             "coach_empty": "Taccuino del coach vuoto (sorveglianza inattiva?)",
@@ -176,6 +192,11 @@ LABELS: Dict[str, Dict[str, Any]] = {
             "stopped_early": "Scansione interrotta prima della fine",
             "fallback_failed": "Riserva abbandonata: nemmeno Yahoo risponde",
             "excel_failed": "Cartella Excel non prodotta",
+            "volume_adjusted": "Seduta in corso: volume relativo riportato a una giornata intera ({markets})",
+            "session_uncertain": "Seduta incerta (festivo?): volume non riportato ({markets})",
+        },
+        "session": {
+            "open": "in seduta ({p} %)", "closed": "chiusa", "unknown": "sconosciuta",
         },
         "info": {
             "criteria": "Criteri", "counts": "Contatori", "markets": "Mercati",
@@ -193,7 +214,7 @@ LABELS: Dict[str, Dict[str, Any]] = {
     },
 }
 
-WIDTHS = [6, 10, 30, 22, 11, 8, 10, 11, 8, 26, 46, 60, 8, 12, 17, 17, 13]
+WIDTHS = [6, 10, 30, 22, 11, 8, 10, 11, 8, 26, 46, 60, 8, 12, 17, 17, 13, 16]
 
 
 # --------------------------------------------------------------------------- #
@@ -258,6 +279,17 @@ def reason_text(reason: Dict[str, Any], lang: str) -> str:
               .replace("{h}", str(reason.get("hours") or ""))
 
 
+def session_text(session: Any, lang: str) -> Optional[str]:
+    """État de la bourse au moment du scan : « en séance (74 %) » / « fermée »."""
+    if not isinstance(session, dict):
+        return None
+    lab = labels(lang)["session"]
+    state = session.get("state") if session.get("state") in lab else "unknown"
+    elapsed = _num(session.get("elapsed"))
+    pct = str(int(round(elapsed * 100))) if elapsed is not None else "?"
+    return lab[state].replace("{p}", pct)
+
+
 def flag_text(flag: str, lang: str) -> str:
     return labels(lang)["flags"].get(flag, flag)
 
@@ -268,7 +300,8 @@ def warning_text(warning: Dict[str, Any], lang: str) -> str:
         return str(warning.get("code") or "")
     return tpl.replace("{columns}", ", ".join(warning.get("columns") or [])) \
               .replace("{market}", str(warning.get("market") or "")) \
-              .replace("{error}", str(warning.get("error") or ""))
+              .replace("{error}", str(warning.get("error") or "")) \
+              .replace("{markets}", ", ".join(str(m) for m in warning.get("markets") or []))
 
 
 def _put(ws, row: int, col: int, value: Any = None, font: Font = DATA_FONT,
@@ -351,6 +384,7 @@ def _candidates_sheet(ws, results: Dict[str, Any], lang: str) -> None:
         _put(ws, row_idx, 16, _num(row.get("avg_value_meur")), fmt=FMT_ONE)
         chart = _http((row.get("links") or {}).get("chart"))
         _put(ws, row_idx, 17, lab["chart"] if chart else None, link=chart)
+        _put(ws, row_idx, 18, session_text(row.get("session"), lang), align=LEFT)
         row_idx += 1
 
     ws.freeze_panes = "A%d" % DATA_START_ROW
