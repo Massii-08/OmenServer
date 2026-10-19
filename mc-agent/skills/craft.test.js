@@ -322,3 +322,181 @@ test('craftItem : bot sans recipesAll → no_recipe, aucun crash', async () => {
   assert.equal(r.ok, false);
   assert.equal(r.reason, 'no_recipe');
 });
+
+// ─── craftItem × EFFET du craft ───────────────────────────────────────────────────────────────
+// NethBot2, live : `goal planks` émis 111× en 2,2 s juste après une téléportation, aucun
+// `goal_failed`, puis kick (flood de paquets). `craftItem` rendait {ok:true} dès que `bot.craft` ne
+// levait pas — sans jamais regarder si l'inventaire avait bougé. Or `bot.craft` ne lève que sur une
+// erreur CLIENT (ingrédient manquant, table requise) : un craft que le serveur ignore (fenêtre
+// périmée, état désynchronisé après un tp) « réussit » en silence, et le planner le relance à
+// l'infini. On attend donc de VOIR le produit arriver en inventaire (sondage 50 ms, 600 ms max) ;
+// sinon `craft_no_effect` — une DÉSYNC, pas une recette 3×3 manquante : `craftSmart` (index.js) ne
+// teste que 'no_recipe' / 'craft_failed' pour aller chercher une table, il ne doit pas la déclencher.
+
+// `_sleep` factice : enregistre chaque attente, et laisse un test faire « arriver » l'effet côté
+// serveur au bout de N ms simulées (`onSleep(totalMs)`). Aucune attente réelle.
+function fakeSleep(onSleep) {
+  const log = [];
+  const fn = async (ms) => { log.push(ms); if (onSleep) onSleep(log.reduce((a, b) => a + b, 0)); };
+  fn.log = log;
+  fn.total = () => log.reduce((a, b) => a + b, 0);
+  return fn;
+}
+
+test('effet : craft qui PRODUIT → {ok:true} EXACT, vu dès la 1re lecture (aucune attente)', async () => {
+  const bot = craftBot({ oak_log: 4 }, { table: null });
+  const sleep = fakeSleep();
+  const r = await craftItem(bot, { name: 'oak_planks', count: 1, _sleep: sleep });
+  assert.deepStrictEqual(r, { ok: true });
+  assert.strictEqual(bot.counts.oak_planks, 4);
+  assert.deepStrictEqual(sleep.log, [], 'le produit est déjà là : on ne dort pas');
+});
+
+test('effet : bot.craft « réussit » mais l\'inventaire ne bouge pas → craft_no_effect après 600 ms de sondage', async () => {
+  const bot = craftBot({ oak_log: 4 }, { table: null });
+  bot.craft = async () => {};            // rien levé côté client, rien pris en compte côté serveur
+  const sleep = fakeSleep();
+  const r = await craftItem(bot, { name: 'oak_planks', count: 1, _sleep: sleep });
+  assert.deepStrictEqual(r, { ok: false, reason: 'craft_no_effect' });
+  assert.deepStrictEqual(sleep.log, new Array(12).fill(50), '12 attentes de 50 ms = 600 ms, pas une de plus');
+});
+
+test('effet TARDIF (le serveur confirme après ~250 ms) : vu au sondage → {ok:true}', async () => {
+  const bot = craftBot({ oak_log: 4 }, { table: null });
+  bot.craft = async () => {};
+  const sleep = fakeSleep((total) => { if (total >= 250) bot.counts.oak_planks = 4; });
+  const r = await craftItem(bot, { name: 'oak_planks', count: 1, _sleep: sleep });
+  assert.deepStrictEqual(r, { ok: true });
+  assert.strictEqual(sleep.total(), 250, 'on sort dès que le produit est vu, sans épuiser les 600 ms');
+});
+
+test('effet trop TARDIF (650 ms) : la fenêtre est de 600 ms → craft_no_effect', async () => {
+  const bot = craftBot({ oak_log: 4 }, { table: null });
+  bot.craft = async () => {};
+  const sleep = fakeSleep((total) => { if (total >= 650) bot.counts.oak_planks = 4; });
+  const r = await craftItem(bot, { name: 'oak_planks', count: 1, _sleep: sleep });
+  assert.deepStrictEqual(r, { ok: false, reason: 'craft_no_effect' });
+  assert.strictEqual(sleep.total(), 600);
+});
+
+test('effet : seul le PRODUIT compte (un autre item qui augmente ne prouve rien)', async () => {
+  const bot = craftBot({ oak_log: 4 }, { table: null });
+  bot.craft = async () => { bot.counts.stick = 8; };   // un craft fantôme dépose AUTRE CHOSE
+  const r = await craftItem(bot, { name: 'oak_planks', count: 1, _sleep: fakeSleep() });
+  assert.deepStrictEqual(r, { ok: false, reason: 'craft_no_effect' });
+});
+
+// Inventaire PLEIN, tel que mineflayer le gère (putSelectedItemRange : ni case vide ni pile à
+// compléter → « no room => drop it ») : `bot.craft` rend la main normalement, les ingrédients sont
+// CONSOMMÉS, le produit est jeté au sol. Piste probable de l'incident NethBot2 (non confirmée en live).
+test('effet : inventaire PLEIN (résultat jeté au sol, ingrédients consommés) → craft_no_effect', async () => {
+  const bot = craftBot({ oak_log: 6 }, { table: null });
+  bot.inventory.emptySlotCount = () => 0;
+  bot.craft = async (recipe, count) => {
+    for (const d of recipe.delta) {
+      if (d.count < 0) bot.counts[registry.items[d.id].name] += d.count * (count == null ? 1 : count);   // ingrédients pris…
+    }                                                                                                      // …produit jeté, pas en poche
+  };
+  const sleep = fakeSleep();
+  const r = await craftItem(bot, { name: 'oak_planks', count: 2, _sleep: sleep });
+  assert.deepStrictEqual(r, { ok: false, reason: 'craft_no_effect' });
+  assert.strictEqual(bot.counts.oak_log, 4, 'les 2 bûches sont parties : le verdict ne les rend pas, il EMPÊCHE de recommencer en boucle');
+  assert.strictEqual(bot.counts.oak_planks || 0, 0);
+});
+
+test('effet : la raison est DISTINCTE de no_recipe / craft_failed (craftSmart n\'ira pas chercher de table)', async () => {
+  const bot = craftBot({ oak_log: 4 }, { table: null });
+  bot.craft = async () => {};
+  const r = await craftItem(bot, { name: 'oak_planks', _sleep: fakeSleep() });
+  assert.strictEqual(r.ok, false);
+  assert.strictEqual(r.reason, 'craft_no_effect', 'sans cette assertion, les deux ci-dessous passeraient à vide');
+  assert.notStrictEqual(r.reason, 'no_recipe');
+  assert.notStrictEqual(r.reason, 'craft_failed');
+});
+
+test('effet : bot.craft qui LÈVE → craft_failed comme avant, sans attendre 600 ms', async () => {
+  const bot = craftBot({ oak_log: 4 }, { table: null });
+  bot.craft = async () => { throw new Error('missing ingredient'); };
+  const sleep = fakeSleep();
+  assert.deepStrictEqual(await craftItem(bot, { name: 'oak_planks', _sleep: sleep }), { ok: false, reason: 'craft_failed' });
+  assert.deepStrictEqual(sleep.log, []);
+});
+
+// Le produit est lu AVANT le craft : un stock préexistant ne doit pas passer pour un effet.
+test('effet : un stock PRÉEXISTANT du produit n\'est pas un effet (on compare à l\'avant-craft)', async () => {
+  const bot = craftBot({ oak_log: 4, oak_planks: 7 }, { table: null });
+  bot.craft = async () => {};
+  const r = await craftItem(bot, { name: 'oak_planks', count: 1, _sleep: fakeSleep() });
+  assert.deepStrictEqual(r, { ok: false, reason: 'craft_no_effect' });
+});
+
+test('effet : plusieurs piles du produit sont ADDITIONNÉES (la pile pleine ne bouge pas, la 2e reçoit le craft)', async () => {
+  const bot = craftBot({ oak_log: 4 }, { table: null });
+  const realItems = bot.inventory.items;
+  bot.inventory.items = () => {
+    const out = realItems().filter((i) => i.name !== 'oak_planks');
+    out.push({ name: 'oak_planks', count: 64 });                                            // pile pleine, immobile…
+    if (bot.counts.oak_planks > 0) out.push({ name: 'oak_planks', count: bot.counts.oak_planks });   // …et celle qui reçoit
+    return out;
+  };
+  const sleep = fakeSleep();
+  assert.deepStrictEqual(await craftItem(bot, { name: 'oak_planks', count: 1, _sleep: sleep }), { ok: true });
+  assert.deepStrictEqual(sleep.log, [], 'si seule la 1re pile était lue (64 → 64), on y verrait un craft sans effet');
+});
+
+// Rétro-compat : un vieux stub sans inventaire lisible ne permet aucune vérification → on ne
+// l'invente pas (contrat inchangé : {ok:true}). Un vrai bot a toujours `inventory.items()`.
+test('effet : inventaire illisible (vieux stub) → rien à vérifier, {ok:true} comme avant', async () => {
+  const bots = [
+    { registry, findBlock: () => null, recipesFor: () => [{ id: 1 }], craft: async () => {} },                               // pas d'inventory
+    { registry, findBlock: () => null, inventory: {}, recipesFor: () => [{ id: 1 }], craft: async () => {} },                // pas d'items()
+    { registry, findBlock: () => null, inventory: { items: () => { throw new Error('boom'); } },
+      recipesFor: () => [{ id: 1 }], craft: async () => {} },                                                               // items() lève
+  ];
+  for (const bot of bots) {
+    const sleep = fakeSleep();
+    assert.deepStrictEqual(await craftItem(bot, { name: 'crafting_table', _sleep: sleep }), { ok: true });
+    assert.deepStrictEqual(sleep.log, []);
+  }
+});
+
+// Le `_sleep` traverse la conversion de bûches : un craft de planches sans effet y est attrapé AUSSI,
+// et le bouclier n'est jamais « fabriqué » sur du vent. (La raison de surface reste 'no_recipe' —
+// contrat inchangé — avec le détail à côté, dans `planks`.)
+test('effet × planches hétérogènes : la conversion de bûches sans effet est attrapée (planks_craft_failed)', async () => {
+  const bot = craftBot({ oak_planks: 3, birch_planks: 3, iron_ingot: 1, oak_log: 30 });
+  const realCraft = bot.craft;
+  bot.craft = async (recipe, ...rest) => {
+    if (registry.items[recipe.result.id].name === 'oak_planks') return;   // les planches n'arrivent jamais
+    return realCraft(recipe, ...rest);
+  };
+  const sleep = fakeSleep();
+  const r = await craftItem(bot, { name: 'shield', _sleep: sleep });
+  assert.equal(r.ok, false);
+  assert.equal(r.reason, 'no_recipe');
+  assert.equal(r.planks, 'planks_craft_failed');
+  assert.equal(bot.counts.shield || 0, 0);
+  assert.deepStrictEqual(sleep.log, new Array(12).fill(50), '_sleep est bien transmis à la conversion de planches');
+});
+
+// ─── L'incident NethBot2 de bout en bout (craftItem + planner) ────────────────────────────────
+// Reproduit la séquence mesurée : le client envoie le craft, le serveur l'ignore, le bot se recale
+// (sa position change à chaque tour) — le fingerprint ne stalle donc jamais. Avant : 111 crafts en
+// 2,2 s puis kick. Maintenant `craftItem` rend {ok:false, craft_no_effect} : le chemin des échecs
+// explicites (failStreak) arrête la boucle au 4e tour.
+test('INCIDENT : craft ignoré du serveur + position qui bouge → 4 crafts envoyés puis stalled (et non 111)', async () => {
+  const { runPlanner } = require('../planner');
+  const bot = craftBot({ oak_log: 8 }, { table: null });
+  let x = 0;
+  let sent = 0;
+  bot.entity = { position: { get x() { return x; }, y: 64, z: 0 } };
+  bot.craft = async () => { sent++; x += 1; };       // envoyé, ignoré, et le bot se recale
+  const r = await runPlanner(bot, {
+    chain: [{ name: 'planks', met: (c) => (c.inv.oak_planks || 0) >= 8, skill: 'craftPlanks', args: { count: 2 } }],
+    ctxExtra: () => ({}),
+    sleep: async () => {},                              // la garde anti-boucle-chaude dormirait pour de vrai au 3e tour
+    runSkill: (g, b) => craftItem(b, { name: 'oak_planks', count: g.args.count, _sleep: fakeSleep() }),
+  }, { cancelled: false });
+  assert.deepStrictEqual(r, { stalled: true, goal: 'planks' });
+  assert.strictEqual(sent, 4, 'le serveur reçoit 4 crafts, pas un flood');
+});
