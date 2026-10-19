@@ -3,7 +3,9 @@
 
 /** Émet un événement structuré (1 ligne JSON) sur stdout. */
 function emit(event) {
-  process.stdout.write(JSON.stringify(event) + '\n');
+  // `ts` (ms epoch) : sans horodatage, les session-*.jsonl ne permettaient de mesurer ni la durée
+  // d'une migration, ni les morts/heure, ni le temps jusqu'au T1. Un `ts` déjà fourni prime.
+  process.stdout.write(JSON.stringify(Object.assign({ ts: Date.now() }, event)) + '\n');
 }
 
 /**

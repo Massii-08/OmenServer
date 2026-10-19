@@ -11,8 +11,20 @@ test('emit écrit une ligne JSON sur stdout', () => {
   try { emit({ type: 'status', state: 'ok' }); }
   finally { process.stdout.write = orig; }
   assert.strictEqual(lines.length, 1);
-  assert.deepStrictEqual(JSON.parse(lines[0]), { type: 'status', state: 'ok' });
+  const got = JSON.parse(lines[0]);
+  assert.ok(Number.isFinite(got.ts), 'chaque event est horodaté (ts ms epoch)');
+  delete got.ts;
+  assert.deepStrictEqual(got, { type: 'status', state: 'ok' });
   assert.ok(lines[0].endsWith('\n'));
+});
+
+test('emit : un ts fourni par l appelant prime sur l horodatage auto', () => {
+  const lines = [];
+  const orig = process.stdout.write;
+  process.stdout.write = (s) => { lines.push(s); return true; };
+  try { emit({ type: 'x', ts: 42 }); }
+  finally { process.stdout.write = orig; }
+  assert.strictEqual(JSON.parse(lines[0]).ts, 42);
 });
 
 test('onCommand parse les lignes JSON et ignore le bruit', () => {
