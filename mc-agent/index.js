@@ -51,7 +51,7 @@ const { huntPassive } = require('./skills/hunt');
 const { fishCatch } = require('./skills/fish');   // pêche : la nourriture qui ne s'épuise pas
 const { nearestPassive, survivalTick, nearbyHostiles, lavaNearby, armorPoints, weaponDamage } = require('./survival');
 const { loadWorld, saveWorld, setObjective, clearObjective } = require('./worldModel');
-const { _nearestTable, tablePlan, TABLE_REACH, TABLE_SEEK } = require('./skills/craft'); // craftItem déjà importé plus haut
+const { _nearestTable, tableKey, tablePlan, TABLE_REACH, TABLE_SEEK } = require('./skills/craft'); // craftItem déjà importé plus haut
 const { placeBlockNear } = require('./skills/placeBlockNear');
 const { smelt, logsToConvert } = require('./skills/smelt');
 const { descendDiagonal } = require('./skills/descendDiagonal');
@@ -62,7 +62,7 @@ const { classifyAuthPrompt, genPassword, resolveAuthChat } = require('./auth');
 const { loadMemory, worldKey, resolveBiome } = require('./worldMemory');
 const { driestCell, oreBase } = require('./ores');         // warp near-spawn DRY-AWARE + normalisation type (fix #8)
 const { recordAnchor, pickDryAnchor } = require('./anchors'); // ancres profondes SÈCHES (anti boucle de noyade)
-const { runMapper } = require('./mapper');
+const { runMapper, createExpiringSet } = require('./mapper');   // createExpiringSet : liste noire des tables inutilisables (withCraftingTable)
 // (LOCATE_KINDS / parseLocateResponse ne sont plus importés : /locate est retiré des bots, cf. plus bas.
 //  structureFoundEvent est émis par mapper.js depuis les signatures VUES.)
 const { isInWater, escapeWater, findLandTarget, isFloatingStuck, recoverFloating, isFrozenDesync,
@@ -830,6 +830,18 @@ async function reclaimBlock(pos, blockName = 'crafting_table') {
   try { emit({ type: 'reclaim_failed', block: blockName, x: pos && pos.x, y: pos && pos.y, z: pos && pos.z }); } catch (e) {}
 }
 
+// TABLES INUTILISABLES — liste noire à OUBLI (30 min). Run du 17-18/08 (216 sessions) :
+// `reclaim_failed` ×11 565 et `table_recycled` ×11 440, quasi 1:1. Une table INATTEIGNABLE (dans le
+// tunnel/la grotte d'un autre, derrière un mur, au-dessus d'un vide) était re-vue à CHAQUE craft :
+// marche de 30 s, reprise ratée, table neuve semée — puis rebelote au craft suivant, à l'infini
+// (~30-60 s perdues par craft). Dès qu'on a la PREUVE qu'une table est inutilisable (on ne l'a pas
+// atteinte / on n'a pas pu la reprendre), `withCraftingTable` ne la cherche plus. TTL fini : le
+// terrain change (un coéquipier ouvre un passage, la table finit reprise par un autre).
+// ⚠️ NIVEAU MODULE, comme `_smeltOppBusy`/`panicInFlight` : un état lu par plusieurs appels doit
+// survivre à chacun (déclaré dans `onSpawn` = ReferenceError en prod alors que les tests passent,
+// piège #56). Il survit aux respawns d'un même process, pas à un process neuf.
+const _badTables = createExpiringSet({ ttlMs: 30 * 60 * 1000 });
+
 // Garantit une table à portée le temps d'exécuter fn (un craft), puis reprend la table si on l'a posée.
 // ⚠️ findBlock(6) > portée d'interaction (~4.5) : une table « proche » peut être INATTEIGNABLE (jungle :
 // posée sous la canopée pendant que le bot est dans l'arbre) → on s'en APPROCHE d'abord ; si le craft
@@ -841,7 +853,15 @@ async function withCraftingTable(fn) {
   let lastFail = null;   // dernier échec de fn() — propagé dans la raison (le libellé nu
                          // `table_present` a fait pointer 3 h de logs vers la table alors que
                          // la vraie cause était `no_recipe`, run world_mn14)
-  const t = _nearestTable(bot, TABLE_SEEK);
+  // Marque une table INUTILISABLE : liste noire + UN event par table (pas un par tentative).
+  const blacklistTable = (pos, why) => {
+    try {
+      if (!pos || _badTables.has(tableKey(pos))) return;
+      _badTables.add(tableKey(pos));
+      emit({ type: 'table_blacklisted', why, x: pos.x, y: pos.y, z: pos.z });
+    } catch (e) { /* best-effort : l'observabilité ne doit jamais casser un craft */ }
+  };
+  const t = _nearestTable(bot, TABLE_SEEK, { exclude: _badTables });
   if (t) {
     try {
       if (bot.entity.position.distanceTo(t.position) > 3) {
@@ -850,6 +870,10 @@ async function withCraftingTable(fn) {
           30000, () => { try { stopMotion(); } catch (e) {} }
         );
       }
+      // ⚠️ `withTimeout` ne REJETTE jamais (timeout comme erreur, il RÉSOUT `{ ok:false, reason }`) :
+      // le catch ci-dessous ne voit donc PAS un goto raté. Seule la DISTANCE dit si on est arrivé.
+      // Resté trop loin pour crafter (> TABLE_REACH - 1) = inatteignable → plus jamais re-tentée.
+      if (bot.entity.position.distanceTo(t.position) > TABLE_REACH - 1) blacklistTable(t.position, 'unreachable');
     } catch (e) { /* pas de chemin → on tentera la table portable */ }
     const r0 = await fn();
     if (r0.ok) return r0;                          // table existante atteinte → craft passé
@@ -859,9 +883,12 @@ async function withCraftingTable(fn) {
   // reclaim) → placeBlockNear échouait 'unknown_item' pour toujours. Une table se re-craft
   // en 2×2 SANS table (4 planks) → on la re-fabrique avant de la poser.
   let hasTableItem = ((bot.inventory && bot.inventory.items()) || []).some((i) => i.name === 'crafting_table');
+  // Les tables en liste noire sont INVISIBLES pour le plan : une table inatteignable « en vue »
+  // déclenchait `recycle` à chaque craft, une autre à portée de vue mais inutilisable faisait
+  // conclure `use_existing` (donc ne rien poser) alors qu'on ne pouvait pas s'en servir.
   const plan = tablePlan({
-    tableInReach: !!_nearestTable(bot, TABLE_REACH),
-    tableSeen: !!_nearestTable(bot, TABLE_SEEK),
+    tableInReach: !!_nearestTable(bot, TABLE_REACH, { exclude: _badTables }),
+    tableSeen: !!_nearestTable(bot, TABLE_SEEK, { exclude: _badTables }),
     hasTableItem,
   });
   // Une table est DÉJÀ à portée de craft : en poser une seconde ne peut RIEN changer (l'échec
@@ -874,7 +901,7 @@ async function withCraftingTable(fn) {
   // Table ABANDONNÉE en vue (une mort ou un timeout a coupé le cycle avant la reprise) : aller
   // la REPRENDRE plutôt que d'en fabriquer une neuve → le terrain se nettoie au lieu de se joncher.
   if (plan === 'recycle') {
-    const litter = _nearestTable(bot, TABLE_SEEK);
+    const litter = _nearestTable(bot, TABLE_SEEK, { exclude: _badTables });
     if (litter) {
       try {
         if (bot.entity.position.distanceTo(litter.position) > 3) {
@@ -885,6 +912,14 @@ async function withCraftingTable(fn) {
         }
         await reclaimBlock(litter.position);
       } catch (e) { /* pas de chemin → on retombe sur la fabrication */ }
+      // `reclaimBlock` ne LÈVE jamais (il avale ses échecs et n'émet que `reclaim_failed`) : le seul
+      // moyen de savoir que la reprise a raté est de regarder si la table est TOUJOURS là. Si oui elle
+      // est inutilisable (hors de portée, incassable…) → liste noire, sinon on la retenterait — 30 s de
+      // marche + 2 reprises ratées — à chaque craft suivant.
+      try {
+        const left = bot.blockAt(litter.position);
+        if (left && left.name === 'crafting_table') blacklistTable(litter.position, 'reclaim_failed');
+      } catch (e) { /* best-effort */ }
       hasTableItem = ((bot.inventory && bot.inventory.items()) || []).some((i) => i.name === 'crafting_table');
       emit({ type: 'table_recycled', ok: hasTableItem });
     }

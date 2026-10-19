@@ -1,7 +1,8 @@
 'use strict';
 const { test } = require('node:test');
 const assert = require('node:assert');
-const { craftItem, _nearestTable, TABLE_REACH, TABLE_SEEK } = require('./craft');
+const { craftItem, _nearestTable, tableKey, TABLE_REACH, TABLE_SEEK } = require('./craft');
+const { createExpiringSet } = require('../mapper');   // la liste noire RÉELLEMENT branchée dans index.js
 
 // Bot minimal : on capture l'argument passé à findBlock pour vérifier le rayon.
 function fakeBot(found = { position: { x: 0, y: 0, z: 0 } }) {
@@ -39,6 +40,135 @@ test('_nearestTable : registre sans crafting_table → null (jamais findBlock(ma
 test('_nearestTable : aucune table trouvée → null (et pas undefined)', () => {
   const bot = fakeBot(null);
   assert.strictEqual(_nearestTable(bot), null);
+});
+
+// ─── _nearestTable × liste noire (`exclude`) ──────────────────────────────────────────────────
+// Run du 17-18/08 (216 sessions) : `reclaim_failed` ×11 565 et `table_recycled` ×11 440, quasi 1:1.
+// Une table INATTEIGNABLE (tunnel d'un autre, derrière un mur, au-dessus d'un vide) était re-vue à
+// chaque craft : marche de 30 s, reprise ratée, table neuve semée — puis rebelote au craft suivant.
+// `findBlock` ne rend que la PLUS PROCHE : si c'est justement la table interdite, on reste aveugle
+// aux autres. Avec `exclude`, `_nearestTable` demande donc plusieurs candidates (`findBlocks`).
+
+test('tableKey : coordonnées ENTIÈRES du bloc, « x,y,z »', () => {
+  assert.strictEqual(tableKey({ x: 12, y: -3, z: 7 }), '12,-3,7');
+  // Une position fractionnaire désigne le bloc qui la contient (floor, pas trunc : -2.1 → -3).
+  assert.strictEqual(tableKey({ x: 12.9, y: -2.1, z: 7.5 }), '12,-3,7');
+});
+
+// Bot à PLUSIEURS tables. `findBlocks` les rend dans l'ordre DONNÉ — volontairement désordonné
+// dans les tests, pour prouver que le tri par distance est fait par `_nearestTable` lui-même.
+function tablesBot(positions, at = { x: 0, y: 0, z: 0 }) {
+  const calls = { findBlock: [], findBlocks: [], blockAt: [] };
+  return {
+    calls,
+    registry: { blocksByName: { crafting_table: { id: 58 } } },
+    entity: { position: at },
+    findBlock(opts) { calls.findBlock.push(opts); throw new Error('avec exclude → findBlocks, jamais findBlock'); },
+    findBlocks(opts) { calls.findBlocks.push(opts); return positions.slice(); },
+    blockAt(pos) { calls.blockAt.push(pos); return { name: 'crafting_table', position: pos }; },
+  };
+}
+const NEAR = { x: 3, y: 0, z: 0 };
+const MID = { x: 10, y: 0, z: 0 };
+const FAR = { x: 30, y: 0, z: 0 };
+const keys = (...ps) => new Set(ps.map(tableKey));
+
+test('_nearestTable sans exclude : chemin HISTORIQUE inchangé (un seul findBlock, forme exacte)', () => {
+  for (const opts of [undefined, {}, { exclude: undefined }, { exclude: null }]) {
+    const bot = fakeBot();        // pas de findBlocks : l'appeler lèverait un TypeError
+    const t = opts === undefined ? _nearestTable(bot, TABLE_SEEK) : _nearestTable(bot, TABLE_SEEK, opts);
+    assert.deepStrictEqual(bot.calls, [{ matching: [58], maxDistance: TABLE_SEEK }]);
+    assert.deepStrictEqual(t, { position: { x: 0, y: 0, z: 0 } });
+  }
+});
+
+test('exclude : saute la table la plus proche si elle est exclue et rend la SUIVANTE', () => {
+  const bot = tablesBot([FAR, NEAR, MID]);
+  const t = _nearestTable(bot, TABLE_SEEK, { exclude: keys(NEAR) });
+  assert.deepStrictEqual(t.position, MID);
+  assert.strictEqual(t.name, 'crafting_table');
+});
+
+test('exclude : rien d\'exclu → la plus proche, quel que soit l\'ordre rendu par findBlocks', () => {
+  const bot = tablesBot([FAR, NEAR, MID]);
+  assert.deepStrictEqual(_nearestTable(bot, TABLE_SEEK, { exclude: keys() }).position, NEAR);
+});
+
+test('exclude : la distance se mesure depuis le BOT (pas depuis l\'origine du monde)', () => {
+  const bot = tablesBot([{ x: 0, y: 0, z: 0 }, { x: 110, y: 0, z: 0 }], { x: 100, y: 0, z: 0 });
+  assert.deepStrictEqual(_nearestTable(bot, TABLE_SEEK, { exclude: keys() }).position, { x: 110, y: 0, z: 0 });
+  // …et la verticale compte : une table 2 blocs plus haut passe après une table à plat à 1 bloc.
+  const b2 = tablesBot([{ x: 5, y: 0, z: 0 }, { x: 5, y: 2, z: 0 }], { x: 4, y: 2, z: 0 });
+  assert.deepStrictEqual(_nearestTable(b2, TABLE_SEEK, { exclude: keys() }).position, { x: 5, y: 2, z: 0 });
+});
+
+test('exclude : toutes les tables exclues → null (et pas undefined)', () => {
+  const bot = tablesBot([FAR, NEAR, MID]);
+  assert.strictEqual(_nearestTable(bot, TABLE_SEEK, { exclude: keys(NEAR, MID, FAR) }), null);
+});
+
+test('exclude : aucune table en vue (findBlocks → [] / null / undefined) → null', () => {
+  for (const found of [[], null, undefined]) {
+    const bot = tablesBot([]);
+    bot.findBlocks = (opts) => { bot.calls.findBlocks.push(opts); return found; };
+    assert.strictEqual(_nearestTable(bot, TABLE_SEEK, { exclude: keys() }), null);
+  }
+});
+
+test('exclude : interroge findBlocks (matching, maxDistance, count 16) — jamais findBlock', () => {
+  const bot = tablesBot([NEAR]);
+  _nearestTable(bot, TABLE_REACH, { exclude: keys() });
+  assert.deepStrictEqual(bot.calls.findBlocks, [{ matching: [58], maxDistance: TABLE_REACH, count: 16 }]);
+  assert.strictEqual(bot.calls.findBlock.length, 0);
+});
+
+test('exclude : seule la table rendue est résolue en bloc (blockAt sur la 1re position PERMISE)', () => {
+  const bot = tablesBot([FAR, NEAR, MID]);
+  _nearestTable(bot, TABLE_SEEK, { exclude: keys(NEAR) });
+  assert.deepStrictEqual(bot.calls.blockAt, [MID]);
+});
+
+test('exclude : blockAt nul (chunk évaporé) → on passe à la candidate suivante', () => {
+  const bot = tablesBot([NEAR, MID]);
+  bot.blockAt = (pos) => (pos === NEAR ? null : { name: 'crafting_table', position: pos });
+  assert.deepStrictEqual(_nearestTable(bot, TABLE_SEEK, { exclude: keys() }).position, MID);
+});
+
+test('exclude : registre sans crafting_table → null, rien n\'est appelé', () => {
+  const bot = tablesBot([NEAR]);
+  bot.registry = { blocksByName: {} };
+  assert.strictEqual(_nearestTable(bot, TABLE_SEEK, { exclude: keys() }), null);
+  assert.strictEqual(bot.calls.findBlocks.length, 0);
+});
+
+test('exclude : bot sans `entity` (stub partiel) → ordre de findBlocks conservé, aucun crash', () => {
+  const bot = tablesBot([NEAR, MID]);
+  delete bot.entity;
+  assert.deepStrictEqual(_nearestTable(bot, TABLE_SEEK, { exclude: keys(NEAR) }).position, MID);
+});
+
+test('exclude : tout objet exposant has(clé) convient (duck typing)', () => {
+  const bot = tablesBot([NEAR, MID]);
+  const asked = [];
+  const exclude = { has: (k) => { asked.push(k); return k === tableKey(NEAR); } };
+  assert.deepStrictEqual(_nearestTable(bot, TABLE_SEEK, { exclude }).position, MID);
+  assert.deepStrictEqual(asked, [tableKey(NEAR), tableKey(MID)], 'les candidates sont testées de la plus proche à la plus lointaine');
+});
+
+// La vraie liste noire d'index.js : un set à OUBLI (30 min). Une table jugée inutilisable est
+// ignorée, puis redevient candidate — le terrain change (un coéquipier ouvre un passage, la
+// table est enfin reprise par un autre…), on ne la condamne pas à vie.
+test('exclude = createExpiringSet réel : table ignorée pendant le TTL, de nouveau visible après', () => {
+  const TTL = 30 * 60 * 1000;
+  let now = 1_000;
+  const bad = createExpiringSet({ now: () => now, ttlMs: TTL });
+  const bot = tablesBot([NEAR, MID]);
+  bad.add(tableKey(NEAR));
+  assert.deepStrictEqual(_nearestTable(bot, TABLE_SEEK, { exclude: bad }).position, MID);
+  now += TTL;                       // pile au TTL : toujours exclue (même seuil que mapper.js : > ttl)
+  assert.deepStrictEqual(_nearestTable(bot, TABLE_SEEK, { exclude: bad }).position, MID);
+  now += 1;                         // TTL dépassé : la liste l'a oubliée
+  assert.deepStrictEqual(_nearestTable(bot, TABLE_SEEK, { exclude: bad }).position, NEAR);
 });
 
 // ─── craftItem × planches hétérogènes ─────────────────────────────────────────────────────────
