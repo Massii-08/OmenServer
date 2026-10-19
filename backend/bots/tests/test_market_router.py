@@ -408,7 +408,7 @@ def test_launch_detaches_the_subprocess(tmp_path, monkeypatch):
         captured["kwargs"] = kwargs
         return FakeProc()
 
-    monkeypatch.setattr(mr.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(mr.run_log.subprocess, "Popen", fake_popen)
     rd = tmp_path / "runs" / ("a" * 32)
     rd.mkdir(parents=True)
     job = {"job_id": "a" * 32, "status": "starting", "logs": [], "process": None}

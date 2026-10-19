@@ -13,9 +13,7 @@ import logging
 import os
 import re
 import secrets
-import subprocess
 import sys
-import threading
 import uuid
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -36,6 +34,7 @@ from backend.bots.harvester.recipe import Recipe
 from backend.bots.harvester.setup import build_setup
 from backend.bots.harvester.store import Store
 from backend.bots.harvester import unblocker_config
+from backend.bots import run_log
 from backend.bots.harvester import telegram_config
 from backend.bots.harvester import notify as _notify
 from backend.bots.harvester import exporter
@@ -257,16 +256,8 @@ def _read_log_tail(run_dir, limit: int = 200):
 def _open_run_log(run_dir):
     """Ouvre run.log en append + 0o600 (cohérent avec config.json : un log de
     run peut contenir des traces sensibles -> même posture que les secrets). Le
-    fichier NAÎT en 0o600 (création atomique via os.open, pas de fenêtre
-    world-readable) ; os.fchmod couvre un fichier pré-existant aux autres
-    permissions. Même posture que unblocker_config.save."""
-    path = os.path.join(run_dir, "run.log")
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
-    try:
-        os.fchmod(fd, 0o600)
-    except (AttributeError, OSError):
-        pass
-    return os.fdopen(fd, "a", encoding="utf-8")
+    fichier NAÎT en 0o600 (création atomique, cf. run_log.open_log)."""
+    return run_log.open_log(os.path.join(run_dir, "run.log"), "a")
 
 
 # run.log n'est PAS borné (1 ligne/page) -> on ne lit que la fin pour la reco.
@@ -491,15 +482,18 @@ def purge_old_runs(now=None, max_age_days=RUN_RETENTION_DAYS, is_alive=_pid_aliv
 
 
 def _launch_subprocess(run_dir: str, job: Dict[str, Any]) -> None:
-    """Lance `python -m backend.bots.harvester <run_dir>` détaché + thread logs."""
+    """Lance `python -m backend.bots.harvester <run_dir>` détaché, sortie écrite
+    DIRECTEMENT dans run.log (jamais de pipe : après un restart uvicorn le
+    premier write de l'enfant lèverait BrokenPipeError, cf. run_log.py)."""
     subprocess_env = {**os.environ, "PYTHONUNBUFFERED": "1"}
     cmd = [sys.executable, "-m", "backend.bots.harvester", run_dir]
-    proc = subprocess.Popen(
+    log_path = os.path.join(run_dir, "run.log")
+    # Une reprise APPEND au run.log existant : on ne relit que la suite, sinon
+    # un vieil `awaiting_manual_solve` ressusciterait l'état.
+    start = run_log.log_size(log_path)
+    proc = run_log.spawn_logged(
         cmd,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        bufsize=1,
+        log_path,
         cwd=str(_project_root),
         env=subprocess_env,
         # détache dans sa propre session pour survivre à un reload uvicorn
@@ -514,55 +508,34 @@ def _launch_subprocess(run_dir: str, job: Dict[str, Any]) -> None:
     except OSError:
         pass
 
-    def _capture(p, j):
-        # logs persistés sur disque -> survivent au restart uvicorn (A)
+    def _on_line(line):
+        job["logs"].append(line)
+        if len(job["logs"]) > 500:
+            job["logs"] = job["logs"][-500:]
         try:
-            logf = _open_run_log(run_dir)
-        except OSError:
-            logf = None
-        try:
-            for line in p.stdout:
-                stripped = line.rstrip()
-                if not stripped:
-                    continue
-                j["logs"].append(stripped)
-                if len(j["logs"]) > 500:
-                    j["logs"] = j["logs"][-500:]
-                if logf:
-                    try:
-                        logf.write(stripped + "\n")
-                        logf.flush()
-                    except OSError:
-                        pass
-                try:
-                    msg = json.loads(stripped)
-                    if msg.get("type") in ("progress", "done") and "counts" in msg:
-                        j["counts"] = msg["counts"]
-                    elif msg.get("type") == "recommend_tier":
-                        j["recommend"] = msg     # surfacé par /status et /active
-                    elif msg.get("type") == "awaiting_manual_solve":
-                        j["awaiting_solve"] = msg
-                    elif msg.get("type") in ("manual_solve_resolved",
-                                             "manual_solve_timeout"):
-                        j["awaiting_solve"] = None
-                except ValueError:
-                    pass
-        except Exception:
-            pass
-        finally:
-            if logf:
-                try:
-                    logf.close()
-                except OSError:
-                    pass
-        p.wait()
-        if j["status"] == "running":
-            j["status"] = "completed" if p.returncode == 0 else "error"
-        j["process"] = None
-        logger.info("[Harvester] Job terminé: %s", j["status"])
+            msg = json.loads(line)
+        except ValueError:
+            return
+        if not isinstance(msg, dict):
+            return
+        if msg.get("type") in ("progress", "done") and "counts" in msg:
+            job["counts"] = msg["counts"]
+        elif msg.get("type") == "recommend_tier":
+            job["recommend"] = msg     # surfacé par /status et /active
+        elif msg.get("type") == "awaiting_manual_solve":
+            job["awaiting_solve"] = msg
+        elif msg.get("type") in ("manual_solve_resolved",
+                                 "manual_solve_timeout"):
+            job["awaiting_solve"] = None
 
-    t = threading.Thread(target=_capture, args=(proc, job), daemon=True)
-    t.start()
+    def _on_exit(rc):
+        if job["status"] == "running":
+            job["status"] = "completed" if rc == 0 else "error"
+        job["process"] = None
+        logger.info("[Harvester] Job terminé: %s", job["status"])
+
+    # Suit le fichier + fauche le process (sinon zombie -> « running » à vie).
+    run_log.start_follower(log_path, proc, _on_line, start=start, on_exit=_on_exit)
 
 
 def _fetch_full(url):

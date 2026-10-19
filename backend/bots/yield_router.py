@@ -22,7 +22,6 @@ import re
 import shutil
 import subprocess
 import sys
-import threading
 import uuid
 from datetime import datetime
 from pathlib import Path
@@ -34,6 +33,7 @@ from pydantic import BaseModel
 
 from backend.auth.models import User
 from backend.auth.permissions import require_role
+from backend.bots import run_log
 
 logger = logging.getLogger(__name__)
 
@@ -202,53 +202,52 @@ async def run_yield_bot(
     job["stats"] = {"total": job["bonds_count"], "updated": 0, "skipped": 0, "errors": 0}
 
     try:
-        proc = subprocess.Popen(
+        job_dir = Path(input_path).parent
+        log_path = job_dir / "run.log"
+        job["log_path"] = str(log_path)
+        start = run_log.log_size(log_path)
+        # Sortie écrite DIRECTEMENT dans run.log, jamais dans un pipe : après un
+        # restart uvicorn plus personne ne lirait le pipe et le bot perdrait
+        # tous ses logs (BrokenPipeError avalée par logging, cf. run_log.py).
+        proc = run_log.spawn_logged(
             cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            bufsize=1,
+            log_path,
             cwd=str(YIELD_BOT_DIR),
             env={**os.environ, "PYTHONUNBUFFERED": "1"},
+            # Session propre : un reload uvicorn (auto-deploy) ne doit pas
+            # emporter le calcul en cours (même posture que le Bond Scanner).
+            start_new_session=True,
         )
         job["process"] = proc
+        try:
+            (job_dir / "pid").write_text(str(proc.pid), encoding="utf-8")
+        except OSError:
+            pass
 
-        # Thread pour capturer les logs
-        def _capture_logs(proc, job_id):
-            job = _yield_jobs.get(job_id)
-            if not job:
-                return
-            try:
-                for line in proc.stdout:
-                    stripped = line.rstrip()
-                    if stripped:
-                        job["logs"].append(stripped)
-                        # Garder les 500 dernières lignes
-                        if len(job["logs"]) > 500:
-                            job["logs"] = job["logs"][-500:]
-                        # Parser la progression
-                        _parse_progress(job, stripped)
-            except Exception:
-                pass
+        def _on_line(line):
+            job["logs"].append(line)
+            # Garder les 500 dernières lignes
+            if len(job["logs"]) > 500:
+                job["logs"] = job["logs"][-500:]
+            _parse_progress(job, line)
 
-            # Marquer comme terminé
-            proc.wait()
-            if proc.returncode == 0:
-                job["status"] = "completed"
-                # Trouver le fichier de sortie
-                base = os.path.splitext(job["input_path"])[0]
-                output_path = f"{base}_AGGIORNATO.xlsx"
-                if os.path.exists(output_path):
-                    job["output_path"] = output_path
-            else:
-                job["status"] = "error"
-                job["logs"].append(f"❌ Process terminé avec code {proc.returncode}")
-
+        def _on_exit(rc):
+            # Un arrêt utilisateur (stopped) n'est pas réécrit en « error ».
+            if job["status"] == "running":
+                if rc == 0:
+                    job["status"] = "completed"
+                    base = os.path.splitext(job["input_path"])[0]
+                    output_path = f"{base}_AGGIORNATO.xlsx"
+                    if os.path.exists(output_path):
+                        job["output_path"] = output_path
+                else:
+                    job["status"] = "error"
+                    job["logs"].append(f"❌ Process terminé avec code {rc}")
             job["process"] = None
             logger.info(f"[Yield] Job {job_id} terminé: {job['status']}")
 
-        t = threading.Thread(target=_capture_logs, args=(proc, job_id), daemon=True)
-        t.start()
+        # Suit le fichier + fauche le process (sinon zombie).
+        run_log.start_follower(log_path, proc, _on_line, start=start, on_exit=_on_exit)
 
         return {"status": "running", "job_id": job_id}
 
@@ -592,14 +591,17 @@ async def stop_yield_bot(
     if job["status"] != "running" or job["process"] is None:
         raise HTTPException(400, "Aucun process en cours")
 
+    proc = job["process"]
+    # « stopped » AVANT terminate : sinon le faucheur peut voir le process
+    # mourir pendant que le job est encore « running » et le marquer « error ».
+    job["status"] = "stopped"
     try:
-        job["process"].terminate()
+        proc.terminate()
         try:
-            job["process"].wait(timeout=5)
+            proc.wait(timeout=5)
         except subprocess.TimeoutExpired:
-            job["process"].kill()
+            proc.kill()
 
-        job["status"] = "stopped"
         job["process"] = None
         job["logs"].append("⏹ Bot arrêté par l'utilisateur")
 
