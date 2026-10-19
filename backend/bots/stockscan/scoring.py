@@ -140,12 +140,19 @@ def pre_score(row: Dict[str, Any], slot: Optional[Dict[str, Any]], today: date) 
 def score_row(row: Dict[str, Any], news_items: Iterable[Dict[str, Any]],
               slot: Optional[Dict[str, Any]], followed: Set[str],
               now: datetime, window_h: float, exclude_red: bool = False,
-              news_verified: bool = True) -> Dict[str, Any]:
+              news_verified: bool = True,
+              price_asof: Optional[datetime] = None) -> Dict[str, Any]:
     """Note un candidat -> ``{score, components, reasons, flags, catalyst,
     excluded, news}``.
 
     ``news_items`` : news ADMISES (fenêtre + non-conseils), toutes sources
     fusionnées. ``slot`` : signaux du coach pour ce symbole (ou ``None``).
+
+    ``price_asof`` : instant où les cours ont été figés quand la bourse est
+    FERMÉE (``None`` = cours vivants). Si TOUTES les news sont postérieures,
+    le cours et le volume datent d'avant elles : ils ne peuvent ni les
+    confirmer (pas de points volume/aligné) ni dire qu'elles sont déjà dans le
+    prix (pas de « en retard ») — la ligne est marquée « attend l'ouverture ».
     """
     slot = slot or {}
     items = [i for i in news_items or [] if isinstance(i, dict)]
@@ -187,19 +194,27 @@ def score_row(row: Dict[str, Any], news_items: Iterable[Dict[str, Any]],
         components["upcoming"] = UPCOMING
         reasons.append({"code": "upcoming"})
 
+    stale_prices = False
+    if price_asof is not None and items:
+        stamps = [nw.parse_ts(i.get("published")) for i in items]
+        stale_prices = all(t is not None and t > price_asof for t in stamps)
+    if stale_prices:
+        reasons.append({"code": "awaiting_open"})
+        flags.append("awaiting_open")
+
     soon = earnings_soon(row.get("earnings_next"), today)
     if soon:
         components["earnings"] = EARNINGS
         reasons.append({"code": "earnings", "value": str(row.get("earnings_next"))[:10]})
         flags.append("earnings_soon")
 
-    vol = volume_points(row.get("rel_volume"))
+    vol = 0 if stale_prices else volume_points(row.get("rel_volume"))
     if vol:
         components["volume"] = vol
         reasons.append({"code": "volume", "value": round(_num(row.get("rel_volume")), 1)})
 
     change = _num(row.get("change_pct"))
-    if change is not None and change > 0 and (has_pos or has_watch):
+    if not stale_prices and change is not None and change > 0 and (has_pos or has_watch):
         components["aligned"] = ALIGNED
         reasons.append({"code": "aligned", "value": round(change, 2)})
 
@@ -226,7 +241,7 @@ def score_row(row: Dict[str, Any], news_items: Iterable[Dict[str, Any]],
     if red:
         components["red"] = RED
         flags.append("red")
-    if is_late(change, row.get("perf_w")):
+    if not stale_prices and is_late(change, row.get("perf_w")):
         components["late"] = LATE
         flags.append("late")
 

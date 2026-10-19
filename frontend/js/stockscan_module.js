@@ -297,10 +297,12 @@ const StockScanModule = {
           '<div style="font-size:13px;color:var(--text-muted);line-height:1.5;margin-bottom:12px;">' +
             esc(Lang.t('stocks.desc')) + '</div>' +
           '<div style="display:flex;gap:8px;flex-wrap:wrap;">' +
-            '<button class="btn btn-primary" id="stk-new-btn" data-stk-act="new" style="display:none;">' +
-              esc(Lang.t('stocks.new_scan')) + '</button>' +
-            '<button class="btn btn-ghost" id="stk-dl-btn" data-stk-act="download" style="display:none;">' +
+            // Comme le Bond Scanner : une fois le relevé fini, l'Excel est
+            // l'action principale (bouton plein), le nouveau scan vient après.
+            '<button class="btn btn-primary" id="stk-dl-btn" data-stk-act="download" style="display:none;">' +
               esc(Lang.t('stocks.download_excel')) + '</button>' +
+            '<button class="btn btn-secondary" id="stk-new-btn" data-stk-act="new" style="display:none;">' +
+              esc(Lang.t('stocks.new_scan')) + '</button>' +
             '<button class="btn btn-ghost" data-stk-act="back">' + esc(Lang.t('stocks.back')) + '</button>' +
           '</div>' +
         '</div>' +
@@ -529,7 +531,7 @@ const StockScanModule = {
             return (Array.isArray(v) && v.length === 2 && isFinite(Number(v[0])) && isFinite(Number(v[1])))
                 ? [Number(v[0]), Number(v[1])] : [lo, hi];
         };
-        const topR = span('top_n', 5, 100);
+        const topR = span('top_n', 5, 80);
         const shortR = span('shortlist', 10, 80);
         const capR = span('min_cap_meur', 50, 500000);
         const valR = span('min_value_meur', 0, 10000);
@@ -664,7 +666,6 @@ const StockScanModule = {
             return isFinite(n) ? n : fb;
         };
         const ex = this._el('stk-exred');
-        const lang = ['fr', 'en', 'it'].indexOf(Lang.current) >= 0 ? Lang.current : 'fr';
         return {
             markets: markets,
             min_cap_meur: num('stk-mincap', def.min_cap_meur),
@@ -673,7 +674,10 @@ const StockScanModule = {
             top_n: Math.round(num('stk-topn', def.top_n)),
             shortlist: Math.round(num('stk-shortlist', def.shortlist)),
             exclude_red: !!(ex && ex.checked),
-            lang: lang,
+            // L'Excel sort TOUJOURS en italien, comme celui du Bond Scanner : c'est
+            // papy qui le lit (demande Massii du 19/10). L'écran, lui, suit la
+            // langue du site.
+            lang: 'it',
         };
     },
 
@@ -1006,6 +1010,7 @@ const StockScanModule = {
         const vars = {
             columns: Array.isArray(o.columns) ? o.columns.map(String).join(', ') : this._plain(o.columns),
             market: o.market ? this._marketLabel(o.market) : '',
+            markets: Array.isArray(o.markets) ? o.markets.map(m => this._marketLabel(m)).join(', ') : '',
             error: err.length > 160 ? err.slice(0, 157) + '…' : err,
             code: code,
         };
@@ -1040,6 +1045,18 @@ const StockScanModule = {
         const cls = c === 'red' ? 'badge danger'
             : ((c === 'late' || c === 'earnings_soon' || c === 'coach_down') ? 'badge warn' : 'badge muted');
         return '<span class="' + cls + '">' + esc(label) + '</span>';
+    },
+
+    // État de la bourse au moment du scan : une place fermée a des cours figés
+    // à sa dernière clôture, une place ouverte n'a qu'une partie de sa séance.
+    _sessionHtml(session) {
+        const st = (session && typeof session === 'object') ? String(session.state || '') : '';
+        if (st === 'open') {
+            const pct = this._isNum(session.elapsed) ? this._num(Number(session.elapsed) * 100, 0) : '?';
+            return '<span class="badge online">' + esc(this._tr('stocks.session.open', { p: pct })) + '</span>';
+        }
+        if (st === 'closed') return '<span class="badge muted">' + esc(Lang.t('stocks.session.closed')) + '</span>';
+        return '';
     },
 
     _reasonText(r, res) {
@@ -1150,7 +1167,13 @@ const StockScanModule = {
             : (chgN > 0 ? 'var(--accent)' : 'var(--danger)');
         const nums = [];
         if (this._isNum(row.gap_pct)) nums.push(this._tr('stocks.gap', { v: this._pct(row.gap_pct, 2, true) }));
-        if (this._isNum(row.rel_volume)) nums.push(this._tr('stocks.rel_volume', { v: this._num(row.rel_volume, 1) }));
+        if (this._isNum(row.rel_volume)) {
+            // Séance en cours : le volume affiché est ramené à une journée
+            // entière ; le brut (partiel) reste visible pour pouvoir vérifier.
+            nums.push(this._isNum(row.rel_volume_raw)
+                ? this._tr('stocks.rel_volume_adj', { v: this._num(row.rel_volume, 1), raw: this._num(row.rel_volume_raw, 2) })
+                : this._tr('stocks.rel_volume', { v: this._num(row.rel_volume, 1) }));
+        }
         if (this._isNum(row.perf_w)) nums.push(this._tr('stocks.week', { v: this._pct(row.perf_w, 1, true) }));
 
         // --- place, secteur, taille, résultats à venir ---
@@ -1164,7 +1187,8 @@ const StockScanModule = {
             meta.push(this._tr('stocks.earnings_next', { date: this._date(row.earnings_next) }));
         }
 
-        const flags = (Array.isArray(row.flags) ? row.flags : []).map(f => this._flagHtml(f)).join('');
+        const flags = this._sessionHtml(row.session) +
+            (Array.isArray(row.flags) ? row.flags : []).map(f => this._flagHtml(f)).join('');
         const reasons = (Array.isArray(row.reasons) ? row.reasons : [])
             .map(r => this._reasonText(r, res)).filter(Boolean)
             .map(txt => '<span style="' + this._CHIP + '">' + esc(txt) + '</span>').join('');

@@ -210,6 +210,10 @@ def parse_response(payload: Any, market: mk.Market,
         avg_volume = _num(d.get("average_volume_10d_calc"))
         avg_value_local = (avg_volume * price) if avg_volume is not None else None
         cap_currency = _text(d.get("fundamental_currency_code")) or currency
+        # ``Value.Traded`` est rendu dans l'unité PRINCIPALE de la devise
+        # (livres), même quand ``close``/``currency`` sont en pence : mesuré
+        # sur la sonde du 19/10 (LSE:RR. volume × cours = 100 × Value.Traded).
+        traded_currency = "GBP" if currency in ("GBX", "GBp") else currency
 
         rows.append({
             "tv_symbol": tv_symbol,
@@ -225,7 +229,7 @@ def parse_response(payload: Any, market: mk.Market,
             "volume": _num(d.get("volume")),
             "rel_volume": _num(d.get("relative_volume_10d_calc")),
             "avg_value_meur": _meur(avg_value_local, currency, market),
-            "value_traded_meur": _meur(_num(d.get("Value.Traded")), currency, market),
+            "value_traded_meur": _meur(_num(d.get("Value.Traded")), traded_currency, market),
             "market_cap_meur": _meur(_num(d.get("market_cap_basic")), cap_currency, market),
             "sector": _text(d.get("sector")) or None,
             "industry": _text(d.get("industry")) or None,

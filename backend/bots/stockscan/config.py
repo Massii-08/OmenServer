@@ -31,14 +31,19 @@ DEFAULTS: Dict[str, Any] = {
     "top_n": 25,
     "shortlist": 40,
     "exclude_red": False,
-    "lang": "fr",
+    # Italien, comme le Bond Scanner : l'Excel est fait pour être lu par papy
+    # (demande Massii du 19/10). L'écran, lui, suit la langue du site.
+    "lang": "it",
 }
 
 # (min, max) des champs numériques — l'UI les lit via GET /config.
 LIMITS: Dict[str, Tuple[float, float]] = {
     "min_cap_meur": (50, 500000),
     "min_value_meur": (0, 10000),
-    "top_n": (5, 100),
+    # top_n ne peut pas dépasser la borne de la présélection : la présélection
+    # est poussée à top_n, et une borne supérieure à 80 la ferait osciller
+    # 100 -> 80 -> 100 à chaque validation (rapport de test réel du 19/10).
+    "top_n": (5, 80),
     "shortlist": (10, 80),
 }
 

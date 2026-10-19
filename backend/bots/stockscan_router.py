@@ -531,18 +531,24 @@ def stocks_run(data: Optional[RunRequest] = None,
     """
     clean, warnings = scan_config.validate(_payload(data))
     try:
-        # Le dernier réglage lancé devient le réglage proposé la fois suivante.
-        scan_config.save_defaults(clean)
-    except OSError as e:
-        # Confort seulement : un disque capricieux ne doit pas bloquer le scan.
-        logger.warning("[Scanner d'actions] défauts non enregistrés: %r", e)
-    try:
         started = _start_run(current_user.username, clean)
     except Exception as e:  # noqa: BLE001 — déjà journalisé par _start_run
         raise HTTPException(status_code=500,
                             detail="Lancement du scan impossible (voir le journal du serveur)"
                             ) from e
-    return {"job_id": started["job_id"], "already_running": started["already_running"],
+    if started["already_running"]:
+        # Demande refusée : on n'enregistre RIEN comme défaut (ces réglages
+        # n'ont pas tourné) et on rend la config du scan qui tourne vraiment.
+        live = _read_json(_run_dir(started["job_id"]) / "config.json")
+        return {"job_id": started["job_id"], "already_running": True,
+                "warnings": warnings, "config": live if isinstance(live, dict) else clean}
+    try:
+        # Le dernier réglage lancé devient le réglage proposé la fois suivante.
+        scan_config.save_defaults(clean)
+    except OSError as e:
+        # Confort seulement : un disque capricieux ne doit pas bloquer le scan.
+        logger.warning("[Scanner d'actions] défauts non enregistrés: %r", e)
+    return {"job_id": started["job_id"], "already_running": False,
             "warnings": warnings, "config": clean}
 
 

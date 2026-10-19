@@ -46,60 +46,87 @@ def _open(tmp_path, lang="fr"):
     return path, load_workbook(str(path))
 
 
-def test_file_name_and_sheets(tmp_path):
+def test_file_name_and_sheets_follow_the_bond_scanner(tmp_path):
+    # Demande Massii du 19/10 : « des Excel comme le Bond Scanner » — une feuille
+    # par marché (lui : une par devise), fichier « Opportunita_… », puis les infos.
     path, wb = _open(tmp_path)
-    assert path.name == "scanner_actions_2026-10-17.xlsx"
-    assert wb.sheetnames == ["Candidats", "Infos"]
+    assert path.name == "Opportunites_Actions_2026-10-17.xlsx"
+    assert wb.sheetnames == ["Italie", "Suisse", "Infos"]
     assert not list(tmp_path.glob(".*.tmp"))           # écriture atomique propre
 
 
-@pytest.mark.parametrize("lang,sheet,first_header,file_prefix", [
-    ("en", "Candidates", "Rank", "stock_scanner_"),
-    ("it", "Candidati", "Pos.", "scanner_azioni_"),
+@pytest.mark.parametrize("lang,sheets,name_header,price_header,file_prefix", [
+    ("en", ["Italy", "Switzerland", "Info"], "17.10.26 Stocks (Stock scanner)", "Price - EUR",
+     "Stock_Opportunities_"),
+    ("it", ["Italia", "Svizzera", "Info"], "17.10.26 Azioni (Scanner azioni)", "Prezzo - EUR",
+     "Opportunita_Azioni_"),
 ])
-def test_languages(tmp_path, lang, sheet, first_header, file_prefix):
+def test_languages(tmp_path, lang, sheets, name_header, price_header, file_prefix):
     path, wb = _open(tmp_path, lang)
     assert path.name.startswith(file_prefix)
-    assert wb.sheetnames[0] == sheet
-    assert wb[sheet].cell(row=xo.DATA_START_ROW - 1, column=1).value == first_header
+    assert wb.sheetnames == sheets
+    ws = wb[sheets[0]]
+    assert ws.cell(row=xo.HEADER_ROW, column=1).value == "PAPY"
+    assert ws.cell(row=xo.HEADER_ROW, column=2).value == name_header
+    assert ws.cell(row=xo.HEADER_ROW, column=4).value == price_header
 
 
-def test_candidate_rows(tmp_path):
+def test_market_sheet_layout_and_rows(tmp_path):
     _, wb = _open(tmp_path)
-    ws = wb["Candidats"]
+    ws = wb["Italie"]
+    assert ws.cell(row=2, column=3).value == "Italie (Borsa Italiana)"     # titre, comme « USD »
+    assert ws.cell(row=xo.HEADER_ROW, column=4).value == "Cours - EUR"
+    assert ws.cell(row=xo.HEADER_ROW, column=1).fill.start_color.rgb.endswith("2F5496")
     r = xo.DATA_START_ROW
-    assert ws.cell(row=r, column=2).value == "ENI"
-    assert ws.cell(row=r, column=4).value == "Italie (Borsa Italiana)"
-    assert ws.cell(row=r, column=7).value == 2.31
-    assert ws.cell(row=r, column=7).number_format == xo.FMT_PCT
-    assert ws.cell(row=r, column=9).value == 72
-    assert ws.cell(row=r, column=10).value == "résultats proches, nouveau"
-    assert ws.cell(row=r, column=11).value == "volume ×2,4 · 3 news en 48 h · résultats le 24/10/2026"
-    assert ws.cell(row=r, column=12).hyperlink.target == "https://www.tradingview.com/news/1"
-    assert ws.cell(row=r, column=14).value.date() == date(2026, 10, 24)
-    assert ws.cell(row=r, column=17).hyperlink.target.endswith("MIL%3AENI")
+    assert ws.cell(row=r, column=1).value is None                         # PAPY : à cocher
+    assert ws.cell(row=r, column=2).value == "Eni S.p.A."
+    assert ws.cell(row=r, column=3).value == "ENI"
+    assert ws.cell(row=r, column=4).value == 15.48
+    assert ws.cell(row=r, column=5).value == 2.31
+    assert ws.cell(row=r, column=5).number_format == xo.FMT_PCT
+    assert ws.cell(row=r, column=7).value == 72
+    assert ws.cell(row=r, column=8).value == "résultats proches, nouveau"
+    assert ws.cell(row=r, column=9).value == "volume ×2,4 · 3 news en 48 h · résultats le 24/10/2026"
+    assert ws.cell(row=r, column=10).hyperlink.target == "https://www.tradingview.com/news/1"
+    assert ws.cell(row=r, column=11).value.date() == date(2026, 10, 24)
+    assert ws.cell(row=r, column=13).hyperlink.target.endswith("MIL%3AENI")
     assert ws.freeze_panes == "A%d" % xo.DATA_START_ROW
-    assert ws.auto_filter.ref.startswith("A%d:" % (xo.DATA_START_ROW - 1))
+    assert ws.auto_filter.ref.startswith("A%d:" % xo.HEADER_ROW)
+    # une mauvaise nouvelle : toute la ligne en rouge, comme un bond trop cher
+    assert ws.cell(row=r + 1, column=2).font.color.rgb.endswith("FF0000")
+    assert ws.cell(row=r, column=2).font.color.rgb.endswith("000000")
+
+
+def test_failed_market_still_gets_its_empty_sheet(tmp_path):
+    _, wb = _open(tmp_path)
+    ws = wb["Suisse"]
+    assert ws.cell(row=xo.HEADER_ROW, column=1).value == "PAPY"
+    assert ws.cell(row=xo.HEADER_ROW, column=4).value == "Cours - CHF"
+    assert ws.cell(row=xo.DATA_START_ROW, column=2).value is None
 
 
 def test_formula_injection_and_bad_links_are_neutralised(tmp_path):
     _, wb = _open(tmp_path)
-    ws = wb["Candidats"]
+    ws = wb["Italie"]
     r = xo.DATA_START_ROW + 1
-    assert ws.cell(row=r, column=3).value.startswith("'=")
-    assert ws.cell(row=r, column=12).value.startswith("'+")
-    assert ws.cell(row=r, column=12).hyperlink is None    # javascript: refusé
-    assert ws.cell(row=r, column=17).value is None         # pas de lien, pas de texte
-    assert ws.cell(row=r, column=8).value is None          # valeur absente = cellule vide
+    assert ws.cell(row=r, column=2).value.startswith("'=")
+    assert ws.cell(row=r, column=10).value.startswith("'+")
+    assert ws.cell(row=r, column=10).hyperlink is None    # javascript: refusé
+    assert ws.cell(row=r, column=13).value is None         # pas de lien, pas de texte
+    assert ws.cell(row=r, column=6).value is None          # valeur absente = cellule vide
 
 
 def test_info_sheet_lists_warnings_and_markets(tmp_path):
     _, wb = _open(tmp_path)
     texts = [c.value for row in wb["Infos"].iter_rows() for c in row if isinstance(c.value, str)]
-    assert "Marché en échec : switzerland (HTTP 403)" in texts
+    # le marché par son NOM, pas par son identifiant technique « switzerland »
+    assert "Marché en échec : Suisse (HTTP 403)" in texts
     assert "Colonnes du screener vides : gap" in texts
-    assert any(t.startswith("échec") for t in texts)
+    assert "échec : HTTP 403" in texts
+    assert "Sans catalyseur" in texts and "excluded_no_catalyst" not in texts
     assert "Italie (Borsa Italiana), Suisse (SIX)" in texts
+    assert "17/10/2026 07:45 UTC" in texts               # plus d'ISO brut
+    assert any(t.startswith("Univers : 180 titres") for t in texts)
 
 
 def test_reason_and_flag_texts():
@@ -119,4 +146,51 @@ def test_reason_and_flag_texts():
 def test_empty_results_still_write(tmp_path):
     path = xo.write_workbook({"generated_at": "2026-10-17T07:00:00+00:00", "rows": []}, tmp_path, "fr")
     wb = load_workbook(str(path))
-    assert wb["Candidats"].cell(row=xo.DATA_START_ROW, column=1).value is None
+    assert wb.sheetnames == ["Candidats", "Infos"]
+    assert wb["Candidats"].cell(row=xo.HEADER_ROW, column=1).value == "PAPY"
+    assert wb["Candidats"].cell(row=xo.DATA_START_ROW, column=2).value is None
+
+
+def test_session_column_and_session_warnings():
+    assert xo.session_text({"state": "open", "elapsed": 0.735}, "fr") == "en séance (74 %)"
+    assert xo.session_text({"state": "closed", "elapsed": None}, "en") == "closed"
+    assert xo.session_text({"state": "???"}, "it") == "sconosciuta"
+    assert xo.session_text(None, "fr") is None
+    for lang in ("fr", "en", "it"):
+        lab = xo.labels(lang)
+        assert len(lab["headers"]) == len(xo.WIDTHS) == 13
+        assert "awaiting_open" in lab["flags"] and "awaiting_open" in lab["reasons"]
+    text = xo.warning_text({"code": "volume_adjusted", "markets": ["italy", "uk"]}, "fr")
+    assert "(Italie, Royaume-Uni)" in text and "{markets}" not in text
+    text = xo.warning_text({"code": "session_uncertain", "markets": ["italy", "atlantis"]}, "it")
+    assert text.endswith("(Italia, atlantis)")         # identifiant inconnu : tel quel
+
+
+def test_without_a_language_the_workbook_is_italian(tmp_path):
+    # Ni langue passée ni langue dans la config : italien, comme le Bond Scanner.
+    path = xo.write_workbook({"generated_at": "2026-10-17T07:00:00+00:00", "rows": [],
+                              "config": {"markets": ["italy"]}}, tmp_path)
+    assert path.name == "Opportunita_Azioni_2026-10-17.xlsx"
+    assert load_workbook(str(path)).sheetnames == ["Italia", "Info"]
+    assert xo.labels("de") is xo.LABELS["it"]
+
+
+def test_italian_info_sheet_has_no_technical_names(tmp_path):
+    # Feuille lue par papy : ni clé de compteur brute, ni ponctuation française.
+    res = _results("it")
+    res["counts"]["brand_new_counter"] = 7
+    path = xo.write_workbook(res, tmp_path)
+    texts = [c.value for row in load_workbook(str(path))["Info"].iter_rows()
+             for c in row if isinstance(c.value, str)]
+    assert "Universo" in texts and "Esclusi (notizia negativa)" in texts
+    assert not {"universe", "kept", "excluded_red"} & set(texts)
+    assert "errore: HTTP 403" in texts and "Mercato in errore: Svizzera (HTTP 403)" in texts
+    assert "brand_new_counter" in texts                 # compteur inconnu : jamais perdu
+    info = load_workbook(str(path))["Info"]
+    assert info.sheet_properties.pageSetUpPr.fitToPage and info.page_setup.fitToWidth == 1
+
+
+def test_every_language_names_the_same_counters():
+    for lang in ("fr", "en", "it"):
+        assert set(xo.LABELS[lang]["info"]["count_names"]) == set(xo.LABELS["fr"]["info"]["count_names"])
+        assert "{error}" in xo.LABELS[lang]["info"]["failed"]
