@@ -6504,8 +6504,11 @@ setInterval(() => {
 // → armure figée pour la flotte de nuit ; désormais testé côté goals + mirroir du timer de fonte).
 let _armorBusy = false;
 setInterval(async () => {
+  // HORS du try (fix 19/10) : un `return` DANS le try passait par le finally, qui remettait
+  // `_armorBusy` à false pendant que l'invocation précédente tournait encore (ensureArmor ≤150 s
+  // pour un tick de 90 s) → deux forges en parallèle qui se disputent table, four et pathfinder.
+  if (_armorBusy) return;
   try {
-    if (_armorBusy) return;
     // MIGRATION EN COURS (fix 18/08) : forger pose puis REPREND une table/un four (collectBlock =
     // un but pathfinder) → la jambe de migration est annulée. La prochaine passe (90 s) suffit.
     if (_migrating) return;
@@ -6533,6 +6536,7 @@ setInterval(async () => {
 // passe bornée (≤8) N'IMPORTE OÙ (le four portable se pose au fond du branch-mine).
 const _SMELT_TIMER_OBJ = new Set(['resource', 'diamond', 'iron_armor', 'diamond_armor']);
 setInterval(async () => {
+  if (_smeltOppBusy) return;   // HORS du try : même piège que le timer d'armure (fonte ≤200 s, tick 60 s)
   try {
     if (_smeltOppBusy || _armorBusy || _stillBusy || _imminentBusy) return;   // jamais pendant un sauvetage PV
     if (_migrating) return;   // fix 18/08 : poser/reprendre le four volerait le pathfinder à la jambe de migration
