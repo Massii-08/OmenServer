@@ -15,9 +15,7 @@ import json
 import logging
 import os
 import re
-import subprocess
 import sys
-import threading
 import uuid
 from datetime import datetime
 from pathlib import Path
@@ -29,6 +27,7 @@ from pydantic import BaseModel
 
 from backend.auth.models import User
 from backend.auth.permissions import require_role
+from backend.bots import run_log
 from backend.bots import market_engine as me
 from backend.bots import market_schedule as ms
 
@@ -182,15 +181,17 @@ def _build_cmd(run_dir: str, opts: Dict[str, Any]) -> List[str]:
 
 def _launch_subprocess(run_dir: str, job: Dict[str, Any],
                        opts: Optional[Dict[str, Any]] = None) -> None:
-    """Lance le moteur détaché + un thread qui persiste ses logs."""
+    """Lance le moteur détaché, sortie écrite DIRECTEMENT dans run.log.
+
+    Jamais de pipe : après un restart uvicorn plus personne ne le lirait et le
+    premier ``print`` du moteur lèverait BrokenPipeError (cf. run_log.py)."""
     opts = dict(DEFAULT_OPTS, **(opts or {}))
     env = dict(os.environ, PYTHONUNBUFFERED="1")
-    proc = subprocess.Popen(
+    log_path = Path(run_dir) / "run.log"
+    start = run_log.log_size(log_path)
+    proc = run_log.spawn_logged(
         _build_cmd(run_dir, opts),
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        bufsize=1,
+        log_path,
         cwd=str(MARKET_PULSE_DIR),
         env=env,
         # OBLIGATOIRE : sans session propre, le restart uvicorn de
@@ -204,29 +205,17 @@ def _launch_subprocess(run_dir: str, job: Dict[str, Any],
     except OSError:
         pass
 
-    def _capture(p, j):
-        log_path = Path(run_dir) / "run.log"
-        try:
-            with open(str(log_path), "a", encoding="utf-8") as logf:
-                for line in p.stdout:
-                    line = line.rstrip()
-                    if not line:
-                        continue
-                    j["logs"].append(line)
-                    if len(j["logs"]) > 300:
-                        j["logs"] = j["logs"][-300:]
-                    logf.write(line + "\n")
-                    logf.flush()
-        except Exception:
-            pass
-        try:
-            p.wait()
-        except Exception:
-            pass
-        if j.get("status") == "running":
-            j["status"] = "completed" if p.returncode == 0 else "error"
+    def _on_line(line):
+        job["logs"].append(line)
+        if len(job["logs"]) > 300:
+            job["logs"] = job["logs"][-300:]
 
-    threading.Thread(target=_capture, args=(proc, job), daemon=True).start()
+    def _on_exit(rc):
+        if job.get("status") == "running":
+            job["status"] = "completed" if rc == 0 else "error"
+
+    # Suit le fichier + fauche le process (sinon zombie -> « running » à vie).
+    run_log.start_follower(log_path, proc, _on_line, start=start, on_exit=_on_exit)
 
 
 def _live_job_id() -> Optional[str]:
