@@ -9,7 +9,10 @@ const { buildCtxInv, firstUnmet } = require('./goals');
  *  opts.ctxExtra: () => ({ hasTable })                 (état monde non-inventaire)
  *  opts.maxStalls: nb d'itérations sans progrès avant fallback (défaut 4)
  *  opts.onStep  : (goal) => void                       (hook events, optionnel)
- * Retour : { done } | { cancelled } | { stalled, goal }
+ * Retour : { done, steps } | { cancelled } | { stalled, goal }
+ *  steps = nb de skills exécutés par CE run. 0 = chaîne satisfaite d'office : sans ce compte, le
+ *  caller ne distinguait pas « objectif atteint après une heure de travail » de « rien à faire » —
+ *  d'où la boucle à vide mapper_armor→mapper_armor ×47 791 du run 17-18/08 (fix 18/08).
  */
 async function runPlanner(bot, opts, token) {
   const chain = opts.chain;
@@ -19,12 +22,13 @@ async function runPlanner(bot, opts, token) {
   let stalls = 0;
   let failStreak = 0;   // échecs EXPLICITES consécutifs du même but ({ok:false} du skill)
   let lastGoal = null;
+  let steps = 0;        // skills réellement lancés dans ce run (succès comme échec)
 
   while (true) {
     if (token && token.cancelled) return { cancelled: true };
     const ctx = Object.assign({ inv: buildCtxInv(bot) }, ctxExtra());
     const goal = firstUnmet(chain, ctx);
-    if (!goal) return { done: true };
+    if (!goal) return { done: true, steps };
 
     // Fingerprint étendu : inv + table + position (x,y,z floored). Un dig de deepslate sans pickup
     // ne change PAS l'inv → si on ne regardait que l'inv, branchMine resterait au même endroit et
@@ -35,6 +39,7 @@ async function runPlanner(bot, opts, token) {
     const before = JSON.stringify(ctx.inv) + '|' + (ctx.hasTable ? 1 : 0) + '|' + _bx + ',' + _by + ',' + _bz;
     if (opts.onStep) { try { opts.onStep(goal); } catch (e) {} }
     let result = null;
+    steps++;
     try { result = await runSkill(goal, bot); } catch (e) { result = { ok: false }; }
     if (token && token.cancelled) return { cancelled: true };
 

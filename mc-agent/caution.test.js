@@ -347,3 +347,33 @@ test('le plancher est nettement au-dessus du plancher dur vanilla (6/7, movement
   // Sinon aucun gain vs shouldSprint qui coupe deja a 6/7 : la reserve serait vide avant de couper.
   assert.ok(SPRINT_HUNGER_FLOOR > 7, 'doit couper AVANT le plancher dur vanilla, pas au meme endroit');
 });
+
+// ─── 1ter) MARCHE DE MIGRATION DE NUIT (18/08) ──────────────────────────────────────────────────
+// Le verdict ne LANCE plus de migration la nuit, mais un trek de 600-1200 blocs commencé au
+// crépuscule finit en pleine nuit : un bot à < 2 pièces qui continue de marcher en hard meurt, et
+// sa mort fait échouer la migration. Même seuil que l'abri du cartographe (une seule source).
+const { migrationCaution } = require('./caution');
+
+test('migration de nuit, bot NU => on s arrete', () => {
+  assert.strictEqual(migrationCaution({ worn: 0, isNight: true }), 'stop');
+  assert.strictEqual(migrationCaution({ worn: CAUTION_MIN_WORN - 1, isNight: true }), 'stop');
+});
+
+test('migration de nuit, bot a 2 pieces ou plus => il continue (il encaisse le temps de fuir)', () => {
+  assert.strictEqual(migrationCaution({ worn: CAUTION_MIN_WORN, isNight: true }), 'walk');
+  assert.strictEqual(migrationCaution({ worn: 4, isNight: true }), 'walk');
+});
+
+test('migration de JOUR => on marche, nu ou pas', () => {
+  assert.strictEqual(migrationCaution({ worn: 0, isNight: false }), 'walk');
+});
+
+test('migration, heure INCONNUE => on ne coupe pas un trek sur une supposition', () => {
+  assert.strictEqual(migrationCaution({ worn: 0, isNight: null }), 'walk');
+  assert.strictEqual(migrationCaution({ worn: 0 }), 'walk');
+  assert.strictEqual(migrationCaution(), 'walk');
+});
+
+test('migration : nombre de pieces illisible => compte comme nu (prudent)', () => {
+  assert.strictEqual(migrationCaution({ worn: 'x', isNight: true }), 'stop');
+});

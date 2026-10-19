@@ -1067,3 +1067,61 @@ test('CHAINE COMPLETE : echec → 5 min plus tard on re-tente, VERS UNE AUTRE ci
   const second = pickMigrationTarget({ from: FROM, biomes: [NEAR_FOREST, FAR_FOREST], avoid: st.failedTargets, now: later });
   assert.strictEqual(second.z, 900, '... et pas vers la cellule qui vient d echouer');
 });
+
+// ─── (d) L'ARRIVÉE d'une migration « loin » se juge comme son départ (fix 18/08, suite) ─────────
+// La sortie anticipée corrigée, restait le VERDICT d'arrivée : jugé à 64 blocs pour tous les
+// motifs. Une migration `depleted` dont les jambes s'épuisaient à 100-250 blocs (obstacles, NoPath)
+// ré-ancrait sa base dans le même secteur vidé et repartait pour 20 min de cooldown — l'échec
+// mesuré (« déménager dans la pièce d'à côté ») revenait par cette porte-là.
+
+const { migrationArrivalOk, ARRIVAL_DEPLETED_RADIUS } = require('./zone');
+
+const ARR = { x: 1000, z: 0 };
+
+test('arrivee BOIS/EAU : la regle historique (64 blocs) est inchangee', () => {
+  assert.deepStrictEqual(migrationArrivalOk({ reason: 'wood', gone: 64, minDist: 64 }), { ok: true, why: 'moved' });
+  assert.deepStrictEqual(migrationArrivalOk({ reason: 'water', gone: 63, minDist: 200 }), { ok: false, why: 'too_short' });
+});
+
+test('arrivee ZONE VIDEE : 3/4 du plancher parcourus => succes', () => {
+  const r = migrationArrivalOk({ reason: 'depleted', gone: 450, minDist: 600, distToTarget: 400, arrival: ARR, depleted: [ARR] });
+  assert.deepStrictEqual(r, { ok: true, why: 'far_enough' });
+});
+
+test('arrivee ZONE VIDEE : arrive a la cible (<=48) => succes meme si la cible est proche', () => {
+  const r = migrationArrivalOk({ reason: 'exhausted', gone: 100, minDist: 600, distToTarget: 30, arrival: ARR, depleted: [ARR] });
+  assert.deepStrictEqual(r, { ok: true, why: 'arrived' });
+});
+
+test('arrivee ZONE VIDEE : 150 blocs en TERRAIN FRAIS (aucune cellule epuisee autour) => succes', () => {
+  const far = { x: ARR.x + ARRIVAL_DEPLETED_RADIUS + 1, z: 0 };
+  const r = migrationArrivalOk({ reason: 'depleted', gone: 150, minDist: 600, distToTarget: 450, arrival: ARR, depleted: [far] });
+  assert.deepStrictEqual(r, { ok: true, why: 'fresh_ground' });
+});
+
+test('LE BUG : arrivee ZONE VIDEE a 150 blocs ENCORE dans le secteur epuise => ECHEC', () => {
+  const near = { x: ARR.x + ARRIVAL_DEPLETED_RADIUS, z: 0 };   // pile au bord : encore « autour »
+  const r = migrationArrivalOk({ reason: 'depleted', gone: 150, minDist: 600, distToTarget: 450, arrival: ARR, depleted: [near] });
+  assert.deepStrictEqual(r, { ok: false, why: 'still_depleted' });
+});
+
+test('arrivee ZONE VIDEE : moins de 64 blocs => echec, terrain frais ou pas', () => {
+  const r = migrationArrivalOk({ reason: 'exhausted', gone: 40, minDist: 600, distToTarget: 560, arrival: ARR, depleted: [] });
+  assert.deepStrictEqual(r, { ok: false, why: 'too_short' });
+});
+
+test('arrivee ZONE VIDEE sans carte (aucune cellule connue) => le terrain est presume frais', () => {
+  const r = migrationArrivalOk({ reason: 'exhausted', gone: 100, minDist: 600, arrival: ARR });
+  assert.deepStrictEqual(r, { ok: true, why: 'fresh_ground' });
+});
+
+test('arrivee : position illisible => echec (on n ancre jamais une base a l aveugle)', () => {
+  assert.deepStrictEqual(migrationArrivalOk({ reason: 'wood', gone: NaN }), { ok: false, why: 'no_position' });
+  assert.deepStrictEqual(migrationArrivalOk({ reason: 'depleted', gone: 200, minDist: 600, arrival: null, depleted: [] }),
+    { ok: false, why: 'no_position' });
+});
+
+test('arrivee : cellules epuisees corrompues ignorees (jamais de crash)', () => {
+  const r = migrationArrivalOk({ reason: 'depleted', gone: 100, minDist: 600, arrival: ARR, depleted: [null, { x: 'a', z: 0 }, 5] });
+  assert.deepStrictEqual(r, { ok: true, why: 'fresh_ground' });
+});

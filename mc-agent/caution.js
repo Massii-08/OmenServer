@@ -60,6 +60,21 @@ function regroupCaution(sig = {}) {
   return mapperCaution(sig) === 'shelter' ? 'shelter' : 'regroup';
 }
 
+// ─── 1ter) Marche de MIGRATION de nuit (18/08) ──────────────────────────────────────────────────
+// Le verdict de zone ne LANCE plus de migration la nuit, mais un trek de 600-1200 blocs commencé au
+// crépuscule finit en pleine nuit : un ouvrier à < 2 pièces qui continue de marcher en hard meurt,
+// et sa mort fait échouer la migration (une des 5 causes du 917 départs → 72 arrivées). Même seuil
+// que l'abri du cartographe (CAUTION_MIN_WORN, une seule source), mais la nuit doit être CONNUE :
+// on ne coupe pas un trek en cours sur une supposition (`isNight` null = bot.time pas encore livré),
+// à l'inverse de l'abri qu'on prend dès qu'un hostile rôde.
+// → 'stop' (arrêter la marche proprement, juger l'arrivée telle quelle) | 'walk'.
+function migrationCaution(sig = {}) {
+  const n = Number(sig && sig.worn);
+  const worn = Number.isFinite(n) ? n : 0;
+  if (worn >= CAUTION_MIN_WORN) return 'walk';
+  return (sig && sig.isNight === true) ? 'stop' : 'walk';
+}
+
 // ─── 2) Ré-essai d'équipement ───────────────────────────────────────────────────────────────────
 
 // `bot.equip` échoue surtout EN MOUVEMENT (le serveur refuse le changement de slot pendant un
@@ -411,7 +426,7 @@ function surfaceTripNeeded(sig = {}) {
 }
 
 module.exports = {
-  mapperCaution, CAUTION_MIN_WORN, regroupCaution,
+  mapperCaution, CAUTION_MIN_WORN, regroupCaution, migrationCaution,
   equipRetryPlan, EQUIP_RETRY_WAIT_MS, EQUIP_MAX_ATTEMPTS, EQUIP_RETRY_COOLDOWN_MS,
   isEquipPickup, PICKUP_EQUIP_DELAY_MS,
   normalizeSmeltResult,

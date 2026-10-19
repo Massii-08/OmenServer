@@ -81,5 +81,36 @@ test('phase3 : succès intermittents remettent le failStreak à zéro', async ()
     },
     ctxExtra: () => ({}),
   }, null);
-  assert.deepStrictEqual(r, { done: true }); // 2 logs récoltés (6 calls) sans stall intermédiaire
+  assert.deepStrictEqual(r, { done: true, steps: 6 }); // 2 logs récoltés (6 calls) sans stall intermédiaire
+});
+
+// ─── `steps` : combien de skills CE run a-t-il exécutés ? (fix 18/08, boucle à vide) ─────────────
+// Run 17-18/08 : `autonomous_chain` mapper_armor→mapper_armor ×47 791 — chaque run se terminait
+// sur `done` SANS avoir rien exécuté (chaîne satisfaite d'office). Le caller ne pouvait pas le voir :
+// `{done:true}` disait « objectif atteint » qu'on ait travaillé une heure ou zéro seconde.
+
+test('steps : une chaine deja satisfaite rend done avec steps 0 (aucun skill lance)', async () => {
+  const h = harness();
+  h.bot._inv.A = 1; h.bot._inv.B = 1;
+  const r = await runPlanner(h.bot, { chain: h.chain, runSkill: h.runSkill, ctxExtra: h.ctxExtra }, { cancelled: false });
+  assert.deepStrictEqual(r, { done: true, steps: 0 });
+  assert.deepStrictEqual(h.calls, []);
+});
+
+test('steps : compte chaque skill execute, succes comme echec', async () => {
+  const h = harness();
+  let n = 0;
+  const flaky = async (goal) => { n++; if (n === 1) return { ok: false, reason: 'timeout' }; return h.runSkill(goal); };
+  const r = await runPlanner(h.bot, { chain: h.chain, runSkill: flaky, ctxExtra: h.ctxExtra }, { cancelled: false });
+  assert.strictEqual(r.done, true);
+  assert.strictEqual(r.steps, 3, '1 echec + 2 succes = 3 skills executes');
+});
+
+test('steps : stalled et cancelled gardent leur forme historique', async () => {
+  const h = harness();
+  const cancelled = await runPlanner(h.bot, { chain: h.chain, runSkill: h.runSkill, ctxExtra: h.ctxExtra }, { cancelled: true });
+  assert.deepStrictEqual(cancelled, { cancelled: true });
+  const stuck = async () => ({ ok: false, reason: 'not_found' });
+  const stalled = await runPlanner(h.bot, { chain: h.chain, runSkill: stuck, ctxExtra: h.ctxExtra, maxStalls: 2 }, { cancelled: false });
+  assert.deepStrictEqual(stalled, { stalled: true, goal: 'a' });
 });

@@ -816,3 +816,145 @@ test('wantsOpportunisticArmor : couvre mapper_armor ET iron_help (piège #61 bis
   assert.strictEqual(wantsOpportunisticArmor('mapper_armor'), true);
   assert.strictEqual(wantsOpportunisticArmor('iron_help'), true);
 });
+
+// ════════════════════════════════════════════════════════════════════════════════════════════════
+// BOUCLE À VIDE APRÈS L'ARMURE (run 17-18/08, serveur AVEC /tpa)
+// ════════════════════════════════════════════════════════════════════════════════════════════════
+// `autonomous_chain` mapper_armor→mapper_armor ×47 791 et iron_help→iron_help ×5 652, contre 18
+// iron_armor→diamond : 4 ouvriers sur 5 avaient fini leur armure fer… puis tournaient à vide
+// (start → done < 1 s → chain → start toutes les 1,5 s) au lieu d'aller au diamant.
+//   1) le ROUTAGE voyait « un mappeur nu » sans savoir si CE bot pouvait le servir (déjà réservé
+//      par un coéquipier, livré il y a < 5 min, ou bot lui-même pas 4/4) → `giftTarget` réel ;
+//   2) toute chaîne peut être satisfaite d'office (iron_help avec ses 8 lingots en poche, diamond
+//      à 64…) → si le run n'a exécuté AUCUN skill et que la suite finirait pareil, on la saute.
+
+const {
+  chainAfterDone, CHAIN_EMPTY_WINDOW_MS, CHAIN_BASE_DELAY_MS, CHAIN_BACKOFF_MS, CHAIN_FALLBACK,
+} = require('./goals');
+
+const T_CH = 70 * 3600 * 1000;
+const NAKED_MAPPERS = [_mapper('M1', 0), _mapper('M2', 0)];
+
+test('routage reel : mappeurs nus MAIS aucune cible pour CE bot => diamant, pas mapper_armor', () => {
+  // Les 2 mappeurs nus sont deja reserves par 2 coequipiers : _giftContext ne rend rien.
+  const d = chainAfterDone({ objective: 'mapper_armor', steps: 0, mates: NAKED_MAPPERS, canTp: true, giftTarget: null, now: T_CH });
+  assert.strictEqual(d.proposed, 'diamond');
+  assert.strictEqual(d.next, 'diamond');
+  assert.strictEqual(d.skip, null, 'le routage suffit : le filet n a pas a agir');
+  assert.strictEqual(d.delayMs, CHAIN_BASE_DELAY_MS);
+});
+
+test('routage reel : une cible reservee par CE bot => mapper_armor (on va l armer)', () => {
+  const d = chainAfterDone({ objective: 'iron_armor', steps: 12, mates: NAKED_MAPPERS, canTp: true, giftTarget: 'M1', now: T_CH });
+  assert.strictEqual(d.next, 'mapper_armor');
+  assert.strictEqual(d.releaseGift, false, 'on part l armer : la reservation est gardee');
+});
+
+test('routage reel : sans /tpa la cible ne compte pas (livraison impossible)', () => {
+  const d = chainAfterDone({ objective: 'mapper_armor', steps: 0, mates: NAKED_MAPPERS, canTp: false, giftTarget: 'M1', now: T_CH });
+  assert.strictEqual(d.next, 'diamond');
+  assert.strictEqual(d.releaseGift, true, 'reservation inutile : relachee');
+});
+
+test('routage reel : un coequipier en manque passe AVANT le mappeur => la reservation est relachee', () => {
+  const mates = [_worker('W2', 12), _mapper('M1', 0)];
+  const d = chainAfterDone({ objective: 'iron_armor', steps: 5, mates, canTp: true, giftTarget: 'M1', now: T_CH });
+  assert.strictEqual(d.next, 'iron_help');
+  assert.strictEqual(d.releaseGift, true, 'on ne part pas armer M1 : un autre ouvrier doit pouvoir le prendre');
+});
+
+test('filet : run A VIDE + meme objectif propose => on saute au diamant', () => {
+  // iron_help satisfait d'office (8 lingots en poche) alors qu'un coequipier reste en manque.
+  const mates = [_worker('W2', 12)];
+  const d = chainAfterDone({ objective: 'iron_help', steps: 0, mates, canTp: true, giftTarget: null, now: T_CH });
+  assert.strictEqual(d.proposed, 'iron_help');
+  assert.strictEqual(d.next, CHAIN_FALLBACK);
+  assert.deepStrictEqual(d.skip, { from: 'iron_help', proposed: 'iron_help', to: 'diamond', why: 'same_empty' });
+  assert.strictEqual(d.delayMs, CHAIN_BASE_DELAY_MS);
+});
+
+test('filet : run qui a TRAVAILLE => le meme objectif est legitime (un set de plus a forger)', () => {
+  const d = chainAfterDone({ objective: 'mapper_armor', steps: 30, mates: NAKED_MAPPERS, canTp: true, giftTarget: 'M2', now: T_CH });
+  assert.strictEqual(d.next, 'mapper_armor');
+  assert.strictEqual(d.skip, null);
+});
+
+test('filet : objectif propose fini A VIDE il y a < 5 min => saute', () => {
+  const memo = { iron_help: T_CH - 2 * 60000 };
+  const mates = [_worker('W2', 12)];
+  const d = chainAfterDone({ objective: 'iron_armor', steps: 0, mates, canTp: true, giftTarget: null, emptyDoneAt: memo, now: T_CH });
+  assert.strictEqual(d.proposed, 'iron_help');
+  assert.strictEqual(d.next, 'diamond');
+  assert.strictEqual(d.skip.why, 'recently_empty');
+});
+
+test('filet : un vide d il y a plus de 5 min est oublie (la situation a pu changer)', () => {
+  const memo = { iron_help: T_CH - CHAIN_EMPTY_WINDOW_MS };
+  const mates = [_worker('W2', 12)];
+  const d = chainAfterDone({ objective: 'iron_armor', steps: 0, mates, canTp: true, giftTarget: null, emptyDoneAt: memo, now: T_CH });
+  assert.strictEqual(d.next, 'iron_help');
+  assert.strictEqual(d.skip, null);
+  assert.strictEqual(d.emptyDoneAt.iron_help, undefined, 'entree expiree elaguee');
+});
+
+test('filet : diamond -> diamond A VIDE (64 diamants) => on ESPACE la relance au lieu de reboucler', () => {
+  const d = chainAfterDone({ objective: 'diamond', steps: 0, mates: [], canTp: true, giftTarget: null, now: T_CH });
+  assert.strictEqual(d.next, 'diamond', 'le diamant est continu par design : on ne l abandonne pas');
+  assert.strictEqual(d.delayMs, CHAIN_BACKOFF_MS);
+  assert.strictEqual(d.skip.why, 'all_empty');
+});
+
+test('filet : meme le diamant finirait a vide => backoff aussi depuis une autre chaine', () => {
+  const memo = { diamond: T_CH - 30000 };
+  const mates = [_worker('W2', 12)];
+  const d = chainAfterDone({ objective: 'iron_help', steps: 0, mates, canTp: true, giftTarget: null, emptyDoneAt: memo, now: T_CH });
+  assert.strictEqual(d.next, 'diamond');
+  assert.strictEqual(d.delayMs, CHAIN_BACKOFF_MS);
+  assert.deepStrictEqual(d.skip, { from: 'iron_help', proposed: 'iron_help', to: 'diamond', why: 'all_empty' });
+});
+
+test('filet : le diamant qui TRAVAILLE garde sa relance rapide', () => {
+  const d = chainAfterDone({ objective: 'diamond', steps: 40, mates: [], canTp: true, giftTarget: null, now: T_CH });
+  assert.strictEqual(d.next, 'diamond');
+  assert.strictEqual(d.delayMs, CHAIN_BASE_DELAY_MS);
+  assert.strictEqual(d.skip, null);
+});
+
+test('filet : un run a vide est MEMORISE, un run qui travaille ne l est pas', () => {
+  const a = chainAfterDone({ objective: 'iron_help', steps: 0, mates: [], now: T_CH });
+  assert.strictEqual(a.emptyDoneAt.iron_help, T_CH);
+  const b = chainAfterDone({ objective: 'iron_help', steps: 3, mates: [], emptyDoneAt: {}, now: T_CH });
+  assert.deepStrictEqual(b.emptyDoneAt, {});
+});
+
+test('filet : ne mute pas la memoire du caller (module pur) et jette les dates futures', () => {
+  const memo = { iron_help: T_CH - 1000, mapper_armor: T_CH + 3600000 };
+  const snap = JSON.parse(JSON.stringify(memo));
+  const d = chainAfterDone({ objective: 'diamond', steps: 0, mates: [], emptyDoneAt: memo, now: T_CH });
+  assert.deepStrictEqual(memo, snap);
+  assert.strictEqual(d.emptyDoneAt.mapper_armor, undefined, 'une date future gelerait le saut a vie');
+});
+
+test('filet : steps inconnu (vieux planner) => jamais de saut (prudent)', () => {
+  const d = chainAfterDone({ objective: 'iron_help', mates: [_worker('W2', 12)], now: T_CH });
+  assert.strictEqual(d.next, 'iron_help');
+  assert.strictEqual(d.skip, null);
+});
+
+test('fin de chaine sans suite (stone_pickaxe) => next null, rien a relancer', () => {
+  const d = chainAfterDone({ objective: 'stone_pickaxe', steps: 0, mates: [], now: T_CH });
+  assert.strictEqual(d.next, null);
+  assert.strictEqual(d.skip, null);
+});
+
+test('LA BOUCLE MESUREE : 3 cycles a vide mapper_armor ne rebouclent plus jamais sur eux-memes', () => {
+  // Reproduction : 2 mappeurs nus reserves par d'autres, ce bot 4/4 sans cible. Avant : la chaine
+  // repartait sur mapper_armor toutes les 1,5 s. Maintenant chaque decision sort de la boucle.
+  let memo = {};
+  for (let i = 0; i < 3; i++) {
+    const d = chainAfterDone({ objective: 'mapper_armor', steps: 0, mates: NAKED_MAPPERS, canTp: true,
+      giftTarget: null, emptyDoneAt: memo, now: T_CH + i * 1500 });
+    assert.notStrictEqual(d.next, 'mapper_armor', `cycle ${i}`);
+    memo = d.emptyDoneAt;
+  }
+});

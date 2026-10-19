@@ -246,3 +246,60 @@ test('isNearlyBroken : seuil surchargeable + entrées bancales', () => {
   assert.strictEqual(isNearlyBroken(null), false);
   assert.strictEqual(isNearlyBroken({ name: 'diamond' }), false, 'sans durabilité → jamais cassé');
 });
+
+// ─── PLUS DE PIOCHE : ne re-crafter QUE si la matière est EN POCHE (18/08) ──────────────────────
+// Mesuré en live : `pickaxe_missing` ~300/h. Le watchdog (index.js, toutes les 20 s) lançait
+// craftSmart stone puis wooden SANS regarder la poche ; chaque appel passait par withCraftingTable
+// → pathfinder.goto vers une table jusqu'à 30 s — ce qui annulait le but pathfinder du planner
+// (explore/gather), la même classe de bug que la migration. Sans matière, il n'y a RIEN à crafter :
+// c'est le planner qui va chercher le bois et la pierre.
+const { pickaxeRecraftPlan, STONE_TOOL_MATERIALS } = require('./gear');
+const _it = (pairs) => pairs.map(([name, count]) => ({ name, count }));
+
+test('pioche : sans batons, rien a crafter (meme avec pierre et planches)', () => {
+  assert.deepStrictEqual(pickaxeRecraftPlan(_it([['cobblestone', 10], ['oak_planks', 10], ['stick', 1]])), []);
+});
+
+test('pioche pierre : 2 batons + 3 cobblestone', () => {
+  assert.deepStrictEqual(pickaxeRecraftPlan(_it([['stick', 2], ['cobblestone', 3]])), ['stone_pickaxe']);
+});
+
+test('pioche pierre : les 3 materiaux reels de la recette (deepslate, blackstone) comptent', () => {
+  // minecraft-data 1.20.1/1.21.x : 3 recettes concretes cobblestone | cobbled_deepslate | blackstone.
+  assert.deepStrictEqual(STONE_TOOL_MATERIALS.slice().sort(), ['blackstone', 'cobbled_deepslate', 'cobblestone']);
+  assert.deepStrictEqual(pickaxeRecraftPlan(_it([['stick', 2], ['cobbled_deepslate', 3]])), ['stone_pickaxe']);
+  assert.deepStrictEqual(pickaxeRecraftPlan(_it([['stick', 2], ['blackstone', 3]])), ['stone_pickaxe']);
+});
+
+test('pioche pierre : materiaux MELANGES ne suffisent pas (chaque recette = UN materiau)', () => {
+  assert.deepStrictEqual(pickaxeRecraftPlan(_it([['stick', 2], ['cobblestone', 2], ['cobbled_deepslate', 2]])), []);
+});
+
+test('pioche pierre : les piles d un meme materiau s additionnent', () => {
+  assert.deepStrictEqual(pickaxeRecraftPlan(_it([['stick', 1], ['stick', 1], ['cobblestone', 2], ['cobblestone', 1]])), ['stone_pickaxe']);
+});
+
+test('pioche bois : 2 batons + 3 planches d UNE essence', () => {
+  assert.deepStrictEqual(pickaxeRecraftPlan(_it([['stick', 2], ['oak_planks', 3]])), ['wooden_pickaxe']);
+});
+
+test('pioche bois : planches d essences MELANGEES => non (aucune recette « n importe quelles planches »)', () => {
+  assert.deepStrictEqual(pickaxeRecraftPlan(_it([['stick', 2], ['oak_planks', 2], ['birch_planks', 2]])), []);
+});
+
+test('pioche bois : des buches CONVERTIBLES comptent (craftItem les convertit), reserve charbon gardee', () => {
+  assert.deepStrictEqual(pickaxeRecraftPlan(_it([['stick', 2], ['oak_log', 3]])), ['wooden_pickaxe']);
+  // 2 buches seulement : les convertir entamerait la reserve du charbon de bois → non.
+  assert.deepStrictEqual(pickaxeRecraftPlan(_it([['stick', 2], ['oak_log', 2]])), []);
+});
+
+test('pioche : les deux faisables => pierre d abord, bois en repli', () => {
+  assert.deepStrictEqual(pickaxeRecraftPlan(_it([['stick', 4], ['cobblestone', 3], ['spruce_planks', 3]])),
+    ['stone_pickaxe', 'wooden_pickaxe']);
+});
+
+test('pioche : poche vide ou corrompue => rien (jamais de crash)', () => {
+  assert.deepStrictEqual(pickaxeRecraftPlan([]), []);
+  assert.deepStrictEqual(pickaxeRecraftPlan(null), []);
+  assert.deepStrictEqual(pickaxeRecraftPlan([null, { name: 'stick' }, { count: 3 }]), []);
+});

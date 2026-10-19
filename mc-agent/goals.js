@@ -621,6 +621,63 @@ function nextObjectiveAfter(objective, mates, opts = {}) {
   return null;
 }
 
+// ─── BOUCLE À VIDE APRÈS L'ARMURE (fix 18/08) ──────────────────────────────────────────────────
+// Run 17-18/08 (serveur AVEC /tpa) : `autonomous_chain` mapper_armor→mapper_armor ×47 791 et
+// iron_help→iron_help ×5 652, contre 18 iron_armor→diamond. 4 ouvriers sur 5 avaient fini leur
+// armure fer, puis tournaient à vide : start → done < 1 s → chain → start toutes les 1,5 s.
+// Deux trous, deux remèdes, une seule décision PURE (index.js ne fait qu'exécuter) :
+//   1) ROUTAGE RÉALISTE — `nextObjectiveAfter` voyait « un mappeur nu » sans savoir si CE bot
+//      pouvait le servir (déjà réservé par un coéquipier, livré il y a < 5 min, bot pas 4/4). Or
+//      la chaîne mapper_armor est satisfaite d'office sans cible → boucle. `giftTarget` = la cible
+//      RÉELLEMENT réservée par ce bot (index.js `_giftContext`, cache forcé) ; le fix 18099de4
+//      (`canGift` = /tpa) ne couvrait que le serveur SANS /tpa.
+//   2) FILET GÉNÉRIQUE — toute chaîne peut finir à vide (iron_help avec 8 lingots en poche, diamond
+//      à 64…). Run à 0 skill ET suite proposée qui finirait pareil (même objectif, ou fini à vide il
+//      y a < 5 min) → on saute au diamant ; si même lui finirait à vide → relance espacée (60 s).
+const CHAIN_EMPTY_WINDOW_MS = 5 * 60 * 1000;   // « a fini à vide récemment »
+const CHAIN_BASE_DELAY_MS = 1500;              // relance historique (pile d'appels neuve)
+const CHAIN_BACKOFF_MS = 60000;                // tout finirait à vide : on espace au lieu de boucler
+const CHAIN_FALLBACK = 'diamond';              // l'objectif d'après de toute la filière armure
+
+/**
+ * Que faire quand un run du planner finit sur `done` ? (PUR)
+ * @param {object} o
+ *   objective : l'objectif qui vient de finir ; steps : skills exécutés par ce run (runPlanner) ;
+ *   mates : presence.list() ; canTp : /tpa autorisé ; giftTarget : cartographe RÉSERVÉ par ce bot
+ *   (nom) ou null ; emptyDoneAt : { objectif → instant du dernier run à vide } (mémoire du caller,
+ *   jamais mutée) ; now.
+ * @returns {{ next:string|null, proposed:string|null, delayMs:number,
+ *             skip:null|{from,proposed,to,why}, emptyDoneAt:object, releaseGift:boolean }}
+ *   why ∈ same_empty | recently_empty | all_empty (backoff) ;
+ *   releaseGift = la réservation de `giftTarget` doit être RELÂCHÉE (on ne part pas l'armer).
+ */
+function chainAfterDone({ objective, steps, mates, canTp = true, giftTarget = null, emptyDoneAt, now } = {}) {
+  const t = Number.isFinite(now) ? now : Date.now();
+  // Mémoire élaguée (copie) : rien d'expiré, rien du FUTUR — une date future gèlerait le saut à vie.
+  const memo = {};
+  for (const [k, v] of Object.entries(emptyDoneAt || {})) {
+    if (Number.isFinite(v) && v <= t && t - v < CHAIN_EMPTY_WINDOW_MS) memo[k] = v;
+  }
+  // `steps === 0` STRICT : un résultat sans compte (vieux planner) ne déclenche jamais le saut.
+  const empty = steps === 0;
+  if (empty && objective) memo[objective] = t;
+  const proposed = nextObjectiveAfter(objective, mates, { canGift: !!canTp && !!giftTarget });
+  let next = proposed;
+  let delayMs = CHAIN_BASE_DELAY_MS;
+  let skip = null;
+  // `memo[objective]` vient d'être posé : « même objectif » est donc un cas de « fini à vide récemment ».
+  if (proposed && empty && memo[proposed] !== undefined) {
+    next = CHAIN_FALLBACK;
+    if (memo[CHAIN_FALLBACK] !== undefined) {
+      delayMs = CHAIN_BACKOFF_MS;
+      skip = { from: objective, proposed, to: next, why: 'all_empty' };
+    } else {
+      skip = { from: objective, proposed, to: next, why: proposed === objective ? 'same_empty' : 'recently_empty' };
+    }
+  }
+  return { next, proposed, delayMs, skip, emptyDoneAt: memo, releaseGift: !!giftTarget && next !== 'mapper_armor' };
+}
+
 // PIÈGE #61 — un Set d'objectifs incomplet tue une fonctionnalité en silence. Le TIMER ARMURE
 // opportuniste (index.js, `_ARMOR_TIMER_OBJ`) forge/équipe une pièce manquante toutes les 90 s dès
 // que le fer dépasse le buffer, INDÉPENDAMMENT du planner (le but `iron_armor` de la chaîne est
@@ -659,4 +716,5 @@ function firstUnmet(chain, ctx) {
 }
 
 module.exports = {
-  nextObjectiveAfter, IRON_HELP_CHAIN, HELP_STOCK, MAPPER_ARMOR_CHAIN, GIFT_SET_INGOTS, DIAMOND_TARGET, hasShield, posableCount, hasSword, hasAxe, buildCtxInv, invCount, anyLog, anyPlanks, cookedCount, COOKED_FOODS, MVP_CHAIN, IRON_CHAIN, DIAMOND_CHAIN, IRON_ARMOR_CHAIN, DIAMOND_ARMOR_CHAIN, MAPPER_KIT, chainFor, firstUnmet, armorNeed, armorWornOk, wantsOpportunisticArmor, ARMOR_FORGE_OBJECTIVES };
+  nextObjectiveAfter, chainAfterDone, CHAIN_EMPTY_WINDOW_MS, CHAIN_BASE_DELAY_MS, CHAIN_BACKOFF_MS, CHAIN_FALLBACK,
+  IRON_HELP_CHAIN, HELP_STOCK, MAPPER_ARMOR_CHAIN, GIFT_SET_INGOTS, DIAMOND_TARGET, hasShield, posableCount, hasSword, hasAxe, buildCtxInv, invCount, anyLog, anyPlanks, cookedCount, COOKED_FOODS, MVP_CHAIN, IRON_CHAIN, DIAMOND_CHAIN, IRON_ARMOR_CHAIN, DIAMOND_ARMOR_CHAIN, MAPPER_KIT, chainFor, firstUnmet, armorNeed, armorWornOk, wantsOpportunisticArmor, ARMOR_FORGE_OBJECTIVES };

@@ -108,6 +108,38 @@ function migrationEarlyExitOk({ reason, gone, minDist, distToTarget } = {}) {
   return gone >= MIGRATE_MIN_PROGRESS;
 }
 
+// ─── VERDICT D'ARRIVÉE (fix 18/08, suite) ──────────────────────────────────────────────────────
+// La sortie anticipée corrigée, l'arrivée restait jugée à 64 blocs pour tous les motifs : une
+// migration `depleted` dont les jambes s'épuisaient à 100-250 blocs (obstacles, NoPath) ré-ancrait
+// sa base dans le même secteur vidé — et le cooldown long de 20 min l'y clouait. Même rayon que le
+// verdict (`depletedNear` de checkZoneVerdict) : une arrivée sans cellule épuisée à 160 blocs ne
+// pourra pas re-déclencher `depleted` derrière — c'est du terrain frais, même sans avoir fait 600.
+const ARRIVAL_DEPLETED_RADIUS = 160;
+
+/**
+ * La migration a-t-elle ABOUTI ? (PUR) — jugé à l'arrivée, avant d'ancrer la nouvelle base.
+ *   • raisons « loin » (depleted/exhausted) : 3/4 du plancher parcourus (`far_enough`), OU arrivé à
+ *     la cible (`arrived`), OU ≥ MIGRATE_MIN_PROGRESS en terrain frais (`fresh_ground`) ;
+ *   • autres raisons : ≥ MIGRATE_MIN_PROGRESS (`moved`, la règle historique).
+ * Sans carte (aucune cellule épuisée connue) le terrain est présumé frais : on ne peut pas mieux.
+ * @param {{reason, gone, minDist?, distToTarget?, arrival?:{x,z}, depleted?:Array<{x,z}>}} o
+ * @returns {{ok:boolean, why:'moved'|'far_enough'|'arrived'|'fresh_ground'|'too_short'|'still_depleted'|'no_position'}}
+ */
+function migrationArrivalOk({ reason, gone, minDist, distToTarget, arrival, depleted } = {}) {
+  if (!Number.isFinite(gone)) return { ok: false, why: 'no_position' };
+  if (!_FAR_REASONS.has(reason)) {
+    return gone >= MIGRATE_MIN_PROGRESS ? { ok: true, why: 'moved' } : { ok: false, why: 'too_short' };
+  }
+  const floor = Number.isFinite(minDist) && minDist > 0 ? minDist : MIGRATE_FAR_MIN_DIST;
+  if (gone >= FAR_EARLY_EXIT_FRACTION * floor) return { ok: true, why: 'far_enough' };
+  if (Number.isFinite(distToTarget) && distToTarget <= MIGRATE_ARRIVED_RADIUS) return { ok: true, why: 'arrived' };
+  if (gone < MIGRATE_MIN_PROGRESS) return { ok: false, why: 'too_short' };
+  if (!arrival || !Number.isFinite(arrival.x) || !Number.isFinite(arrival.z)) return { ok: false, why: 'no_position' };
+  const near = (Array.isArray(depleted) ? depleted : []).some((d) => d && Number.isFinite(d.x) && Number.isFinite(d.z)
+    && _horiz(d.x, d.z, arrival.x, arrival.z) <= ARRIVAL_DEPLETED_RADIUS);
+  return near ? { ok: false, why: 'still_depleted' } : { ok: true, why: 'fresh_ground' };
+}
+
 // ─── CIBLES RATÉES (fix 18/08) ──────────────────────────────────────────────────────────────────
 // `pickMigrationTarget` est DÉTERMINISTE (c'est ce qui groupe l'escouade) : après un échec, le
 // re-essai visait donc exactement la même cellule — re-échec garanti au même endroit. On écarte
@@ -587,6 +619,7 @@ module.exports = {
   zoneVerdict, verdictTelemetry, pickMigrationTarget, migrationLeg, legHeading, LEG_STUCK_MIN, legIsGood, isWetBiome, minDistFor, zoneFailureKind,
   zoneStateInit, zoneStateLoad, zoneStateAfterMigration, zoneStateAfterFailedMigration,
   migrationEarlyExitOk, pruneFailedTargets, FAR_EARLY_EXIT_FRACTION, MIGRATE_ARRIVED_RADIUS,
+  migrationArrivalOk, ARRIVAL_DEPLETED_RADIUS,
   FAILED_TARGET_TTL_MS, FAILED_TARGET_RADIUS, FAILED_TARGETS_CAP,
   windowAdd, windowSum, windowPrune, windowLoad, ZONE_WINDOW_MS, ZONE_BUCKET_MS,
   MIN_MINUTES_IN_ZONE, MIGRATION_COOLDOWN_MS, WATER_FAILS_MAX, LOGS_NOT_FOUND_MAX,

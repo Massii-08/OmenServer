@@ -7,6 +7,7 @@
 //  - mostLackingType : le type à viser en priorité (déficit relatif max — l'or a bloqué 3 bots hier).
 
 const { TIERS } = require('./ores');
+const { planksPlan } = require('./planks');
 
 // Y de branch mining par type (centre de la bande de spawn la plus dense, 1.18+).
 // NB gold = -16 (pic de spawn réel 1.18). REVERT du fix #10 (-54) : le gold mappé est concentré à -16
@@ -97,6 +98,37 @@ function pickaxePlan(items, neededTypes) {
     return { craft: 'stone_pickaxe', why: 'spare' };          // pioche d'avance pour le tunnel
   }
   return { ok: true };
+}
+
+// ─── PLUS DE PIOCHE : ne re-crafter QUE si la matière est EN POCHE (18/08) ─────────────────────
+// Mesuré en live : `pickaxe_missing` ~300/h. Le watchdog (index.js, 20 s) lançait craftSmart pierre
+// puis bois SANS regarder la poche ; chaque appel passait par withCraftingTable → pathfinder.goto
+// vers une table jusqu'à 30 s, ce qui annulait le but pathfinder du planner (explore/gather) — même
+// classe de bug que la migration. Sans matière il n'y a rien à crafter : le planner, lui, va
+// chercher le bois et la pierre.
+// Matériaux = les recettes CONCRÈTES de minecraft-data (1.20.1/1.21.x) : 3 recettes de pioche
+// pierre, chacune d'UN seul matériau (pas de mélange) ; 12 de pioche bois, une par essence.
+const STONE_TOOL_MATERIALS = ['cobblestone', 'cobbled_deepslate', 'blackstone'];
+
+/**
+ * PUR — quelles pioches peut-on fabriquer AVEC LA POCHE, sans rien aller chercher ?
+ * Pierre : ≥2 bâtons + ≥3 d'UN matériau de STONE_TOOL_MATERIALS. Bois : ≥2 bâtons + 3 planches
+ * d'UNE essence, bûches convertibles comprises — exactement ce que `craftItem` sait faire (il
+ * convertit les bûches via planksPlan, réserve du charbon de bois gardée ; il ne fait PAS les bâtons).
+ * @param {Array<{name,count}>} items  bot.inventory.items()
+ * @returns {string[]} ordre de tentative (pierre d'abord) — vide = rien à tenter
+ */
+function pickaxeRecraftPlan(items) {
+  const counts = {};
+  for (const it of Array.isArray(items) ? items : []) {
+    if (!it || typeof it.name !== 'string' || !Number.isFinite(it.count)) continue;
+    counts[it.name] = (counts[it.name] || 0) + it.count;
+  }
+  if ((counts.stick || 0) < 2) return [];
+  const out = [];
+  if (STONE_TOOL_MATERIALS.some((m) => (counts[m] || 0) >= 3)) out.push('stone_pickaxe');
+  if (planksPlan(counts, 3).action !== 'impossible') out.push('wooden_pickaxe');
+  return out;
 }
 
 /**
@@ -307,4 +339,5 @@ function shieldPlan(items, hasShield) {
 }
 
 module.exports = {
-  wearRatio, isNearlyBroken, WEAR_REPLACE, Y_OPT, TIER_FOR, listPicks, bestTier, cheapestPickFor, pickaxePlan, mostLackingType, armorPlan, ARMOR_PIECES, bestArmorToEquip, armorUpgradePlan, isMinimallyArmored, shieldPlan, smeltPlan, smeltReady };
+  wearRatio, isNearlyBroken, WEAR_REPLACE, Y_OPT, TIER_FOR, listPicks, bestTier, cheapestPickFor, pickaxePlan,
+  pickaxeRecraftPlan, STONE_TOOL_MATERIALS, mostLackingType, armorPlan, ARMOR_PIECES, bestArmorToEquip, armorUpgradePlan, isMinimallyArmored, shieldPlan, smeltPlan, smeltReady };

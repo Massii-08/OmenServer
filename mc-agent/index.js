@@ -40,7 +40,7 @@ const { equipItem, eat } = require('./skills/equip');
 const { loiter } = require('./skills/loiter');
 const fs = require('fs');
 const { runPlanner } = require('./planner');
-const { chainFor, buildCtxInv, firstUnmet, cookedCount, armorNeed, nextObjectiveAfter, wantsOpportunisticArmor, GIFT_SET_INGOTS } = require('./goals');
+const { chainFor, buildCtxInv, firstUnmet, cookedCount, armorNeed, chainAfterDone, wantsOpportunisticArmor, GIFT_SET_INGOTS } = require('./goals');
 const { isForbiddenCheat } = require('./nogive');
 const homewarp = require('./homewarp'); // couche warp LÉGITIME sans-give (/sethome+/home ; goSpawn=/home safe)
 const { secureSpot } = require('./skills/secureSpot'); // secure-then-warp : pilier/se murer/flotter AVANT le /home
@@ -76,7 +76,7 @@ const {
   zoneVerdict, verdictTelemetry, pickMigrationTarget, migrationLeg, legHeading, LEG_STUCK_MIN, legIsGood, minDistFor,
   zoneFailureKind, zoneStateInit, zoneStateLoad, zoneStateAfterMigration, MAX_LEGS, MIGRATE_MIN_PROGRESS, LOADED_RADIUS,
   LOGS_NOT_FOUND_MAX, windowAdd, windowSum, windowPrune, ZONE_WINDOW_MS,
-  zoneStateAfterFailedMigration, migrationEarlyExitOk, pruneFailedTargets,
+  zoneStateAfterFailedMigration, migrationEarlyExitOk, pruneFailedTargets, migrationArrivalOk,
 } = require('./zone');
 const { recordWorkDrown, noteDrownedSite, isDrownedNear, offsetFromDrowned } = require('./workDrown'); // chantier adjacent à un aquifère → abandon + BANNISSEMENT du lieu (3a)
 const { createDeathSpots } = require('./deathspots');
@@ -94,7 +94,7 @@ const { runResource } = require('./skills/resource');
 const { planSmeltRaw } = require('./bank');   // fonte périodique du brut or/fer → lingots bankables
 const { tunnelTo } = require('./skills/tunnelTo');
 const { junkItems, ITEMS_FOR } = require('./quota');
-const { Y_OPT, pickaxePlan, armorPlan, ARMOR_PIECES, bestArmorToEquip, armorUpgradePlan, isMinimallyArmored, shieldPlan, smeltPlan, smeltReady, isNearlyBroken } = require('./gear');
+const { Y_OPT, pickaxePlan, pickaxeRecraftPlan, armorPlan, ARMOR_PIECES, bestArmorToEquip, armorUpgradePlan, isMinimallyArmored, shieldPlan, smeltPlan, smeltReady, isNearlyBroken } = require('./gear');
 // Torche tous les N paliers de branch-mine (mob-aware phase B) — best-effort : sans torche
 // en poche le minage continue sans (zéro coût en peaceful, sécurité en non-pacifique).
 const TORCH_EVERY = 8;
@@ -123,7 +123,7 @@ const { takeCover, pickCoverBlock } = require('./skills/takeCover');
 // Décisions PURES : abri tant qu'il est nu, ré-essai d'équipement, ramassage → équipement,
 // raison de fonte toujours renseignée. Cf. caution.js.
 const {
-  mapperCaution, regroupCaution, equipRetryPlan, isEquipPickup, normalizeSmeltResult, PICKUP_EQUIP_DELAY_MS,
+  mapperCaution, regroupCaution, migrationCaution, equipRetryPlan, isEquipPickup, normalizeSmeltResult, PICKUP_EQUIP_DELAY_MS,
   sprintAllowed,
   // FAMINE (run world_mn15, 18/08 — 5 « starved to death » en 10 min sur des bots BLINDÉS) :
   // la porte de la chasse à la ficelle, et le déclencheur PRÉCOCE de la quête de nourriture.
@@ -709,7 +709,16 @@ function ctxExtra() {
     for (const name of or.toEmit) emit({ type: 'gear_worn_out', item: name, slot: 'offhand' });
     offhand = (s && s.name && !isNearlyBroken(s)) ? s.name : null;
   } catch (e) { /* best-effort */ }
-  const gift = _giftContext();
+  // ⚠️ NE RÉSERVER UN MAPPEUR QUE SI ON VA L'ARMER (fix 18/08). ctxExtra tourne à chaque pas de
+  // TOUTES les chaînes : `_giftContext()` posait donc la réservation `marmor:` — et `_giftTarget`,
+  // qui fait mettre 24 lingots de côté au team_gift — pour un ouvrier 4/4 parti au DIAMANT, qui ne
+  // l'armerait jamais. Les coéquipiers sur mapper_armor trouvaient alors les mappeurs nus « déjà
+  // réservés » → chaîne satisfaite d'office → la boucle à vide ×47 791. Seule MAPPER_ARMOR_CHAIN
+  // lit mapperTarget/giftReady. Une réservation restée d'un mapper_armor interrompu (préemption,
+  // respawn) est rendue ici, pour qu'un coéquipier puisse prendre le relais sans attendre le TTL.
+  const onGiftChain = !!(world.objective && world.objective.type === 'mapper_armor');
+  if (!onGiftChain && _giftTarget) releaseGiftTarget(_giftTarget);
+  const gift = onGiftChain ? _giftContext() : { target: null, ready: false };
   // noWood : le bois est PROUVÉ rare dans cette zone (même seuil que le verdict « zone rasée »).
   // Rend `plank_buffer` non bloquant → un ouvrier remonté en surface d'un wood-desert peut enfin
   // redescendre miner son fer au lieu de boucler gatherLog→not_found (deadlock world_mn12, 28/07).
@@ -790,6 +799,24 @@ function _giftContext() {
     _giftTarget = null;
     return { target: null, ready };
   } catch (e) { return empty; }
+}
+
+// ROUTAGE RÉALISTE (fix 18/08 : mapper_armor→mapper_armor ×47 791 sur un serveur AVEC /tpa). Au
+// moment d'enchaîner, la seule question qui vaille est « CE bot a-t-il un cartographe à armer
+// MAINTENANT ? » — pas « existe-t-il un mappeur nu ». On recalcule donc `_giftContext` SANS son
+// cache de 15 s : 4/4 soi-même, mappeur frais non livré il y a < 5 min, réservation `marmor:` obtenue.
+// ⚠️ Effet de bord ASSUMÉ : la réservation est posée. Si l'enchaînement part ailleurs (entraide,
+// diamant), `releaseGiftTarget` la rend tout de suite — sinon le mappeur resterait bloqué 120 s
+// (TTL des claims) pour les coéquipiers qui, eux, pourraient l'armer.
+function freshGiftTarget() {
+  _giftAt = 0;
+  return _giftContext().target;
+}
+function releaseGiftTarget(name) {
+  if (!name) return;
+  try { if (_teamClaims) _teamClaims.release('marmor:' + name); } catch (e) { /* best-effort */ }
+  if (_giftTarget === name) _giftTarget = null;
+  _giftAt = 0;
 }
 
 // Table de craft PORTABLE : le bot garde 1 crafting_table en poche et la pose/reprend à la demande
@@ -1820,6 +1847,11 @@ let _migrationLegs = 0;       // jambes déjà parcourues (marche à l'aveugle)
 let _skillInFlight = 0;       // runGoalSkill en cours (cf. runSkillWithTelemetry)
 let _autoRunners = 0;         // startAutonomous en cours (planner, ressource, récup post-mort)
 const MIGRATION_PREEMPT_WAIT_MS = 30000;   // attente max que le planner rende la main
+// FILET ANTI-BOUCLE À VIDE (fix 18/08) : { objectif → instant du dernier run fini SANS AUCUN skill }.
+// Écrit et relu par runAutonomousBody à chaque `done` (décision pure : goals.chainAfterDone). En
+// mémoire de process VOLONTAIREMENT : la boucle mesurée tournait dans UN process (1 cycle / 1,5 s) ;
+// après un respawn, au pire un cycle à vide de plus avant que le filet ne re-mémorise.
+let _emptyDoneAt = {};
 
 /** Applique un état de zone (pur → variables de module). */
 function _applyZoneState(s) {
@@ -2061,6 +2093,22 @@ async function migrateZone(reason) {
       const pT = bot.entity && bot.entity.position;
       if (pT) { travelFrom = { x: pT.x, z: pT.z }; yRef = Math.round(pT.y); }
     }
+    // NUIT EN ROUTE (fix 18/08) : le verdict ne LANCE plus de migration la nuit, mais un trek de
+    // 600-1200 blocs commencé au crépuscule finit en pleine nuit — un bot à < 2 pièces qui continue
+    // de marcher en hard meurt, et sa mort fait échouer la migration. On s'arrête PROPREMENT avant la
+    // jambe suivante : l'arrivée est jugée telle quelle (migrationArrivalOk tranche succès/échec),
+    // puis le planner relancé reprend la main — abri de nuit compris. Décision : caution.migrationCaution.
+    let nightStopped = false;
+    const nightStop = () => {
+      if (nightStopped) return true;
+      let worn = 0;
+      try { worn = _wornArmor().size; } catch (e) { /* inventaire pas livré → 0 = prudent */ }
+      const night = (bot.time && bot.time.timeOfDay != null) ? isNight(bot) : null;
+      if (migrationCaution({ worn, isNight: night }) !== 'stop') return false;
+      nightStopped = true;
+      emit({ type: 'zone_migration_night_stop', reason, legs: _migrationLegs, worn });
+      return true;
+    };
     if (target) {
       // ⚠️ UNE CIBLE HORS DES CHUNKS CHARGES EST INVISIBLE DU PATHFINDER (view-distance 6 = 96
       // blocs, verifie sur le serveur). Un goto direct vers 250+ blocs rend NoPath en quelques
@@ -2071,6 +2119,7 @@ async function migrateZone(reason) {
       if (!hops) emit({ type: 'zone_migration_legs', dist: Math.round(dFar), reason: 'beyond_loaded' });
       // Trajet borné et découpé : un goto unique de 1500 blocs ne rend jamais la main proprement.
       for (let hop = 0; hop < hops && !tok.cancelled; hop++) {
+        if (nightStop()) break;
         const p = bot.entity && bot.entity.position;
         if (!p) break;
         if (Math.hypot(p.x - target.x, p.z - target.z) <= 32) break;
@@ -2087,7 +2136,7 @@ async function migrateZone(reason) {
       // blocs que le pathfinder sait faire, dans la direction de la cible.
       const pAfter = bot.entity && bot.entity.position;
       const moved = pAfter ? Math.hypot(pAfter.x - travelFrom.x, pAfter.z - travelFrom.z) : 0;
-      if (moved < MIGRATE_MIN_PROGRESS) {
+      if (moved < MIGRATE_MIN_PROGRESS && !nightStopped) {
         if (hops) emit({ type: 'zone_migration_hop_failed', moved: Math.round(moved), toX: target.x, toZ: target.z });
         // ⚠️ CONTOURNEMENT D'OBSTACLE (cause racine mesuree world_mn12, 28/07 : `moved:1/9`
         // underground:false en 24 jambes = NoPath en boucle). La jambe vise `GoalNearXZ`+`canDig=false` ;
@@ -2098,6 +2147,7 @@ async function migrateZone(reason) {
         // cible a chaque jambe : des qu'on progresse, `stuck` retombe a 0 et on repointe droit dessus.
         let stuck = 0;
         for (let i = 0; i < MAX_LEGS && !tok.cancelled; i++) {
+          if (nightStop()) break;
           const pl = bot.entity && bot.entity.position;
           const base = pl ? { x: pl.x, z: pl.z } : from;
           const heading = legHeading(Math.atan2(target.z - base.z, target.x - base.x), stuck);
@@ -2130,6 +2180,7 @@ async function migrateZone(reason) {
       const heading0 = basecamp.headingForName(bot.username, 3);
       let stuck = 0;
       for (let i = 0; i < MAX_LEGS && !tok.cancelled; i++) {
+        if (nightStop()) break;
         const p = bot.entity && bot.entity.position;
         const base = p ? { x: p.x, z: p.z } : from;
         const heading = legHeading(heading0, stuck);
@@ -2184,7 +2235,19 @@ async function migrateZone(reason) {
     const p2wet = !!(p2 && isInWater(bot));
     // On n'ancre une NOUVELLE base que si on a réellement déménagé : sans ça un goto raté
     // re-posait la base à 2 blocs et consommait le cooldown (bug mesuré sur world_mn11).
-    const reallyMoved = p2 ? Math.hypot(p2.x - travelFrom.x, p2.z - travelFrom.z) >= MIGRATE_MIN_PROGRESS : false;
+    // ⚠️ « Réellement » DÉPEND DU MOTIF (fix 18/08) : pour une zone vidée (depleted/exhausted,
+    // plancher 600), 64 blocs ne suffisent plus — des jambes épuisées à 100-250 blocs ré-ancraient
+    // la base dans le même secteur fouillé. Succès = 3/4 du plancher, OU cible atteinte, OU terrain
+    // frais (aucune cellule épuisée à ≤ 160 blocs, carte RElue : les coéquipiers ont pu en marquer).
+    const arrivalCells = loadWorldCells();
+    const arrival = migrationArrivalOk({
+      reason, minDist,
+      gone: p2 ? Math.hypot(p2.x - travelFrom.x, p2.z - travelFrom.z) : NaN,
+      distToTarget: (p2 && target) ? Math.hypot(p2.x - target.x, p2.z - target.z) : Infinity,
+      arrival: p2 ? { x: p2.x, z: p2.z } : null,
+      depleted: arrivalCells.depleted,
+    });
+    const reallyMoved = arrival.ok;
     // ⚠️ SURFACE OBLIGATOIRE (bugfix world_mn10, 27/07) : `safe`/base/spawnpoint ne s'ancrent QUE
     // sur une vraie surface sèche. Une « migration » à l'aveugle (cible null → aucun déplacement,
     // dist ~11 blocs) laissait le mineur À SA POSITION SOUTERRAINE (y=-7) ; l'ancienne garde ne
@@ -2223,18 +2286,22 @@ async function migrateZone(reason) {
         toX: base.x, toZ: base.z, legs: _migrationLegs,
         dist: Math.round(Math.hypot(base.x - from.x, base.z - from.z)),
         took_s: Math.round((Date.now() - t0) / 1000),
+        arrival: arrival.why, night_stop: nightStopped,
       });
     } else {
       // Arrivée dans l'eau, SOUS TERRE, ou position illisible : on NE pose PAS la base (un home
       // mouillé/souterrain rend `/home safe` mortel). Le cooldown court quand même — on ne relance
       // pas un trek dans la foulée, et le bot garde son safe de surface précédent. Mais COURT
       // (5 min, fix 18/08) et vers une AUTRE cible : 20 min puis la même cellule = re-échec garanti.
-      noteMigrationFailed(target);
+      // Exception : un arrêt de NUIT ne prouve rien contre la cible (on s'est arrêté, on n'a pas
+      // échoué à l'atteindre) → cooldown court, mais pas de mise à l'écart de 45 min.
+      noteMigrationFailed(nightStopped ? null : target);
       emit({
         type: 'zone_migration_failed', reason, wet: p2wet,
         underground: !!(p2 && !p2wet && p2.y < SAFE_HOME_MIN_Y),
         moved: p2 ? Math.round(Math.hypot(p2.x - travelFrom.x, p2.z - travelFrom.z)) : 0,
         toX: target ? target.x : null, toZ: target ? target.z : null,
+        arrival: arrival.why, night_stop: nightStopped,
       });
     }
   } catch (e) {
@@ -4389,18 +4456,41 @@ async function runAutonomousBody(sender, objType, myTok) {
     // `canGift` = MÊME test que le gate de `_giftContext` : sans /tpa dans la whitelist, aucun
     // cartographe ne peut être servi → un mappeur nu ne doit plus router vers `mapper_armor`,
     // sinon start → done → chain(mapper_armor→mapper_armor) → start… (48 cycles mesurés en live).
-    const nextObj = nextObjectiveAfter(objType, presence ? presence.list() : [],
-      { canGift: isAllowed('/tpa x', whitelist) });
+    // ⚠️ ET AVEC /tpa il faut une cible RÉELLE pour CE bot (fix 18/08 : ×47 791 cycles à vide —
+    // mappeurs nus déjà réservés par des coéquipiers, livrés < 5 min, ou bot pas 4/4). Le routage
+    // ET le filet anti-boucle (run à 0 skill qui reproposerait une chaîne à vide) vivent dans
+    // goals.chainAfterDone (pur, testé) ; ici on ne fait qu'exécuter sa décision.
+    const canTp = isAllowed('/tpa x', whitelist);
+    const giftTarget = canTp ? freshGiftTarget() : null;
+    const dec = chainAfterDone({
+      objective: objType, steps: res.steps, mates: presence ? presence.list() : [],
+      canTp, giftTarget, emptyDoneAt: _emptyDoneAt, now: Date.now(),
+    });
+    _emptyDoneAt = dec.emptyDoneAt;
+    if (dec.releaseGift) releaseGiftTarget(giftTarget);   // on ne part pas l'armer : un coéquipier le pourra
+    if (dec.skip) {
+      emit({ type: 'autonomous_chain_skip', from: dec.skip.from, proposed: dec.skip.proposed,
+        to: dec.skip.to, why: dec.skip.why, delay_s: Math.round(dec.delayMs / 1000) });
+    }
+    const nextObj = dec.next;
     if (nextObj) {
       setObjective(world, { type: nextObj, status: 'in_progress' });
       saveWorld(worldFile, world);
-      emit({ type: 'autonomous_chain', from: objType, to: nextObj });
+      emit({ type: 'autonomous_chain', from: objType, to: nextObj, steps: res.steps });
       // RELANCER LE MOTEUR : poser l'objectif ne suffit pas, la boucle du planner vient de se
       // terminer sur ce `done` et rien ne la rallume avant le prochain spawn. Mesuré live
       // (Massii : « neth 1 4 5 sont toujours immobiles ») : `autonomous_chain` émis, objectif
       // en poche, et 0 bloc parcouru en 45 s. setTimeout plutôt qu'un appel direct = pile
       // d'appels neuve ; la chaîne s'arrête d'elle-même (nextObjectiveAfter('diamond') → null).
-      setTimeout(() => { try { startAutonomous(null); } catch (e) { /* best-effort */ } }, 1500);
+      // Délai = 1,5 s, ou 60 s quand TOUT finirait à vide (backoff du filet). INTERRUPTIBLE : une
+      // préemption pendant l'attente (migration, ordre, respawn) annule `myTok` → pas de relance
+      // par-dessus — celui qui a pris la main gère la suite (avant ce fix, la relance l'écrasait).
+      setTimeout(() => {
+        if (myTok.cancelled) return;
+        try {
+          startAutonomous(null).catch((e) => emit({ type: 'error', message: String((e && e.message) || e) }));
+        } catch (e) { /* best-effort */ }
+      }, dec.delayMs);
     } else {
       clearObjective(world); saveWorld(worldFile, world);
     }
@@ -5041,6 +5131,14 @@ async function onSpawn() {
         const _o2 = bot.oxygenLevel;
         const drowning = typeof _o2 === 'number' && _o2 <= 4;
         waterRescue = (async () => {
+          // MIGRATION EN COURS (fix 18/08) : nager oui — c'est vital —, warper NON. /home safe (ou le
+          // relocate admin) ramènerait le marcheur à l'ANCIENNE base, la zone qu'on vient de juger
+          // morte : le trek serait perdu (`moved: 0`) et la migration jugée en échec.
+          if (_migrating) {
+            emit({ type: 'water_rescue_no_warp', ctx: 'migration', drowning });
+            try { await escapeWater(bot, { emit }); } catch (e) { /* best-effort */ }
+            return;
+          }
           if (persistentlyWet || drowning) {
             waterStuckTimes = []; waterEscapeFails = 0;
             emit({ type: 'water_rescue_warp', reason: drowning ? 'drowning' : 'persistent_wet' });
@@ -5978,7 +6076,15 @@ setInterval(async () => {
 // court-circuités dès que l'armure est complète (`withFinal(g, IA)`) : un bot équipé mais désarmé
 // de sa pioche ne la refaisait jamais. Filet indépendant de la tâche, borné, silencieux s'il manque
 // la matière (le planner, lui, ira chercher le bois/cobble).
+// ⚠️ MATIÈRE EN POCHE OBLIGATOIRE (fix 18/08 — mesuré en live : `pickaxe_missing` ~300/h). Sans
+// regarder la poche, chaque passe (20 s) lançait craftSmart pierre puis bois ; chaque appel passait
+// par withCraftingTable → pathfinder.goto vers une table jusqu'à 30 s, ce qui ANNULAIT le but
+// pathfinder du planner (explore/gather) — la même classe de bug que la migration en parallèle.
+// Sans matière il n'y a rien à crafter : on ne fait rien, c'est le planner qui ira chercher bois et
+// pierre (décision pure gear.pickaxeRecraftPlan). L'event reste, mais au plus 1 par minute.
 let _pickFixBusy = false;
+let _lastPickMissingAt = 0;
+const PICK_MISSING_EMIT_MS = 60000;
 setInterval(async () => {
   if (_pickFixBusy) return;
   const hasPick = () => ((bot.inventory && bot.inventory.items()) || [])
@@ -5986,10 +6092,17 @@ setInterval(async () => {
   try {
     if (!bot.inventory || !bot.entity) return;
     if (hasPick()) return;
-    if (_imminentBusy || panicInFlight || _armorBusy || _baseBusy) return;
+    // `_migrating` (fix 18/08) : la table qu'on irait chercher volerait le pathfinder à la jambe.
+    if (_imminentBusy || panicInFlight || _armorBusy || _baseBusy || _migrating) return;
+    const plan = pickaxeRecraftPlan(bot.inventory.items());
+    const now = Date.now();
+    if (now - _lastPickMissingAt >= PICK_MISSING_EMIT_MS) {
+      _lastPickMissingAt = now;
+      emit({ type: 'pickaxe_missing', craftable: plan });
+    }
+    if (!plan.length) return;
     _pickFixBusy = true;
-    emit({ type: 'pickaxe_missing' });
-    for (const name of ['stone_pickaxe', 'wooden_pickaxe']) {
+    for (const name of plan) {
       try { await withTimeout(craftSmart({ name, count: 1 }), 60000, () => {}); } catch (e) {}
       if (hasPick()) { emit({ type: 'pickaxe_recrafted', name }); break; }
     }
@@ -6071,6 +6184,11 @@ setInterval(async () => {
       } catch (e) { /* best-effort */ }
     }
     try { stopMotion(); } catch (e) {}                                   // le goto rejette → re-path
+    // MIGRATION EN COURS (fix 18/08) : saut + dig ci-dessus oui (ils débloquent la jambe), escalade
+    // NON — sous NO_GIVE `relocateToRegion` = /home safe = retour à l'ANCIENNE base, la zone qu'on
+    // vient de juger morte (une des causes des `moved: 0`). Les jambes ont leur propre contournement
+    // (legHeading) ; on ne compte même pas ces jams, sinon le giveUp tuerait le process en plein trek.
+    if (_migrating) return;
     // ESCALADE : si le dig de l'unjam ne libère pas (jams répétés au MÊME endroit), le bot reboucle
     // droit dans l'obstacle (live 22/06 SOIR ResBot2 : unjam×12 à 381,65,395, 0 descente). Comme les
     // watchdogs flottant/océan, au 3e unjam ~même spot → relocate FORCÉ vers une cellule terre fraîche.
@@ -6175,7 +6293,12 @@ setInterval(async () => {
       // respawne frais). keepInventory garde tout.
       if (res && res.ok === false) {
         _floatFails++;
-        if (_floatFails === 3) {
+        // MIGRATION EN COURS (fix 18/08) : la récupération ci-dessus (relâcher, dégager, retomber)
+        // reste, le relocate NON — sous NO_GIVE c'est un /home safe vers l'ANCIENNE base, qui ruine
+        // le trek. Le dernier recours (exit à 6 échecs) reste : un bot coincé à vie ne migrera pas.
+        if (_floatFails === 3 && _migrating) {
+          emit({ type: 'unstuck', cause: 'floating_relocate_skipped', ctx: 'migration' });
+        } else if (_floatFails === 3) {
           emit({ type: 'unstuck', cause: 'floating_relocate' });
           _floatSettleUntil = Date.now() + 15000;
           try { stopMotion(); } catch (e) {}
@@ -6224,7 +6347,11 @@ setInterval(async () => {
       _oceanStuckTimes = _esc.times;
       try { stopMotion(); } catch (e) {}
       try { await escapeWater(bot, { emit, maxDistance: 64 }); } catch (e) {}
-      if (isInWater(bot) || _esc.forceRelocate) {                          // noyé OU baie persistante → terre ferme
+      // MIGRATION EN COURS (fix 18/08) : l'escapade à la nage ci-dessus suffit — pas de warp, qui
+      // ramènerait le marcheur à l'ANCIENNE base (/home safe sous NO_GIVE) et ruinerait le trek.
+      if (_migrating) {
+        if (isInWater(bot)) emit({ type: 'water_rescue_no_warp', ctx: 'ocean_migration' });
+      } else if (isInWater(bot) || _esc.forceRelocate) {                   // noyé OU baie persistante → terre ferme
         _floatSettleUntil = Date.now() + 15000;
         emit({ type: 'water_rescue_warp', reason: isInWater(bot) ? 'ocean_oscillation' : 'ocean_persistent' });
         try { stopMotion(); } catch (e) {}
@@ -6274,6 +6401,9 @@ let _armorBusy = false;
 setInterval(async () => {
   try {
     if (_armorBusy) return;
+    // MIGRATION EN COURS (fix 18/08) : forger pose puis REPREND une table/un four (collectBlock =
+    // un but pathfinder) → la jambe de migration est annulée. La prochaine passe (90 s) suffit.
+    if (_migrating) return;
     const objType = (world.objective && world.objective.type) || '';
     if (!wantsOpportunisticArmor(objType)) return;
     if (bot.targetDigBlock) return;                       // pas en plein minage
@@ -6300,6 +6430,7 @@ const _SMELT_TIMER_OBJ = new Set(['resource', 'diamond', 'iron_armor', 'diamond_
 setInterval(async () => {
   try {
     if (_smeltOppBusy || _armorBusy || _stillBusy || _imminentBusy) return;   // jamais pendant un sauvetage PV
+    if (_migrating) return;   // fix 18/08 : poser/reprendre le four volerait le pathfinder à la jambe de migration
     const objType = (world.objective && world.objective.type) || '';
     if (!_SMELT_TIMER_OBJ.has(objType)) return;
     if (!(world.objective && world.objective.status === 'in_progress')) return;
