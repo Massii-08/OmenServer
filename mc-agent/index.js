@@ -71,7 +71,7 @@ const { runMapper, createExpiringSet } = require('./mapper');   // createExpirin
 const { isInWater, escapeWater, findLandTarget, isFloatingStuck, recoverFloating, isFrozenDesync,
   escapePlan, escapeReached, canReanchorSpawn, ESCAPE_SAFE_RADIUS,
   // Fuite dès le spawn + historique de morts persisté (live 19/10, MapBot1) — décisions PURES, cf. unstuck.js.
-  spawnDanger, deathTimesPrune, deathTimesLoad, deathMemoWith, escapeArmed, deathLoopTripped } = require('./unstuck');
+  spawnDanger, hostilesWithin, deathTimesPrune, deathTimesLoad, deathMemoWith, escapeArmed, deathLoopTripped } = require('./unstuck');
 // Neutres tant qu'on ne les provoque pas (enderman) : jamais une raison de fuir au spawn (même liste que nearbyHostiles).
 const { NEUTRAL_NO_PROVOKE } = require('./survival');
 const deathzones = require('./deathzones'); // ban-zone des camps de mort (≥2 alertes → fuite active)
@@ -121,7 +121,7 @@ const { pickRegroupTarget, squadTarget } = require('./regroup');
 const { teamStatus, pickDonation, allArmored, pickMobAssist, pickMapperToEquip, giftSetPlan } = require('./teamwork');
 const { tierRank } = require('./tools');
 const { createTeleportWatcher, wireTeleportDetection } = require('./teleport');
-const { isNight, shelterUntilDawn, shouldShelter } = require('./skills/shelter');
+const { isNight, shelterUntilDawn, shouldShelter, DAWN_WAIT_MAX_MS } = require('./skills/shelter');
 const { maybeRunKit } = require('./kit');   // survie mappeur : /kit serveur au démarrage/respawn (décision pure)
 const { needDirtBuffer } = require('./dirt');   // survie mappeur : buffer de blocs posables pour sceller l'abri
 const { panicWall } = require('./skills/panicWall');
@@ -1920,8 +1920,14 @@ async function maybeNightShelter(proactive = false, opts = {}) {
     }
     _stillBusy = true;    // terré jusqu'à l'aube (≤13 min immobile) : immobilité légitime, pas un desync
     try {
-      await withTimeout(shelterUntilDawn(bot, taskToken, { emit }), 13 * 60 * 1000,
-        () => { try { stopMotion(); } catch (e) {} });
+      // `hostilesNear` + `worn` : l'attente des monstres à l'AUBE (shelter étape 3bis, live 19/10 —
+      // 14 morts sur 17 « shot by Skeleton » juste après la sortie d'abri, sous une canopée où ils ne
+      // brûlent pas). SANS ce branchement l'attente n'existe pas et rien ne le dit : tests verts, bot
+      // qui ressort droit dans l'arc des squelettes (piège #61). Le garde-fou extérieur lui laisse sa borne.
+      await withTimeout(shelterUntilDawn(bot, taskToken, {
+        emit, hostilesNear: hostilesNearNow, worn: () => _wornArmor().size,
+      }), 13 * 60 * 1000 + DAWN_WAIT_MAX_MS,
+      () => { try { stopMotion(); } catch (e) {} });
     } finally { _stillBusy = false; }
     return true;
   }
@@ -4569,9 +4575,18 @@ async function escapeDeathCamp() {
 // ⚠️ Fonctions de NIVEAU MODULE (piège #56), comme escapeDeathCamp.
 
 /**
+ * LE prédicat « hostile à craindre » — UNE définition pour la fuite au spawn (spawnDangerNow) ET
+ * l'attente de l'aube dans l'abri (hostilesNearNow) : deux lectures du même mot finiraient par se
+ * contredire. MÊME prédicat que `escapeDeathCamp` (isFleeHostile : kind OU nom listé), MOINS les
+ * neutres (enderman : jamais une raison de fuir tant qu'on ne le regarde pas — cf. nearbyHostiles)
+ * et les entités retirées du monde (isValid:false).
+ */
+function isThreatHostile(e) {
+  return !!e && e.isValid !== false && isFleeHostile(e) && !NEUTRAL_NO_PROVOKE.has(e.name);
+}
+
+/**
  * Le bot est-il en danger visible MAINTENANT ? null sinon, la décision de spawnDanger sinon.
- * MÊME prédicat hostile que `escapeDeathCamp` (isFleeHostile : kind OU nom listé), MOINS les neutres
- * (enderman : jamais une raison de fuir tant qu'on ne le regarde pas — cf. nearbyHostiles).
  * Jamais de throw : on est dans le chemin du spawn.
  */
 function spawnDangerNow() {
@@ -4582,10 +4597,28 @@ function spawnDangerNow() {
       worn: _wornArmor().size,   // pièces PORTÉES (usées exclues) : 0 si l'inventaire n'est pas encore livré → prudent
       pos,
       entities: Object.values(bot.entities || {}),
-      isHostile: (e) => e.isValid !== false && isFleeHostile(e) && !NEUTRAL_NO_PROVOKE.has(e.name),
+      isHostile: isThreatHostile,
     });
     return d.flee ? d : null;
   } catch (e) { return null; }
+}
+
+/**
+ * Combien d'hostiles à craindre à ≤ 12 blocs (SPAWN_DANGER_RADIUS, 3D) ? C'est le relevé que l'abri
+ * (shelterUntilDawn, étape 3bis) relit toutes les 3 s pendant qu'il attend la fin des monstres de la
+ * nuit. Relu à chaque appel, jamais mis en cache. Jamais de throw : un relevé qui plante vaut « 0 »
+ * (le bot ne reste pas coincé dans son trou sur une erreur de lecture).
+ */
+function hostilesNearNow() {
+  try {
+    const pos = bot.entity && bot.entity.position;
+    if (!pos) return 0;
+    return hostilesWithin({
+      pos,
+      entities: Object.values(bot.entities || {}),
+      isHostile: isThreatHostile,
+    }).length;
+  } catch (e) { return 0; }
 }
 
 /**

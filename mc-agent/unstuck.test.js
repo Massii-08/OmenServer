@@ -430,6 +430,72 @@ test('spawnDanger : rayon et seuil injectables', () => {
   assert.strictEqual(spawnDanger({ worn: 3, pos: _here, entities: [_mob('zombie', 5, 0)], minWorn: 4 }).flee, true);
 });
 
+// ── Compter les hostiles autour (partagé : fuite au spawn ET attente de l'aube dans l'abri) ──────
+// Le MÊME balayage pour les deux décisions : si « hostile » ou « 3D » change d'un côté, l'autre suit.
+const { scanHostiles, hostilesWithin } = require('./unstuck');
+
+test('scanHostiles : les hostiles du plus proche au plus loin, avec leur nom et leur distance 3D', () => {
+  const list = scanHostiles({
+    pos: _here,
+    entities: [_mob('skeleton', 11, 0), _mob('zombie', 4, 3), _mob('creeper', 9, 0), _mob('cow', 1, 0, 0, 'Passive mobs')],
+  });
+  assert.deepStrictEqual(list.map((h) => h.mob), ['zombie', 'creeper', 'skeleton']);
+  assert.deepStrictEqual(list.map((h) => h.dist), [5, 9, 11]);
+});
+
+test('scanHostiles : prédicat injectable, prédicat qui lève sur UNE entité, entrées absurdes', () => {
+  const ents = [_mob('weird', 1, 0), _mob('zombie', 7, 0), null, {}, { position: null }];
+  const list = scanHostiles({
+    pos: _here, entities: ents,
+    isHostile: (e) => { if (e.name === 'weird') throw new Error('boom'); return true; },
+  });
+  assert.deepStrictEqual(list.map((h) => h.mob), ['zombie']);
+  assert.deepStrictEqual(scanHostiles({ pos: null, entities: ents }), []);
+  assert.deepStrictEqual(scanHostiles({ pos: { x: NaN, y: 0, z: 0 }, entities: ents }), []);
+  assert.deepStrictEqual(scanHostiles({ pos: _here }), []);
+  assert.deepStrictEqual(scanHostiles(), []);
+  assert.deepStrictEqual(scanHostiles(null), []);
+});
+
+test('scanHostiles : ne mute pas les entités', () => {
+  const ents = [_mob('zombie', 3, 0), _mob('skeleton', 2, 0)];
+  const frozen = JSON.stringify(ents);
+  scanHostiles({ pos: _here, entities: ents });
+  assert.strictEqual(JSON.stringify(ents), frozen);
+});
+
+test('hostilesWithin : ne garde que ceux à ≤ 12 blocs (frontière INCLUSIVE, 3D) — le rayon de l abri et du spawn', () => {
+  const ents = [_mob('zombie', 3, 0), _mob('skeleton', 12, 0), _mob('creeper', 12.01, 0), _mob('spider', 5, 0, -11)];
+  const near = hostilesWithin({ pos: _here, entities: ents });
+  assert.deepStrictEqual(near.map((h) => h.mob), ['zombie', 'skeleton']);
+  // 5 à plat mais 11 de dénivelé → 12,08 : hors rayon (une grotte sous le bot n est pas « à côté »)
+  assert.strictEqual(near.some((h) => h.mob === 'spider'), false);
+  assert.strictEqual(hostilesWithin({ pos: _here, entities: ents }).length, 2);
+});
+
+test('hostilesWithin : le rayon par défaut EST celui du spawn (une seule définition de « près »)', () => {
+  const ents = [_mob('zombie', SPAWN_DANGER_RADIUS, 0), _mob('skeleton', SPAWN_DANGER_RADIUS + 1, 0)];
+  assert.strictEqual(hostilesWithin({ pos: _here, entities: ents }).length, 1);
+  assert.strictEqual(hostilesWithin({ pos: _here, entities: ents, radius: 20 }).length, 2);
+  assert.strictEqual(hostilesWithin({ pos: _here, entities: ents, radius: 0 }).length, 0);
+});
+
+test('hostilesWithin : entrées absurdes → [] (jamais de throw)', () => {
+  assert.deepStrictEqual(hostilesWithin(), []);
+  assert.deepStrictEqual(hostilesWithin({}), []);
+  assert.deepStrictEqual(hostilesWithin({ pos: _here, entities: 'x' }), []);
+});
+
+test('spawnDanger et hostilesWithin lisent le MÊME monde : le plus proche du balayage = celui de la décision', () => {
+  const ents = [_mob('skeleton', 11, 0), _mob('zombie', 4, 3), _mob('enderman', 6, 0)];
+  const isHostile = (e) => e.kind === 'Hostile mobs' && e.name !== 'enderman';
+  const d = spawnDanger({ worn: 0, pos: _here, entities: ents, isHostile });
+  const scan = scanHostiles({ pos: _here, entities: ents, isHostile });
+  assert.strictEqual(d.mob, scan[0].mob);
+  assert.strictEqual(d.dist, scan[0].dist);
+  assert.strictEqual(hostilesWithin({ pos: _here, entities: ents, isHostile }).length, 2);
+});
+
 // ── Historique de morts : élagage, chargement, rétro-compat ──────────────────────────────────────
 const T0 = 1_700_000_000_000;
 const MIN = 60 * 1000;

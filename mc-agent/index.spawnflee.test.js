@@ -75,6 +75,7 @@ function dangerSandbox({ worn = 0, entities = [], position = { x: 0, y: 70, z: 0
     isFleeHostile, NEUTRAL_NO_PROVOKE,
     ...extra,
   });
+  run(sb, fnSrc('isThreatHostile'));    // le prédicat « hostile à craindre » est partagé avec l'abri (cf. index.dawnwait.test.js)
   run(sb, fnSrc('spawnDangerNow'));
   run(sb, fnSrc('armSpawnEscapeIfDanger'));
   return sb;

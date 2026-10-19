@@ -52,3 +52,78 @@ test('shouldShelter : en surface (underground false/absent) → comportements hi
   assert.strictEqual(shouldShelter({ lightLevel: 3, lowHp: true }).shelter, true);
   assert.strictEqual(shouldShelter({ night: false, naked: true }).shelter, false);
 });
+
+// ─── L'AUBE N'EST PAS LA FIN DES MONSTRES (live 19/10, spawn sous la canopée d'une vieille forêt) ──
+// Mesuré en live : 14 des 17 morts des 10 dernières minutes sont « shot by Skeleton », avec toujours la
+// même séquence : shelter dig_in → shelter dawn → shelter out → goal logs → reflex fight_ranged →
+// reflex flee → take_cover placed:0 ok:false → mort. L'abri sortait dès que `isNight` devenait faux,
+// sans regarder si les monstres de la nuit attendaient dehors. À l'ombre d'une canopée, zombies et
+// squelettes NE BRÛLENT PAS au lever du jour : ils sont toujours là.
+const {
+  dawnExitDecision, DAWN_WAIT_MAX_MS, DAWN_WAIT_CHECK_MS, DAWN_WAIT_MIN_WORN,
+} = require('./shelter');
+
+test('dawnExitDecision : nu + hostiles présents + peu attendu → WAIT (rester dans l abri)', () => {
+  assert.strictEqual(dawnExitDecision({ hostilesNear: 3, waitedMs: 0, worn: 0 }), 'wait');
+  assert.strictEqual(dawnExitDecision({ hostilesNear: 1, waitedMs: 45000, worn: 1 }), 'wait');
+});
+
+test('dawnExitDecision : AUCUN hostile → GO (on sort tout de suite, comme avant)', () => {
+  assert.strictEqual(dawnExitDecision({ hostilesNear: 0, waitedMs: 0, worn: 0 }), 'go');
+  assert.strictEqual(dawnExitDecision({ hostilesNear: false, waitedMs: 0, worn: 0 }), 'go');
+  assert.strictEqual(dawnExitDecision({ hostilesNear: undefined, waitedMs: 0, worn: 0 }), 'go');
+  assert.strictEqual(dawnExitDecision({ hostilesNear: NaN, waitedMs: 0, worn: 0 }), 'go');
+});
+
+test('dawnExitDecision : ARMÉ (≥2 pièces) → GO même avec des hostiles dehors (un bot armé sort tout de suite)', () => {
+  for (const worn of [2, 3, 4]) {
+    assert.strictEqual(dawnExitDecision({ hostilesNear: 5, waitedMs: 0, worn }), 'go', `worn=${worn}`);
+  }
+});
+
+test('dawnExitDecision : 1 pièce = encore nu (WAIT), 2 pièces = armé (GO) — le « nu » de caution/homes/spawn', () => {
+  assert.strictEqual(DAWN_WAIT_MIN_WORN, 2);
+  assert.strictEqual(dawnExitDecision({ hostilesNear: 2, waitedMs: 0, worn: 1 }), 'wait');
+  assert.strictEqual(dawnExitDecision({ hostilesNear: 2, waitedMs: 0, worn: 2 }), 'go');
+  // une seule définition du mot « nu » pour quatre gardes : si l une bouge, ce test le dit
+  assert.strictEqual(DAWN_WAIT_MIN_WORN, require('../caution').CAUTION_MIN_WORN);
+  assert.strictEqual(DAWN_WAIT_MIN_WORN, require('../homes').DEBT_MIN_WORN);
+  assert.strictEqual(DAWN_WAIT_MIN_WORN, require('../unstuck').SPAWN_DANGER_MIN_WORN);
+});
+
+test('dawnExitDecision : borne DURE de 120 s — au-delà on sort quand même (vitesse : rien ne traîne)', () => {
+  assert.strictEqual(DAWN_WAIT_MAX_MS, 120000);
+  assert.strictEqual(dawnExitDecision({ hostilesNear: 4, waitedMs: 119999, worn: 0 }), 'wait');
+  assert.strictEqual(dawnExitDecision({ hostilesNear: 4, waitedMs: 120000, worn: 0 }), 'go');
+  assert.strictEqual(dawnExitDecision({ hostilesNear: 4, waitedMs: 600000, worn: 0 }), 'go');
+});
+
+test('dawnExitDecision : worn INCONNU (inventaire illisible) = nu — « 0 = prudent » (on attend, borné)', () => {
+  for (const worn of [undefined, null, NaN, -2, 'x']) {
+    assert.strictEqual(dawnExitDecision({ hostilesNear: 2, waitedMs: 0, worn }), 'wait', String(worn));
+  }
+});
+
+test('dawnExitDecision : hostilesNear booléen accepté (true = au moins un)', () => {
+  assert.strictEqual(dawnExitDecision({ hostilesNear: true, waitedMs: 0, worn: 0 }), 'wait');
+});
+
+test('dawnExitDecision : waitedMs absent/absurde = 0 ; borne et seuil injectables', () => {
+  assert.strictEqual(dawnExitDecision({ hostilesNear: 2, worn: 0 }), 'wait');
+  assert.strictEqual(dawnExitDecision({ hostilesNear: 2, waitedMs: NaN, worn: 0 }), 'wait');
+  assert.strictEqual(dawnExitDecision({ hostilesNear: 2, waitedMs: 30000, worn: 0, maxMs: 30000 }), 'go');
+  assert.strictEqual(dawnExitDecision({ hostilesNear: 2, waitedMs: 29999, worn: 0, maxMs: 30000 }), 'wait');
+  assert.strictEqual(dawnExitDecision({ hostilesNear: 2, waitedMs: 0, worn: 3, minWorn: 4 }), 'wait');
+});
+
+test('dawnExitDecision : entrée absurde → GO (jamais de throw, jamais de blocage dans le trou)', () => {
+  assert.strictEqual(dawnExitDecision(), 'go');
+  assert.strictEqual(dawnExitDecision(null), 'go');
+  assert.strictEqual(dawnExitDecision({}), 'go');
+  assert.strictEqual(dawnExitDecision('x'), 'go');
+});
+
+test('DAWN_WAIT_CHECK_MS : on re-vérifie toutes les 3 s, et la borne est un multiple entier du pas', () => {
+  assert.strictEqual(DAWN_WAIT_CHECK_MS, 3000);
+  assert.strictEqual(DAWN_WAIT_MAX_MS % DAWN_WAIT_CHECK_MS, 0);
+});

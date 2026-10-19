@@ -81,3 +81,184 @@ describe('abri : plan B « se murer »', () => {
     assert.equal(out.mode, 'walled', 'un bot muré au sol n\'a pas de trou à remonter');
   });
 });
+
+// ─── L'AUBE N'EST PAS LA FIN DES MONSTRES (live 19/10, spawn sous la canopée d'une vieille forêt) ──
+// Mesuré : 14 des 17 morts des 10 dernières minutes = « shot by Skeleton », toujours la séquence
+//   shelter dig_in → shelter dawn → shelter out → goal logs → reflex fight_ranged → reflex flee →
+//   take_cover placed:0 ok:false → mort.
+// L'abri sortait dès que `isNight` devenait faux. À l'ombre d'une canopée, zombies et squelettes ne
+// brûlent PAS au lever du jour : les monstres de la nuit attendent dehors. Étape 3bis : tant qu'un
+// hostile est à portée ET que le bot est nu, on RESTE (re-vérifié toutes les 3 s, borne dure 120 s —
+// vitesse : rien ne doit traîner).
+
+// Abri muré (pas de pilier réel à jouer) ; l'horloge de test = le sleep injecté (instantané).
+function dawnHarness(over = {}) {
+  const events = [];
+  const sleeps = [];
+  const deps = {
+    emit: (e) => events.push(e),
+    sleep: async (ms) => { sleeps.push(ms); },
+    mineDown: async () => ({ ok: false, reason: 'void_below' }),
+    wallIn: async () => ({ ok: true, placed: 4 }),
+    ...over,
+  };
+  const bot = nightBot();
+  bot.time.timeOfDay = 1000;               // le jour s'est levé : la boucle de nuit est déjà finie
+  return { bot, deps, events, sleeps };
+}
+const actions = (events) => events.map((e) => e.action);
+
+describe('abri : attente à l\'aube tant que des monstres rôdent (étape 3bis)', () => {
+  it('nu + hostiles dehors à l\'aube → RESTE dans l\'abri, re-vérifie toutes les 3 s, sort quand c\'est dégagé', async () => {
+    let reads = 0;
+    const { bot, deps, events, sleeps } = dawnHarness({
+      hostilesNear: () => (++reads <= 5 ? 3 : 0),     // 5 relevés avec 3 hostiles, puis dégagé
+      worn: () => 0,
+    });
+    const r = await shelterUntilDawn(bot, null, deps);
+    assert.equal(r.ok, true);
+    assert.deepEqual(sleeps, [3000, 3000, 3000, 3000, 3000], 'un relevé toutes les 3 s');
+    assert.equal(reads, 6, 'relu à CHAQUE pas, jamais mis en cache : 5 « il y en a » + le « dégagé »');
+    const waits = events.filter((e) => e.action === 'dawn_wait');
+    assert.equal(waits.length, 1, 'UN seul event à la sortie de l\'attente, pas un par tick');
+    assert.equal(waits[0].type, 'shelter');
+    assert.equal(waits[0].hostiles, 3);
+    assert.equal(waits[0].waited_s, 15);
+    assert.equal(waits[0].reason, 'clear');
+    assert.equal(waits[0].hostiles_left, 0);
+    // la séquence qui tuait : dawn → (maintenant) dawn_wait → out. Jamais « out » avant la fin de l'attente.
+    const order = actions(events);
+    assert.ok(order.indexOf('dawn') < order.indexOf('dawn_wait'), `dawn avant dawn_wait : ${order}`);
+    assert.ok(order.indexOf('dawn_wait') < order.indexOf('out'), `dawn_wait avant out : ${order}`);
+  });
+
+  it('les monstres ne partent JAMAIS (canopée) → borne dure de 120 s, puis on sort quand même', async () => {
+    const { bot, deps, events, sleeps } = dawnHarness({ hostilesNear: () => 2, worn: () => 0 });
+    const r = await shelterUntilDawn(bot, null, deps);
+    assert.equal(r.ok, true, 'on sort : la vitesse prime sur la prudence au-delà de la borne');
+    assert.equal(sleeps.length, 40, '120 s / 3 s = 40 relevés, pas un de plus (boucle bornée même avec un sleep instantané)');
+    const w = events.filter((e) => e.action === 'dawn_wait');
+    assert.equal(w.length, 1);
+    assert.equal(w[0].waited_s, 120);
+    assert.equal(w[0].reason, 'timeout');
+    assert.equal(w[0].hostiles, 2);
+    assert.equal(w[0].hostiles_left, 2);
+    assert.ok(actions(events).includes('out'), 'et il ressort bel et bien');
+  });
+
+  it('ARMÉ (≥2 pièces) → sort tout de suite, comme avant : aucune attente, aucun event', async () => {
+    let reads = 0;
+    const { bot, deps, events, sleeps } = dawnHarness({ hostilesNear: () => { reads++; return 4; }, worn: () => 3 });
+    await shelterUntilDawn(bot, null, deps);
+    assert.deepEqual(sleeps, []);
+    assert.equal(events.some((e) => e.action === 'dawn_wait'), false);
+    assert.ok(actions(events).includes('out'));
+    assert.ok(reads <= 1, 'au plus UN relevé : un bot armé ne s\'attarde pas à compter les monstres');
+  });
+
+  it('aucun hostile à l\'aube → sort tout de suite, aucune attente, aucun event', async () => {
+    const { bot, deps, events, sleeps } = dawnHarness({ hostilesNear: () => 0, worn: () => 0 });
+    await shelterUntilDawn(bot, null, deps);
+    assert.deepEqual(sleeps, []);
+    assert.equal(events.some((e) => e.action === 'dawn_wait'), false);
+    assert.ok(actions(events).includes('out'));
+  });
+
+  it('prédicat NON injecté → comportement d\'origine à l\'identique (aucune attente, aucun event de plus)', async () => {
+    const { bot, deps, events, sleeps } = dawnHarness();
+    const r = await shelterUntilDawn(bot, null, deps);
+    assert.equal(r.ok, true);
+    assert.deepEqual(sleeps, []);
+    // la séquence EXACTE d'avant l'étape 3bis : on ne rajoute aucun event à qui ne l'a pas demandé
+    assert.deepEqual(actions(events), ['dig_in', 'walled_in', 'no_roof', 'dawn', 'out']);
+  });
+
+  it('le relevé d\'hostiles qui LÈVE = « aucun » (on ne reste jamais coincé dans le trou sur une erreur)', async () => {
+    const { bot, deps, events, sleeps } = dawnHarness({ hostilesNear: () => { throw new Error('entities'); }, worn: () => 0 });
+    const r = await shelterUntilDawn(bot, null, deps);
+    assert.equal(r.ok, true);
+    assert.deepEqual(sleeps, []);
+    assert.ok(actions(events).includes('out'));
+  });
+
+  it('l\'armure arrive PENDANT l\'attente → on sort (raison « armed »)', async () => {
+    let worn = 0;
+    const { bot, deps, events, sleeps } = dawnHarness({ hostilesNear: () => 3, worn: () => worn });
+    deps.sleep = async (ms) => { sleeps.push(ms); if (sleeps.length === 2) worn = 2; };
+    await shelterUntilDawn(bot, null, deps);
+    assert.equal(sleeps.length, 2);
+    const w = events.find((e) => e.action === 'dawn_wait');
+    assert.equal(w.reason, 'armed');
+    assert.equal(w.waited_s, 6);
+  });
+
+  it('annulé PENDANT l\'attente → {ok:false, reason:cancelled}, on ne sort PAS du trou, l\'event le trace', async () => {
+    const token = { cancelled: false };
+    const { bot, deps, events, sleeps } = dawnHarness({ hostilesNear: () => 2, worn: () => 0 });
+    deps.sleep = async (ms) => { sleeps.push(ms); if (sleeps.length === 2) token.cancelled = true; };
+    const r = await shelterUntilDawn(bot, token, deps);
+    assert.deepEqual(r, { ok: false, reason: 'cancelled' });
+    assert.equal(actions(events).includes('out'), false, 'annulé = pas de sortie : le nouveau maître de la tâche décide');
+    const w = events.filter((e) => e.action === 'dawn_wait');
+    assert.equal(w.length, 1);
+    assert.equal(w[0].reason, 'cancelled');
+  });
+
+  it('le jour se lève PENDANT la nuit d\'attente : la boucle de nuit finit, PUIS l\'attente des monstres commence', async () => {
+    const { bot, deps, events, sleeps } = dawnHarness({ hostilesNear: (() => { let n = 0; return () => (++n <= 2 ? 1 : 0); })(), worn: () => 0 });
+    bot.time.timeOfDay = 13000;                              // pleine nuit
+    deps.sleep = async (ms) => { sleeps.push(ms); if (ms === 5000) bot.time.timeOfDay = 1000; };   // 1er pas de nuit : l'aube
+    await shelterUntilDawn(bot, null, deps);
+    assert.deepEqual(sleeps, [5000, 3000, 3000], 'un pas de nuit (5 s) puis deux relevés de monstres (3 s)');
+    const order = actions(events);
+    assert.ok(order.indexOf('dawn') < order.indexOf('dawn_wait') && order.indexOf('dawn_wait') < order.indexOf('out'), String(order));
+  });
+
+  it('abri CREUSÉ (pas muré) : même attente avant de remonter en pilier', async () => {
+    const { bot, deps, events, sleeps } = dawnHarness({
+      mineDown: async () => ({ ok: true }),
+      hostilesNear: (() => { let n = 0; return () => (++n <= 3 ? 2 : 0); })(),
+      worn: () => 1,
+    });
+    await shelterUntilDawn(bot, null, deps);
+    assert.equal(sleeps.length, 3);
+    const order = actions(events);
+    assert.ok(order.indexOf('dawn_wait') < order.indexOf('out'), String(order));
+    assert.equal(events.find((e) => e.action === 'out').mode, undefined, 'sortie par pilier, pas par paroi');
+  });
+
+  it('borne en TEMPS RÉEL : si les sleeps durent plus que prévu (process qui rame), 120 s restent 120 s', async () => {
+    const realNow = Date.now;
+    let clock = 1_700_000_000_000;
+    Date.now = () => clock;
+    try {
+      const { bot, deps, events, sleeps } = dawnHarness({ hostilesNear: () => 2, worn: () => 0 });
+      deps.sleep = async (ms) => { sleeps.push(ms); clock += 10000; };      // chaque « 3 s » en dure 10 (serveur qui lag)
+      await shelterUntilDawn(bot, null, deps);
+      assert.equal(sleeps.length, 12, 'coupé à 120 s d\'horloge murale, pas à 40 relevés (= 400 s réelles)');
+      const w = events.find((e) => e.action === 'dawn_wait');
+      assert.equal(w.reason, 'timeout');
+      assert.equal(w.waited_s, 120);
+    } finally { Date.now = realNow; }
+  });
+
+  it('borne et pas injectables (deps.dawnWaitMaxMs / deps.dawnCheckMs) — pour que les tests ne dépendent pas de 120 s', async () => {
+    const { bot, deps, events, sleeps } = dawnHarness({ hostilesNear: () => 1, worn: () => 0, dawnWaitMaxMs: 10000, dawnCheckMs: 2000 });
+    await shelterUntilDawn(bot, null, deps);
+    assert.deepEqual(sleeps, [2000, 2000, 2000, 2000, 2000]);
+    assert.equal(events.find((e) => e.action === 'dawn_wait').waited_s, 10);
+  });
+
+  it('worn NON injecté → lu sur l\'inventaire du bot (slots 5-8) : 2 pièces portées = armé = pas d\'attente', async () => {
+    const piece = { name: 'iron_helmet' };
+    const armed = dawnHarness({ hostilesNear: () => 3 });
+    armed.bot.inventory.slots = [null, null, null, null, null, piece, piece, null, null];
+    await shelterUntilDawn(armed.bot, null, armed.deps);
+    assert.deepEqual(armed.sleeps, []);
+
+    const nude = dawnHarness({ hostilesNear: (() => { let n = 0; return () => (++n <= 2 ? 3 : 0); })() });
+    nude.bot.inventory.slots = [null, null, null, null, null, piece, null, null, null];     // 1 seule pièce
+    await shelterUntilDawn(nude.bot, null, nude.deps);
+    assert.deepEqual(nude.sleeps, [3000, 3000]);
+  });
+});
