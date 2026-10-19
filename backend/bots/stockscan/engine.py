@@ -220,15 +220,6 @@ def _coach_summary(slot: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def _session_summary(state: Optional[Dict[str, Any]]) -> Dict[str, Any]:
-    state = state or {}
-    elapsed = state.get("elapsed")
-    return {"state": state.get("state") or "unknown",
-            "elapsed": round(elapsed, 3) if isinstance(elapsed, float) else None,
-            "local_time": state.get("local_time"),
-            "last_close": state.get("last_close")}
-
-
 def _fr_number(value: Optional[float]) -> str:
     """« 1,06 » pour le journal (deux décimales, virgule) ; « — » si inconnu."""
     return "—" if value is None else ("%.2f" % value).replace(".", ",")
@@ -313,10 +304,6 @@ def run_scan(cfg: Dict[str, Any], username: str, out_dir: Any, deps: Deps,
             "%s %s%s" % (m, _fr_number(medians[m]), "" if m in timed else " (10 j)")
             for m in cfg["markets"] if m in medians))
 
-    # Séances : une bourse fermée a ses cours figés à sa dernière clôture
-    # (sessions.py).
-    states = ss.states_for(cfg["markets"], now)
-
     # --- 2. signaux du coach (zéro réseau) ---------------------------------------
     check()
     progress.update("coach", 0, 1, universe=len(universe))
@@ -383,9 +370,12 @@ def run_scan(cfg: Dict[str, Any], username: str, out_dir: Any, deps: Deps,
         items, advice = nw.admit(nw.merge(fresh_items or [], slot.get("news") or []), now, window)
         counts["filtered_advice"] += advice
         verified = fresh_items is not None or deps.news_fetch is None
+        # La séance que décrivent les chiffres (TradingView, la table en repli) :
+        # des cours figés avant toutes les news ne les confirment pas.
+        session = ss.row_session(row, now)
         scored = sg.score_row(row, items, slot, view["followed"], now, window,
                               exclude_red=bool(cfg["exclude_red"]), news_verified=verified,
-                              price_asof=ss.price_asof(states.get(row.get("market"))))
+                              price_asof=ss.price_asof(session))
         if scored["excluded"] == "no_catalyst":
             counts["excluded_no_catalyst"] += 1
             continue
@@ -399,7 +389,7 @@ def run_scan(cfg: Dict[str, Any], username: str, out_dir: Any, deps: Deps,
         out.update({"score": scored["score"], "components": scored["components"],
                     "reasons": scored["reasons"], "flags": flags, "news": scored["news"],
                     "coach": _coach_summary(slot),
-                    "session": _session_summary(states.get(row.get("market"))),
+                    "session": session,
                     "links": {"chart": mk.chart_url(row.get("tv_symbol"))}})
         candidates.append(out)
     candidates.sort(key=lambda r: (-r["score"], -(r.get("rel_volume") or 0.0),
@@ -421,7 +411,7 @@ def run_scan(cfg: Dict[str, Any], username: str, out_dir: Any, deps: Deps,
         "config": dict(cfg),
         "source": source,
         "markets": markets_status,
-        "sessions": states,
+        "sessions": ss.market_sessions(universe, now),
         "counts": counts,
         "warnings": warnings,
         "rows": top,

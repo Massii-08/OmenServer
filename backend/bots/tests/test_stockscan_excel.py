@@ -26,6 +26,9 @@ def _results(lang="fr"):
              "change_pct": 2.31, "rel_volume": 2.4, "score": 72, "market_cap_meur": 50200,
              "avg_value_meur": 201.24, "earnings_next": "2026-10-24",
              "flags": ["earnings_soon", "new"],
+             "session": {"source": "tradingview", "state": "closed", "date": "2026-10-16",
+                         "stale": True, "elapsed": None, "local_time": "09:45",
+                         "last_close": "2026-10-16T15:30:00+00:00"},
              "reasons": [{"code": "volume", "value": 2.4}, {"code": "news", "value": 3, "hours": 48},
                          {"code": "earnings", "value": "2026-10-24"}],
              "news": [{"title": "Eni beats estimates", "url": "https://www.tradingview.com/news/1",
@@ -90,6 +93,8 @@ def test_market_sheet_layout_and_rows(tmp_path):
         "volume ×2,4 vs son marché · 3 news en 48 h · résultats le 24/10/2026"
     assert ws.cell(row=r, column=10).hyperlink.target == "https://www.tradingview.com/news/1"
     assert ws.cell(row=r, column=11).value.date() == date(2026, 10, 24)
+    # samedi : variation, gap et volume sont ceux de la séance du vendredi
+    assert ws.cell(row=r, column=12).value == "fermée — chiffres du 16/10/2026"
     assert ws.cell(row=r, column=13).hyperlink.target.endswith("MIL%3AENI")
     assert ws.freeze_panes == "A%d" % xo.DATA_START_ROW
     assert ws.auto_filter.ref.startswith("A%d:" % xo.HEADER_ROW)
@@ -161,9 +166,34 @@ def test_session_column_and_session_labels():
         lab = xo.labels(lang)
         assert len(lab["headers"]) == len(xo.WIDTHS) == 13
         assert "awaiting_open" in lab["flags"] and "awaiting_open" in lab["reasons"]
+        assert set(lab["session"]) == set(xo.LABELS["fr"]["session"])
         # plus émis depuis que le volume « à l'heure » est rapporté à son
         # marché : un libellé sans émetteur finirait par mentir
         assert not {"volume_adjusted", "session_uncertain"} & set(lab["warnings"])
+
+
+@pytest.mark.parametrize("lang,expected", [
+    ("fr", "pré-ouverture — chiffres du 16/10/2026"),
+    ("en", "pre-market — figures from 16/10/2026"),
+    ("it", "pre-apertura — dati del 16/10/2026"),
+], ids=["fr", "en", "it"])
+def test_session_text_says_when_the_figures_are_from_an_earlier_session(lang, expected):
+    # Lundi avant l'ouverture de New York : variation, gap et volume sont ceux
+    # du vendredi — la cellule le dit, avec la date.
+    assert xo.session_text({"state": "pre_open", "date": "2026-10-16", "stale": True},
+                           lang) == expected
+
+
+def test_session_text_open_without_elapsed_and_dates_only_when_stale():
+    # séance ouverte d'après TradingView, part écoulée inconnue : pas de « ? % »
+    assert xo.session_text({"state": "open", "elapsed": None}, "fr") == "en séance"
+    assert xo.session_text({"state": "open", "elapsed": None}, "it") == "in seduta"
+    assert xo.session_text({"state": "open", "elapsed": 0.42, "date": "2026-10-16",
+                            "stale": True}, "it") == "in seduta (42 %) — dati del 16/10/2026"
+    # chiffres du jour, ou date inconnue : aucun suffixe
+    assert xo.session_text({"state": "closed", "date": "2026-10-19", "stale": False},
+                           "it") == "chiusa"
+    assert xo.session_text({"state": "closed", "date": None, "stale": True}, "it") == "chiusa"
 
 
 def test_volume_reason_says_what_it_is_compared_to():

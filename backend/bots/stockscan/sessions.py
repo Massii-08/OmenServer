@@ -17,22 +17,31 @@ pendant la séance européenne mettait côte à côte deux choses incomparables.
 - Les cours d'une bourse fermée datent de sa dernière séance : une variation
   du vendredi ne peut ni confirmer ni « rendre en retard » une news du lundi
   (CRWV −11,9 % affiché à côté de « CoreWeave jumps as Goldman upgrades »).
+  Une table d'horaires ne suffisait pas à le savoir : elle ignore les fériés
+  (Hong Kong, lundi 19/10 : hors séance, barre du vendredi) et le différé de
+  15 minutes (New York « ouverte » à 09:30 alors que les données étaient
+  encore en pré-ouverture). L'état vient donc de TradingView, ligne par ligne.
 
-Ce que ce module fournit : l'état de chaque place (ouverte / fermée), la part
-de séance écoulée, l'heure de la dernière clôture, le volume rapporté à son
-marché et le quota par marché de la présélection.
+Ce que ce module fournit : la séance que décrivent les chiffres de chaque
+ligne (``row_session`` : état réel, date locale de la barre, chiffres d'une
+séance antérieure ou non, instant où les cours ont été figés), un résumé par
+marché, le volume rapporté à son marché et le quota par marché de la
+présélection.
 
 ⚠️ Limites assumées, à connaître :
-- les horaires sont une TABLE (mêmes heures que Market Pulse, sondées le
-  29/07) : week-ends gérés, **jours fériés NON** — un férié en semaine passe
-  pour une séance ouverte ;
+- la table des horaires (mêmes heures que Market Pulse, sondées le 29/07) ne
+  connaît pas les fériés. Elle ne décide plus de l'état qu'en REPLI (univers
+  Yahoo, colonnes de séance mortes), où un férié en semaine passe pour une
+  séance ouverte. Elle fournit toujours la part de séance écoulée et l'heure
+  de clôture : une place absente de la table n'a pas de ``last_close`` ;
 - la médiane est celle de l'univers BALAYÉ (les titres les plus échangés de
   chaque marché) : un marché entier en effervescence revient lui aussi vers
   1,0, d'où la borne ``VOLUME_MEDIAN_CLAMP`` — et le volume ne fait que
   CONFIRMER une news, il ne la remplace jamais.
 """
 import math
-from datetime import datetime, timedelta, timezone
+from collections import Counter
+from datetime import date, datetime, timedelta, timezone
 from statistics import median
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 from zoneinfo import ZoneInfo
@@ -48,6 +57,17 @@ HOURS: Dict[str, Tuple[str, str, str]] = {
     "uk": ("Europe/London", "08:00", "16:30"),
     "america": ("America/New_York", "09:30", "16:00"),
 }
+
+# ``current_session`` de TradingView -> état de séance du scanner. Valeurs VUES
+# le 19/10 : market, pre_market, out_of_session (post_market existe aussi).
+# Toute autre valeur rend None : un état n'est jamais deviné.
+TV_SESSION_STATES: Dict[str, str] = {
+    "market": "open",
+    "pre_market": "pre_open",
+    "post_market": "closed",
+    "out_of_session": "closed",
+}
+SESSION_STATES = ("open", "pre_open", "closed")
 
 # Volume relatif rapporté à la médiane de SON marché : en dessous de 8 valeurs,
 # une médiane ne dit rien du marché (le volume reste tel quel, diviseur 1).
@@ -191,16 +211,160 @@ def shortlist_with_quota(ranked: Sequence[Dict[str, Any]], size: int,
     return [ranked[i] for i in sorted(chosen)][:size]
 
 
-def states_for(markets: Iterable[str], now: datetime) -> Dict[str, Dict[str, Any]]:
-    return {m: session_state(m, now) for m in dict.fromkeys(markets)}
+# --------------------------------------------------------------------------- #
+# L'état RÉEL de la séance, lu dans TradingView (fériés compris)
+# --------------------------------------------------------------------------- #
+
+def tv_session_state(value: Any) -> Optional[str]:
+    """``current_session`` -> ``open`` / ``pre_open`` / ``closed``, sinon None."""
+    return TV_SESSION_STATES.get(value) if isinstance(value, str) else None
 
 
-def price_asof(state: Optional[Dict[str, Any]]) -> Optional[datetime]:
-    """Instant auquel les cours d'une place FERMÉE ont été figés, ``None`` si
-    la place est ouverte (cours vivants) ou d'état inconnu."""
-    if not state or state.get("state") != "closed" or not state.get("last_close"):
+def _zone(name: Any) -> Optional[ZoneInfo]:
+    """Fuseau IANA utilisable, sinon None : absent, inconnu, ou chemin piégé
+    (« ../../etc ») — que ZoneInfo refuse lui-même, sans ouvrir de fichier."""
+    if not isinstance(name, str) or not name:
         return None
     try:
-        return datetime.fromisoformat(state["last_close"])
+        return ZoneInfo(name)
+    except Exception:             # noqa: BLE001 — ValueError, ZoneInfoNotFoundError, OSError…
+        return None
+
+
+def _local(moment: datetime, tz_name: Any) -> datetime:
+    """``moment`` à l'heure de la place ; en UTC si le fuseau est inutilisable."""
+    zone = _zone(tz_name)
+    if zone is not None:
+        try:
+            return moment.astimezone(zone)
+        except (OverflowError, ValueError, OSError):
+            pass
+    return moment.astimezone(timezone.utc)
+
+
+def session_date(time_value: Any, tz_name: Any) -> Optional[str]:
+    """Date LOCALE (``YYYY-MM-DD``) de la séance que décrivent les chiffres.
+
+    ``time`` de TradingView = ouverture de la barre journalière, UNIX en
+    secondes (millisecondes tolérées). Sydney 1792360800 = 18/10 22:00 UTC,
+    soit le LUNDI 19/10 sur place : la date UTC serait fausse. Fuseau absent,
+    inconnu ou invalide -> date UTC ; horodatage illisible -> None. Ne lève
+    jamais.
+    """
+    stamp = _finite(time_value)
+    if stamp is None or stamp <= 0:
+        return None
+    if stamp > 1e11:              # millisecondes
+        stamp /= 1000.0
+    if stamp < 1e8:               # ni secondes ni millisecondes plausibles
+        return None
+    try:
+        moment = datetime.fromtimestamp(stamp, tz=timezone.utc)
+    except (OverflowError, OSError, ValueError):
+        return None
+    return _local(moment, tz_name).date().isoformat()
+
+
+def local_today(tz_name: Any, now: datetime) -> str:
+    """Le jour qu'il est SUR PLACE à ``now`` (en UTC si le fuseau est inutilisable)."""
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
+    return _local(now, tz_name).date().isoformat()
+
+
+def is_stale(day: Any, tz_name: Any, now: datetime) -> bool:
+    """Les chiffres datent-ils d'une séance ANTÉRIEURE au jour local de la place ?
+
+    Quel que soit l'état : pré-ouverture du lundi (chiffres du vendredi),
+    week-end, nuit, férié, ou titre sans échange aujourd'hui dans une séance
+    ouverte. Une place clôturée le jour même n'est PAS en retard.
+    """
+    try:
+        return date.fromisoformat(day) < date.fromisoformat(local_today(tz_name, now))
+    except (TypeError, ValueError):
+        return False
+
+
+def _close_of(market_id: Any, day: str) -> Optional[datetime]:
+    """Clôture de la séance ``day`` d'après ``HOURS`` (None : place absente de
+    la table, date illisible — jamais supposée)."""
+    hours = HOURS.get(market_id) if isinstance(market_id, str) else None
+    if hours is None:
+        return None
+    try:
+        session_day = date.fromisoformat(day)
+    except (TypeError, ValueError):
+        return None
+    return _at(session_day, _hm(hours[2]), ZoneInfo(hours[0])).astimezone(timezone.utc)
+
+
+def _round3(value: Any) -> Optional[float]:
+    return round(value, 3) if isinstance(value, float) else None
+
+
+def row_session(row: Dict[str, Any], now: datetime) -> Dict[str, Any]:
+    """La séance que décrivent les chiffres d'une ligne (PUR).
+
+    TradingView (``session_state`` ET ``session_date`` connus) : l'état réel,
+    fériés compris — la table croyait Hong Kong ouverte un lundi férié, et les
+    États-Unis ouverts à 09:30 alors que les données différées étaient encore
+    en pré-ouverture. Sinon (repli Yahoo, colonnes mortes) : la table.
+
+    ``{source, state, date, stale, elapsed, local_time, last_close}`` —
+    ``elapsed`` seulement si TradingView ET la table disent la place ouverte ;
+    ``last_close`` (ISO UTC) = la clôture de la séance des chiffres quand les
+    cours sont figés (place pas ouverte, ou chiffres d'une séance antérieure),
+    jamais une clôture encore à venir ni celle d'une place absente de la table.
+    """
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
+    market_id = row.get("market")
+    table = session_state(market_id, now)
+    state, day = row.get("session_state"), row.get("session_date")
+    if state in SESSION_STATES and isinstance(day, str) and day:
+        stale = is_stale(day, row.get("session_tz"), now)
+        elapsed = table["elapsed"] if state == "open" and table["state"] == "open" else None
+        last_close = None
+        if state != "open" or stale:
+            close = _close_of(market_id, day)
+            if close is not None and close <= now:
+                last_close = close.isoformat(timespec="seconds")
+        return {"source": "tradingview", "state": state, "date": day, "stale": stale,
+                "elapsed": _round3(elapsed), "local_time": table["local_time"],
+                "last_close": last_close}
+    return {"source": "table", "state": table["state"], "date": None, "stale": False,
+            "elapsed": _round3(table["elapsed"]), "local_time": table["local_time"],
+            # place ouverte : cours vivants, rien n'est figé
+            "last_close": table["last_close"] if table["state"] == "closed" else None}
+
+
+def market_sessions(rows: Iterable[Dict[str, Any]], now: datetime) -> Dict[Any, Dict[str, Any]]:
+    """Résumé par marché, dérivé des lignes de son univers : l'état le plus
+    fréquent, la date la plus fréquente parmi ces lignes, et ``stale`` /
+    ``elapsed`` / ``source`` d'une ligne qui porte cet état et cette date."""
+    groups: Dict[Any, List[Dict[str, Any]]] = {}
+    for row in rows:
+        groups.setdefault(row.get("market"), []).append(row_session(row, now))
+    summary: Dict[Any, Dict[str, Any]] = {}
+    for market_id, sessions in groups.items():
+        state = Counter(s["state"] for s in sessions).most_common(1)[0][0]
+        same_state = [s for s in sessions if s["state"] == state]
+        days = Counter(s["date"] for s in same_state if s["date"])
+        day = days.most_common(1)[0][0] if days else None
+        ref = next(s for s in same_state if s["date"] == day)
+        summary[market_id] = {"state": state, "date": day, "stale": ref["stale"],
+                              "elapsed": ref["elapsed"], "source": ref["source"]}
+    return summary
+
+
+def price_asof(session: Optional[Dict[str, Any]]) -> Optional[datetime]:
+    """Instant auquel les chiffres d'une ligne ont été figés : la ``last_close``
+    de sa séance (``row_session``), ``None`` quand les cours sont vivants ou
+    que la séance est inconnue."""
+    last_close = session.get("last_close") if isinstance(session, dict) else None
+    if not isinstance(last_close, str):
+        return None
+    try:
+        return datetime.fromisoformat(last_close)
     except ValueError:
         return None

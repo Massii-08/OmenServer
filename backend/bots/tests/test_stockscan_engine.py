@@ -145,7 +145,12 @@ def test_full_scan_ranks_catalysts_and_writes_files(tmp_path):
     assert "awaiting_open" in eni["flags"]
     assert eni["session"]["state"] == "closed"
     assert eni["session"]["last_close"] == "2026-10-16T15:30:00+00:00"
-    assert results["sessions"]["italy"]["state"] == "closed"
+    # l'état vient de TradingView (hors séance, barre du vendredi), pas de la table
+    assert eni["session"]["source"] == "tradingview"
+    assert eni["session"]["date"] == "2026-10-16" and eni["session"]["stale"] is True
+    assert results["sessions"]["italy"] == {"state": "closed", "date": "2026-10-16",
+                                            "stale": True, "elapsed": None,
+                                            "source": "tradingview"}
     assert eni["links"]["chart"] == "https://www.tradingview.com/chart/?symbol=MIL%3AENI"
     assert len(eni["news"]) == 2
 
@@ -257,6 +262,10 @@ def test_fallback_universe_when_screener_fails_everywhere(tmp_path):
     eni = results["rows"][0]
     assert eni["tv_symbol"] == "MIL:ENI"
     assert eni["rel_volume"] == 3.0
+    # Yahoo ne dit rien de la séance : la table prend le relais (samedi : fermée)
+    assert (eni["session"]["source"], eni["session"]["state"], eni["session"]["date"],
+            eni["session"]["stale"]) == ("table", "closed", None, False)
+    assert eni["session"]["last_close"] == "2026-10-16T15:30:00+00:00"
     assert eni["change_pct"] == round((106 - 104) / 104 * 100, 2)
 
 
@@ -377,18 +386,41 @@ def test_probe_reports_screener_failure(tmp_path):
     assert cli.probe(str(tmp_path), "japan", None, screener=FakeScreener()) == 1
 
 
+class SessionScreener(FakeScreener):
+    """La fixture italienne avec l'état de séance que TradingView rendrait à un
+    autre instant : ``current_session`` et ouverture de la barre du jour."""
+
+    def __init__(self, current_session, bar_open, **kw):
+        super().__init__(**kw)
+        self.current_session, self.bar_open = current_session, bar_open
+
+    def scan(self, market, cfg):
+        payload, meta = super().scan(market, cfg)
+        i_session, i_time = sc.COLUMNS.index("current_session"), sc.COLUMNS.index("time")
+        for raw in payload["data"]:
+            if raw["s"]:
+                raw["d"][i_session] = self.current_session
+                raw["d"][i_time] = int(self.bar_open.timestamp())
+        return payload, meta
+
+
 def test_open_session_volume_is_no_longer_scaled_by_elapsed_time(tmp_path):
     # Mercredi 21/10 13:15 UTC = 15:15 à Milan, séance ouverte. Le volume n'est
     # plus divisé par la part de séance écoulée (courbe en U : 74 % du temps
     # n'est pas 74 % du volume) : c'est le volume « à l'heure », rapporté à la
     # médiane de son marché — ici 6 titres, trop peu (8) : diviseur 1.
     wednesday = datetime(2026, 10, 21, 13, 15, tzinfo=timezone.utc)
-    deps = _deps()
+    deps = _deps(screener=SessionScreener(
+        "market", datetime(2026, 10, 21, 7, 0, tzinfo=timezone.utc)))
     deps.now = lambda: wednesday
     results = engine.run_scan(_cfg(), "massii", tmp_path, deps, log=lambda m: None)
     assert not {w["code"] for w in results["warnings"]} & {"volume_adjusted", "session_uncertain"}
     assert results["markets"][0]["volume_median"] is None
-    assert results["rows"] and results["rows"][0]["session"]["state"] == "open"
+    assert results["rows"]
+    session = results["rows"][0]["session"]
+    assert (session["source"], session["state"], session["date"], session["stale"]) == \
+        ("tradingview", "open", "2026-10-21", False)
+    assert session["elapsed"] == round(6.25 / 8.5, 3) and session["last_close"] is None
     for row in results["rows"]:
         assert row["rel_volume_raw"] == row["rel_volume_time"]
         assert row["rel_volume"] == round(row["rel_volume_raw"], 2)
@@ -489,3 +521,48 @@ def test_dead_volume_at_time_column_falls_back_to_the_ten_day_volume(tmp_path):
         assert abs(row["rel_volume"] - row["rel_volume_raw"] / divisor) <= 0.006, row["symbol"]
     assert ("Volume relatif médian à l'heure : switzerland 0,37 (10 j) · italy 0,40 (10 j) · "
             "germany 0,30 (10 j) · france 0,27 (10 j) · america 1,22 (10 j)") in logs
+
+
+def test_real_snapshot_sessions_come_from_tradingview(tmp_path):
+    # 13:30:37 UTC = 09:30 à New York : la table dirait la bourse ouverte, mais
+    # les données (différées) sont en PRÉ-OUVERTURE, barre du vendredi 16/10 —
+    # des chiffres d'avant les news du week-end, qui ne peuvent ni les
+    # confirmer ni les dire « déjà dans le cours » : « attend l'ouverture ».
+    # Milan est en séance avec la barre du jour : cours vivants, rien n'attend.
+    # Des news du coach font passer un titre US et un titre italien SANS
+    # résultats proches le filtre « catalyseur ».
+    news = {"NVDA": ["Nvidia signs a data-center supply deal",
+                     "Nvidia opens a research lab in Tel Aviv"],
+            "UCG.MI": ["UniCredit completes the sale of its Russian unit",
+                       "UniCredit names a new head of retail banking"]}
+    events = [{"ts": (SNAPSHOT_NOW - timedelta(hours=2 + i)).isoformat(), "symbol": symbol,
+               "title": title, "link": "https://n/%s/%d" % (symbol, i),
+               "sentiment": "pos", "src": "pressefi"}
+              for symbol, titles in news.items() for i, title in enumerate(titles)]
+    deps = _snapshot_deps(SnapshotScreener())
+    deps.coach_loaders = FakeLoaders(events=events)
+    cfg = _cfg(markets=SNAPSHOT_MARKETS, shortlist=40, top_n=25)
+    results, _ = _run(tmp_path, cfg=cfg, deps=deps)
+    rows = {r["symbol"]: r for r in results["rows"]}
+
+    nvda = rows["NVDA"]
+    assert nvda["session"] == {"source": "tradingview", "state": "pre_open",
+                               "date": "2026-10-16", "stale": True, "elapsed": None,
+                               "local_time": "09:30",
+                               "last_close": "2026-10-16T20:00:00+00:00"}
+    assert "awaiting_open" in nvda["flags"]
+    assert not {"volume", "aligned"} & set(nvda["components"])
+
+    ucg = rows["UCG.MI"]
+    assert (ucg["session"]["source"], ucg["session"]["state"], ucg["session"]["date"],
+            ucg["session"]["stale"], ucg["session"]["last_close"]) == \
+        ("tradingview", "open", "2026-10-19", False, None)
+    assert ucg["session"]["elapsed"] is not None
+    assert "awaiting_open" not in ucg["flags"]           # cours vivants : rien n'attend
+
+    assert results["sessions"]["america"] == {"state": "pre_open", "date": "2026-10-16",
+                                              "stale": True, "elapsed": None,
+                                              "source": "tradingview"}
+    assert {m: (s["state"], s["date"], s["stale"]) for m, s in results["sessions"].items()
+            if m != "america"} == {m: ("open", "2026-10-19", False)
+                                   for m in SNAPSHOT_MARKETS if m != "america"}

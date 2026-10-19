@@ -31,6 +31,7 @@ from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from backend.bots.stockscan import markets as mk
+from backend.bots.stockscan import sessions as ss
 
 SCAN_URL = "https://scanner.tradingview.com/{market}/scan"
 
@@ -232,6 +233,7 @@ def parse_response(payload: Any, market: mk.Market,
         # Jamais en pence : sans devise comptable connue, un titre coté en GBX
         # garde la règle des livres.
         traded_currency = "GBP" if cap_currency in ("GBX", "GBp") else cap_currency
+        session_tz = _text(d.get("timezone")) or None
 
         rows.append({
             "tv_symbol": tv_symbol,
@@ -260,6 +262,11 @@ def parse_response(payload: Any, market: mk.Market,
             "earnings_next": _date_of(d.get("earnings_release_next_trading_date_fq")),
             "dividend_yield": _num(d.get("dividends_yield_current")),
             "pe": _num(d.get("price_earnings_ttm")),
+            # La séance que décrivent les chiffres (sessions.row_session) :
+            # état réel de la place et date LOCALE de la barre journalière.
+            "session_tz": session_tz,
+            "session_state": ss.tv_session_state(d.get("current_session")),
+            "session_date": ss.session_date(d.get("time"), session_tz),
         })
 
     info["returned"] = len(rows)

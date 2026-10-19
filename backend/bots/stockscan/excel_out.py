@@ -94,7 +94,8 @@ LABELS: Dict[str, Dict[str, Any]] = {
             "excel_failed": "Classeur Excel non produit",
         },
         "session": {
-            "open": "en séance ({p} %)", "closed": "fermée", "unknown": "inconnue",
+            "open": "en séance ({p} %)", "open_now": "en séance", "pre_open": "pré-ouverture",
+            "closed": "fermée", "unknown": "inconnue", "stale": " — chiffres du {date}",
         },
         "info": {
             "criteria": "Critères", "counts": "Compteurs", "markets": "Marchés",
@@ -157,7 +158,8 @@ LABELS: Dict[str, Dict[str, Any]] = {
             "excel_failed": "Excel workbook not produced",
         },
         "session": {
-            "open": "in session ({p}%)", "closed": "closed", "unknown": "unknown",
+            "open": "in session ({p}%)", "open_now": "in session", "pre_open": "pre-market",
+            "closed": "closed", "unknown": "unknown", "stale": " — figures from {date}",
         },
         "info": {
             "criteria": "Criteria", "counts": "Counts", "markets": "Markets",
@@ -222,7 +224,8 @@ LABELS: Dict[str, Dict[str, Any]] = {
             "excel_failed": "Cartella Excel non prodotta",
         },
         "session": {
-            "open": "in seduta ({p} %)", "closed": "chiusa", "unknown": "sconosciuta",
+            "open": "in seduta ({p} %)", "open_now": "in seduta", "pre_open": "pre-apertura",
+            "closed": "chiusa", "unknown": "sconosciuta", "stale": " — dati del {date}",
         },
         "info": {
             "criteria": "Criteri", "counts": "Contatori", "markets": "Mercati",
@@ -317,15 +320,27 @@ def reason_text(reason: Dict[str, Any], lang: str) -> str:
               .replace("{h}", str(reason.get("hours") or ""))
 
 
+SESSION_STATES = ("open", "pre_open", "closed", "unknown")
+
+
 def session_text(session: Any, lang: str) -> Optional[str]:
-    """État de la bourse au moment du scan : « en séance (74 %) » / « fermée »."""
+    """La séance que décrivent les chiffres : « en séance (74 %) », « fermée »,
+    « pré-ouverture — chiffres du 16/10/2026 » quand variation, gap et volume
+    datent d'une séance antérieure (``stale``)."""
     if not isinstance(session, dict):
         return None
     lab = labels(lang)["session"]
-    state = session.get("state") if session.get("state") in lab else "unknown"
+    state = session.get("state") if session.get("state") in SESSION_STATES else "unknown"
     elapsed = _num(session.get("elapsed"))
-    pct = str(int(round(elapsed * 100))) if elapsed is not None else "?"
-    return lab[state].replace("{p}", pct)
+    if state == "open":
+        text = lab["open"].replace("{p}", str(int(round(elapsed * 100)))) \
+            if elapsed is not None else lab["open_now"]
+    else:
+        text = lab[state]
+    day = _date(session.get("date")) if session.get("stale") is True else None
+    if day is not None:
+        text += lab["stale"].replace("{date}", day.strftime("%d/%m/%Y"))
+    return text
 
 
 def flag_text(flag: str, lang: str) -> str:

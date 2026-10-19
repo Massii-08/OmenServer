@@ -64,3 +64,39 @@ def test_frontend_versions_were_bumped():
     assert _v(r"/js/lang\.js\?v=(\d+)", index) >= 301
     assert _v(r"/js/stockscan_module\.js\?v=(\d+)", index) >= 6
     assert _v(r"omenserver-v(\d+)", sw) >= 200
+
+
+# Le badge de séance (phase 3) : état RÉEL lu dans TradingView, et la date des
+# chiffres quand ils datent d'une séance antérieure.
+SESSION_LABELS = {
+    "fr": {"stocks.session.open_now": "En séance",
+           "stocks.session.pre_open": "Pré-ouverture",
+           "stocks.session_data": "chiffres du {date}",
+           "stocks.session_stale_hint":
+               "Variation, gap et volume datent de cette séance, pas d\\'aujourd\\'hui"},
+    "en": {"stocks.session.open_now": "In session",
+           "stocks.session.pre_open": "Pre-market",
+           "stocks.session_data": "figures from {date}",
+           "stocks.session_stale_hint":
+               "Change, gap and volume are from this session, not today\\'s"},
+    "it": {"stocks.session.open_now": "In seduta",
+           "stocks.session.pre_open": "Pre-apertura",
+           "stocks.session_data": "dati del {date}",
+           "stocks.session_stale_hint":
+               "Variazione, gap e volume sono di questa seduta, non di oggi"},
+}
+
+
+@pytest.mark.parametrize("lang", ("fr", "en", "it"))
+def test_session_badge_labels_exist_in_every_language(lang):
+    block = _lang_blocks()[lang]
+    for key, text in SESSION_LABELS[lang].items():
+        assert _label(block, key) == text, key
+
+
+def test_frontend_versions_were_bumped_for_the_session_badge():
+    index = (_ROOT / "frontend" / "index.html").read_text(encoding="utf-8")
+    sw = (_ROOT / "frontend" / "sw.js").read_text(encoding="utf-8")
+    assert int(re.search(r"/js/lang\.js\?v=(\d+)", index).group(1)) >= 302
+    assert int(re.search(r"/js/stockscan_module\.js\?v=(\d+)", index).group(1)) >= 7
+    assert int(re.search(r"omenserver-v(\d+)", sw).group(1)) >= 201

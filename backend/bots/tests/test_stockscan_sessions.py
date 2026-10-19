@@ -11,6 +11,8 @@ from collections import Counter
 from datetime import datetime, timezone
 from statistics import median
 
+import pytest
+
 from backend.bots.stockscan import markets as mk
 from backend.bots.stockscan import screener as sc
 from backend.bots.stockscan import sessions as ss
@@ -264,3 +266,181 @@ def test_quota_never_returns_more_than_asked_nor_duplicates():
     picked = ss.shortlist_with_quota(ranked, 2, ["a", "b", "c"])
     assert len(picked) == 2 and len({r["symbol"] for r in picked}) == 2
     assert _in_rank_order(picked, ranked)
+
+
+# --------------------------------------------------------------------------- #
+# État de séance lu dans TradingView (fériés compris) — la table en repli
+# --------------------------------------------------------------------------- #
+
+# Horodatages RÉELS de la capture du 19/10 (``time`` = ouverture de la barre
+# journalière : la séance que décrivent variation, gap et volume).
+TOKYO_MON = 1792368000      # 19/10 09:00 JST
+HONG_KONG_FRI = 1792114200  # 16/10 09:30 HKT : le lundi 19/10 était férié à Hong Kong
+SYDNEY_MON = 1792360800     # 19/10 09:00 AEDT = 18/10 22:00 UTC
+EUROPE_MON = 1792393200     # 19/10 07:00 UTC = 09:00 à Milan
+US_FRI = 1792157400         # 16/10 13:30 UTC = 09:30 à New York
+SNAPSHOT_NOW = utc(2026, 10, 19, 13, 30, 37)
+
+
+@pytest.mark.parametrize("raw,expected", [
+    ("market", "open"), ("pre_market", "pre_open"), ("post_market", "closed"),
+    ("out_of_session", "closed"),
+    ("lunch_break", None), ("MARKET", None), ("", None), (None, None), (1, None),
+])
+def test_tradingview_session_is_mapped_never_guessed(raw, expected):
+    assert ss.tv_session_state(raw) == expected
+
+
+@pytest.mark.parametrize("stamp,tz,expected", [
+    (TOKYO_MON, "Asia/Tokyo", "2026-10-19"),
+    (HONG_KONG_FRI, "Asia/Hong_Kong", "2026-10-16"),
+    (SYDNEY_MON, "Australia/Sydney", "2026-10-19"),          # en UTC : le 18 !
+    (EUROPE_MON, "Europe/Rome", "2026-10-19"),
+    (US_FRI, "America/New_York", "2026-10-16"),
+    (SYDNEY_MON * 1000, "Australia/Sydney", "2026-10-19"),   # millisecondes
+])
+def test_session_date_is_the_local_date_of_the_place(stamp, tz, expected):
+    assert ss.session_date(stamp, tz) == expected
+
+
+@pytest.mark.parametrize("tz", [None, "", 42, "Mars/Olympus_Mons", "America", "../../etc",
+                                "/etc/passwd", "Etc/../Europe/Rome", "Europe/Rome\x00"])
+def test_session_date_falls_back_to_utc_without_a_usable_timezone(tz):
+    assert ss.session_date(SYDNEY_MON, tz) == "2026-10-18"
+
+
+@pytest.mark.parametrize("stamp", [None, "", "hier", True, 0, -5, 12345,
+                                   float("nan"), float("inf"), 1e17, 1e30, [1]])
+def test_session_date_of_an_unreadable_timestamp_is_none(stamp):
+    assert ss.session_date(stamp, "Europe/Rome") is None
+
+
+def test_local_today_is_the_day_on_the_spot():
+    assert ss.local_today("Australia/Sydney", utc(2026, 10, 19, 23, 40)) == "2026-10-20"
+    assert ss.local_today("America/New_York", utc(2026, 10, 20, 2, 0)) == "2026-10-19"
+    assert ss.local_today("../../etc", utc(2026, 10, 19, 23, 40)) == "2026-10-19"   # UTC
+
+
+@pytest.mark.parametrize("day,tz,now,expected", [
+    # pré-ouverture du lundi à New York : chiffres du vendredi
+    ("2026-10-16", "America/New_York", SNAPSHOT_NOW, True),
+    # Europe en séance : chiffres du jour
+    ("2026-10-19", "Europe/Rome", SNAPSHOT_NOW, False),
+    # Tokyo clôturée le jour même, 23:40 JST : chiffres du jour
+    ("2026-10-19", "Asia/Tokyo", utc(2026, 10, 19, 14, 40), False),
+    # Hong Kong férié le lundi : la barre est celle du vendredi
+    ("2026-10-16", "Asia/Hong_Kong", SNAPSHOT_NOW, True),
+    # lundi 23:40 UTC : déjà mardi à Sydney, les chiffres sont ceux de lundi
+    ("2026-10-19", "Australia/Sydney", utc(2026, 10, 19, 23, 40), True),
+], ids=["us-pre-ouverture", "europe-ouverte", "tokyo-cloturee", "hong-kong-ferie",
+        "sydney-deja-mardi"])
+def test_figures_are_stale_when_they_predate_the_local_day(day, tz, now, expected):
+    assert ss.is_stale(day, tz, now) is expected
+
+
+def _tv_row(market, state, day, tz):
+    return {"market": market, "session_state": state, "session_date": day, "session_tz": tz}
+
+
+def test_row_session_us_pre_open_monday_prices_date_from_friday_close():
+    # 13:30:37 UTC = 09:30 à New York : la table dirait « ouverte », mais les
+    # données (différées) sont en pré-ouverture, avec la barre du vendredi.
+    s = ss.row_session(_tv_row("america", "pre_open", "2026-10-16", "America/New_York"),
+                       SNAPSHOT_NOW)
+    assert s == {"source": "tradingview", "state": "pre_open", "date": "2026-10-16",
+                 "stale": True, "elapsed": None, "local_time": "09:30",
+                 "last_close": "2026-10-16T20:00:00+00:00"}
+
+
+def test_row_session_europe_open_today_has_live_prices_and_the_table_elapsed():
+    s = ss.row_session(_tv_row("italy", "open", "2026-10-19", "Europe/Rome"), SNAPSHOT_NOW)
+    assert s["source"] == "tradingview" and s["state"] == "open"
+    assert s["date"] == "2026-10-19" and s["stale"] is False
+    assert s["last_close"] is None                           # cours vivants
+    assert s["elapsed"] == round(ss.session_state("italy", SNAPSHOT_NOW)["elapsed"], 3)
+    assert s["local_time"] == "15:30"
+
+
+def test_row_session_open_for_tradingview_but_not_for_the_table_has_no_elapsed():
+    s = ss.row_session(_tv_row("italy", "open", "2026-10-19", "Europe/Rome"),
+                       utc(2026, 10, 19, 16, 0))                 # 18:00 à Milan
+    assert s["state"] == "open" and s["elapsed"] is None and s["last_close"] is None
+
+
+def test_row_session_open_but_stale_dates_the_prices_from_that_session():
+    # Place ouverte, mais aucun échange aujourd'hui sur ce titre : sa barre est
+    # celle du vendredi, ses chiffres aussi.
+    s = ss.row_session(_tv_row("italy", "open", "2026-10-16", "Europe/Rome"), SNAPSHOT_NOW)
+    assert s["stale"] is True and s["last_close"] == "2026-10-16T15:30:00+00:00"
+
+
+def test_row_session_closed_the_same_day_is_not_stale():
+    s = ss.row_session(_tv_row("italy", "closed", "2026-10-19", "Europe/Rome"),
+                       utc(2026, 10, 19, 17, 0))                 # 19:00 à Milan
+    assert s["stale"] is False and s["last_close"] == "2026-10-19T15:30:00+00:00"
+
+
+def test_row_session_never_dates_prices_from_a_close_still_to_come():
+    # Barre du JOUR en pré-ouverture : sa clôture n'a pas encore eu lieu.
+    s = ss.row_session(_tv_row("america", "pre_open", "2026-10-19", "America/New_York"),
+                       SNAPSHOT_NOW)
+    assert s["stale"] is False and s["last_close"] is None
+
+
+def test_row_session_judges_staleness_on_the_local_day_of_the_row():
+    # Lundi 23:40 UTC : déjà mardi à Sydney — la barre du lundi est d'hier.
+    # En UTC (encore lundi), on la croirait du jour.
+    s = ss.row_session(_tv_row("australia", "closed", "2026-10-19", "Australia/Sydney"),
+                       utc(2026, 10, 19, 23, 40))
+    assert s["stale"] is True
+
+
+def test_row_session_of_a_market_unknown_to_the_table_never_guesses_a_close():
+    # Hong Kong (absent de HOURS), férié le lundi : chiffres du vendredi, mais
+    # aucune heure de clôture connue, donc pas d'instant inventé.
+    s = ss.row_session(_tv_row("hong_kong", "closed", "2026-10-16", "Asia/Hong_Kong"),
+                       SNAPSHOT_NOW)
+    assert s["source"] == "tradingview" and s["stale"] is True
+    assert s["last_close"] is None and s["elapsed"] is None
+
+
+def test_row_session_falls_back_to_the_table_without_tradingview_fields():
+    # Repli Yahoo ou colonnes mortes : la table, comme avant (samedi : fermée).
+    s = ss.row_session({"market": "germany"}, utc(2026, 10, 17, 10, 0))
+    assert s == {"source": "table", "state": "closed", "date": None, "stale": False,
+                 "elapsed": None, "local_time": "12:00",
+                 "last_close": "2026-10-16T15:30:00+00:00"}
+    # un état sans date ne suffit pas ; place ouverte : cours vivants
+    s = ss.row_session({"market": "italy", "session_state": "open"}, MON_1300)
+    assert s["source"] == "table" and s["state"] == "open" and s["last_close"] is None
+    assert s["elapsed"] == round(6 / 8.5, 3)
+
+
+def test_price_asof_reads_the_last_close_of_the_session():
+    assert ss.price_asof({"state": "pre_open", "last_close": "2026-10-16T20:00:00+00:00"}) == \
+        utc(2026, 10, 16, 20, 0)
+    # ouverte mais chiffres d'une séance antérieure : figés eux aussi
+    assert ss.price_asof({"state": "open", "stale": True,
+                          "last_close": "2026-10-16T15:30:00+00:00"}) == utc(2026, 10, 16, 15, 30)
+    assert ss.price_asof({"state": "open", "last_close": None}) is None
+    assert ss.price_asof({"state": "closed", "last_close": "hier"}) is None
+    assert ss.price_asof(None) is None
+
+
+def test_market_summary_is_derived_from_the_rows_of_its_universe():
+    # les lignes minoritaires EN PREMIER : le résumé est la majorité, pas la 1re
+    # ligne (un état minoritaire aux US, une date minoritaire en Italie : un
+    # titre sans échange aujourd'hui garde la barre du vendredi)
+    rows = [_tv_row("america", "open", "2026-10-19", "America/New_York")] + \
+           [_tv_row("america", "pre_open", "2026-10-16", "America/New_York")] * 3 + \
+           [_tv_row("italy", "open", "2026-10-16", "Europe/Rome")] + \
+           [_tv_row("italy", "open", "2026-10-19", "Europe/Rome")] * 2 + \
+           [{"market": "germany"}]
+    summary = ss.market_sessions(rows, SNAPSHOT_NOW)
+    assert set(summary) == {"america", "italy", "germany"}
+    assert summary["america"] == {"state": "pre_open", "date": "2026-10-16", "stale": True,
+                                  "elapsed": None, "source": "tradingview"}
+    assert (summary["italy"]["state"], summary["italy"]["date"], summary["italy"]["stale"]) == \
+        ("open", "2026-10-19", False)
+    assert summary["italy"]["elapsed"] is not None
+    assert summary["germany"]["source"] == "table" and summary["germany"]["date"] is None

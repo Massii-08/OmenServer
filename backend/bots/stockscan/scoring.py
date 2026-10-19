@@ -148,8 +148,9 @@ def score_row(row: Dict[str, Any], news_items: Iterable[Dict[str, Any]],
     ``news_items`` : news ADMISES (fenêtre + non-conseils), toutes sources
     fusionnées. ``slot`` : signaux du coach pour ce symbole (ou ``None``).
 
-    ``price_asof`` : instant où les cours ont été figés quand la bourse est
-    FERMÉE (``None`` = cours vivants). Si TOUTES les news sont postérieures,
+    ``price_asof`` : instant où les cours ont été figés — place pas ouverte, ou
+    chiffres d'une séance antérieure (``sessions.row_session``) ; ``None`` =
+    cours vivants. Si TOUTES les news sont postérieures,
     le cours et le volume datent d'avant elles : ils ne peuvent ni les
     confirmer (pas de points volume/aligné) ni dire qu'elles sont déjà dans le
     prix (pas de « en retard ») — la ligne est marquée « attend l'ouverture ».

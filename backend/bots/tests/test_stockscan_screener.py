@@ -90,6 +90,9 @@ def test_parse_maps_fields():
     assert eni["change_pct"] == 2.31
     assert eni["rel_volume"] == 2.4
     assert eni["rel_volume_time"] == 2.4
+    # samedi : Milan hors séance, barre du vendredi 16/10
+    assert (eni["session_state"], eni["session_date"], eni["session_tz"]) == \
+        ("closed", "2026-10-16", "Europe/Rome")
     assert eni["earnings_next"] == "2026-10-24"
     # 1,3e7 titres × 15,48 € ≈ 201,24 M€ échangés par jour
     assert eni["avg_value_meur"] == 201.24
@@ -245,6 +248,29 @@ def test_parse_reads_rel_volume_time_from_the_real_snapshot():
     by_symbol = {r["tv_symbol"]: r for r in rows}
     assert [by_symbol[raw["s"]]["rel_volume_time"] for raw in block["data"]] == \
         [raw["d"][col] for raw in block["data"]]
+
+
+@pytest.mark.parametrize("market_id,state,day,tz", [
+    ("switzerland", "open", "2026-10-19", "Europe/Zurich"),
+    ("italy", "open", "2026-10-19", "Europe/Rome"),
+    ("germany", "open", "2026-10-19", "Europe/Berlin"),
+    ("france", "open", "2026-10-19", "Europe/Paris"),
+    # pré-ouverture du lundi : la barre (et les chiffres) du vendredi 16/10
+    ("america", "pre_open", "2026-10-16", "America/New_York"),
+])
+def test_parse_reads_the_session_of_the_real_snapshot(market_id, state, day, tz):
+    rows, _ = sc.parse_response(_load(SNAPSHOT)["markets"][market_id], mk.by_id(market_id))
+    assert {(r["session_state"], r["session_date"], r["session_tz"]) for r in rows} == \
+        {(state, day, tz)}
+
+
+def test_parse_session_fields_never_guess():
+    payload = {"totalCount": 1, "data": [{"s": "MIL:ENI", "d": _values(
+        name="ENI", close=15.0, current_session="lunch_break", time="hier",
+        timezone="../../etc")}]}
+    eni = sc.parse_response(payload, ITALY)[0][0]
+    assert eni["session_state"] is None and eni["session_date"] is None
+    assert eni["session_tz"] == "../../etc"      # texte brut, jamais ouvert comme chemin
 
 
 @pytest.mark.parametrize("payload", [None, [], "x", {"data": "nope"}, {"totalCount": 3}])
