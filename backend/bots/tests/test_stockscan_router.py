@@ -178,7 +178,7 @@ def test_config_serves_defaults_catalogue_limits_windows_langs(tmp_path, monkeyp
     assert body["defaults"] == cfgmod.DEFAULTS         # aucun fichier : défauts d'usine
     assert [m["id"] for m in body["markets"]] == [m.id for m in mk.MARKETS]
     assert set(body["limits"]) == set(cfgmod.LIMITS)
-    assert body["limits"]["top_n"] == [5, 100]
+    assert body["limits"]["top_n"] == [5, 80]      # = borne de la présélection
     assert body["limits"]["min_cap_meur"] == [50, 500000]
     assert body["windows"] == [24, 48, 72]
     assert body["langs"] == ["fr", "en", "it"]
@@ -251,11 +251,24 @@ def test_run_does_not_stack_a_second_run(tmp_path, monkeypatch):
     assert r.status_code == 200
     body = r.json()
     assert body["job_id"] == first and body["already_running"] is True
-    # l'UI montre quand même la config validée et ses avertissements
+    # les avertissements de la demande restent visibles...
     assert {"code": "unknown_market", "value": "atlantis"} in body["warnings"]
-    assert body["config"]["markets"] == ["italy"]
+    # ...mais la config rendue est celle du scan qui TOURNE, pas celle refusée
+    live = json.loads((_rd(tmp_path, first) / "config.json").read_text(encoding="utf-8"))
+    assert body["config"] == live
     assert len(list((tmp_path / "runs").iterdir())) == 1
     assert len(h["launches"]) == 1
+
+
+def test_a_refused_run_does_not_overwrite_the_saved_defaults(tmp_path, monkeypatch):
+    # Rapport de test réel du 19/10 : un clic refusé (scan déjà en cours)
+    # écrasait defaults.json avec des réglages qui n'ont jamais tourné.
+    c, h = make_client(tmp_path, monkeypatch)
+    first = _start(c)
+    before = (tmp_path / "data" / "defaults.json").read_text(encoding="utf-8")
+    r = c.post(API + "/run", json={"markets": ["uk"], "top_n": 7})
+    assert r.json()["already_running"] is True and r.json()["job_id"] == first
+    assert (tmp_path / "data" / "defaults.json").read_text(encoding="utf-8") == before
 
 
 def test_the_live_run_is_detected_from_disk_after_a_backend_restart(tmp_path, monkeypatch):

@@ -101,7 +101,7 @@ def test_validate_accepts_comma_string():
 
 def test_validate_clamps_numbers_and_says_so():
     clean, warnings = cfgmod.validate({"top_n": 500, "min_cap_meur": 1})
-    assert clean["top_n"] == 100
+    assert clean["top_n"] == cfgmod.LIMITS["top_n"][1]
     assert clean["min_cap_meur"] == 50
     codes = [(w["code"], w.get("field")) for w in warnings]
     assert ("clamped", "top_n") in codes
@@ -175,3 +175,14 @@ def test_saved_file_is_plain_json(tmp_path, monkeypatch):
     cfgmod.save_defaults({"lang": "it"})
     data = json.loads(cfgmod.defaults_path().read_text(encoding="utf-8"))
     assert data["lang"] == "it"
+
+
+def test_validate_is_idempotent_even_at_the_top_n_ceiling():
+    # Rapport de test réel du 19/10 : top_n=100 poussait shortlist à 100,
+    # au-delà de sa propre borne (80) -> 100 -> 80 -> 100 à chaque passage,
+    # et 100 requêtes de news. Les deux bornes doivent être compatibles.
+    clean, _ = cfgmod.validate({"top_n": 100})
+    again, warnings = cfgmod.validate(clean)
+    assert again == clean and warnings == []
+    assert clean["top_n"] <= clean["shortlist"] <= cfgmod.LIMITS["shortlist"][1]
+    assert cfgmod.LIMITS["top_n"][1] <= cfgmod.LIMITS["shortlist"][1]
