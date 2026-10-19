@@ -2812,20 +2812,65 @@ function settleDeathDebt(reason) {
   emit({ type: 'death_debt_settled', reason });
 }
 
+// Dette DIFFÉRÉE (de nuit, bot nu : cf. homes.debtAction → 'defer') : on ne se téléporte PAS au lieu de
+// mort — là où les monstres viennent de nous tuer — et on re-décide 60 s plus tard (aube levée, armure
+// trouvée, ou TTL de despawn → dette levée : la boucle est bornée par les 5 min de la dette).
+// ⚠️ GARDES DE NIVEAU MODULE, comme `_deathDebtBusy` (l.~267) : le timer les lit HORS de tout onSpawn.
+// Déclarées dans onSpawn, elles lèveraient un ReferenceError au premier tir et TUERAIENT le process
+// alors que les tests passent (piège #56, vécu avec `panicInFlight`).
+let _deathDebtRetryTimer = null;   // UNE seule relance en attente à la fois
+let _deathDebtDeferredAt = null;   // `at` de la dette dont le report est déjà tracé → UNE trace par dette
+const DEATH_DEBT_RETRY_MS = 60000;
+
+/** Diffère la récupération : trace UNE fois par dette, arme UNE relance (jamais deux en attente). */
+function deferDeathDebt(debt, reason) {
+  if (_deathDebtDeferredAt !== debt.at) {
+    _deathDebtDeferredAt = debt.at;
+    emit({ type: 'death_debt_deferred', reason });
+  }
+  if (_deathDebtRetryTimer) return;
+  _deathDebtRetryTimer = setTimeout(() => {
+    _deathDebtRetryTimer = null;
+    // Mort entre-temps : le prochain `spawn` relance de toute façon (onSpawn relit la dette persistée).
+    if (bot.isAlive === false) return;
+    // `.catch` OBLIGATOIRE : un rejet non géré tue le process (Node ≥ 15).
+    recoverDeathDebt().catch(() => { /* best-effort : la dette reste, le TTL la lèvera */ });
+  }, DEATH_DEBT_RETRY_MS);
+}
+
 /**
  * Récupération post-respawn : /home death → tuer tout ce qui traîne → ramasser → ne lever la dette
  * QUE s'il ne reste plus rien au sol. Sinon la dette reste et le prochain respawn y revient.
  * Prioritaire sur la reprise de chaîne ; les réflexes de survie restent armés pendant toute la manœuvre.
+ * DE NUIT et NU (< 2 pièces portées) on ne part pas : la dette est différée (deferDeathDebt). Sinon le
+ * bot est arraché à son abri et renvoyé là où il vient de mourir — 9 morts en 4 min (run de référence).
  */
 async function recoverDeathDebt() {
   if (_deathDebtBusy) return;
   const debt0 = loadDeathDebt();
-  const first = debtAction({ debt: debt0, now: Date.now() });
+  // Heure + armure relues à CHAQUE décision (la première, puis le re-contrôle après l'attente plus bas).
+  // `bot.time` peut manquer juste après un spawn/une reconnexion : `null` = inconnu → pas de garde-fou
+  // (même convention que mapperNightGuard / regroupNightGuard).
+  const decide = () => {
+    let worn = 0;
+    try { worn = _wornArmor().size; } catch (e) { /* inventaire pas encore livré → 0 = prudent */ }
+    return debtAction({
+      debt: debt0, now: Date.now(), worn,
+      night: (bot.time && bot.time.timeOfDay != null) ? isNight(bot) : null,
+    });
+  };
+  const first = decide();
   if (first.act === 'none') return;
   if (first.act === 'settle') { settleDeathDebt(first.reason); return; }
+  if (first.act === 'defer') { deferDeathDebt(debt0, first.reason); return; }
   _deathDebtBusy = true;
   try {
     await sleep(1500);
+    // Re-contrôle : au spawn d'un process fraîchement relancé (self-healing après death_loop) l'heure
+    // n'est parfois pas encore livrée → la 1re décision a pu passer faute de savoir. Après l'attente
+    // elle l'est : nuit + nu → on diffère au lieu de se téléporter. (`return` → le finally lève la garde.)
+    const again = decide();
+    if (again.act === 'defer') { deferDeathDebt(debt0, again.reason); return; }
     emit({ type: 'death_recover_home', x: debt0.x, y: debt0.y, z: debt0.z });
     homewarp.goHome(bot, HOME_DEATH);
     await awaitWarp({ maxMs: 8000 }); // atterrissage OU warmup teleport-delay
@@ -2847,8 +2892,15 @@ async function recoverDeathDebt() {
 
 const DEATH_DROP_RADIUS = 16;   // rayon de mesure des drops restants (cf. homewarp.dropsWithin)
 const DEATH_CLEAR_RADIUS = 12;  // hostiles à écarter avant de ramasser
+// Seuil d'engagement : un bot NU (< 2 pièces portées — le même « nu » que homes.DEBT_MIN_WORN et
+// caution.CAUTION_MIN_WORN) ET à ≤ 5 cœurs n'a pas les moyens de « tuer tout » : un coup de
+// squelette ou de creeper le finit.
+const DEATH_CLEAR_MIN_WORN = 2;
+const DEATH_CLEAR_MIN_HP = 10;
 
-/** Engage les hostiles proches du lieu de mort (borné) : « le but est de tuer tout, pas de fuir ». */
+/** Engage les hostiles proches du lieu de mort (borné) : « le but est de tuer tout, pas de fuir ».
+ *  … SAUF nu ET blessé (< 2 pièces, PV ≤ 10) : on cesse d'engager et les réflexes de fuite existants
+ *  prennent le relais. Le cas armuré est inchangé. Relu à chaque tour : les PV baissent en combattant. */
 async function clearHostilesAround() {
   const deadline = Date.now() + 20000;
   while (Date.now() < deadline) {
@@ -2858,6 +2910,13 @@ async function clearHostilesAround() {
       target = list && list.length ? list[0] : null;
     } catch (e) { target = null; }
     if (!target) return;
+    let worn = 0;
+    try { worn = _wornArmor().size; } catch (e) { /* inventaire pas encore livré → 0 = prudent */ }
+    if (worn < DEATH_CLEAR_MIN_WORN && bot.health != null && bot.health <= DEATH_CLEAR_MIN_HP) {
+      try { bot.pvp && bot.pvp.stop(); } catch (e) {}
+      emit({ type: 'death_clear_aborted', reason: 'naked_low_hp', health: bot.health, worn });
+      return;
+    }
     // Même séquence que le réflexe de défense : arme en main PUIS attaque (au poing = 1 dégât).
     try {
       const w = bestWeapon(bot);
