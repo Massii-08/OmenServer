@@ -282,3 +282,331 @@ test('constantes : les seuils sont exportés et cohérents entre eux', () => {
   // sortir de la zone dangereuse doit être garanti par une fuite réussie
   assert.ok(ESCAPE_REACHED_DIST > ESCAPE_SAFE_RADIUS / 2);
 });
+
+// ─── FUITE DÈS LE SPAWN + HISTORIQUE DE MORTS QUI SURVIT AU PROCESS (live 19/10, MapBot1) ────────
+// Journal serveur MESURÉ (cartographe non-op, sans lit, spawn du monde sous la canopée d'une forêt
+// de bouleaux — les zombies n'y brûlent pas en plein jour) :
+//   17:47:20 login (-3, 70, -1) · 17:47:25 / :32 / :37 / :54 « was slain by Zombie »
+//   → death_loop (5 morts / 10 min) → process.exit(2) → relance 25 s plus tard → MÊME spawn.
+// Deux défauts, une seule classe (« une mémoire d'échec par process ne sert à rien quand les sessions
+// redémarrent sans cesse ») :
+//   1. l'évasion anti-camping ne s'armait QU'APRÈS des morts → 2-3 vies perdues par génération ;
+//   2. `deathTimes` vivait dans la mémoire du process → la relance repartait de zéro et recommençait.
+const {
+  spawnDanger, SPAWN_DANGER_RADIUS, SPAWN_DANGER_MIN_WORN,
+  deathTimesPrune, deathTimesLoad, deathMemoWith, escapeArmed, deathLoopTripped,
+  DEATH_WINDOW_MS, DEATH_HISTORY_CAP, DEATH_LOOP_LIMIT,
+} = require('./unstuck');
+
+const _mob = (name, dx, dz, dy = 0, kind = 'Hostile mobs') => ({ name, kind, position: { x: dx, y: 70 + dy, z: dz } });
+const _here = { x: 0, y: 70, z: 0 };
+
+test('spawnDanger : nu + zombie à 8 blocs → FUIR (le cas MapBot1 : 0 mort encore, mais condamné)', () => {
+  const d = spawnDanger({ worn: 0, pos: _here, entities: [_mob('zombie', 8, 0)] });
+  assert.strictEqual(d.flee, true);
+  assert.strictEqual(d.reason, 'naked_hostile_near');
+  assert.strictEqual(d.mob, 'zombie');
+  assert.strictEqual(d.dist, 8);
+  assert.strictEqual(d.worn, 0);
+});
+
+test('spawnDanger : tous les hostiles de mêlée de la liste de la mission déclenchent la fuite', () => {
+  for (const n of ['zombie', 'husk', 'drowned', 'skeleton', 'stray', 'spider', 'cave_spider', 'creeper']) {
+    const d = spawnDanger({ worn: 0, pos: _here, entities: [_mob(n, 6, 3)] });
+    assert.strictEqual(d.flee, true, n);
+    assert.strictEqual(d.mob, n);
+  }
+});
+
+test('spawnDanger : ARMURÉ (≥2 pièces) → pas de fuite, même avec un zombie collé', () => {
+  for (const worn of [2, 3, 4]) {
+    const d = spawnDanger({ worn, pos: _here, entities: [_mob('zombie', 1, 0)] });
+    assert.strictEqual(d.flee, false, `worn=${worn}`);
+    assert.strictEqual(d.reason, 'armored');
+  }
+});
+
+test('spawnDanger : hostile à 20 blocs → pas de fuite (trop loin pour justifier de courir)', () => {
+  const d = spawnDanger({ worn: 0, pos: _here, entities: [_mob('zombie', 20, 0)] });
+  assert.strictEqual(d.flee, false);
+  assert.strictEqual(d.reason, 'too_far');
+  assert.strictEqual(d.dist, 20);          // on garde la mesure : elle sert à tracer pourquoi on est resté
+  assert.strictEqual(d.mob, 'zombie');
+});
+
+test('spawnDanger : AUCUN hostile → pas de fuite (liste vide, absente, ou seulement des passifs)', () => {
+  assert.strictEqual(spawnDanger({ worn: 0, pos: _here, entities: [] }).flee, false);
+  assert.strictEqual(spawnDanger({ worn: 0, pos: _here }).flee, false);
+  assert.strictEqual(spawnDanger({ worn: 0, pos: _here, entities: [_mob('cow', 2, 0, 0, 'Passive mobs')] }).flee, false);
+  assert.strictEqual(spawnDanger({ worn: 0, pos: _here, entities: [] }).reason, 'no_hostile');
+});
+
+test('spawnDanger : la frontière des 12 blocs est INCLUSIVE', () => {
+  assert.strictEqual(SPAWN_DANGER_RADIUS, 12);
+  assert.strictEqual(spawnDanger({ worn: 0, pos: _here, entities: [_mob('zombie', 12, 0)] }).flee, true);
+  assert.strictEqual(spawnDanger({ worn: 0, pos: _here, entities: [_mob('zombie', 12.01, 0)] }).flee, false);
+});
+
+test('spawnDanger : 1 pièce = ENCORE nu, 2 pièces = armuré (même « nu » que caution/homes)', () => {
+  assert.strictEqual(SPAWN_DANGER_MIN_WORN, 2);
+  assert.strictEqual(spawnDanger({ worn: 1, pos: _here, entities: [_mob('zombie', 5, 0)] }).flee, true);
+  assert.strictEqual(spawnDanger({ worn: 2, pos: _here, entities: [_mob('zombie', 5, 0)] }).flee, false);
+});
+
+test('« nu » : UNE seule définition du mot pour trois gardes (caution, homes, spawn)', () => {
+  assert.strictEqual(SPAWN_DANGER_MIN_WORN, require('./caution').CAUTION_MIN_WORN);
+  assert.strictEqual(SPAWN_DANGER_MIN_WORN, require('./homes').DEBT_MIN_WORN);
+});
+
+test('spawnDanger : la distance est 3D (un zombie 11 blocs plus bas, dans une grotte, n est pas « à 5 blocs »)', () => {
+  // 5 à plat mais 11 de dénivelé → 12,08 : hors rayon. À 10 de dénivelé → 11,18 : dedans.
+  assert.strictEqual(spawnDanger({ worn: 0, pos: _here, entities: [_mob('zombie', 5, 0, -11)] }).flee, false);
+  assert.strictEqual(spawnDanger({ worn: 0, pos: _here, entities: [_mob('zombie', 5, 0, -10)] }).flee, true);
+});
+
+test('spawnDanger : plusieurs hostiles → le PLUS PROCHE est retenu et nommé', () => {
+  const d = spawnDanger({
+    worn: 0, pos: _here,
+    entities: [_mob('skeleton', 11, 0), _mob('zombie', 4, 3), _mob('creeper', 9, 0)],
+  });
+  assert.strictEqual(d.flee, true);
+  assert.strictEqual(d.mob, 'zombie');
+  assert.strictEqual(d.dist, 5);
+});
+
+test('spawnDanger : par DÉFAUT seuls les « Hostile mobs » comptent (vache, joueur, item : non)', () => {
+  const d = spawnDanger({
+    worn: 0, pos: _here,
+    entities: [
+      _mob('cow', 2, 0, 0, 'Passive mobs'),
+      { name: 'Massii_08', type: 'player', position: { x: 1, y: 70, z: 0 } },
+      { name: 'item', kind: 'Drops', position: { x: 1, y: 70, z: 1 } },
+    ],
+  });
+  assert.strictEqual(d.flee, false);
+});
+
+test('spawnDanger : prédicat injectable (l appelant exclut l enderman neutre, ajoute les nommés)', () => {
+  const ents = [_mob('enderman', 3, 0), _mob('zombie', 10, 0)];
+  // exclusion de l'enderman → c'est le zombie (10) qui est retenu
+  const isHostile = (e) => e.kind === 'Hostile mobs' && e.name !== 'enderman';
+  const d = spawnDanger({ worn: 0, pos: _here, entities: ents, isHostile });
+  assert.strictEqual(d.mob, 'zombie');
+  // un mob SANS kind mais listé par nom (entité pas encore résolue) passe si le prédicat le dit
+  const named = spawnDanger({
+    worn: 0, pos: _here, entities: [{ name: 'zombie', position: { x: 3, y: 70, z: 0 } }],
+    isHostile: (e) => e.name === 'zombie',
+  });
+  assert.strictEqual(named.flee, true);
+});
+
+test('spawnDanger : worn INCONNU (inventaire pas encore livré) = nu — « 0 = prudent », comme les autres gardes', () => {
+  for (const worn of [undefined, null, NaN, -3, 'x']) {
+    assert.strictEqual(spawnDanger({ worn, pos: _here, entities: [_mob('zombie', 5, 0)] }).flee, true, String(worn));
+  }
+});
+
+test('spawnDanger : entrées absurdes → JAMAIS de throw, jamais de fuite', () => {
+  assert.strictEqual(spawnDanger().flee, false);
+  assert.strictEqual(spawnDanger({}).flee, false);
+  assert.strictEqual(spawnDanger({ worn: 0 }).flee, false);                          // pas de position
+  assert.strictEqual(spawnDanger({ worn: 0 }).reason, 'no_position');
+  assert.strictEqual(spawnDanger({ worn: 0, pos: { x: NaN, y: 70, z: 0 }, entities: [_mob('zombie', 1, 0)] }).flee, false);
+  const junk = [null, undefined, 42, {}, { position: null }, { kind: 'Hostile mobs' },
+    { kind: 'Hostile mobs', position: { x: NaN, y: 0, z: 0 } }];
+  assert.strictEqual(spawnDanger({ worn: 0, pos: _here, entities: junk }).flee, false);
+  // un prédicat qui explose sur une entité ne doit pas tuer la décision (ni masquer les autres)
+  const boom = spawnDanger({
+    worn: 0, pos: _here, entities: [_mob('weird', 1, 0), _mob('zombie', 7, 0)],
+    isHostile: (e) => { if (e.name === 'weird') throw new Error('boom'); return true; },
+  });
+  assert.strictEqual(boom.flee, true);
+  assert.strictEqual(boom.mob, 'zombie');
+});
+
+test('spawnDanger : rayon et seuil injectables', () => {
+  const ents = [_mob('zombie', 20, 0)];
+  assert.strictEqual(spawnDanger({ worn: 0, pos: _here, entities: ents, radius: 24 }).flee, true);
+  assert.strictEqual(spawnDanger({ worn: 3, pos: _here, entities: [_mob('zombie', 5, 0)], minWorn: 4 }).flee, true);
+});
+
+// ── Historique de morts : élagage, chargement, rétro-compat ──────────────────────────────────────
+const T0 = 1_700_000_000_000;
+const MIN = 60 * 1000;
+
+test('deathTimesPrune : ne garde que les morts de moins de 10 min (frontière EXCLUSIVE, comme l ancien filtre)', () => {
+  assert.strictEqual(DEATH_WINDOW_MS, 10 * MIN);
+  const now = T0 + 20 * MIN;
+  const kept = deathTimesPrune([now - 11 * MIN, now - 10 * MIN, now - 10 * MIN + 1, now - MIN, now], now);
+  assert.deepStrictEqual(kept, [now - 10 * MIN + 1, now - MIN, now]);
+});
+
+test('deathTimesPrune : une mort datée du FUTUR est jetée (horloge reculée / mémo hérité) — elle compterait « récente » à vie', () => {
+  const now = T0;
+  assert.deepStrictEqual(deathTimesPrune([now + 5 * MIN, now - MIN], now), [now - MIN]);
+});
+
+test('deathTimesPrune : triées du plus ancien au plus récent, plafonnées aux 10 plus récentes', () => {
+  assert.strictEqual(DEATH_HISTORY_CAP, 10);
+  const now = T0;
+  const shuffled = [3, 1, 5, 2, 4, 9, 8, 7, 6, 12, 11, 10, 13].map((k) => now - k * 1000);
+  const kept = deathTimesPrune(shuffled, now);
+  assert.strictEqual(kept.length, 10);
+  assert.deepStrictEqual(kept, [...kept].sort((a, b) => a - b));
+  assert.strictEqual(kept[kept.length - 1], now - 1000);          // la plus récente est gardée
+  assert.strictEqual(kept[0], now - 10 * 1000);                    // les 3 plus anciennes (11,12,13 s) sont tombées
+});
+
+test('deathTimesPrune : entrée absurde → [] (jamais de throw)', () => {
+  const now = T0;
+  for (const bad of [undefined, null, 'x', 7, {}, true]) assert.deepStrictEqual(deathTimesPrune(bad, now), []);
+  assert.deepStrictEqual(deathTimesPrune([NaN, Infinity, 'a', null, undefined, {}, now - 1000], now), [now - 1000]);
+  assert.deepStrictEqual(deathTimesPrune([now - 1000], NaN), []);
+});
+
+test('deathTimesPrune : ne mute pas son entrée', () => {
+  const now = T0;
+  const input = [now - 2000, now - 30 * MIN, now - 1000];
+  const copy = [...input];
+  deathTimesPrune(input, now);
+  assert.deepStrictEqual(input, copy);
+});
+
+test('deathTimesLoad : un mémo d ANCIEN format (sans `deaths`) charge [] — rétro-compat', () => {
+  const now = T0;
+  assert.deepStrictEqual(deathTimesLoad({ base: { x: 1, y: 70, z: 2 }, personal: true }, now), []);
+  assert.deepStrictEqual(deathTimesLoad(null, now), []);
+  assert.deepStrictEqual(deathTimesLoad(undefined, now), []);
+  assert.deepStrictEqual(deathTimesLoad({ deaths: 'pas un tableau' }, now), []);
+});
+
+test('deathTimesLoad : élague AU CHARGEMENT — les morts d il y a une heure ne ressuscitent pas', () => {
+  const now = T0;
+  assert.deepStrictEqual(
+    deathTimesLoad({ deaths: [now - 60 * MIN, now - 9 * MIN, now - 2 * MIN] }, now),
+    [now - 9 * MIN, now - 2 * MIN],
+  );
+});
+
+test('deathMemoWith : remplace `deaths` en PRÉSERVANT les autres champs du mémo (base, dette, zone) — sans muter l entrée', () => {
+  const memo = {
+    base: { x: 10, y: 70, z: -4 }, worldSpawn: { x: 0, z: 0 }, personal: true,
+    deathDebt: { x: 1, y: 2, z: 3, at: T0 }, zone: { anchoredAt: T0 - 5000, waterFails: 2 },
+    deaths: [T0 - 9 * MIN],
+  };
+  const frozen = JSON.stringify(memo);
+  const next = deathMemoWith(memo, [T0 - 5000, T0 - 1000], T0);
+  assert.deepStrictEqual(next.deaths, [T0 - 5000, T0 - 1000]);
+  for (const k of ['base', 'worldSpawn', 'personal', 'deathDebt', 'zone']) assert.deepStrictEqual(next[k], memo[k], k);
+  assert.strictEqual(JSON.stringify(memo), frozen, 'l entrée n est pas mutée');
+  assert.notStrictEqual(next, memo);
+  // mémo absent (premier lancement) → un mémo qui ne contient que l'historique
+  assert.deepStrictEqual(deathMemoWith(null, [T0 - 1000], T0), { deaths: [T0 - 1000] });
+});
+
+test('deathMemoWith : élague à l écriture aussi (le fichier ne grossit pas)', () => {
+  const next = deathMemoWith({}, [T0 - 30 * MIN, T0 - MIN], T0);
+  assert.deepStrictEqual(next.deaths, [T0 - MIN]);
+});
+
+// ── Décisions dérivées de l'historique ───────────────────────────────────────────────────────────
+test('escapeArmed : 2 morts en moins de 60 s → armé (rafale — comportement d avant, inchangé)', () => {
+  const now = T0;
+  assert.strictEqual(escapeArmed([now - 40 * 1000, now], now), true);
+  assert.strictEqual(escapeArmed([now - 61 * 1000, now], now), false);
+});
+
+test('escapeArmed : 3 morts en 10 min même espacées → armé (camping LENT, « fix fable1 ter »)', () => {
+  const now = T0;
+  assert.strictEqual(escapeArmed([now - 8 * MIN, now - 4 * MIN, now], now), true);
+  assert.strictEqual(escapeArmed([now - 8 * MIN, now], now), false);
+});
+
+test('escapeArmed : les morts de plus de 10 min ne comptent plus', () => {
+  const now = T0;
+  assert.strictEqual(escapeArmed([now - 30 * MIN, now - 20 * MIN, now - 15 * MIN], now), false);
+});
+
+test('escapeArmed : historique vide ou absurde → pas armé (jamais de fuite sur du vent)', () => {
+  assert.strictEqual(escapeArmed([], T0), false);
+  assert.strictEqual(escapeArmed(null, T0), false);
+  assert.strictEqual(escapeArmed(undefined, T0), false);
+  assert.strictEqual(escapeArmed('x', T0), false);
+});
+
+test('deathLoopTripped : 5 morts de CE process en 10 min → sortie (comportement d avant)', () => {
+  assert.strictEqual(DEATH_LOOP_LIMIT, 5);
+  const boot = T0;
+  const now = T0 + 40 * 1000;
+  const five = [5, 12, 17, 34, 40].map((s) => boot + s * 1000);
+  assert.strictEqual(deathLoopTripped(five, { bootAt: boot, now }), true);
+  assert.strictEqual(deathLoopTripped(five.slice(1), { bootAt: boot, now }), false);   // 4 : pas encore
+});
+
+test('deathLoopTripped : les morts HÉRITÉES d un process précédent ne comptent PAS', () => {
+  // Sinon : history persistée (5 morts) + 1 → sortie à la 1ʳᵉ mort de CHAQUE relance, vies < 15 s,
+  // et le backend (3 vies < 15 s d'affilée = crash_on_spawn) ABANDONNE le bot. Le garde-fou doit
+  // continuer à mesurer « ce process est-il pris dans une boucle ? », pas « le monde est-il mortel ? ».
+  const bootB = T0;
+  const inherited = [-60, -50, -45, -30, -25].map((s) => bootB + s * 1000);
+  const now = bootB + 6 * 1000;
+  const mine = [...inherited, now];
+  assert.strictEqual(deathLoopTripped(mine, { bootAt: bootB, now }), false);
+  // …mais 5 morts PROPRES, elles, sortent bien, quel que soit l'héritage
+  const own5 = [1, 2, 3, 4, 5].map((s) => bootB + s * 1000);
+  assert.strictEqual(deathLoopTripped([...inherited, ...own5], { bootAt: bootB, now: bootB + 5000 }), true);
+});
+
+test('deathLoopTripped : sans bootAt tout compte (comportement historique du garde-fou)', () => {
+  const now = T0;
+  const five = [5, 4, 3, 2, 1].map((s) => now - s * 1000);
+  assert.strictEqual(deathLoopTripped(five, { now }), true);
+});
+
+test('deathLoopTripped : 5 morts étalées sur plus de 10 min → pas de sortie (fenêtre glissante)', () => {
+  const boot = T0;
+  const now = T0 + 30 * MIN;
+  const spread = [0, 6, 12, 18, 24].map((m) => boot + m * MIN + 1000);
+  assert.strictEqual(deathLoopTripped(spread, { bootAt: boot, now }), false);
+});
+
+test('deathLoopTripped : entrée absurde → false', () => {
+  assert.strictEqual(deathLoopTripped(null, { now: T0 }), false);
+  assert.strictEqual(deathLoopTripped(undefined, { now: T0 }), false);
+  assert.strictEqual(deathLoopTripped([], { now: T0 }), false);
+  assert.strictEqual(deathLoopTripped([T0], {}), false);
+});
+
+// ── LE scénario du bug, de bout en bout (sans réseau ni fichier) ─────────────────────────────────
+test('SCÉNARIO MapBot1 : la rafale du process A survit au death_loop et arme la fuite du process B DÈS son démarrage', () => {
+  // Process A démarre à T0 ; 5 morts en 36 s (journal serveur du 19/10) → death_loop → exit(2).
+  const bootA = T0;
+  let timesA = [];
+  let onDisk = { base: { x: 10, y: 70, z: -4 }, deathDebt: { x: 1, y: 2, z: 3, at: T0 }, zone: { anchoredAt: T0 - 1000 } };
+  let tripped = false;
+  for (const s of [5, 12, 17, 34, 36]) {
+    const now = bootA + s * 1000;
+    timesA = deathTimesPrune(timesA.concat([now]), now);
+    onDisk = JSON.parse(JSON.stringify(deathMemoWith(onDisk, timesA, now)));    // ce qui part VRAIMENT sur disque
+    tripped = deathLoopTripped(timesA, { bootAt: bootA, now });
+  }
+  assert.strictEqual(tripped, true, 'la 5ᵉ mort déclenche la sortie');
+  assert.strictEqual(onDisk.deaths.length, 5, 'et l historique COMPLET (5ᵉ mort comprise) est sur disque avant la sortie');
+
+  // Process B : relancé 25 s plus tard. Mémoire VIDE — seul le fichier a survécu.
+  const bootB = bootA + 36 * 1000 + 25 * 1000;
+  const inherited = deathTimesLoad(onDisk, bootB);
+  assert.strictEqual(inherited.length, 5);
+  assert.strictEqual(escapeArmed(inherited, bootB), true, 'B sait déjà que ce spawn est campé : il fuit AVANT de mourir');
+
+  // La 1ʳᵉ mort de B ne doit PAS le renvoyer au death_loop (sinon vies < 15 s → give_up backend)
+  const nowB = bootB + 6 * 1000;
+  const timesB = deathTimesPrune(inherited.concat([nowB]), nowB);
+  assert.strictEqual(deathLoopTripped(timesB, { bootAt: bootB, now: nowB }), false);
+  assert.strictEqual(escapeArmed(timesB, nowB), true);
+
+  // Et les autres champs du mémo ont traversé tout le cycle intacts
+  assert.deepStrictEqual(onDisk.base, { x: 10, y: 70, z: -4 });
+  assert.deepStrictEqual(onDisk.deathDebt, { x: 1, y: 2, z: 3, at: T0 });
+  assert.deepStrictEqual(onDisk.zone, { anchoredAt: T0 - 1000 });
+});
