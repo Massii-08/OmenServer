@@ -243,6 +243,8 @@ def test_fallback_universe_when_screener_fails_everywhere(tmp_path):
     # (une seule ligne : pas de médiane, diviseur 1)
     assert eni["rel_volume_time"] is None
     assert eni["rel_volume_adj"] == 3.0
+    # Yahoo ne dit pas l'état de séance : rien n'est affirmé, rien n'est « périmé »
+    assert (eni["session_state"], eni["session_date"], eni["session_stale"]) == (None, None, False)
     assert eni["change_pct"] == round((106 - 104) / 104 * 100, 2)
 
 
@@ -277,6 +279,8 @@ def test_row_from_chart_handles_pence_and_garbage():
                                   "volume": [1e7, 1e7, 1e7]}]}}]}}
     row = engine.row_from_chart("SHEL.L", raw)
     assert "rel_volume_time" in row and row["rel_volume_time"] is None
+    for key in ("session_state", "session_date", "session_tz"):
+        assert key in row and row[key] is None
     assert row["currency"] == "GBX"
     assert row["avg_value_meur"] == round(1e7 * 2450 * 0.0117 / 1e6, 2)
     assert row["tv_symbol"] == "LSE:SHEL"
@@ -359,6 +363,59 @@ def test_hour_bias_regression_on_real_snapshot(tmp_path):
     assert ("Volume relatif médian à l'heure : switzerland 1,06 · italy 0,91 · germany 0,86"
             " · france 0,99 · america 1,19") in logs
     assert any(line.startswith("Présélection : 20 titres — ") for line in logs)
+
+
+def test_rows_say_which_session_their_figures_come_from(tmp_path):
+    """Lundi 13:30 UTC, la variation de -11,91 % de CoreWeave affichée à côté de
+    « CoreWeave jumps as Goldman upgrades » est celle de VENDREDI : la ligne doit
+    le dire (pré-ouverture, chiffres du 16/10, périmée). Une ligne européenne en
+    séance n'est pas périmée."""
+    news_at = (SNAPSHOT_NOW - timedelta(hours=2)).isoformat()
+    loaders = FakeLoaders(events=[
+        {"ts": news_at, "symbol": "CRWV", "title": "CoreWeave jumps as Goldman upgrades",
+         "link": "https://n/crwv", "sentiment": "pos", "src": "pressefi"},
+        {"ts": news_at, "symbol": "RHM.DE", "title": "Rheinmetall wins German army ammunition order",
+         "link": "https://n/rhm", "sentiment": "pos", "src": "pressefi"},
+    ])
+    deps = engine.Deps(screener=PayloadScreener(_snapshot_payloads()), coach_loaders=loaders,
+                       news_fetch=None, now=lambda: SNAPSHOT_NOW,
+                       sleep=lambda s: None, monotonic=lambda: 0.0)
+    cfg = cfgmod.validate({"markets": SNAPSHOT_MARKETS, "shortlist": 20, "top_n": 10})[0]
+    results, _ = _run(tmp_path, cfg=cfg, deps=deps)
+
+    rows = {r["symbol"]: r for r in results["rows"]}
+    crwv = rows["CRWV"]
+    assert crwv["change_pct"] == pytest.approx(-11.91, abs=0.01)
+    assert (crwv["session_state"], crwv["session_date"], crwv["session_stale"]) == \
+        ("pre_open", "2026-10-16", True)
+    rhm = rows["RHM.DE"]
+    assert (rhm["session_state"], rhm["session_date"], rhm["session_stale"]) == \
+        ("open", "2026-10-19", False)
+    for row in results["rows"]:
+        expected = (("pre_open", "2026-10-16", True) if row["market"] == "america"
+                    else ("open", "2026-10-19", False))
+        assert (row["session_state"], row["session_date"], row["session_stale"]) == expected, \
+            row["symbol"]
+    on_disk = json.loads((tmp_path / "results.json").read_text(encoding="utf-8"))
+    assert {r["symbol"]: r["session_stale"] for r in on_disk["rows"]} == \
+        {s: r["session_stale"] for s, r in rows.items()}
+
+
+def test_stale_is_judged_on_the_local_day_of_the_place(tmp_path):
+    """Lundi 23:30 UTC = mardi 01:30 à Rome : les chiffres de la séance de lundi y
+    sont ceux d'HIER, alors qu'en UTC on serait encore lundi."""
+    late = datetime(2026, 10, 19, 23, 30, tzinfo=timezone.utc)
+    payload = _payload(("MIL:ENI", {
+        "name": "ENI", "close": 15.0, "change": 1.0, "average_volume_10d_calc": 2e6,
+        "earnings_release_next_trading_date_fq": 1792800000,      # 24/10 : catalyseur
+        "current_session": "out_of_session", "time": 1792393200, "timezone": "Europe/Rome"}))
+    deps = engine.Deps(screener=PayloadScreener({"italy": payload}), coach_loaders=FakeLoaders(),
+                       news_fetch=None, now=lambda: late,
+                       sleep=lambda s: None, monotonic=lambda: 0.0)
+    results, _ = _run(tmp_path, cfg=_cfg(markets=["italy"]), deps=deps)
+    (eni,) = results["rows"]
+    assert (eni["session_state"], eni["session_date"], eni["session_stale"]) == \
+        ("closed", "2026-10-19", True)
 
 
 def test_markets_status_carries_volume_median_and_shortlisted(tmp_path):

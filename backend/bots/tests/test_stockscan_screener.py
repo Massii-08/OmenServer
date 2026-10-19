@@ -74,6 +74,8 @@ def test_parse_maps_fields():
     assert eni["change_pct"] == 2.31
     assert eni["rel_volume"] == 2.4
     assert eni["rel_volume_time"] == 2.2
+    assert (eni["session_state"], eni["session_date"], eni["session_tz"]) == \
+        ("open", "2026-10-19", "Europe/Rome")
     assert eni["earnings_next"] == "2026-10-24"
     # 1,3e7 titres × 15,48 € ≈ 201,24 M€ échangés par jour
     assert eni["avg_value_meur"] == 201.24
@@ -277,6 +279,32 @@ def test_real_snapshot_parses_time_volume_without_dead_column(market_id):
     assert info["null_columns"] == []
     assert all(isinstance(r["rel_volume_time"], float) for r in rows)
     assert all(isinstance(r["rel_volume"], float) for r in rows)    # le 10 j reste là
+
+
+@pytest.mark.parametrize("market_id,expected", [
+    ("italy", ("open", "2026-10-19", "Europe/Rome")),
+    ("america", ("pre_open", "2026-10-16", "America/New_York")),    # chiffres de VENDREDI
+])
+def test_real_snapshot_session_fields(market_id, expected):
+    rows, _ = sc.parse_response(_load(SNAPSHOT)["markets"][market_id], mk.by_id(market_id))
+    assert {(r["session_state"], r["session_date"], r["session_tz"]) for r in rows} == {expected}
+
+
+def test_session_date_follows_the_row_timezone():
+    """Ligne SYNTHÉTIQUE : barre ouverte le dimanche 18/10 à 23:00 UTC, fuseau de
+    Sydney -> séance du LUNDI. Les places réelles du relevé ouvrent toutes de jour
+    en UTC et ne distinguent pas jour local et jour UTC."""
+    sydney_open = 1792364400                                  # 2026-10-18T23:00:00Z
+    row = _parse_one("NASDAQ:XYZ", "america", {
+        "name": "XYZ", "close": 10.0, "current_session": "market", "time": sydney_open,
+        "timezone": "Australia/Sydney"})
+    assert (row["session_state"], row["session_date"], row["session_tz"]) == \
+        ("open", "2026-10-19", "Australia/Sydney")
+
+
+def test_session_fields_are_none_without_the_columns():
+    row = _parse_one("MIL:ENI", "italy", {"name": "ENI", "close": 15.0})
+    assert (row["session_state"], row["session_date"], row["session_tz"]) == (None, None, None)
 
 
 def test_synthetic_fixture_has_no_dead_column():

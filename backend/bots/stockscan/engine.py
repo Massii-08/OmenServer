@@ -22,6 +22,7 @@ from backend.bots.stockscan import markets as mk
 from backend.bots.stockscan import news as nw
 from backend.bots.stockscan import scoring as sg
 from backend.bots.stockscan import screener as sc
+from backend.bots.stockscan import session as ses
 
 RESULTS_VERSION = 1
 STOP_FILE = "stop.flag"
@@ -166,6 +167,8 @@ def row_from_chart(symbol: str, raw: Any) -> Optional[Dict[str, Any]]:
         "market_cap_meur": None, "sector": None, "industry": None, "country": None,
         "perf_w": perf_w, "perf_1m": None, "high_52w": None, "low_52w": None,
         "earnings_next": None, "dividend_yield": None, "pe": None,
+        # Yahoo ne dit pas l'état de séance : rien n'est affirmé (ni « périmé »)
+        "session_state": None, "session_date": None, "session_tz": None,
     }
 
 
@@ -221,7 +224,8 @@ def _coach_summary(slot: Dict[str, Any]) -> Dict[str, Any]:
 
 _ROW_KEYS = ("tv_symbol", "symbol", "ticker", "name", "market", "exchange", "currency",
              "price", "change_pct", "gap_pct", "rel_volume", "rel_volume_time", "rel_volume_adj",
-             "avg_value_meur", "market_cap_meur", "sector", "perf_w", "earnings_next")
+             "avg_value_meur", "market_cap_meur", "sector", "perf_w", "earnings_next",
+             "session_state", "session_date")
 
 
 def _fr_ratio(value: Optional[float]) -> str:
@@ -381,6 +385,10 @@ def run_scan(cfg: Dict[str, Any], username: str, out_dir: Any, deps: Deps,
         out.update({"score": scored["score"], "components": scored["components"],
                     "reasons": scored["reasons"], "flags": flags, "news": scored["news"],
                     "coach": _coach_summary(slot),
+                    # variation, gap et volume d'une séance ANTÉRIEURE au jour local
+                    # de la place (pré-ouverture, nuit, week-end) : à dire à l'écran
+                    "session_stale": ses.is_stale(row.get("session_state"), row.get("session_date"),
+                                                  row.get("session_tz"), now),
                     "links": {"chart": mk.chart_url(row.get("tv_symbol"))}})
         candidates.append(out)
     # départage : le volume que le score utilise (comparé à son marché), pas le

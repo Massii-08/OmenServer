@@ -29,6 +29,7 @@ from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from backend.bots.stockscan import markets as mk
+from backend.bots.stockscan import session as ses
 
 SCAN_URL = "https://scanner.tradingview.com/{market}/scan"
 
@@ -221,6 +222,7 @@ def parse_response(payload: Any, market: mk.Market,
         avg_value_local = (avg_volume * price) if avg_volume is not None else None
         # devise COMPTABLE : celle de market_cap_basic ET de Value.Traded
         cap_currency = _text(d.get("fundamental_currency_code")) or currency
+        tz_name = _text(d.get("timezone")) or None
 
         rows.append({
             "tv_symbol": tv_symbol,
@@ -259,6 +261,11 @@ def parse_response(payload: Any, market: mk.Market,
             "earnings_next": _date_of(d.get("earnings_release_next_trading_date_fq")),
             "dividend_yield": _num(d.get("dividends_yield_current")),
             "pe": _num(d.get("price_earnings_ttm")),
+            # de QUAND datent variation, gap et volume : la séance de la barre
+            # journalière, au jour LOCAL de la place (cf. ``session``)
+            "session_state": ses.state_of(d.get("current_session")),
+            "session_date": ses.bar_date(d.get("time"), tz_name),
+            "session_tz": tz_name,
         })
 
     info["returned"] = len(rows)

@@ -72,13 +72,13 @@ def test_candidate_rows(tmp_path):
     assert ws.cell(row=r, column=4).value == "Italie (Borsa Italiana)"
     assert ws.cell(row=r, column=7).value == 2.31
     assert ws.cell(row=r, column=7).number_format == xo.FMT_PCT
-    assert ws.cell(row=r, column=9).value == 72
-    assert ws.cell(row=r, column=10).value == "résultats proches, nouveau"
-    assert ws.cell(row=r, column=11).value == ("volume ×2,4 vs son marché · 3 news en 48 h"
+    assert ws.cell(row=r, column=10).value == 72
+    assert ws.cell(row=r, column=11).value == "résultats proches, nouveau"
+    assert ws.cell(row=r, column=12).value == ("volume ×2,4 vs son marché · 3 news en 48 h"
                                                " · résultats le 24/10/2026")
-    assert ws.cell(row=r, column=12).hyperlink.target == "https://www.tradingview.com/news/1"
-    assert ws.cell(row=r, column=14).value.date() == date(2026, 10, 24)
-    assert ws.cell(row=r, column=17).hyperlink.target.endswith("MIL%3AENI")
+    assert ws.cell(row=r, column=13).hyperlink.target == "https://www.tradingview.com/news/1"
+    assert ws.cell(row=r, column=15).value.date() == date(2026, 10, 24)
+    assert ws.cell(row=r, column=18).hyperlink.target.endswith("MIL%3AENI")
     assert ws.freeze_panes == "A%d" % xo.DATA_START_ROW
     assert ws.auto_filter.ref.startswith("A%d:" % (xo.DATA_START_ROW - 1))
 
@@ -88,10 +88,10 @@ def test_formula_injection_and_bad_links_are_neutralised(tmp_path):
     ws = wb["Candidats"]
     r = xo.DATA_START_ROW + 1
     assert ws.cell(row=r, column=3).value.startswith("'=")
-    assert ws.cell(row=r, column=12).value.startswith("'+")
-    assert ws.cell(row=r, column=12).hyperlink is None    # javascript: refusé
-    assert ws.cell(row=r, column=17).value is None         # pas de lien, pas de texte
-    assert ws.cell(row=r, column=8).value is None          # valeur absente = cellule vide
+    assert ws.cell(row=r, column=13).value.startswith("'+")
+    assert ws.cell(row=r, column=13).hyperlink is None    # javascript: refusé
+    assert ws.cell(row=r, column=18).value is None         # pas de lien, pas de texte
+    assert ws.cell(row=r, column=9).value is None          # valeur absente = cellule vide
 
 
 def test_info_sheet_lists_warnings_and_markets(tmp_path):
@@ -130,12 +130,73 @@ def test_rel_volume_column_prefers_the_volume_at_time(tmp_path):
     results = _results()
     results["rows"][0]["rel_volume_time"] = 1.15          # ENI : 2,4 sur 10 j, 1,15 à l'heure
     ws = load_workbook(str(xo.write_workbook(results, tmp_path)))["Candidats"]
-    assert ws.cell(row=xo.DATA_START_ROW, column=8).value == 1.15
-    assert ws.cell(row=xo.DATA_START_ROW, column=8).number_format == xo.FMT_RATIO
+    assert ws.cell(row=xo.DATA_START_ROW, column=9).value == 1.15
+    assert ws.cell(row=xo.DATA_START_ROW, column=9).number_format == xo.FMT_RATIO
     # volume à l'heure inconnu (univers de repli, colonne morte) : le 10 j, comme avant
     results["rows"][0]["rel_volume_time"] = None
     ws = load_workbook(str(xo.write_workbook(results, tmp_path)))["Candidats"]
-    assert ws.cell(row=xo.DATA_START_ROW, column=8).value == 2.4
+    assert ws.cell(row=xo.DATA_START_ROW, column=9).value == 2.4
+
+
+# --- colonne « Séance » : de quand datent variation, gap et volume ---------- #
+
+@pytest.mark.parametrize("lang,day_change,session", [
+    ("fr", "Var. jour", "Séance"), ("en", "Day chg", "Session"), ("it", "Var. giorno", "Seduta"),
+])
+def test_session_column_comes_right_after_the_day_change(tmp_path, lang, day_change, session):
+    path, wb = _open(tmp_path, lang)
+    ws = wb.worksheets[0]
+    header = xo.DATA_START_ROW - 1
+    assert ws.cell(row=header, column=7).value == day_change
+    assert ws.cell(row=header, column=8).value == session
+    assert len(xo.LABELS[lang]["headers"]) == len(xo.WIDTHS)
+
+
+def test_chart_link_stays_in_the_last_column(tmp_path):
+    _, wb = _open(tmp_path)
+    ws = wb["Candidats"]
+    last = len(xo.LABELS["fr"]["headers"])
+    assert ws.max_column == last
+    assert ws.cell(row=xo.DATA_START_ROW - 1, column=last).value == "Graphique"
+    assert ws.cell(row=xo.DATA_START_ROW, column=last).hyperlink.target.endswith("MIL%3AENI")
+
+
+def test_session_cell_text_and_warning_font(tmp_path):
+    results = _results()
+    results["rows"][0].update(session_state="open", session_date="2026-10-19", session_stale=False)
+    results["rows"][1].update(session_state="pre_open", session_date="2026-10-16",
+                              session_stale=True)
+    ws = load_workbook(str(xo.write_workbook(results, tmp_path)))["Candidats"]
+    eni, stl = (ws.cell(row=xo.DATA_START_ROW + i, column=8) for i in (0, 1))
+    assert eni.value == "ouverte (19/10/2026)"
+    assert not eni.font.italic
+    # chiffres de vendredi lus un lundi : police d'avertissement
+    assert stl.value == "pré-ouverture (16/10/2026)"
+    assert stl.font.italic and stl.font.bold and stl.font.color.rgb.endswith("C00000")
+    # état inconnu : cellule vide (on n'affirme rien)
+    results["rows"][1]["session_state"] = "pre_market"
+    ws = load_workbook(str(xo.write_workbook(results, tmp_path)))["Candidats"]
+    assert ws.cell(row=xo.DATA_START_ROW + 1, column=8).value is None
+
+
+@pytest.mark.parametrize("lang,expected", [
+    ("fr", ("ouverte (19/10/2026)", "pré-ouverture (16/10/2026)", "clôturée (19/10/2026)")),
+    ("en", ("open (19/10/2026)", "pre-market (16/10/2026)", "closed (19/10/2026)")),
+    ("it", ("aperta (19/10/2026)", "pre-apertura (16/10/2026)", "chiusa (19/10/2026)")),
+])
+def test_session_text_in_three_languages(lang, expected):
+    rows = [{"session_state": "open", "session_date": "2026-10-19"},
+            {"session_state": "pre_open", "session_date": "2026-10-16"},
+            {"session_state": "closed", "session_date": "2026-10-19"}]
+    assert tuple(xo.session_text(r, lang) for r in rows) == expected
+    assert set(xo.LABELS[lang]["session"]) == {"open", "pre_open", "closed"}
+
+
+def test_session_text_without_date_or_known_state():
+    assert xo.session_text({"session_state": "closed"}, "fr") == "clôturée"
+    assert xo.session_text({"session_state": "closed", "session_date": "vendredi"}, "fr") == "clôturée"
+    assert xo.session_text({"session_state": None, "session_date": "2026-10-16"}, "fr") is None
+    assert xo.session_text({}, "it") is None
 
 
 def test_empty_results_still_write(tmp_path):

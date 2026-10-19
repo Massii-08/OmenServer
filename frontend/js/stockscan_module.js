@@ -1042,6 +1042,27 @@ const StockScanModule = {
         return '<span class="' + cls + '">' + esc(label) + '</span>';
     },
 
+    // État de séance : de QUAND datent variation, gap et volume. Un lundi matin,
+    // une place pas encore ouverte affiche les chiffres du vendredi -> badge warn
+    // + explication au survol. Néon (badge online) = information vivante : la
+    // séance est ouverte. Un état inconnu ou sans traduction : pas de badge.
+    _sessionHtml(row) {
+        const state = String(row.session_state == null ? '' : row.session_state);
+        const key = 'stocks.session.' + state;
+        if (!state || !this._has(key)) return '';
+        let text = Lang.t(key);
+        const day = this._date(row.session_date);
+        if ((state === 'pre_open' || state === 'closed') && day !== '—') {
+            text += ' · ' + this._tr('stocks.session_data', { date: day });
+        }
+        const stale = row.session_stale === true;
+        const cls = stale ? 'badge warn' : (state === 'open' ? 'badge online' : 'badge muted');
+        const title = stale ? ' title="' + esc(Lang.t('stocks.session_stale_hint')) + '"' : '';
+        // police texte : la ligne des cours est en mono (chiffres), le badge est une phrase
+        return '<span class="' + cls + '"' + title + ' style="font-family:var(--font-ui);">' +
+            esc(text) + '</span>';
+    },
+
     _reasonText(r, res) {
         const o = (r && typeof r === 'object') ? r : { code: String(r) };
         const code = String(o.code || '');
@@ -1217,6 +1238,7 @@ const StockScanModule = {
               '<span style="font-size:15px;">' + esc(price) + '</span>' +
               '<span style="font-size:15px;color:' + chgColor + ';">' + esc(this._pct(row.change_pct, 2, true)) + '</span>' +
               nums.map(x => '<span style="font-size:13px;color:var(--text-muted);">' + esc(x) + '</span>').join('') +
+              this._sessionHtml(row) +
             '</div>' +
             (meta.length
                 ? '<div style="font-size:12px;color:var(--text-dim);margin-top:4px;line-height:1.5;overflow-wrap:anywhere;">' +

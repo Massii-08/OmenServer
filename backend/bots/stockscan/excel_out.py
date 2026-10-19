@@ -55,10 +55,11 @@ LABELS: Dict[str, Dict[str, Any]] = {
         "summary": ("Univers : {universe} titres · présélection : {shortlist} · retenus : {kept}"
                     " · exclus : {no_cat} sans catalyseur, {red} en rouge"),
         "headers": ["Rang", "Titre", "Nom", "Marché", "Cours", "Devise", "Var. jour",
-                    "Vol. relatif", "Score", "Signaux", "Raisons", "News principale",
+                    "Séance", "Vol. relatif", "Score", "Signaux", "Raisons", "News principale",
                     "Nb news", "Résultats", "Capitalisation (M€)", "Échanges moy. (M€)",
                     "Graphique"],
         "chart": "TradingView",
+        "session": {"open": "ouverte", "pre_open": "pré-ouverture", "closed": "clôturée"},
         "reasons": {
             "news": "{v} news en {h} h", "sources": "{v} sources distinctes",
             "positive": "bonne nouvelle", "upcoming": "catalyseur annoncé",
@@ -103,9 +104,10 @@ LABELS: Dict[str, Dict[str, Any]] = {
         "summary": ("Universe: {universe} stocks · shortlist: {shortlist} · kept: {kept}"
                     " · excluded: {no_cat} without catalyst, {red} flagged red"),
         "headers": ["Rank", "Ticker", "Name", "Market", "Price", "Currency", "Day chg",
-                    "Rel. volume", "Score", "Flags", "Reasons", "Top news", "News",
+                    "Session", "Rel. volume", "Score", "Flags", "Reasons", "Top news", "News",
                     "Earnings", "Market cap (M€)", "Avg traded (M€)", "Chart"],
         "chart": "TradingView",
+        "session": {"open": "open", "pre_open": "pre-market", "closed": "closed"},
         "reasons": {
             "news": "{v} news in {h} h", "sources": "{v} distinct sources",
             "positive": "good news", "upcoming": "announced catalyst",
@@ -151,10 +153,11 @@ LABELS: Dict[str, Dict[str, Any]] = {
         "summary": ("Universo: {universe} titoli · preselezione: {shortlist} · tenuti: {kept}"
                     " · esclusi: {no_cat} senza catalizzatore, {red} in rosso"),
         "headers": ["Pos.", "Titolo", "Nome", "Mercato", "Prezzo", "Valuta", "Var. giorno",
-                    "Vol. relativo", "Punteggio", "Segnali", "Motivi", "Notizia principale",
-                    "N. notizie", "Risultati", "Capitalizzazione (M€)", "Scambi medi (M€)",
-                    "Grafico"],
+                    "Seduta", "Vol. relativo", "Punteggio", "Segnali", "Motivi",
+                    "Notizia principale", "N. notizie", "Risultati", "Capitalizzazione (M€)",
+                    "Scambi medi (M€)", "Grafico"],
         "chart": "TradingView",
+        "session": {"open": "aperta", "pre_open": "pre-apertura", "closed": "chiusa"},
         "reasons": {
             "news": "{v} notizie in {h} h", "sources": "{v} fonti distinte",
             "positive": "buona notizia", "upcoming": "catalizzatore annunciato",
@@ -193,7 +196,7 @@ LABELS: Dict[str, Dict[str, Any]] = {
     },
 }
 
-WIDTHS = [6, 10, 30, 22, 11, 8, 10, 11, 8, 26, 46, 60, 8, 12, 17, 17, 13]
+WIDTHS = [6, 10, 30, 22, 11, 8, 10, 26, 11, 8, 26, 46, 60, 8, 12, 17, 17, 13]
 
 
 # --------------------------------------------------------------------------- #
@@ -260,6 +263,21 @@ def reason_text(reason: Dict[str, Any], lang: str) -> str:
 
 def flag_text(flag: str, lang: str) -> str:
     return labels(lang)["flags"].get(flag, flag)
+
+
+def session_text(row: Dict[str, Any], lang: str) -> Optional[str]:
+    """État de séance d'une ligne -> « pré-ouverture (16/10/2026) », ou ``None``.
+
+    Variation, gap et volume décrivent la séance de cette date : un lundi matin,
+    celle du vendredi pour une place pas encore ouverte. État inconnu : rien
+    (on n'affirme pas une séance qu'on ne connaît pas).
+    """
+    state = row.get("session_state")
+    label = labels(lang)["session"].get(state) if isinstance(state, str) else None
+    if not label:
+        return None
+    day = _date(row.get("session_date"))
+    return "%s (%s)" % (label, day.strftime("%d/%m/%Y")) if day else label
 
 
 def warning_text(warning: Dict[str, Any], lang: str) -> str:
@@ -341,20 +359,24 @@ def _candidates_sheet(ws, results: Dict[str, Any], lang: str) -> None:
         _put(ws, row_idx, 5, _num(row.get("price")), fmt=FMT_NUM)
         _put(ws, row_idx, 6, row.get("currency"))
         _put(ws, row_idx, 7, change, font=_sign_font(change), fmt=FMT_PCT)
-        _put(ws, row_idx, 8, rel_volume, fmt=FMT_RATIO)
-        _put(ws, row_idx, 9, _num(row.get("score")), fmt=FMT_INT)
+        # de quand datent variation, gap et volume ; police d'avertissement quand
+        # c'est une séance antérieure au jour de la place (pré-ouverture, nuit…)
+        _put(ws, row_idx, 8, session_text(row, lang),
+             font=WARNING_FONT if row.get("session_stale") is True else DATA_FONT)
+        _put(ws, row_idx, 9, rel_volume, fmt=FMT_RATIO)
+        _put(ws, row_idx, 10, _num(row.get("score")), fmt=FMT_INT)
         flags = [flag_text(f, lang) for f in row.get("flags") or []]
-        _put(ws, row_idx, 10, ", ".join(flags) or None,
+        _put(ws, row_idx, 11, ", ".join(flags) or None,
              font=RED_FONT if "red" in (row.get("flags") or []) else DATA_FONT, align=WRAP)
-        _put(ws, row_idx, 11, " · ".join(reason_text(r, lang) for r in row.get("reasons") or [])
+        _put(ws, row_idx, 12, " · ".join(reason_text(r, lang) for r in row.get("reasons") or [])
              or None, align=WRAP)
-        _put(ws, row_idx, 12, top.get("title"), align=WRAP, link=_http(top.get("url")))
-        _put(ws, row_idx, 13, len(news), fmt=FMT_INT)
-        _put(ws, row_idx, 14, _date(row.get("earnings_next")), fmt=FMT_DATE)
-        _put(ws, row_idx, 15, _num(row.get("market_cap_meur")), fmt=FMT_INT)
-        _put(ws, row_idx, 16, _num(row.get("avg_value_meur")), fmt=FMT_ONE)
+        _put(ws, row_idx, 13, top.get("title"), align=WRAP, link=_http(top.get("url")))
+        _put(ws, row_idx, 14, len(news), fmt=FMT_INT)
+        _put(ws, row_idx, 15, _date(row.get("earnings_next")), fmt=FMT_DATE)
+        _put(ws, row_idx, 16, _num(row.get("market_cap_meur")), fmt=FMT_INT)
+        _put(ws, row_idx, 17, _num(row.get("avg_value_meur")), fmt=FMT_ONE)
         chart = _http((row.get("links") or {}).get("chart"))
-        _put(ws, row_idx, 17, lab["chart"] if chart else None, link=chart)
+        _put(ws, row_idx, 18, lab["chart"] if chart else None, link=chart)   # toujours la dernière
         row_idx += 1
 
     ws.freeze_panes = "A%d" % DATA_START_ROW
