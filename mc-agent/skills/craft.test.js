@@ -500,3 +500,452 @@ test('INCIDENT : craft ignoré du serveur + position qui bouge → 4 crafts envo
   assert.deepStrictEqual(r, { stalled: true, goal: 'planks' });
   assert.strictEqual(sent, 4, 'le serveur reçoit 4 crafts, pas un flood');
 });
+
+// ─── PLACE POUR LE RÉSULTAT : pickJunkToToss / needsRoomFor (fonctions PURES) ─────────────────
+// Remède de fond de l'incident : inventaire PLEIN → mineflayer JETTE le résultat du craft au sol
+// (putSelectedItemRange : « no room => drop it »). Avant de crafter, craftItem jette UNE pile de
+// déchet. Les déchets sont une LISTE BLANCHE ordonnée : tout le reste n'est jamais touché.
+const { pickJunkToToss, needsRoomFor, COBBLE_KEEP, JUNK_TIERS } = require('./craft');
+
+// Fabrique un inventaire minimal [{name,count}] à partir de paires — `slot` croissant comme en vrai.
+const stacksOf = (pairs) => pairs.map(([name, count], i) => ({ name, count, slot: 9 + i }));
+const pick = (pairs, opts) => {
+  const items = stacksOf(pairs);
+  const it = pickJunkToToss(items, opts);
+  return it ? { name: it.name, count: it.count } : null;
+};
+
+test('pickJunkToToss : priorité terre > gravier > granite/diorite/andésite/tuf/calcite > netherrack > cobbled_deepslate > cobble', () => {
+  const items = stacksOf([
+    ['cobblestone', 64], ['cobblestone', 64], ['cobbled_deepslate', 64], ['cobbled_deepslate', 50],
+    ['netherrack', 64], ['calcite', 40], ['granite', 12], ['tuff', 3], ['gravel', 30],
+    ['rooted_dirt', 20], ['dirt', 10], ['coarse_dirt', 5],
+  ]);
+  const order = [];
+  let left = items.slice();
+  for (;;) {
+    const it = pickJunkToToss(left);
+    if (!it) break;
+    order.push(it.name + ':' + it.count);
+    left = left.filter((x) => x !== it);
+  }
+  assert.deepStrictEqual(order, [
+    'coarse_dirt:5', 'dirt:10', 'rooted_dirt:20',      // palier 1, la PLUS PETITE pile d'abord
+    'gravel:30',
+    'tuff:3', 'granite:12', 'calcite:40',              // palier 3 (idem)
+    'netherrack:64',
+    'cobbled_deepslate:50',                            // au-delà de 32 : la pile de 50 part (reste 64)…
+    'cobblestone:64',                                  // …la 2e (64 seule → il resterait 0) est protégée ; cobble : 2 piles de 64 → une part
+  ]);
+  assert.deepStrictEqual(left.map((x) => x.name + ':' + x.count), ['cobblestone:64', 'cobbled_deepslate:64'],
+    'il reste exactement la réserve : une pile de chaque cobble');
+});
+
+test('pickJunkToToss : terre / rooted_dirt / coarse_dirt forment UN palier (la plus petite pile gagne)', () => {
+  assert.deepStrictEqual(pick([['rooted_dirt', 7], ['dirt', 40], ['coarse_dirt', 30]]), { name: 'rooted_dirt', count: 7 });
+  assert.deepStrictEqual(pick([['dirt', 40], ['coarse_dirt', 30], ['rooted_dirt', 7]]), { name: 'rooted_dirt', count: 7 });
+});
+
+test('pickJunkToToss : à taille égale la 1re rencontrée gagne (déterministe) et le résultat est la RÉFÉRENCE', () => {
+  const items = stacksOf([['gravel', 10], ['gravel', 10], ['dirt', 64]]);
+  assert.strictEqual(pickJunkToToss(items), items[2], 'terre d\'abord, même si elle est plus grosse que le gravier');
+  const g = stacksOf([['gravel', 10], ['gravel', 10]]);
+  assert.strictEqual(pickJunkToToss(g), g[0]);
+});
+
+test('pickJunkToToss : le cobble SOUS 32 n\'est jamais jeté (ni 32 pile, ni une pile unique, ni deux demi-réserves)', () => {
+  assert.strictEqual(COBBLE_KEEP, 32);
+  for (const name of ['cobblestone', 'cobbled_deepslate']) {
+    assert.strictEqual(pick([[name, 10]]), null, name + ' ×10');
+    assert.strictEqual(pick([[name, 32]]), null, name + ' ×32 pile');
+    assert.strictEqual(pick([[name, 33]]), null, name + ' ×33 en UNE pile : il resterait 0');
+    assert.strictEqual(pick([[name, 64]]), null, name + ' ×64 en UNE pile : il resterait 0');
+    assert.strictEqual(pick([[name, 20], [name, 12]]), null, name + ' 20+12 = 32 : partir de l\'une perce la réserve');
+    assert.strictEqual(pick([[name, 20], [name, 20]]), null, name + ' 20+20 = 40 mais aucune pile ne part sans passer sous 32');
+  }
+});
+
+test('pickJunkToToss : le cobble AU-DELÀ de 32 part pile par pile, en gardant toujours ≥ 32', () => {
+  assert.deepStrictEqual(pick([['cobblestone', 32], ['cobblestone', 8]]), { name: 'cobblestone', count: 8 }, '40 au total : la pile de 8 part, il reste 32');
+  assert.deepStrictEqual(pick([['cobblestone', 64], ['cobblestone', 40]]), { name: 'cobblestone', count: 40 }, 'la plus petite pile jetable');
+  assert.deepStrictEqual(pick([['cobblestone', 64], ['cobblestone', 64], ['cobblestone', 64]]), { name: 'cobblestone', count: 64 });
+  // La réserve se compte PAR NOM (lecture littérale « au-delà de 32 », prudente) : 30 + 30 mélangés ne s'additionnent pas.
+  assert.strictEqual(pick([['cobblestone', 30], ['cobbled_deepslate', 30]]), null);
+});
+
+test('pickJunkToToss : cobbled_deepslate part avant le cobblestone', () => {
+  assert.deepStrictEqual(
+    pick([['cobblestone', 64], ['cobblestone', 64], ['cobbled_deepslate', 64], ['cobbled_deepslate', 64]]),
+    { name: 'cobbled_deepslate', count: 64 });
+});
+
+// JAMAIS : outils, armure, nourriture, bois/planches/bâtons, minerais/lingots/charbon, table, four,
+// torches, seau, canne… — liste blanche : ce qui n'y figure pas ne peut pas partir, même isolé.
+test('pickJunkToToss : JAMAIS outils, armure, nourriture, bois, minerais, utilitaires (liste blanche)', () => {
+  const never = [
+    'wooden_pickaxe', 'stone_pickaxe', 'iron_pickaxe', 'diamond_pickaxe', 'iron_axe', 'stone_shovel', 'iron_hoe',
+    'wooden_sword', 'diamond_sword', 'bow', 'crossbow', 'shield', 'arrow',
+    'iron_helmet', 'iron_chestplate', 'iron_leggings', 'iron_boots', 'diamond_helmet',
+    'cooked_beef', 'cooked_porkchop', 'bread', 'apple', 'golden_apple', 'carrot', 'baked_potato', 'beef',
+    'oak_log', 'spruce_log', 'birch_log', 'oak_planks', 'birch_planks', 'stick',
+    'coal', 'charcoal', 'raw_iron', 'iron_ingot', 'gold_ingot', 'raw_gold', 'diamond', 'redstone', 'lapis_lazuli',
+    'copper_ingot', 'raw_copper', 'iron_ore', 'deepslate_iron_ore', 'coal_ore',
+    'crafting_table', 'furnace', 'chest', 'torch', 'bucket', 'water_bucket', 'lava_bucket', 'fishing_rod',
+  ];
+  assert.strictEqual(pickJunkToToss(stacksOf(never.map((n) => [n, 64]))), null);
+  // Mêlés à UN déchet, seul le déchet est choisi.
+  const mixed = stacksOf(never.map((n) => [n, 64]).concat([['gravel', 5]]));
+  assert.strictEqual(pickJunkToToss(mixed).name, 'gravel');
+});
+
+test('pickJunkToToss : opts.exclude protège ce que la recette consomme ou produit (tableau ou Set)', () => {
+  const inv = [['dirt', 40], ['gravel', 10], ['cobblestone', 64], ['cobblestone', 64]];
+  assert.deepStrictEqual(pick(inv, { exclude: ['dirt'] }), { name: 'gravel', count: 10 });
+  assert.deepStrictEqual(pick(inv, { exclude: new Set(['dirt', 'gravel']) }), { name: 'cobblestone', count: 64 });
+  assert.strictEqual(pick(inv, { exclude: ['dirt', 'gravel', 'cobblestone'] }), null);
+  assert.deepStrictEqual(pick(inv, { exclude: undefined }), { name: 'dirt', count: 40 }, 'sans exclusion : la terre, comme par défaut');
+});
+
+test('pickJunkToToss : entrées bizarres → null sans crash, et l\'entrée n\'est jamais modifiée', () => {
+  for (const bad of [undefined, null, 'x', 42, {}, []]) assert.strictEqual(pickJunkToToss(bad), null);
+  const items = [null, undefined, { count: 5 }, { name: 'dirt' }, { name: 'dirt', count: 0 }, { name: 'dirt', count: 'abc' }, { name: 'gravel', count: 3 }];
+  const copy = JSON.parse(JSON.stringify(items));
+  assert.deepStrictEqual(pickJunkToToss(items), items[6], 'seules les piles bien formées et non vides comptent');
+  assert.deepStrictEqual(JSON.parse(JSON.stringify(items)), copy, 'aucune mutation');
+});
+
+test('JUNK_TIERS : liste blanche exacte, dans l\'ordre demandé', () => {
+  assert.deepStrictEqual(JUNK_TIERS.map((t) => t.names), [
+    ['dirt', 'coarse_dirt', 'rooted_dirt'], ['gravel'], ['granite', 'diorite', 'andesite', 'tuff', 'calcite'],
+    ['netherrack'], ['cobbled_deepslate'], ['cobblestone'],
+  ]);
+  assert.deepStrictEqual(JUNK_TIERS.map((t) => t.keep), [0, 0, 0, 0, 32, 32]);
+});
+
+test('needsRoomFor : seulement si AUCUNE case vide ET pas de place dans les piles du produit', () => {
+  const planks = (n) => [{ name: 'oak_planks', count: n, stackSize: 64 }];
+  assert.strictEqual(needsRoomFor({ emptySlots: 0, items: [], product: 'oak_planks', need: 4 }), true, 'plein, aucune pile du produit');
+  assert.strictEqual(needsRoomFor({ emptySlots: 1, items: [], product: 'oak_planks', need: 4 }), false, 'une case vide suffit');
+  assert.strictEqual(needsRoomFor({ emptySlots: 12, items: [], product: 'oak_planks', need: 4 }), false);
+  assert.strictEqual(needsRoomFor({ emptySlots: null, items: [], product: 'oak_planks', need: 4 }), false, 'nombre de cases inconnu : on ne jette rien');
+  assert.strictEqual(needsRoomFor({ emptySlots: undefined, items: [], product: 'oak_planks', need: 4 }), false);
+  assert.strictEqual(needsRoomFor({ emptySlots: 0, items: planks(10), product: 'oak_planks', need: 4 }), false, '54 de place dans la pile');
+  assert.strictEqual(needsRoomFor({ emptySlots: 0, items: planks(60), product: 'oak_planks', need: 4 }), false, 'place pile pour 4 : 64-60');
+  assert.strictEqual(needsRoomFor({ emptySlots: 0, items: planks(61), product: 'oak_planks', need: 4 }), true, '3 de place < 4');
+  assert.strictEqual(needsRoomFor({ emptySlots: 0, items: planks(64), product: 'oak_planks', need: 1 }), true, 'pile pleine');
+});
+
+test('needsRoomFor : la place se CUMULE sur plusieurs piles ; une autre pile (autre item) n\'en offre pas', () => {
+  const items = [{ name: 'oak_planks', count: 62, stackSize: 64 }, { name: 'oak_planks', count: 62, stackSize: 64 }, { name: 'dirt', count: 1, stackSize: 64 }];
+  assert.strictEqual(needsRoomFor({ emptySlots: 0, items, product: 'oak_planks', need: 4 }), false, '2 + 2 = 4');
+  assert.strictEqual(needsRoomFor({ emptySlots: 0, items, product: 'oak_planks', need: 5 }), true);
+  assert.strictEqual(needsRoomFor({ emptySlots: 0, items, product: 'stick', need: 1 }), true, 'la terre ne sert pas de place pour des bâtons');
+});
+
+test('needsRoomFor : taille de pile du produit (non empilable = jamais de place) et défauts', () => {
+  assert.strictEqual(needsRoomFor({ emptySlots: 0, items: [{ name: 'shield', count: 1, stackSize: 1 }], product: 'shield', need: 1 }), true);
+  // Une pile qui n'expose pas stackSize : on prend celui du registre (param), puis 64.
+  assert.strictEqual(needsRoomFor({ emptySlots: 0, items: [{ name: 'torch', count: 60 }], product: 'torch', need: 4 }), false, 'défaut 64 → 4 de place');
+  assert.strictEqual(needsRoomFor({ emptySlots: 0, items: [{ name: 'ender_pearl', count: 15 }], product: 'ender_pearl', need: 1, stackSize: 16 }), false);
+  assert.strictEqual(needsRoomFor({ emptySlots: 0, items: [{ name: 'ender_pearl', count: 16 }], product: 'ender_pearl', need: 1, stackSize: 16 }), true);
+  // need absent / invalide → 1 exemplaire.
+  const fullPlanks = [{ name: 'oak_planks', count: 64, stackSize: 64 }];
+  assert.strictEqual(needsRoomFor({ emptySlots: 0, items: [], product: 'oak_planks' }), true);
+  assert.strictEqual(needsRoomFor({ emptySlots: 0, items: fullPlanks, product: 'oak_planks', need: 0 }), true);
+  assert.strictEqual(needsRoomFor(), false, 'sans argument : emptySlots indéfini → rien à faire');
+});
+
+// ─── craftItem × inventaire PLEIN (bout en bout, VRAIES recettes) ─────────────────────────────
+// Bot à INVENTAIRE PAR CASES (36 cases utiles, 9..44) qui rejoue la gestion de la place de mineflayer
+// (putSelectedItemRange) :
+//   - ingrédients retirés des piles (une pile VIDÉE libère sa case) ;
+//   - résultat fusionné dans une pile NON PLEINE du même item, sinon posé dans la 1re case vide,
+//     sinon JETÉ au sol (« no room => drop it ») — et le craft « réussit » quand même ;
+//   - `tossStack(item)` jette la pile visée (`toss(type, null, count)` en variante, `useToss`).
+function slotBot(stacks, { table = null, useToss = false, emptyCount = true } = {}) {
+  const slots = new Array(46).fill(null);
+  const useful = () => slots.slice(9, 45);
+  stacks.forEach(([name, count], i) => {
+    const def = registry.itemsByName[name];
+    slots[9 + i] = { name, type: def.id, count, stackSize: def.stackSize, slot: 9 + i };
+  });
+  const dropped = [];
+  const tossed = [];
+  const bot = {
+    registry, slots, dropped, tossed,
+    inventory: {
+      slots,
+      items: () => useful().filter(Boolean),
+      count: (id) => useful().reduce((n, s) => n + (s && s.type === id ? s.count : 0), 0),
+    },
+    findBlock: () => table,
+    // copies fidèles de mineflayer/lib/plugins/craft.js (comme craftBot)
+    recipesFor(itemType, metadata, minResultCount, craftingTable) {
+      const min = minResultCount == null ? 1 : minResultCount;
+      return Recipe.find(itemType, metadata).filter((r) => {
+        if (r.requiresTable && !craftingTable) return false;
+        const craftCount = Math.ceil(min / r.result.count);
+        for (const d of r.delta) if (bot.inventory.count(d.id) + d.count * craftCount < 0) return false;
+        return true;
+      });
+    },
+    recipesAll(itemType, metadata, craftingTable) {
+      return Recipe.find(itemType, metadata).filter((r) => !r.requiresTable || craftingTable);
+    },
+    async craft(recipe, count, craftingTable) {
+      if (recipe.requiresTable && !craftingTable) throw new Error('Recipe requires craftingTable');
+      for (let i = 0; i < (count == null ? 1 : count); i++) {
+        for (const d of recipe.delta) {
+          if (d.count >= 0) continue;
+          let need = -d.count;
+          for (let s = 9; s < 45 && need > 0; s++) {
+            const it = slots[s];
+            if (!it || it.type !== d.id) continue;
+            const take = Math.min(it.count, need);
+            it.count -= take; need -= take;
+            if (it.count === 0) slots[s] = null;               // pile vidée → case libérée
+          }
+          if (need > 0) throw new Error('missing ingredient');
+        }
+        const rid = recipe.result.id;
+        const def = registry.items[rid];
+        let left = recipe.result.count;
+        for (let s = 9; s < 45 && left > 0; s++) {              // 1. pile NON PLEINE du même item
+          const it = slots[s];
+          if (it && it.type === rid && it.count < def.stackSize) {
+            const put = Math.min(def.stackSize - it.count, left);
+            it.count += put; left -= put;
+          }
+        }
+        while (left > 0) {
+          const s = slots.findIndex((x, idx) => idx >= 9 && idx < 45 && x === null);   // 2. 1re case vide
+          if (s === -1) { dropped.push({ name: def.name, count: left }); break; }       // 3. JETÉ au sol
+          const put = Math.min(def.stackSize, left);
+          slots[s] = { name: def.name, type: rid, count: put, stackSize: def.stackSize, slot: s };
+          left -= put;
+        }
+      }
+    },
+  };
+  if (emptyCount) bot.inventory.emptySlotCount = () => useful().filter((s) => s === null).length;
+  if (useToss) {
+    bot.toss = async (type, meta, count) => {                   // prélève dans la 1re pile du type
+      tossed.push({ type, meta, count });
+      for (let s = 9; s < 45; s++) if (slots[s] && slots[s].type === type) { slots[s] = null; return; }
+    };
+  } else {
+    bot.tossStack = async (item) => { tossed.push(item.name); slots[item.slot] = null; };
+  }
+  return bot;
+}
+// Complète à 36 piles avec de la nourriture (JAMAIS jetable) : inventaire PLEIN.
+const fullInv = (stacks) => stacks.concat(new Array(36 - stacks.length).fill(['cooked_beef', 64]));
+const countOf = (bot, name) => bot.inventory.count(registry.itemsByName[name].id);
+
+test('inventaire PLEIN + terre : la terre est jetée, PUIS le craft a lieu → {ok:true, freed:"dirt"}', async () => {
+  const bot = slotBot(fullInv([['oak_log', 8], ['dirt', 40]]));
+  assert.strictEqual(bot.inventory.emptySlotCount(), 0, 'inventaire bien plein au départ');
+  const sleep = fakeSleep();
+  const r = await craftItem(bot, { name: 'oak_planks', count: 1, _sleep: sleep });
+  assert.deepStrictEqual(r, { ok: true, freed: 'dirt' });
+  assert.deepStrictEqual(bot.tossed, ['dirt']);
+  assert.strictEqual(countOf(bot, 'oak_planks'), 4, 'les planches sont EN POCHE');
+  assert.strictEqual(countOf(bot, 'dirt'), 0);
+  assert.strictEqual(countOf(bot, 'oak_log'), 7, 'une seule bûche consommée');
+  assert.deepStrictEqual(bot.dropped, [], 'plus rien jeté au sol');
+  assert.deepStrictEqual(sleep.log, [], 'effet vu dès la 1re lecture');
+});
+
+test('TÉMOIN : le MÊME inventaire plein sans déchet → rien jeté, le résultat part au sol, craft_no_effect (sans champ freed)', async () => {
+  const bot = slotBot(fullInv([['oak_log', 8]]));
+  const sleep = fakeSleep();
+  const r = await craftItem(bot, { name: 'oak_planks', count: 1, _sleep: sleep });
+  assert.deepStrictEqual(r, { ok: false, reason: 'craft_no_effect' });
+  assert.deepStrictEqual(bot.tossed, [], 'aucun déchet : on ne jette ni la nourriture ni les bûches');
+  assert.deepStrictEqual(bot.dropped, [{ name: 'oak_planks', count: 4 }], 'le mécanisme mineflayer : le produit est par terre');
+  assert.strictEqual(countOf(bot, 'oak_log'), 7);
+  assert.deepStrictEqual(sleep.log, new Array(12).fill(50));
+});
+
+test('des cases LIBRES : rien n\'est jeté, résultat exact {ok:true} (pas de champ freed)', async () => {
+  const bot = slotBot([['oak_log', 8], ['dirt', 40], ['cooked_beef', 64]]);          // 33 cases libres
+  const r = await craftItem(bot, { name: 'oak_planks', count: 1, _sleep: fakeSleep() });
+  assert.deepStrictEqual(r, { ok: true });
+  assert.deepStrictEqual(bot.tossed, []);
+  assert.strictEqual(countOf(bot, 'dirt'), 40);
+  assert.strictEqual(countOf(bot, 'oak_planks'), 4);
+});
+
+test('UNE seule case libre suffit : rien n\'est jeté', async () => {
+  const stacks = fullInv([['oak_log', 8], ['dirt', 40]]);
+  stacks.pop();                                                                         // 35 piles → 1 case libre
+  const bot = slotBot(stacks);
+  assert.strictEqual(bot.inventory.emptySlotCount(), 1);
+  assert.deepStrictEqual(await craftItem(bot, { name: 'oak_planks', count: 1, _sleep: fakeSleep() }), { ok: true });
+  assert.deepStrictEqual(bot.tossed, []);
+});
+
+test('plein MAIS une pile du produit a la place du rendement : rien n\'est jeté (mineflayer complète la pile)', async () => {
+  const bot = slotBot(fullInv([['oak_log', 8], ['oak_planks', 10], ['dirt', 40]]));
+  const r = await craftItem(bot, { name: 'oak_planks', count: 1, _sleep: fakeSleep() });
+  assert.deepStrictEqual(r, { ok: true });
+  assert.deepStrictEqual(bot.tossed, []);
+  assert.strictEqual(countOf(bot, 'oak_planks'), 14);
+  assert.deepStrictEqual(bot.dropped, []);
+});
+
+test('plein ET la pile du produit n\'a PAS la place du rendement (62/64 pour 4) : une pile de déchet part', async () => {
+  const bot = slotBot(fullInv([['oak_log', 8], ['oak_planks', 62], ['dirt', 40]]));
+  const r = await craftItem(bot, { name: 'oak_planks', count: 1, _sleep: fakeSleep() });
+  assert.deepStrictEqual(r, { ok: true, freed: 'dirt' });
+  assert.strictEqual(countOf(bot, 'oak_planks'), 66, '2 complètent la pile, 2 vont dans la case libérée');
+  assert.deepStrictEqual(bot.dropped, []);
+});
+
+test('le rendement compte : count × résultat de la recette (3 crafts de planches = 12 planches à loger)', async () => {
+  // 56/64 : la place (8) suffit pour UN craft (4 planches) mais pas pour TROIS (12) → il faut de la place.
+  const three = slotBot(fullInv([['oak_log', 8], ['oak_planks', 56], ['gravel', 20]]));
+  assert.deepStrictEqual(await craftItem(three, { name: 'oak_planks', count: 3, _sleep: fakeSleep() }),
+    { ok: true, freed: 'gravel' });
+  assert.strictEqual(countOf(three, 'oak_planks'), 68, '56 + 12');
+  assert.deepStrictEqual(three.dropped, [], 'rien n\'est jeté au sol : la case libérée a reçu le surplus');
+  // Témoin : le MÊME inventaire pour un seul craft (4 planches) n'a besoin de rien.
+  const one = slotBot(fullInv([['oak_log', 8], ['oak_planks', 56], ['gravel', 20]]));
+  assert.deepStrictEqual(await craftItem(one, { name: 'oak_planks', count: 1, _sleep: fakeSleep() }), { ok: true });
+  assert.deepStrictEqual(one.tossed, []);
+});
+
+test('priorité à l\'œuvre : la terre part avant le gravier, même plus grosse', async () => {
+  const bot = slotBot(fullInv([['oak_log', 8], ['gravel', 10], ['dirt', 50], ['netherrack', 5]]));
+  const r = await craftItem(bot, { name: 'oak_planks', count: 1, _sleep: fakeSleep() });
+  assert.deepStrictEqual(r, { ok: true, freed: 'dirt' });
+  assert.deepStrictEqual(bot.tossed, ['dirt'], 'UNE seule pile, la plus anodine');
+  assert.strictEqual(countOf(bot, 'gravel'), 10);
+  assert.strictEqual(countOf(bot, 'netherrack'), 5);
+});
+
+test('le cobble SOUS 32 n\'est jamais jeté, même avec l\'inventaire plein (craft_no_effect, rien de perdu)', async () => {
+  for (const cobble of [[['cobblestone', 32]], [['cobblestone', 20], ['cobblestone', 12]], [['cobbled_deepslate', 30]]]) {
+    const bot = slotBot(fullInv([['oak_log', 8]].concat(cobble)));
+    const r = await craftItem(bot, { name: 'oak_planks', count: 1, _sleep: fakeSleep() });
+    assert.deepStrictEqual(r, { ok: false, reason: 'craft_no_effect' }, JSON.stringify(cobble));
+    assert.deepStrictEqual(bot.tossed, [], JSON.stringify(cobble));
+  }
+});
+
+test('le cobble AU-DELÀ de 32 part (la plus petite pile) et la réserve de 32 reste', async () => {
+  const bot = slotBot(fullInv([['oak_log', 8], ['cobblestone', 64], ['cobblestone', 40]]));
+  const r = await craftItem(bot, { name: 'oak_planks', count: 1, _sleep: fakeSleep() });
+  assert.deepStrictEqual(r, { ok: true, freed: 'cobblestone' });
+  assert.strictEqual(countOf(bot, 'cobblestone'), 64, 'la pile de 40 est partie, 64 restent (≥ 32)');
+});
+
+test('un INGRÉDIENT n\'est jamais jeté : le four (8 cobble) ne jette pas le cobble qu\'il va consommer', async () => {
+  const table = { position: { x: 0, y: 0, z: 0 } };
+  const bot = slotBot(fullInv([['cobblestone', 64], ['cobblestone', 64]]), { table });
+  const r = await craftItem(bot, { name: 'furnace', count: 1, _sleep: fakeSleep() });
+  assert.deepStrictEqual(bot.tossed, [], 'le cobble est l\'ingrédient : intouchable, même au-delà de 32');
+  assert.deepStrictEqual(r, { ok: false, reason: 'craft_no_effect' }, 'rien d\'autre à jeter → le contrôle d\'effet tranche');
+  // …mais s'il y a de la terre, c'est elle qui libère la case.
+  const bot2 = slotBot(fullInv([['cobblestone', 64], ['cobblestone', 64], ['dirt', 3]]), { table });
+  assert.deepStrictEqual(await craftItem(bot2, { name: 'furnace', count: 1, _sleep: fakeSleep() }), { ok: true, freed: 'dirt' });
+  assert.strictEqual(countOf(bot2, 'furnace'), 1);
+});
+
+test('conversion de bûches en planches ET craft du bouclier : la terre libère la case des planches, freed remonte', async () => {
+  // 0 planche, 64 bûches, 1 lingot, inventaire PLEIN : la conversion (récursion de craftItem) a besoin
+  // d'une case pour les 8 planches ; le bouclier, lui, se loge dans la case que le lingot libère.
+  const table = { position: { x: 0, y: 0, z: 0 } };
+  const bot = slotBot(fullInv([['iron_ingot', 1], ['oak_log', 64], ['dirt', 40]]), { table });
+  const r = await craftItem(bot, { name: 'shield', _sleep: fakeSleep() });
+  assert.deepStrictEqual(r, { ok: true, freed: 'dirt' });
+  assert.deepStrictEqual(bot.tossed, ['dirt'], 'une seule pile jetée pour tout le cycle');
+  assert.strictEqual(countOf(bot, 'shield'), 1);
+  assert.strictEqual(countOf(bot, 'oak_planks'), 2, '8 planches, 6 consommées');
+  assert.deepStrictEqual(bot.dropped, []);
+});
+
+test('freed accompagne AUSSI un échec survenu après le jet (craft_failed, craft_no_effect)', async () => {
+  const lost = slotBot(fullInv([['oak_log', 8], ['dirt', 40]]));
+  lost.craft = async () => { throw new Error('missing ingredient'); };
+  assert.deepStrictEqual(await craftItem(lost, { name: 'oak_planks', _sleep: fakeSleep() }),
+    { ok: false, reason: 'craft_failed', freed: 'dirt' });
+  const ghost = slotBot(fullInv([['oak_log', 8], ['dirt', 40]]));
+  ghost.craft = async () => {};                                       // le serveur ignore le craft
+  assert.deepStrictEqual(await craftItem(ghost, { name: 'oak_planks', _sleep: fakeSleep() }),
+    { ok: false, reason: 'craft_no_effect', freed: 'dirt' });
+});
+
+test('plusieurs piles jetées dans un même cycle : noms séparés par une virgule', async () => {
+  // Deux crafts imbriqués qui ont chacun besoin d'une case : conversion de bûches (terre) puis bouclier
+  // (gravier). Le lingot, pile de 1, libérerait la case du bouclier à lui seul — mais le calcul est
+  // PESSIMISTE à dessein (il ne devine pas quelles piles la recette videra) : le gravier part quand même.
+  const table = { position: { x: 0, y: 0, z: 0 } };
+  const bot = slotBot(fullInv([['iron_ingot', 1], ['oak_log', 64], ['dirt', 40], ['gravel', 20]]), { table });
+  const r = await craftItem(bot, { name: 'shield', _sleep: fakeSleep() });
+  assert.strictEqual(r.ok, true);
+  assert.strictEqual(r.freed, 'dirt,gravel');
+  assert.deepStrictEqual(bot.tossed, ['dirt', 'gravel']);
+});
+
+test('jet IMPOSSIBLE (tossStack lève) : pas de freed, pas de crash, le contrôle d\'effet tranche', async () => {
+  const bot = slotBot(fullInv([['oak_log', 8], ['dirt', 40]]));
+  bot.tossStack = async () => { throw new Error('boom'); };
+  const r = await craftItem(bot, { name: 'oak_planks', count: 1, _sleep: fakeSleep() });
+  assert.deepStrictEqual(r, { ok: false, reason: 'craft_no_effect' });
+  assert.strictEqual(countOf(bot, 'dirt'), 40, 'la terre est toujours là');
+});
+
+test('sans tossStack : repli sur toss(type, null, count)', async () => {
+  const bot = slotBot(fullInv([['oak_log', 8], ['dirt', 40]]), { useToss: true });
+  const r = await craftItem(bot, { name: 'oak_planks', count: 1, _sleep: fakeSleep() });
+  assert.deepStrictEqual(r, { ok: true, freed: 'dirt' });
+  assert.deepStrictEqual(bot.tossed, [{ type: registry.itemsByName.dirt.id, meta: null, count: 40 }]);
+});
+
+test('sans emptySlotCount : repli sur le comptage des cases 9..44 vides', async () => {
+  const full = slotBot(fullInv([['oak_log', 8], ['dirt', 40]]), { emptyCount: false });
+  assert.strictEqual(typeof full.inventory.emptySlotCount, 'undefined');
+  assert.deepStrictEqual(await craftItem(full, { name: 'oak_planks', _sleep: fakeSleep() }), { ok: true, freed: 'dirt' });
+  // …et avec de la place, le repli ne jette toujours rien (les cases 0..8 et 45 ne comptent pas).
+  const roomy = slotBot([['oak_log', 8], ['dirt', 40]], { emptyCount: false });
+  assert.deepStrictEqual(await craftItem(roomy, { name: 'oak_planks', _sleep: fakeSleep() }), { ok: true });
+  assert.deepStrictEqual(roomy.tossed, []);
+});
+
+test('aucune information sur les cases (vieux stub : ni emptySlotCount ni slots) : jamais de jet', async () => {
+  const bot = craftBot({ oak_log: 4, dirt: 64 }, { table: null });
+  bot.tossStack = async () => { throw new Error('ne doit pas être appelé'); };
+  bot.toss = async () => { throw new Error('ne doit pas être appelé'); };
+  assert.deepStrictEqual(await craftItem(bot, { name: 'oak_planks', count: 1, _sleep: fakeSleep() }), { ok: true });
+  // Un emptySlotCount qui ne rend pas un nombre vaut « inconnu » : toujours rien jeté.
+  for (const bad of [() => undefined, () => NaN, () => { throw new Error('boom'); }]) {
+    const b = craftBot({ oak_log: 4, dirt: 64 }, { table: null });
+    b.inventory.emptySlotCount = bad;
+    b.tossStack = async () => { throw new Error('ne doit pas être appelé'); };
+    assert.deepStrictEqual(await craftItem(b, { name: 'oak_planks', count: 1, _sleep: fakeSleep() }), { ok: true });
+  }
+});
+
+// La terre grossière est une VRAIE recette (2 terre + 2 gravier → 4 terre grossière) dont le produit
+// ET les ingrédients sont tous des déchets de la liste blanche : ni l'un ni l'autre ne doit partir
+// pour faire de la place à… eux-mêmes. Seul un déchet étranger à la recette (le tuf) est jetable.
+test('le PRODUIT et les INGRÉDIENTS de la recette ne sont jamais jetés, même quand ce sont des déchets', async () => {
+  const withTuff = slotBot(fullInv([['dirt', 40], ['gravel', 20], ['tuff', 7]]));
+  const r = await craftItem(withTuff, { name: 'coarse_dirt', count: 1, _sleep: fakeSleep() });
+  assert.deepStrictEqual(r, { ok: true, freed: 'tuff' });
+  assert.deepStrictEqual(withTuff.tossed, ['tuff'], 'ni la terre (ingrédient) ni le gravier (ingrédient) malgré leur priorité');
+  assert.strictEqual(countOf(withTuff, 'coarse_dirt'), 4);
+  assert.strictEqual(countOf(withTuff, 'dirt'), 38);
+  const noOther = slotBot(fullInv([['dirt', 40], ['gravel', 20]]));
+  assert.deepStrictEqual(await craftItem(noOther, { name: 'coarse_dirt', count: 1, _sleep: fakeSleep() }),
+    { ok: false, reason: 'craft_no_effect' });
+  assert.deepStrictEqual(noOther.tossed, []);
+  // Le PRODUIT lui-même — ici une pile pleine de terre grossière, sans place pour 4 de plus — n'est
+  // pas non plus un candidat : on ne jette pas ce qu'on est en train de fabriquer.
+  const fullProduct = slotBot(fullInv([['dirt', 40], ['gravel', 20], ['coarse_dirt', 64]]));
+  assert.deepStrictEqual(await craftItem(fullProduct, { name: 'coarse_dirt', count: 1, _sleep: fakeSleep() }),
+    { ok: false, reason: 'craft_no_effect' });
+  assert.deepStrictEqual(fullProduct.tossed, []);
+  assert.strictEqual(countOf(fullProduct, 'coarse_dirt'), 64);
+});
