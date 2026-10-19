@@ -470,6 +470,27 @@ function legHeading(baseHeading, stuckStreak) {
   return baseHeading + sign * magnitude;
 }
 
+/**
+ * Jambe de migration marchée SANS creuser (`canDig:false`) qui n'a pas avancé : faut-il la RETENTER
+ * en creusant ? (PUR)
+ *
+ * Mesure live (19/10, 3/3 bots à l'aube) : le gate de nuit tient (`stay night` puis `migrate
+ * depleted`), mais la migration part pendant que le bot est encore DANS son abri de nuit (creusé,
+ * emmuré, couvert) ou au fond de son tunnel (y=50, `/home safe` refusé). `canDig:false` + enfermé =
+ * NoPath instantané : les 24 jambes « s'exécutent » en 1-2 s et l'arrivée échoue `moved:1..2
+ * arrival:too_short`. Un joueur, lui, casse le mur de son abri avant de partir.
+ *
+ * `canDig:false` reste la RÈGLE (il empêche le plongeon en grotte des jambes `GoalNearXZ`) : le repli
+ * ne joue que sur une jambe qui n'a rien donné (< LEG_STUCK_MIN, même seuil que la déviation de cap),
+ * une seule fois, et jamais par-dessus une tâche qui nous a préemptés (mort, ordre, évasion).
+ * Position illisible → pas de repli : on ne creuse pas à l'aveugle.
+ */
+function legDigRetry({ moved, cancelled = false } = {}) {
+  if (cancelled) return false;
+  if (typeof moved !== 'number' || !Number.isFinite(moved) || moved < 0) return false;
+  return moved < LEG_STUCK_MIN;
+}
+
 // ─── L'ÉTAT DE ZONE DOIT SURVIVRE AU PROCESS (cause racine trouvée le 27/07 au soir) ────────────
 //
 // La migration n'a JAMAIS tiré de la journée, alors que la flotte était visiblement noyée
@@ -616,7 +637,7 @@ function legIsGood({ treesNear = 0, inWater = false, biome = null } = {}) {
 }
 
 module.exports = {
-  zoneVerdict, verdictTelemetry, pickMigrationTarget, migrationLeg, legHeading, LEG_STUCK_MIN, legIsGood, isWetBiome, minDistFor, zoneFailureKind,
+  zoneVerdict, verdictTelemetry, pickMigrationTarget, migrationLeg, legHeading, LEG_STUCK_MIN, legDigRetry, legIsGood, isWetBiome, minDistFor, zoneFailureKind,
   zoneStateInit, zoneStateLoad, zoneStateAfterMigration, zoneStateAfterFailedMigration,
   migrationEarlyExitOk, pruneFailedTargets, FAR_EARLY_EXIT_FRACTION, MIGRATE_ARRIVED_RADIUS,
   migrationArrivalOk, ARRIVAL_DEPLETED_RADIUS,

@@ -141,3 +141,69 @@ test('entrees absurdes : on laisse', () => {
   assert.strictEqual(oreStepPlan({}), null);
   assert.strictEqual(oreStepPlan(), null);
 });
+
+// ─── LE RAMASSAGE NE VOLE PLUS LE TRAJET EN COURS (mesure goal_trace, 19/10) ───────────────────
+// Premier appelant qui interrompait un `pathfinder.goto` en cours : `Timeout._onTimeout@index.js:6083`
+// = la marche 'walk' de ce timer. Ses goto (marche, ramassage d'un drop, approche hors ligne de vue)
+// écrasaient le but du planner → GoalChanged → explore / branch-mine / migration ratés.
+const { grabScope, mayApproach } = require('./oregrab');
+
+test('grabScope : pendant une MIGRATION le timer ne fait RIEN', () => {
+  const s = grabScope({ migrating: true });
+  assert.strictEqual(s.run, false);
+  assert.strictEqual(s.detour, false);
+  assert.strictEqual(s.walk, false);
+  assert.strictEqual(s.drops, false);
+  assert.strictEqual(s.approach, false);
+});
+
+test('grabScope : la migration prime même sans autre but posé', () => {
+  assert.strictEqual(grabScope({ migrating: true, goal: null }).run, false);
+  assert.strictEqual(grabScope({ migrating: true, goal: {} }).run, false);
+});
+
+test('grabScope : un AUTRE but actif → portée de bras seulement, mais le détour rare reste permis', () => {
+  const s = grabScope({ goal: { planner: true } });
+  assert.strictEqual(s.run, true);
+  assert.strictEqual(s.detour, true, 'diamant/émeraude/débris : rare, vaut l interruption');
+  assert.strictEqual(s.walk, false, 'plus de quelques pas vers du fer');
+  assert.strictEqual(s.drops, false, 'plus de marche vers un item au sol');
+  assert.strictEqual(s.approach, false, 'plus de goto pour contourner une paroi');
+  assert.strictEqual(s.maxDist, ORE_REACH);
+  assert.ok(s.scan >= ORE_REACH && s.scan < ORE_STEP_MAX, 'le scan se limite à ce qu on a le droit de miner');
+});
+
+test('grabScope : en portée de bras, oreStepPlan ne rend plus jamais walk', () => {
+  const { maxDist } = grabScope({ goal: { planner: true } });
+  assert.strictEqual(oreStepPlan({ name: 'iron_ore', dist: 3, maxDist }), 'reach');
+  assert.strictEqual(oreStepPlan({ name: 'iron_ore', dist: 8, maxDist }), null);
+});
+
+test('grabScope : aucun but → comportement d avant, inchangé', () => {
+  const s = grabScope({ goal: null });
+  assert.deepStrictEqual(
+    { run: s.run, detour: s.detour, walk: s.walk, drops: s.drops, approach: s.approach, maxDist: s.maxDist, scan: s.scan },
+    { run: true, detour: true, walk: true, drops: true, approach: true, maxDist: ORE_STEP_MAX, scan: ORE_STEP_MAX },
+  );
+  assert.strictEqual(oreStepPlan({ name: 'iron_ore', dist: 8, maxDist: s.maxDist }), 'walk');
+  assert.deepStrictEqual(grabScope(), grabScope({ goal: null }));
+});
+
+test('grabScope : le RELIQUAT de notre propre but n est pas « un autre trajet »', () => {
+  // NoPath / chemin vide : mineflayer-pathfinder ne remet PAS `goal` à null — sans cette règle, un
+  // minerai inatteignable une fois mettrait le timer en portée de bras jusqu'au prochain trajet.
+  const ours = { ore: true };
+  assert.strictEqual(grabScope({ goal: ours, ownGoal: ours }).walk, true);
+  assert.strictEqual(grabScope({ goal: { other: true }, ownGoal: ours }).walk, false);
+});
+
+test('mayApproach : contourner une paroi = un goto → seulement sans autre trajet, ou pour du rare', () => {
+  const free = grabScope({ goal: null });
+  const busy = grabScope({ goal: { planner: true } });
+  const mig = grabScope({ migrating: true });
+  assert.strictEqual(mayApproach(free, 'iron_ore'), true);
+  assert.strictEqual(mayApproach(busy, 'iron_ore'), false);
+  assert.strictEqual(mayApproach(busy, 'deepslate_diamond_ore'), true);
+  assert.strictEqual(mayApproach(mig, 'diamond_ore'), false);
+  assert.strictEqual(mayApproach(null, 'diamond_ore'), false);
+});

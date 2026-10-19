@@ -1125,3 +1125,32 @@ test('arrivee : cellules epuisees corrompues ignorees (jamais de crash)', () => 
   const r = migrationArrivalOk({ reason: 'depleted', gone: 100, minDist: 600, arrival: ARR, depleted: [null, { x: 'a', z: 0 }, 5] });
   assert.deepStrictEqual(r, { ok: true, why: 'fresh_ground' });
 });
+
+// ─── JAMBE DE MIGRATION BLOQUÉE DANS UN ABRI / UN TUNNEL : REPLI EN CREUSANT (mesure 19/10) ─────
+// À l'aube, la migration part pendant que le bot est encore DANS son abri de nuit (creusé, emmuré,
+// couvert) ou au fond de son tunnel (y=50, `/home safe` refusé). La jambe marche en `canDig:false` :
+// enfermé + interdiction de creuser = NoPath instantané, les 24 jambes « s'exécutent » en 1-2 s et
+// la migration échoue `moved:1..2 arrival:too_short` (3/3 bots ce matin-là).
+const { legDigRetry } = require('./zone');
+
+test('legDigRetry : jambe sans creuser qui n a pas avancé → on la retente EN CREUSANT', () => {
+  assert.strictEqual(legDigRetry({ moved: 0 }), true);
+  assert.strictEqual(legDigRetry({ moved: 2 }), true);
+  assert.strictEqual(legDigRetry({ moved: LEG_STUCK_MIN - 0.5 }), true);
+});
+
+test('legDigRetry : la jambe a avancé → aucun repli (la marche de surface reste la règle)', () => {
+  assert.strictEqual(legDigRetry({ moved: LEG_STUCK_MIN }), false);
+  assert.strictEqual(legDigRetry({ moved: 60 }), false);
+});
+
+test('legDigRetry : préemptés (mort, ordre, évasion) → on ne relance RIEN', () => {
+  assert.strictEqual(legDigRetry({ moved: 0, cancelled: true }), false);
+});
+
+test('legDigRetry : position illisible → pas de repli (on ne creuse pas à l aveugle)', () => {
+  assert.strictEqual(legDigRetry({ moved: NaN }), false);
+  assert.strictEqual(legDigRetry({ moved: -1 }), false);
+  assert.strictEqual(legDigRetry({}), false);
+  assert.strictEqual(legDigRetry(), false);
+});

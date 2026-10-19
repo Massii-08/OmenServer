@@ -7,9 +7,15 @@
 // chantier — un bloc de fer à un bloc du nez était ignoré : le planner ne mine que ce qu'il a
 // décidé de miner. Un joueur, lui, casse ce qui est à portée de main et continue sa route.
 //
-// Contrat : on ne mine QUE ce qui est déjà à portée de bras (aucun déplacement, aucun
-// pathfinding) — donc ça n'interrompt jamais la tâche en cours, ça la ponctue.
-// Décisions pures ici ; le scan et le dig vivent dans index.js.
+// Contrat d'origine : on ne mine QUE ce qui est déjà à portée de bras (aucun déplacement). Il a
+// grandi depuis — détour pour un minerai RARE (DETOUR_ORES), quelques pas vers du minerai visible
+// (`oreStepPlan` 'walk'), marche vers un item au sol de valeur, approche quand le bloc est derrière
+// une paroi — et chacun de ces gestes POSE UN BUT PATHFINDER. Or le pathfinder n'a qu'un but : poser
+// le nôtre fait rejeter le `goto` en cours (GoalChanged). Mesure goal_trace (19/10) : le premier
+// appelant qui interrompait un trajet du planner était CE timer (sa marche 'walk').
+// D'où `grabScope` : pendant une migration, rien ; quand un AUTRE trajet est en cours, portée de bras
+// seulement (le détour vers du rare reste permis : il vaut l'interruption) ; sans trajet, tout.
+// Décisions pures ici ; le scan, les goto et le dig vivent dans index.js.
 
 // Ce qui vaut un coup de pioche en passant. Pas de pierre/terre : on ne ramasse pas du remblai.
 const WANTED_ORES = new Set([
@@ -122,8 +128,56 @@ function oreStepPlan({ name, dist, maxDist = ORE_STEP_MAX, reach = ORE_REACH } =
   return dist <= maxDist ? 'walk' : null;
 }
 
+// ─── NE PAS VOLER LE TRAJET EN COURS (mesure goal_trace, 19/10) ────────────────────────────────
+// Le premier appelant qui interrompait un `pathfinder.goto` du planner (explore, migration, branch-
+// mine) était `Timeout._onTimeout@index.js:6083` : la marche 'walk' de ce timer. Tout ce qui fait
+// MARCHER le bot (walk, drop, approche) pose un but → GoalChanged → le trajet du planner échoue.
+//
+// Le scan se limite à ce qu'on a le droit de miner : en portée de bras, `ORE_REACH` + 2 suffit
+// (findBlocks mesure depuis la position ARRONDIE, oreStepPlan depuis la position EXACTE : < √3 d'écart).
+const REACH_SCAN = ORE_REACH + 2;
+
+/**
+ * Ce que la prise opportuniste a le DROIT de faire maintenant, vu le trajet en cours. (PUR)
+ *
+ *   - migration en cours → RIEN (`run:false`) : la migration est EXCLUSIVE — un but posé sous ses
+ *     jambes lui volerait le pathfinder, un dig se battrait avec les creusages de la jambe ;
+ *   - un AUTRE but pathfinder est posé → minerais déjà à portée de bras SEULEMENT (ni marche, ni
+ *     drop, ni approche) ; le DÉTOUR vers un minerai rare (DETOUR_ORES) reste permis — rare, il vaut
+ *     l'interruption ;
+ *   - aucun autre but → comportement d'avant, inchangé.
+ *
+ * « Autre » : `ownGoal` est le dernier but posé PAR le ramassage. mineflayer-pathfinder ne remet pas
+ * `goal` à null après un NoPath ou un chemin vide — sans cette exception, un minerai inatteignable une
+ * seule fois laisserait le timer en portée de bras jusqu'au prochain trajet de quelqu'un d'autre.
+ *
+ * @param {{migrating?: boolean, goal?: *, ownGoal?: *}} [s] — `goal` = bot.pathfinder.goal
+ * @returns {{run: boolean, detour: boolean, walk: boolean, drops: boolean, approach: boolean,
+ *            maxDist: number, scan: number}} — `maxDist` à passer à oreStepPlan, `scan` à findBlocks
+ */
+function grabScope({ migrating = false, goal = null, ownGoal = null } = {}) {
+  if (migrating) {
+    return { run: false, detour: false, walk: false, drops: false, approach: false, maxDist: 0, scan: 0 };
+  }
+  const otherTrip = goal != null && goal !== ownGoal;
+  if (otherTrip) {
+    return { run: true, detour: true, walk: false, drops: false, approach: false, maxDist: ORE_REACH, scan: REACH_SCAN };
+  }
+  return { run: true, detour: true, walk: true, drops: true, approach: true, maxDist: ORE_STEP_MAX, scan: ORE_STEP_MAX };
+}
+
+/**
+ * Minerai à portée mais hors ligne de vue : peut-on s'en approcher (GoalGetToBlock = un but) ? (PUR)
+ * Sans autre trajet, oui ; sinon seulement pour du rare — c'est un détour comme un autre.
+ */
+function mayApproach(scope, oreName) {
+  if (!scope || !scope.run) return false;
+  return !!scope.approach || (!!scope.detour && isDetourWorthy(oreName));
+}
+
 module.exports = {
   WANTED_ORES, isWantedOre, canHarvest, shouldGrab,
   VALUABLE_DROPS, isValuableDrop, DETOUR_ORES, isDetourWorthy,
   oreStepPlan, ORE_STEP_MAX, ORE_REACH,
+  grabScope, mayApproach, REACH_SCAN,
 };

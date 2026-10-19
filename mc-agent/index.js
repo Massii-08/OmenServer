@@ -29,6 +29,7 @@ const { createTaskController } = require('./tasks');
 const { createMemory } = require('./memory');
 const { bestWeapon, bestToolFor } = require('./tools');
 const { shouldSprint, applyPathfinderBounds, withTempMovements } = require('./movement');   // sprint « vrai joueur » ON par défaut (Massii 2026-06-22) + bornage A* (anti-OOM 2026-07-25)
+const { installBridgeGuard } = require('./bridges');   // pas de pont au-dessus d'une vallée / de l'eau (Massii 19/10)
 const { createGoalTrace, installGoalTrace } = require('./goalTrace');   // DIAG GoalChanged : qui pose un but pendant un goto ? (aucun effet sur le bot)
 const vec3Lib = require('vec3'); // watchdog anti-jam (blocs barrants)
 const { gather, woodExpeditionCount } = require('./skills/gather');
@@ -74,7 +75,7 @@ const { recordOceanStuck } = require('./oceanEscalate'); // baie humide PERSISTA
 // en mémoire de process, son horloge repartait à zéro à chaque respawn et l'hystérésis de 15 min
 // n'était jamais atteinte — c'est pourquoi la migration n'a jamais tiré de la journée.
 const {
-  zoneVerdict, verdictTelemetry, pickMigrationTarget, migrationLeg, legHeading, LEG_STUCK_MIN, legIsGood, minDistFor,
+  zoneVerdict, verdictTelemetry, pickMigrationTarget, migrationLeg, legHeading, LEG_STUCK_MIN, legDigRetry, legIsGood, minDistFor,
   zoneFailureKind, zoneStateInit, zoneStateLoad, zoneStateAfterMigration, MAX_LEGS, MIGRATE_MIN_PROGRESS, LOADED_RADIUS,
   LOGS_NOT_FOUND_MAX, windowAdd, windowSum, windowPrune, ZONE_WINDOW_MS,
   zoneStateAfterFailedMigration, migrationEarlyExitOk, pruneFailedTargets, migrationArrivalOk,
@@ -1900,6 +1901,10 @@ let _failedTargets = [];          // cibles ratées [{x,z,at}] : écartées 45 m
 let _lastZoneVerdictReason = null; // dedup télémétrie : dernière raison de verdict tracée
 let _migrating = false;       // marche de migration en cours → l'enforcement confine est SUSPENDU
 let _migrationLegs = 0;       // jambes déjà parcourues (marche à l'aveugle)
+// Migrations (leur jeton `tok`) qui ont déjà émis `zone_migration_leg_dig` : l'event dit « cette
+// migration a dû creuser pour sortir », une fois, pas à chaque jambe. WeakSet : un jeton par migration,
+// libéré avec elle. Niveau MODULE (lu par migrationLegTo, piège #56).
+const _legDigEmitted = new WeakSet();
 // MIGRATION EXCLUSIVE (fix 18/08) — gardes lues par migrateZone, écrites ailleurs : niveau MODULE
 // obligatoire (piège #56 : un `let` dans onSpawn compile, passe les tests, et tue le bot en prod).
 // Des COMPTEURS et non des booléens : deux exécutions peuvent se chevaucher (un skill expiré par
@@ -2441,14 +2446,39 @@ async function migrationLegTo(leg, yRef, tok) {
   // autorisait (le vrai probleme que 18321c3 visait), on marche avec `canDig=false` : le bot suit la
   // surface sans pouvoir creuser vers le bas. Belt-and-suspenders : la remontee par jambe ci-dessous
   // rattrape le rare cas ou il finit quand meme sous terre.
-  await withTempMovements(bot, Movements, { canDig: false }, async () => {
+  const p0 = bot.entity && bot.entity.position;
+  const legFrom = p0 ? { x: p0.x, z: p0.z } : null;
+  const walkLeg = async () => {
     try {
       await withTimeout(
         bot.pathfinder.goto(new pfGoals.GoalNearXZ(leg.x, leg.z, 16)),
         90000, () => { try { stopMotion(); } catch (e) {} });
     } catch (e) { /* best-effort : la jambe suivante retentera */ }
-  });
+  };
+  await withTempMovements(bot, Movements, { canDig: false }, walkLeg);
   if (tok && tok.cancelled) return;   // préemptés PENDANT la jambe : pas de remontée par-dessus
+  // ⚠️ ENFERMÉ DANS SON ABRI / SON TUNNEL (mesure live 19/10, 3/3 bots à l'aube) : la migration part
+  // au lever du jour pendant que le bot est encore dans son abri de nuit (creusé, emmuré, couvert) ou
+  // au fond de son tunnel (y=50, `/home safe` refusé). `canDig:false` + enfermé = NoPath instantané,
+  // les 24 jambes « s'exécutaient » en 1-2 s → `zone_migration_failed moved:1..2 arrival:too_short`.
+  // Jambe sans progrès → on retente la MÊME jambe une fois EN CREUSANT (zone.legDigRetry) : le bot
+  // casse le mur de son abri ou perce son tunnel, puis la re-remontée ci-dessous s'applique comme avant.
+  {
+    const p1 = bot.entity && bot.entity.position;
+    const moved = (legFrom && p1) ? Math.hypot(p1.x - legFrom.x, p1.z - legFrom.z) : NaN;
+    if (legDigRetry({ moved, cancelled: !!(tok && tok.cancelled) })) {
+      // UNE fois par migration (pas par jambe) : le jeton est propre à chaque migration.
+      if (!tok || !_legDigEmitted.has(tok)) {
+        if (tok) _legDigEmitted.add(tok);
+        emit({
+          type: 'zone_migration_leg_dig', moved: Math.round(moved),
+          y: p1 ? Math.round(p1.y) : null, legX: leg.x, legZ: leg.z,
+        });
+      }
+      await withTempMovements(bot, Movements, { canDig: true }, walkLeg);
+      if (tok && tok.cancelled) return;
+    }
+  }
   const p = bot.entity && bot.entity.position;
   if (p && p.y < SAFE_HOME_MIN_Y) {
     try {
@@ -4993,6 +5023,28 @@ async function onSpawn() {
         .filter((x) => x != null);
       if (ids.length) moves.scafoldingBlocks = ids;
     } catch (e) { /* best-effort : garde le défaut dirt+cobblestone */ }
+    // PONTS ÉNORMES EN SURFACE (Massii 19/10 : « évite que les bots créent des ponts énormes en
+    // surface, ça ne sert à rien »). Ce n'est PAS `placeCost` qu'on remonte (cf. plus haut : poser
+    // trop cher partout a figé les bots, world_ax5) : on interdit la pose UNIQUEMENT là où elle ne
+    // sert qu'à ponter — au-dessus d'un vide ≥ 3 blocs en surface, au-dessus de l'eau partout — via
+    // `exclusionAreasPlace`, le crochet par bloc de la lib. Les TOURS 1×1 sont exemptées (l'A* voit
+    // encore de l'air sous une tour en cours : sans exemption elle plafonnerait à 3 blocs, cf.
+    // bridges.installBridgeGuard). withTempMovements recopie le garde-fou dans ses temporaires.
+    // ⚠️ ET les Movements des PLUGINS : `collectBlock.collect` et `pvp.attack` posent LEUR Movements
+    // d'usine (placeCost 1, eau `replaceable`) et ne rendent jamais la nôtre — sans garde-fou chez
+    // eux, chaque collecte ou combat rouvrait la porte aux passerelles, sur l'eau comprise.
+    {
+      const bridgeAt = (p) => bot.blockAt(p, false);   // comme la lib : sans les extras (peintures)
+      const on = {};
+      for (const [who, m] of [
+        ['nominal', moves],
+        ['collectBlock', bot.collectBlock && bot.collectBlock.movements],
+        ['pvp', bot.pvp && bot.pvp.movements],
+      ]) {
+        try { on[who] = installBridgeGuard(m, bridgeAt); } catch (e) { on[who] = false; }
+      }
+      emit(Object.assign({ type: 'bridge_guard_on' }, on));
+    }
     bot.pathfinder.setMovements(moves);
     // ANTI-OOM (crash live 25/07 : NethBot2 → 2 Go de heap en 38 s → FATAL heap out of memory,
     // juste après `survival:flee`). mineflayer-pathfinder livre `searchRadius = -1` = espace de
@@ -5970,17 +6022,41 @@ bot.on('end', () => { emit({ type: 'status', state: 'disconnected' }); process.e
 // cartographes figés en jambe (même signature). Jamais pendant un dig (immobile = légitime).
 let _jamSample = null;
 // ── PRISE OPPORTUNISTE DE MINERAI (Massii 2026-07-26 : « il y a plein de fois où les bots passent
-// à côté du fer mais ne le prennent pas »). On ne mine QUE ce qui est déjà à portée de bras (≤4,2
-// blocs, aucun déplacement, aucun pathfinding) → la tâche en cours n'est jamais interrompue, elle
-// est juste ponctuée. Et on vérifie l'OUTIL : miner du fer à la pioche de bois casse le bloc et ne
-// donne rien du tout (`oregrab.canHarvest`).
+// à côté du fer mais ne le prennent pas »). Ce qui est à portée de bras (≤4,2 blocs) est miné SANS
+// bouger, la tâche en cours est juste ponctuée. MAIS ce timer sait aussi MARCHER — détour vers un
+// minerai rare, quelques pas vers du fer visible ('walk'), ramassage d'un drop de valeur, approche
+// d'un bloc derrière une paroi — et chacun de ces gestes POSE UN BUT PATHFINDER, qui fait rejeter
+// le `goto` en cours (GoalChanged). Mesure goal_trace du 19/10 : le PREMIER interrupteur des trajets
+// du planner était ce timer (`Timeout._onTimeout@index.js:6083`, la marche 'walk'). D'où
+// `oregrab.grabScope` : pendant une migration, RIEN ; si un autre trajet est en cours, portée de
+// bras seulement (le détour vers du rare reste permis : il vaut l'interruption) ; sinon, tout.
+// Et on vérifie l'OUTIL : miner du fer à la pioche de bois casse le bloc et ne donne rien du tout
+// (`oregrab.canHarvest`).
 let _oreGrabBusy = false;
 let _oreGrabIds = null;
 let _oreDetourIds = null;   // ids des minerais RARES qui valent un detour (cf. oregrab)
+// Dernier but posé PAR le ramassage : son reliquat (NoPath / chemin vide → la lib ne remet pas
+// `goal` à null) n'est pas « un autre trajet » — sinon un minerai inatteignable une fois mettrait le
+// timer en portée de bras jusqu'au prochain trajet de quelqu'un d'autre. Niveau MODULE : lu par le timer.
+let _oreGrabGoal = null;
+/** Goto du ramassage : borné, et mémorise le but pour que grabScope le reconnaisse comme le nôtre. */
+function oreGrabGoto(goal, ms) {
+  _oreGrabGoal = goal;
+  return withTimeout(bot.pathfinder.goto(goal), ms, () => { try { stopMotion(); } catch (er) {} });
+}
 setInterval(async () => {
   if (_oreGrabBusy) return;
   try {
     if (!bot.entity || !bot.entity.position || !bot.registry) return;
+    // Relu juste avant CHAQUE geste (marche, approche, dig) : entre deux `await` (equip, goto) le
+    // planner a pu poser son but, une migration a pu démarrer — on décide sur l'état du moment.
+    const scopeNow = () => oregrab.grabScope({
+      migrating: _migrating,
+      goal: bot.pathfinder ? bot.pathfinder.goal : null,
+      ownGoal: _oreGrabGoal,
+    });
+    let scope = scopeNow();
+    if (!scope.run) return;   // migration EXCLUSIVE : ni but posé, ni dig lancé sous ses jambes
     const hostile = (() => {
       try {
         const e = bot.nearestEntity((x) => x && x.position && isFleeHostile(x)
@@ -6012,7 +6088,7 @@ setInterval(async () => {
           .map((n) => bot.registry.blocksByName[n] && bot.registry.blocksByName[n].id)
           .filter((x) => x != null);
       }
-      if (_oreDetourIds.length) {
+      if (scope.detour && _oreDetourIds.length) {
         const rare = bot.findBlocks({ matching: _oreDetourIds, maxDistance: 20, count: 1 });
         const rp = rare && rare[0];
         if (rp) {
@@ -6024,10 +6100,10 @@ setInterval(async () => {
           const _best = bestToolFor(bot, rb);
           if (rb && d > 4.2 && oregrab.canHarvest(rb, _best ? _best.type : (bot.heldItem && bot.heldItem.type))) {
             if (_best) { try { await bot.equip(_best, 'hand'); } catch (e) { /* best-effort */ } }
+            if (!scopeNow().detour) return;    // une migration a démarré pendant l'equip
             _oreGrabBusy = true;
             emit({ type: 'ore_detour', ore: rb.name, d: Math.round(d) });
-            await withTimeout(bot.pathfinder.goto(new pfGoals.GoalNear(rp.x, rp.y, rp.z, 2)),
-              25000, () => { try { stopMotion(); } catch (er) {} });
+            await oreGrabGoto(new pfGoals.GoalNear(rp.x, rp.y, rp.z, 2), 25000);
             return;   // la passe suivante (800 ms) le minera à portée de bras
           }
         }
@@ -6039,13 +6115,15 @@ setInterval(async () => {
     // jamais dans la liste des candidats — la marche était donc morte-née. Les deux valeurs
     // viennent maintenant de la MÊME constante. Coût maîtrisé : `count: 4` arrête le scan dès 4
     // trouvailles, et le rayon reste sans commune mesure avec les scans 256 qui gelaient l'event
-    // loop (piège #43a).
-    const hits = bot.findBlocks({ matching: _oreGrabIds, maxDistance: oregrab.ORE_STEP_MAX, count: 4 });
+    // loop (piège #43a). Quand un autre trajet est en cours (portée de bras seulement), le scan se
+    // réduit d'autant : `scope.scan` (cf. oregrab.grabScope).
+    const hits = bot.findBlocks({ matching: _oreGrabIds, maxDistance: scope.scan, count: 4 });
     // RAMASSAGE AU SOL (Massii, live 26/07 : « si il y a des item qui leur servent (genre diamant)
     // ils doivent les prendre »). Un minerai miné hors du rayon de ramassage automatique tombe et
     // reste là. On ne se détourne QUE pour ce qui fait avancer la chaîne (cf. oregrab.isValuableDrop)
     // et seulement quand il n'y a pas de minerai à portée — le minage garde la priorité.
     if (!hits || !hits.length) {
+      if (!scope.drops) return;            // marcher vers un item = poser un but : pas sur le trajet d'un autre
       try {
         const drops = homewarp.dropsWithin(bot.entities, bot.entity.position, 10)
           .filter((d) => {
@@ -6058,8 +6136,7 @@ setInterval(async () => {
           _oreGrabBusy = true;
           const e = drops[0].entity;
           emit({ type: 'drop_pickup', d: Math.round(drops[0].dist) });
-          await withTimeout(bot.pathfinder.goto(new pfGoals.GoalNear(e.position.x, e.position.y, e.position.z, 1)),
-            10000, () => { try { stopMotion(); } catch (er) {} });
+          await oreGrabGoto(new pfGoals.GoalNear(e.position.x, e.position.y, e.position.z, 1), 10000);
           await sleep(400);   // laisse la collecte automatique par proximité opérer
         }
       } catch (e) { /* best-effort : jamais bloquant */ }
@@ -6067,21 +6144,22 @@ setInterval(async () => {
     }
     _oreGrabBusy = true;
     for (const pos of hits) {
+      scope = scopeNow();                  // l'itération précédente a pu attendre (equip, goto, dig)
+      if (!scope.run) break;
       const blk = bot.blockAt(pos);
       if (!blk || !oregrab.isWantedOre(blk.name)) continue;
       // QUELQUES PAS pour du minerai visible (Massii 27/07, photo de 3 veines de fer intactes
       // dans les parois d'une salle creusée par les bots). L'ancien contrat — « portée de bras
       // stricte, aucun déplacement » — expliquait exactement ce qu'il voyait : dans une salle,
       // le fer est dans les PAROIS à 5-10 blocs, jamais à 4,2. Un joueur fait les trois pas.
+      // `maxDist` = portée autorisée : ORE_REACH quand un autre trajet est en cours → jamais 'walk'.
       const plan = oregrab.oreStepPlan({
-        name: blk.name, dist: blk.position.distanceTo(bot.entity.position),
+        name: blk.name, dist: blk.position.distanceTo(bot.entity.position), maxDist: scope.maxDist,
       });
       if (!plan) continue;
       if (plan === 'walk') {
         try {
-          await withTimeout(
-            bot.pathfinder.goto(new pfGoals.GoalNear(blk.position.x, blk.position.y, blk.position.z, 2)),
-            12000, () => { try { stopMotion(); } catch (er) {} });
+          await oreGrabGoto(new pfGoals.GoalNear(blk.position.x, blk.position.y, blk.position.z, 2), 12000);
         } catch (e) { continue; }               // inatteignable → on laisse, sans insister
         if (blk.position.distanceTo(bot.entity.position) > oregrab.ORE_REACH) continue;
       }
@@ -6103,13 +6181,14 @@ setInterval(async () => {
         return true;
       };
       if (!_reachable()) {
+        // S'approcher = poser un but : pendant le trajet d'un autre, seulement pour du rare.
+        if (!oregrab.mayApproach(scopeNow(), blk.name)) continue;
         try {
-          await withTimeout(
-            bot.pathfinder.goto(new pfGoals.GoalGetToBlock(blk.position.x, blk.position.y, blk.position.z)),
-            12000, () => { try { stopMotion(); } catch (er) {} });
+          await oreGrabGoto(new pfGoals.GoalGetToBlock(blk.position.x, blk.position.y, blk.position.z), 12000);
         } catch (e) { continue; }
         if (!_reachable()) continue;                     // inatteignable : on ne le gaspille pas
       }
+      if (!scopeNow().run) break;                        // migration lancée pendant l'equip : pas de dig sous ses jambes
       try {
         await withTimeout(bot.dig(blk), 12000, () => { try { bot.stopDigging(); } catch (e) {} });
         emit({ type: 'ore_grabbed', ore: blk.name, y: Math.round(blk.position.y) });
