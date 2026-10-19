@@ -99,6 +99,94 @@ def test_parse_gbx_is_divided_by_hundred():
     assert shel["market_cap_meur"] == 175500.0
 
 
+# --- Value.Traded : devise COMPTABLE, pas devise de cotation ---------------- #
+#
+# Lignes RÉELLES du screener, relevé du 19/10/2026 13:30 UTC (8 marchés). Le
+# rapport Value.Traded / (volume × close) y vaut 1,0 quand cotation et comptes
+# sont dans la même devise, 0,01 pour GBX/GBP, et le taux de change sinon (USD/GBP
+# 0,7503, USD/EUR 0,8899) : la valeur échangée est exprimée dans
+# ``fundamental_currency_code`` (celle de la capitalisation), PAS dans ``currency``.
+
+RR_LSE = {            # cours en pence (GBX), comptes en livres (GBP)
+    "name": "RR.", "currency": "GBX", "fundamental_currency_code": "GBP",
+    "close": 1332.6, "volume": 13635755, "Value.Traded": 181710071.13,
+    "average_volume_10d_calc": 20780949.8, "market_cap_basic": 111914036139,
+}
+CPG_LSE = {           # cotée en dollars à Londres, comptes en livres
+    "name": "CPG", "currency": "USD", "fundamental_currency_code": "GBP",
+    "close": 32.49, "volume": 308584, "Value.Traded": 7522428.388247999,
+    "average_volume_10d_calc": 1764787.2, "market_cap_basic": 41538441458.590195,
+}
+TFG_AMS = {           # cotée en dollars à Amsterdam, comptes en euros
+    "name": "TFG", "currency": "USD", "fundamental_currency_code": "EUR",
+    "close": 14.95, "volume": 4746, "Value.Traded": 63143.1491691,
+    "average_volume_10d_calc": 9728.4, "market_cap_basic": 1067421656.678443,
+}
+
+
+def _parse_one(tv_symbol, market_id, cols):
+    """Une seule ligne, construite par colonne (``_values``), parsée."""
+    # ``_values`` ignore en silence une colonne inconnue : une faute de frappe
+    # ferait passer un test à vide.
+    assert set(cols) <= set(sc.COLUMNS)
+    payload = {"totalCount": 1, "data": [{"s": tv_symbol, "d": _values(**cols)}]}
+    rows, _ = sc.parse_response(payload, mk.by_id(market_id))
+    assert len(rows) == 1
+    return rows[0]
+
+
+def test_value_traded_gbx_quote_is_converted_as_gbp():
+    """Londres, cours en pence : Value.Traded est en LIVRES. Lue comme des pence
+    elle sortait 100 fois trop petite (2,13 M€ au lieu de 212,6)."""
+    rr = _parse_one("LSE:RR.", "uk", RR_LSE)
+    # 181,7 M£ × 1,17 ≈ 212,6 M€
+    assert rr["value_traded_meur"] == round(181710071.13 * mk.eur_rate("GBP") / 1e6, 2)
+
+
+def test_value_traded_usd_quote_gbp_accounting_uses_gbp_rate():
+    """Cotée en USD mais comptes en GBP : Value.Traded est en livres."""
+    cpg = _parse_one("LSE:CPG", "uk", CPG_LSE)
+    # 7,52 M£ × 1,17 ≈ 8,80 M€ (avec le taux USD, 0,92, on lirait 6,92)
+    assert cpg["value_traded_meur"] == round(7522428.388247999 * mk.eur_rate("GBP") / 1e6, 2)
+
+
+@pytest.mark.parametrize("scale", [1, 1000])
+def test_value_traded_usd_quote_eur_accounting_uses_eur_rate(scale):
+    """Cotée en USD mais comptes en EUR : Value.Traded est en euros (taux 1,0).
+
+    À l'échelle 1 (relevé brut, 63 143 €) l'arrondi à 2 décimales donne 0,06
+    avec le taux EUR comme avec le taux USD : ce cas ne distingue rien. Les
+    montants ×1000 (même rapport mesuré, 0,8899) donnent 63,14 contre 58,09.
+    """
+    cols = dict(TFG_AMS)
+    cols["volume"] = TFG_AMS["volume"] * scale
+    cols["Value.Traded"] = TFG_AMS["Value.Traded"] * scale
+    tfg = _parse_one("EURONEXT:TFG", "netherlands", cols)
+    assert tfg["value_traded_meur"] == round(cols["Value.Traded"] * mk.eur_rate("EUR") / 1e6, 2)
+
+
+def test_value_traded_follows_row_accounting_currency_not_market_currency():
+    """Ligne SYNTHÉTIQUE (pas un relevé) : les trois lignes réelles ci-dessus ont
+    des comptes dans la devise de leur marché (uk -> GBP, netherlands -> EUR) et
+    ne distinguent donc pas « devise comptable de la LIGNE » de « devise du
+    marché ». Ici : un titre étranger coté en USD sur le marché ``america``,
+    comptes en EUR, avec le rapport mesuré USD/EUR (0,8899)."""
+    cols = {"name": "ADR", "currency": "USD", "fundamental_currency_code": "EUR",
+            "close": 1000.0, "volume": 1_000_000, "Value.Traded": 889_900_000.0}
+    adr = _parse_one("NASDAQ:ADR", "america", cols)
+    # 889,9 M€ — et pas 818,71 (taux USD, que la devise de cotation comme celle
+    # du marché ``america`` donneraient)
+    assert adr["value_traded_meur"] == round(889_900_000.0 * mk.eur_rate("EUR") / 1e6, 2)
+
+
+def test_avg_value_stays_in_quote_currency_for_gbx():
+    """``avg_value_meur`` = moyenne 10 j (titres) × cours (pence) : c'est la
+    devise de COTATION qui convertit ; la corriger comme Value.Traded la
+    rendrait 100 fois trop grosse."""
+    rr = _parse_one("LSE:RR.", "uk", RR_LSE)
+    assert rr["avg_value_meur"] == round(20780949.8 * 1332.6 * mk.eur_rate("GBX") / 1e6, 2)
+
+
 def test_parse_dedups_symbols_and_tolerates_short_rows():
     payload = {"totalCount": 2, "data": [
         {"s": "MIL:ENI", "d": ["ENI", "Eni", "stock", ["common"], "MIL", "EUR", 15.0]},

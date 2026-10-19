@@ -209,6 +209,7 @@ def parse_response(payload: Any, market: mk.Market,
         currency = _text(d.get("currency")) or market.currency
         avg_volume = _num(d.get("average_volume_10d_calc"))
         avg_value_local = (avg_volume * price) if avg_volume is not None else None
+        # devise COMPTABLE : celle de market_cap_basic ET de Value.Traded
         cap_currency = _text(d.get("fundamental_currency_code")) or currency
 
         rows.append({
@@ -225,7 +226,15 @@ def parse_response(payload: Any, market: mk.Market,
             "volume": _num(d.get("volume")),
             "rel_volume": _num(d.get("relative_volume_10d_calc")),
             "avg_value_meur": _meur(avg_value_local, currency, market),
-            "value_traded_meur": _meur(_num(d.get("Value.Traded")), currency, market),
+            # Value.Traded est exprimé dans la devise COMPTABLE, pas dans la devise
+            # de cotation. Mesure réelle du 19/10/2026 (8 marchés), rapport
+            # Value.Traded / (volume × close) : 1,0 quand les deux devises
+            # coïncident (USD/USD, EUR/EUR, CHF/CHF) ; 0,01 pour GBX/GBP (Londres :
+            # cours en pence, valeur en livres — 100 fois trop petite en lisant
+            # ``currency``) ; le taux de change quand elles diffèrent (USD/GBP
+            # 0,7503, EUR/GBP 0,8431, USD/EUR 0,8899). ``avg_value_meur``, lui,
+            # reste en devise de cotation : c'est un nombre de titres × le cours.
+            "value_traded_meur": _meur(_num(d.get("Value.Traded")), cap_currency, market),
             "market_cap_meur": _meur(_num(d.get("market_cap_basic")), cap_currency, market),
             "sector": _text(d.get("sector")) or None,
             "industry": _text(d.get("industry")) or None,
