@@ -19,13 +19,15 @@
 //   goSpawn(bot)        → /home safe         (repli sur LA base, cf. /spawn absent)
 //   goWork(bot)         → /home work         (retour au chantier après une excursion)
 //   delhome(bot, name)  → /delhome <name>    (libère un slot — la limite serveur est de 3)
+//   ⚠️ Un /home safe consulte d'abord le veto du home CAMPÉ (bot._mcaSafeVeto, cf. goHome) : seul ce
+//   module envoie des /home, c'est le point d'entrée unique (test de câblage dans index.homesafety.test.js).
 //
 // ⚠️ SEULEMENT 3 NOMS (safe/work/death, cf. homes.js) : le serveur limite à 3 homes et le 4ᵉ
 // `/sethome` échoue EN SILENCE. C'est le bug prouvé sur world_mn5 (un bot sans home `safe` = filet
 // anti-noyade mort). `canchor`/`wsite` sont retirés : `safe` EST l'ancre, `work` EST le chantier.
 
 const { isForbiddenCheat } = require('./nogive');
-const { HOMES, HOME_WORK } = require('./homes');
+const { HOMES, HOME_SAFE, HOME_WORK } = require('./homes');
 
 const RESERVED = HOMES.slice();
 
@@ -51,17 +53,31 @@ function bookmark(bot, name) {
 /** Téléporte le bot vers le signet <name>. Retourne le nom nettoyé, ou false.
  * Trace le dernier /home envoyé sur le bot (bot._mcaLastHome) : Essentials répond de façon
  * asynchrone dans le chat, et un refus (« destination unsafe ») ne cite PAS le nom du home —
- * seul ce tracking permet d'attribuer le refus (cf. refusedHome). */
-function goHome(bot, name) {
+ * seul ce tracking permet d'attribuer le refus (cf. refusedHome).
+ *
+ * HOME `safe` CAMPÉ (live 19/10, MapBot2 : 8 morts en 3 min, chaque secours le ramenait dans le camp
+ * du spawn) : un /home safe consulte d'abord `bot._mcaSafeVeto(ctx)`, posé par index.js (décision pure
+ * homeSafety.rescueWarpVeto). Vrai = home campé ET (nuit OU hostile signalé près du home) → la commande
+ * N'EST PAS envoyée et on rend false, l'échec habituel : chaque appelant a déjà son repli (nager, creuser
+ * sur place, s'abriter là où il est). C'est le point d'entrée UNIQUE : goSpawn, safeWarpHome et les
+ * appels directs passent tous par ici. `opts.voluntary` (retour demandé, de jour) court-circuite le
+ * veto ; un veto qui LÈVE ne bloque jamais un secours ; sans veto installé, comportement d'avant.
+ * @param {{ctx?: string, voluntary?: boolean}} [opts] */
+function goHome(bot, name, opts) {
   const n = sanitizeName(name);
+  if (n === HOME_SAFE && !(opts && opts.voluntary) && bot && typeof bot._mcaSafeVeto === 'function') {
+    let veto = false;
+    try { veto = !!bot._mcaSafeVeto(opts && opts.ctx); } catch (e) { veto = false; }
+    if (veto) return false;
+  }
   if (!_send(bot, '/home ' + n)) return false;
   try { bot._mcaLastHome = { name: n, at: Date.now() }; } catch (e) {}
   return n;
 }
 
-/** Sort d'un piège mortel vers LA BASE (repli sur le home 'safe' — /spawn absent). */
-function goSpawn(bot) {
-  return goHome(bot, 'safe');
+/** Sort d'un piège mortel vers LA BASE (repli sur le home 'safe' — /spawn absent). Même veto que goHome. */
+function goSpawn(bot, opts) {
+  return goHome(bot, HOME_SAFE, opts);
 }
 
 /** Retour au chantier courant après une excursion volontaire (bois, dépôt, livraison, entraide). */

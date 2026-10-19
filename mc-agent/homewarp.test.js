@@ -278,3 +278,62 @@ test('isTpAlreadyPending: chemin DISTINCT du refus de destination et de l_annula
   assert.strictEqual(homewarp.isTpRefusal(m), false);
   assert.strictEqual(homewarp.isTpCancelled(m), false);
 });
+
+// --- HOME `safe` CAMPÉ (live 19/10) : TOUT /home safe passe par goHome, qui consulte le veto ------
+// Le veto est posé sur le bot par index.js (`bot._mcaSafeVeto`, décision pure dans homeSafety.js).
+// Point d'entrée UNIQUE : goSpawn, safeWarpHome et les appels directs passent tous par ici.
+function vetoBot(veto) {
+  const b = fakeBot();
+  b.vetoCalls = [];
+  b._mcaSafeVeto = (ctx) => { b.vetoCalls.push(ctx); if (veto instanceof Error) throw veto; return veto; };
+  return b;
+}
+
+test('goHome safe : veto vrai → AUCUNE commande envoyée, false rendu (l échec habituel), pas de tracking', () => {
+  const bot = vetoBot(true);
+  assert.strictEqual(goHome(bot, 'safe', { ctx: 'mapper_night' }), false);
+  assert.deepStrictEqual(bot.sent, []);
+  assert.deepStrictEqual(bot.vetoCalls, ['mapper_night'], 'le contexte de l appelant arrive au veto');
+  assert.strictEqual(bot._mcaLastHome, undefined, 'un /home non envoyé ne doit pas se faire attribuer un refus');
+});
+
+test('goHome safe : veto faux → /home safe envoyé normalement', () => {
+  const bot = vetoBot(false);
+  assert.strictEqual(goHome(bot, 'safe'), 'safe');
+  assert.deepStrictEqual(bot.sent, ['/home safe']);
+});
+
+test('goSpawn : passe par le même veto (c est un /home safe)', () => {
+  const bot = vetoBot(true);
+  assert.strictEqual(goSpawn(bot, { ctx: 'relocate' }), false);
+  assert.deepStrictEqual(bot.sent, []);
+  assert.deepStrictEqual(bot.vetoCalls, ['relocate']);
+});
+
+test('goHome safe : un veto qui LÈVE ne bloque jamais un secours', () => {
+  const bot = vetoBot(new Error('boom'));
+  assert.strictEqual(goHome(bot, 'safe'), 'safe');
+  assert.deepStrictEqual(bot.sent, ['/home safe']);
+});
+
+test('goHome safe : `voluntary` (retour demandé, de jour) court-circuite le veto', () => {
+  const bot = vetoBot(true);
+  assert.strictEqual(goHome(bot, 'safe', { voluntary: true }), 'safe');
+  assert.deepStrictEqual(bot.sent, ['/home safe']);
+  assert.deepStrictEqual(bot.vetoCalls, [], 'le veto n est même pas consulté');
+});
+
+test('goHome work/death : le veto du home safe ne les concerne pas', () => {
+  const bot = vetoBot(true);
+  assert.strictEqual(goHome(bot, 'work'), 'work');
+  assert.strictEqual(goHome(bot, 'death'), 'death');
+  assert.strictEqual(goWork(bot), 'work');
+  assert.deepStrictEqual(bot.sent, ['/home work', '/home death', '/home work']);
+  assert.deepStrictEqual(bot.vetoCalls, []);
+});
+
+test('goHome safe : sans veto installé (autres bots, tests) → comportement d avant', () => {
+  const bot = fakeBot();
+  assert.strictEqual(goHome(bot, 'safe'), 'safe');
+  assert.deepStrictEqual(bot.sent, ['/home safe']);
+});

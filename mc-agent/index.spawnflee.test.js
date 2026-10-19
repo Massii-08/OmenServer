@@ -259,6 +259,9 @@ function deathSandbox(opts = {}) {
     lastDeath: null,
     deathSpots: { noteDeath: () => null },
     abandonWorkIfDeathSpot: () => {},
+    // HOME CAMPÉ (19/10) : la position de la mort est notée par le handler (glue réelle testée plus bas
+    // et dans index.homesafety.test.js) — ici un témoin qui trace l'ordre des écritures.
+    recordDeathPosition: () => { sb.calls.push('pos'); return true; },
     taskCtl: { cancel: () => {} },
     process: { exit(code) { exits.push(code); sb.calls.push('exit:' + code); } },
     ...opts,
@@ -333,6 +336,26 @@ test('GÉNÉRATIONS : le process B (mémoire vide, même fichier) fuit dès son 
   // B ne sort que sur SES 5 morts
   for (const s of [9, 12, 15, 18]) B.die(tB + s * 1000);
   assert.deepStrictEqual(B.exits, [2], 'la 5ᵉ mort PROPRE de B déclenche la sortie');
+});
+
+test('handler death : la POSITION de chaque mort est persistée (deathPos) AVANT process.exit(2) — le process suivant saura que son home est campé', () => {
+  const H = require('./homeSafety');
+  const atExit = [];
+  const sb = deathSandbox({
+    deathPosPrune: H.deathPosPrune, deathPosLoad: H.deathPosLoad, deathPosMemoWith: H.deathPosMemoWith,
+    _deathPos: [], _deathPosLoaded: false,
+  });
+  run(sb, fnSrc('loadDeathPositions'));
+  run(sb, fnSrc('recordDeathPosition'));                       // la vraie glue remplace le témoin
+  sb.process.exit = (code) => { atExit.push((sb.disk.memo.deathPos || []).length); sb.exits.push(code); };
+  for (const s of [5, 12, 17, 34, 36]) sb.die(T0 + s * 1000);
+  assert.deepStrictEqual(sb.exits, [2]);
+  assert.deepStrictEqual(atExit, [5], '5 positions sur disque au moment de la sortie');
+  assert.deepStrictEqual(sb.disk.memo.deathPos[4], { x: -3, y: 70, z: -1, at: T0 + 36000 });
+  assert.strictEqual(sb.disk.memo.deaths.length, 5, 'l historique des instants est intact, à côté');
+  // le process suivant (même fichier, mémoire neuve) juge le home du spawn campé dès son 1er spawn
+  const tB = T0 + 61000;
+  assert.strictEqual(H.homeCamped({ home: { x: -3, y: 70, z: -1 }, deaths: H.deathPosLoad(sb.disk.memo, tB), now: tB }), true);
 });
 
 test('handler death : sans chargement préalable, il charge lui-même (jamais une mort écrite sur un historique pas relu)', () => {

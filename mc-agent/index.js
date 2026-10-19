@@ -97,6 +97,12 @@ const { recordWorkStuck } = require('./workStuck'); // chantier menant à une im
 // de mort. Le serveur n'autorise que 3 homes et le code en posait 4 → un /sethome échouait EN
 // SILENCE sur chaque bot (bug prouvé world_mn5). Voir homes.js.
 const { HOME_SAFE, HOME_WORK, HOME_DEATH, LEGACY_HOMES, canBookmarkDeath, openDebt, debtAction, isSurfaceSpot, SAFE_HOME_MIN_Y, isSilentSafeFailure } = require('./homes');
+// HOME `safe` CAMPÉ (live 19/10, MapBot2 : 8 morts en 3 min — chaque secours le ramenait au camp du
+// spawn). Décisions PURES ; la glue (veto, re-pose, mémo) est plus bas, section « HOME safe CAMPÉ ».
+const {
+  homeCamped, rescueWarpVeto, safeHomeMove, spawnSafeHomeAction, deathPosPrune, deathPosLoad, deathPosMemoWith,
+  safeHomeLoad, safeHomeMemoWith, nearestHostile, hostileNearHome, CAMPED_EVENT_EVERY_MS,
+} = require('./homeSafety');
 const { recordJam } = require('./jamEscalate'); // JAM persistant au MÊME endroit → relocate forcé (live 22/06 SOIR ResBot2)
 const { runResource } = require('./skills/resource');
 const { planSmeltRaw } = require('./bank');   // fonte périodique du brut or/fer → lingots bankables
@@ -378,6 +384,14 @@ let presence = null;          // heartbeat de présence du groupe (positions-<gr
 let _lastMapperTpAt = 0;      // TP-au-mappeur : cooldown (1 tentative / 4 min)
 let _dzones = [];             // camps de mort : zones où ≥2 alertes « mort imminente » (deathzones.js)
 let _safeHomePos = null;      // coords du dernier /sethome safe (pour fuir VERS lui si hors zone bannie)
+// HOME `safe` CAMPÉ (live 19/10, cf. homeSafety.js) — gardes de NIVEAU MODULE (piège #56) : le veto est
+// lu par homewarp.goHome depuis n'importe quel timer, la re-pose tourne dans un setInterval, le handler
+// `death` écrit les positions. Déclarées dans onSpawn, elles lèveraient une ReferenceError en prod.
+let _deathPos = [];           // morts récentes {x,y,z,at} — miroir du champ `deathPos` du mémo de base
+let _deathPosLoaded = false;  // relues du mémo UNE fois par process (les morts des process précédents comptent)
+let _hostileNearHomeAt = 0;   // dernier hostile vu à ≤ 24 blocs du home safe (remis à 0 quand le home bouge)
+let _homeCampedEventAt = 0;   // throttle de `home_safe_camped` (1×/min)
+let _safeHomeMovedAt = 0;     // dernière re-pose du home pour cause de camp (cooldown 5 min)
 let _posSamples = [];         // desync-watchdog : échantillons de position (30 s × 10 = 5 min)
 let _stillBusy = false;       // immobilité LÉGITIME en cours (fonte au four, abri nocturne) — gate desync
 let _smeltOppBusy = false;    // fonte opportuniste : une seule passe à la fois
@@ -437,10 +451,11 @@ async function awaitWarp(opts = {}) {
 // Fire-and-forget depuis le watchdog imminent — best-effort, les réflexes couvrent la course.
 async function fleeDeathCamp(fromPos) {
   const now = Date.now();
+  // HOME CAMPÉ (19/10) : fuir un camp VERS un autre camp n'est pas une fuite → à pied, comme sans home.
   if (_safeHomePos && !deathzones.isBanned(_dzones, _safeHomePos.x, _safeHomePos.z, now)
-      && !deathSpots.isBanned(_safeHomePos.x, _safeHomePos.z)) {
+      && !deathSpots.isBanned(_safeHomePos.x, _safeHomePos.z) && !safeHomeVeto('death_camp_flee')) {
     emit({ type: 'death_camp_flee', via: 'home_safe' });
-    await safeWarpHome('safe');
+    await safeWarpHome('safe', { ctx: 'death_camp_flee' });
     return;
   }
   const ang = Math.random() * Math.PI * 2;
@@ -508,7 +523,7 @@ setInterval(() => {
     if (shouldEnforceConfine({ dist, radius: conf.radius, busy, now: Date.now(), lastAt: _lastConfineEnforceAt })) {
       _lastConfineEnforceAt = Date.now();
       emit({ type: 'confine_enforce', dist: Math.round(dist), x: conf.x, z: conf.z });
-      safeWarpHome(CONFINE_HOME).catch(() => {});
+      safeWarpHome(CONFINE_HOME, { ctx: 'confine_enforce' }).catch(() => {});
     }
   } catch (e) { /* watchdog : ne crash jamais */ }
 }, 45000);
@@ -520,6 +535,12 @@ setInterval(() => {
 setInterval(() => {
   try { checkZoneVerdict(); } catch (e) { /* watchdog : ne crash jamais */ }
 }, 60000);
+
+// HOME `safe` CAMPÉ (live 19/10) : toutes les 5 s, note les hostiles vus près du home et, de jour, au
+// calme, en surface, loin du camp, RE-POSE le home ici (1×/5 min max — cf. maybeMoveCampedSafeHome).
+setInterval(() => {
+  try { maybeMoveCampedSafeHome(); } catch (e) { /* watchdog : ne crash jamais */ }
+}, 5000);
 
 // TP-AU-MAPPEUR : demande /tpa vers le mappeur choisi par pickMapperTp (frais, qui rapproche de
 // la cible d'au moins 150 blocs — ou le plus loin de moi sans cible). L'acceptation est automatique
@@ -662,7 +683,16 @@ async function trySquad() {
 // murer / flotter) AVANT le /home — sur les serveurs à teleport-delay, le TP est annulé si on
 // bouge/prend un coup pendant le warmup ~5 s, et nos secours partent précisément sous les coups.
 // Best-effort intégral : un échec de mise en sécurité n'empêche jamais le warp ; 1 retry si annulé.
+// HOME `safe` CAMPÉ (live 19/10) : le veto passe AVANT la mise en sécurité — se murer 6 s pour un
+// /home qui ne partira pas, c'est 6 s de plus sous les coups. On rend l'échec habituel (warped:false,
+// + camped/why) : chaque appelant a déjà son repli (nager, creuser sur place, s'abriter où il est).
+// `opts.ctx` = qui demande (tracé dans `home_safe_camped`).
 async function safeWarpHome(name, opts = {}) {
+  if (homewarp.sanitizeName(name) === HOME_SAFE) {
+    const veto = safeHomeVeto(opts.ctx || 'safe_warp');
+    if (veto) return { warped: false, cancelled: false, camped: true, why: veto.why };
+  }
+  const goOpts = { ctx: opts.ctx || 'safe_warp' };
   const state = {
     inWater: (function () { try { return isInWater(bot); } catch (e) { return false; } })(),
     hostiles: (function () { try { return nearbyHostiles(bot, 8).length; } catch (e) { return 0; } })(),
@@ -682,17 +712,18 @@ async function safeWarpHome(name, opts = {}) {
     try { await withTimeout(secureSpot(bot, tactic, { token: taskToken, emit }), 6000, () => {}); } catch (e) {}
   }
   try { stopMotion(); } catch (e) {}    // IMMOBILE pendant l'éventuel warmup (sinon annulation)
-  homewarp.goHome(bot, name);
-  let r = await awaitWarp(opts);
+  // goHome re-consulte le veto (la nuit a pu tomber pendant la mise en sécurité) : un /home NON ENVOYÉ
+  // ne s'attend pas (9 s pour rien) et ne compte pas comme un /home muet — ce n'est pas un signet cassé.
+  const NOT_SENT = { warped: false, cancelled: false, notSent: true };
+  let r = homewarp.goHome(bot, name, goOpts) ? await awaitWarp(opts) : NOT_SENT;
   if (!r.warped && r.cancelled) {       // annulé (coup reçu/mouvement) → re-sécuriser + 1 retry
     emit({ type: 'safe_warp_retry', name, tactic });
     try { await withTimeout(secureSpot(bot, tactic === 'none' ? 'seal' : tactic, { token: taskToken, emit }), 6000, () => {}); } catch (e) {}
     try { stopMotion(); } catch (e) {}
-    homewarp.goHome(bot, name);
-    r = await awaitWarp(opts);
+    r = homewarp.goHome(bot, name, goOpts) ? await awaitWarp(opts) : NOT_SENT;
   }
   if (tactic === 'float') { try { bot.setControlState('jump', false); } catch (e) {} }
-  emit({ type: 'safe_warp', name, tactic, warped: !!r.warped });
+  emit({ type: 'safe_warp', name, tactic, warped: !!r.warped, ...(r.notSent ? { sent: false } : {}) });
   // /home safe SILENCIEUX depuis sous terre (warped:false, non annulé, aucun message de refus reconnu
   // par refusedHome) = signet safe cassé → le bot reste piégé en profondeur, /home safe ne le
   // remontera jamais. La voie « refus » (home_tp_refused) ne couvre que le refus EXPLICITE ; ce no-op
@@ -702,7 +733,7 @@ async function safeWarpHome(name, opts = {}) {
   // sain à la prochaine surface sèche, et la survie cesse de compter sur ce warp mort.
   try {
     const py = bot.entity && bot.entity.position ? bot.entity.position.y : null;
-    if (isSilentSafeFailure({ name, warped: !!r.warped, cancelled: !!r.cancelled, y: py })) {
+    if (!r.notSent && isSilentSafeFailure({ name, warped: !!r.warped, cancelled: !!r.cancelled, y: py })) {
       _safeNoopStreak++;
       if (_safeNoopStreak >= SAFE_NOOP_MAX && !_homeRefusedAt.safe) {
         _homeRefusedAt.safe = Date.now();
@@ -1398,21 +1429,26 @@ async function runGoalSkill(goal) {
   //   (b) il ne regardait que le NOM du but, et `help_pick` — celui qui échouait en boucle sur
   //       `no_sticks`, 31 fois mesurées — n'est pas dans WOOD_GOALS.
   // Résultat : le bot manquait de bois, le savait, et ne remontait jamais en chercher.
+  // HOME CAMPÉ (19/10) : le bois est en surface, mais pas dans le camp qui vient de nous tuer — campé
+  // de nuit ou avec un hostile signalé là-haut, pas de trajet (ni signet de chantier) : on tente le
+  // skill sur place, et le besoin de bois reste armé pour la prochaine passe (cooldown 2 min).
   if (NO_GIVE && (WOOD_GOALS.has(goal.name) || _needsWoodTrip) && bot.entity && bot.entity.position
       && bot.entity.position.y < 62 && (Date.now() - _lastWoodTripAt) > 120000) {
     _lastWoodTripAt = Date.now();
-    try {
-      if (!_workSet && !isInWater(bot)) {
-        homewarp.bookmark(bot, HOME_WORK); _workSet = true; _workPos = _botXZ();
-        emit({ type: 'work_bookmarked', why: 'wood_trip' });
-      }
-      emit({
-        type: 'wood_trip', goal: goal.name, y: Math.round(bot.entity.position.y),
-        why: _needsWoodTrip ? 'no_wood_proven' : 'wood_goal',
-      });
-      _needsWoodTrip = false;
-      await safeWarpHome('safe');   // surface : c'est là qu'il y a des arbres et de quoi crafter
-    } catch (e) { /* best-effort : à défaut on tente le skill sur place, comportement d'avant */ }
+    if (!safeHomeVeto('wood_trip')) {
+      try {
+        if (!_workSet && !isInWater(bot)) {
+          homewarp.bookmark(bot, HOME_WORK); _workSet = true; _workPos = _botXZ();
+          emit({ type: 'work_bookmarked', why: 'wood_trip' });
+        }
+        emit({
+          type: 'wood_trip', goal: goal.name, y: Math.round(bot.entity.position.y),
+          why: _needsWoodTrip ? 'no_wood_proven' : 'wood_goal',
+        });
+        _needsWoodTrip = false;
+        await safeWarpHome('safe', { ctx: 'wood_trip' });   // surface : c'est là qu'il y a des arbres et de quoi crafter
+      } catch (e) { /* best-effort : à défaut on tente le skill sur place, comportement d'avant */ }
+    }
   }
   // ARMURE-AVANT-PROFONDEUR pour le chemin planner (chaîne diamant + kit mappeur, hole A §1.3) :
   // avant une descente/branche, tente armure+bouclier (best-effort, borné, idempotent si déjà armé).
@@ -1871,8 +1907,16 @@ async function maybeNightShelter(proactive = false, opts = {}) {
     lastShelterT = Date.now();
     // MAPPEUR (Massii 2026-07-15) : d'abord REVENIR au home 'safe' de surface (/home safe, visible),
     // puis se terrer là — plutôt que de creuser un trou au hasard là où la nuit l'a surpris.
+    // ⚠️ HOME CAMPÉ (live 19/10) : c'était le 1ᵉʳ maillon de la boucle mortelle de MapBot2
+    // (mapper_home_return > safe_warp > fight > dig_in > flee > mort, 8 fois en 3 min). goHome passe par
+    // le veto : campé la nuit, le /home ne part pas et on se terre LÀ où la nuit nous a surpris.
     if (IS_MAPPER && _safeHomeSet) {
-      try { emit({ type: 'mapper_home_return', home: 'safe' }); homewarp.goHome(bot, 'safe'); await sleep(4000); } catch (e) {}
+      try {
+        if (homewarp.goHome(bot, HOME_SAFE, { ctx: 'mapper_night' })) {
+          emit({ type: 'mapper_home_return', home: 'safe' });
+          await sleep(4000);
+        }
+      } catch (e) {}
     }
     _stillBusy = true;    // terré jusqu'à l'aube (≤13 min immobile) : immobilité légitime, pas un desync
     try {
@@ -2152,9 +2196,10 @@ async function migrateZone(reason) {
       if (pUp && pUp.y < SAFE_HOME_MIN_Y && !tok.cancelled) {
         emit({ type: 'zone_migration_surfacing', from_y: Math.round(pUp.y), via: 'home_safe' });
         try {
-          await safeWarpHome(HOME_SAFE);
+          await safeWarpHome(HOME_SAFE, { ctx: 'migration_surfacing' });
         } catch (e) { /* best-effort */ }
-        // Repli : si le home a ete refuse (teleport-safety) on tente quand meme la remontee a pied.
+        // Repli : si le home a ete refuse (teleport-safety) — ou s'il est CAMPÉ (veto, 19/10) — on
+        // tente quand meme la remontee a pied.
         const pAfterWarp = bot.entity && bot.entity.position;
         if (pAfterWarp && pAfterWarp.y < SAFE_HOME_MIN_Y && !tok.cancelled) {
           emit({ type: 'zone_migration_surfacing', from_y: Math.round(pAfterWarp.y), via: 'walk' });
@@ -2345,9 +2390,7 @@ async function migrateZone(reason) {
       try { homewarp.delhome(bot, HOME_WORK); } catch (e) { /* best-effort */ }
       try { homewarp.delhome(bot, HOME_SAFE); } catch (e) { /* best-effort */ }
       homewarp.bookmark(bot, HOME_SAFE);
-      _safeHomeSet = true;
-      _safeHomeSurface = p2.y >= 58;
-      _safeHomePos = { x: p2.x, y: p2.y, z: p2.z };
+      noteSafeHome(p2, 'migration');   // état du process + `safeHome` persisté (le process suivant doit le savoir)
       try { bot.chat('/spawnpoint'); } catch (e) {}
       const base = { x: Math.round(p2.x), y: Math.round(p2.y), z: Math.round(p2.z) };
       const st = loadBaseState() || {};
@@ -3142,6 +3185,220 @@ function persistDeathHistory() {
   } catch (e) { return false; }
 }
 
+// ─── HOME `safe` CAMPÉ (live 19/10, monde neuf : spawn sous la canopée d'une vieille forêt de bouleaux) ─
+// Le home `safe` est posé au spawn et c'est la destination de secours de TOUT le code. Or le spawn était
+// CAMPÉ (zombies/squelettes/creepers qui ne brûlent pas sous la canopée) : MapBot2 y est mort 8 fois en
+// 3 min, chaque « secours » le ramenant au camp — 12 morts en 5 min sur la flotte, dont 6 creepers.
+// Décisions PURES dans homeSafety.js ; ici, la seule glue :
+//   - les POSITIONS de mort, persistées (champ `deathPos` du mémo) : le death_loop fait process.exit(2) et
+//     le process neuf respawne au même camp — il DOIT savoir que son home y est ;
+//   - safeHomeVeto : LE point de décision, consulté par homewarp.goHome (bot._mcaSafeVeto, posé après
+//     createBot) pour TOUT /home safe, et par safeWarpHome avant de se murer ;
+//   - noteSafeHome : TOUT /sethome safe est mémorisé (état + mémo `safeHome`) — sans ça le veto jugerait
+//     un autre endroit que celui où /home safe téléporte vraiment ;
+//   - maybeMoveCampedSafeHome : de jour, au calme, en surface, loin du camp → le home DÉMÉNAGE (timer 5 s) ;
+//   - poseSafeHomeAtSpawn : un process neuf ne re-pose plus `safe` DANS le camp.
+
+/** Relit les positions de mort des process précédents — UNE fois par process (lazy : le 1er besoin). */
+function loadDeathPositions() {
+  if (_deathPosLoaded) return;
+  _deathPosLoaded = true;
+  try {
+    const now = Date.now();
+    // Fusion avec ce que ce process aurait déjà noté : on ne perd jamais une mort.
+    _deathPos = deathPosPrune(deathPosLoad(loadBaseState(), now).concat(_deathPos), now);
+  } catch (e) { /* best-effort : sans l'historique, aucun home n'est jugé campé (comportement d'avant) */ }
+}
+
+/** Positions de mort récentes, chargées au besoin. */
+function _recentDeathPositions() {
+  loadDeathPositions();
+  return _deathPos;
+}
+
+/** Ce point est-il CAMPÉ (≥ 2 morts récentes à ≤ 24 blocs) ? */
+function _campedAt(p) {
+  try { return homeCamped({ home: p, deaths: _recentDeathPositions(), now: Date.now() }); } catch (e) { return false; }
+}
+
+/**
+ * Note la POSITION d'une mort et la PERSISTE (fusion sur le mémo COURANT, piège #61). Appelée par le
+ * handler `death` AVANT tout process.exit(2) : c'est elle qui dira au process suivant que son home est
+ * campé. Rend false — et le DIT — si l'écriture échoue (la relance ne verrait pas cette mort).
+ */
+function recordDeathPosition(p) {
+  try {
+    loadDeathPositions();
+    if (!p || !Number.isFinite(p.x) || !Number.isFinite(p.z)) return false;
+    const now = Date.now();
+    _deathPos = deathPosPrune(_deathPos.concat([{ x: p.x, y: p.y, z: p.z, at: now }]), now);
+    const ok = saveBaseState(deathPosMemoWith(loadBaseState(), _deathPos, now));
+    if (ok === false) { emit({ type: 'death_pos_save_failed' }); return false; }
+    return true;
+  } catch (e) { return false; }
+}
+
+/**
+ * Mémorise le home `safe` qu'on VIENT de poser (/sethome safe envoyé) : état du process ET mémo de base
+ * (`safeHome`, relu au spawn d'un process neuf). Un test de câblage exige un appel après CHAQUE
+ * /sethome safe : un seul oubli, et le veto jugerait un autre endroit que celui où /home téléporte.
+ */
+function noteSafeHome(p, why) {
+  if (!p || !Number.isFinite(p.x) || !Number.isFinite(p.z)) return false;
+  _safeHomeSet = true;
+  _safeHomeSurface = Number.isFinite(p.y) && p.y >= SAFE_HOME_MIN_Y;
+  _safeHomePos = { x: p.x, y: p.y, z: p.z };   // COPIE : bot.entity.position est muté en place
+  _hostileNearHomeAt = 0;                       // les hostiles vus près de l'ANCIEN home ne campent pas celui-ci
+  try { return saveBaseState(safeHomeMemoWith(loadBaseState(), _safeHomePos, Date.now(), why)) !== false; }
+  catch (e) { return false; }
+}
+
+/** Hostile « vrai » : même prédicat que spawnDangerNow (kind OU nom listé), moins les neutres (enderman). */
+function _isFoe(e) {
+  return !!e && e.isValid !== false && isFleeHostile(e) && !NEUTRAL_NO_PROVOKE.has(e.name);
+}
+
+/**
+ * Note un hostile vu près du HOME (pas du bot) et rend l'instant de la dernière observation. Le client ne
+ * voit que les entités à portée de suivi : loin du home on ne voit rien, et la mémoire (5 min,
+ * homeSafety.HOSTILE_SEEN_MS) prend le relais.
+ */
+function noteHostileNearSafeHome(now) {
+  try {
+    if (_safeHomePos && hostileNearHome({
+      home: _safeHomePos, entities: Object.values(bot.entities || {}), isHostile: _isFoe,
+    })) _hostileNearHomeAt = now;
+  } catch (e) { /* best-effort */ }
+  return _hostileNearHomeAt;
+}
+
+/**
+ * LE point de décision unique : un warp de SECOURS vers `safe` doit-il être refusé ?
+ * null = on y va ; sinon le verdict de homeSafety.rescueWarpVeto (`home_safe_camped` tracé, 1×/min max).
+ * Jamais de throw : une lecture ratée ne bloque JAMAIS un secours. `ctx` = qui demande (télémétrie).
+ * Un /home safe tapé sur ORDRE (commande LLM/joueur) ne passe pas par ici : il n'est jamais bloqué.
+ */
+function safeHomeVeto(ctx) {
+  try {
+    if (!_safeHomePos) return null;
+    const now = Date.now();
+    const v = rescueWarpVeto({
+      home: _safeHomePos, deaths: _recentDeathPositions(), now,
+      night: (bot.time && bot.time.timeOfDay != null) ? isNight(bot) : null,   // inconnu → pas de garde-fou nuit
+      hostilesNearHomeSeen: noteHostileNearSafeHome(now),
+    });
+    if (!v.veto) return null;
+    if (now - _homeCampedEventAt >= CAMPED_EVENT_EVERY_MS) {
+      _homeCampedEventAt = now;
+      emit({ type: 'home_safe_camped', why: v.why, deaths: v.deaths, ctx: ctx || null });
+    }
+    return v;
+  } catch (e) { return null; }
+}
+
+/**
+ * RE-POSE du home `safe` hors du camp (timer 5 s). Conditions : homeSafety.safeHomeMove (surface au sec,
+ * pieds au sol, JOUR su, aucun hostile à ≤ 24 blocs, loin du camp, 1×/5 min — cooldown relu du mémo,
+ * il traverse les relances). LA BASE SUIT, avec la partie utile du chemin `zone_migrated` : /sethome
+ * safe ICI, /spawnpoint, base persistée (ouvriers — un cartographe n'en a pas), confine et borne
+ * d'exploration ré-ancrés. PAS le reste : ni /delhome work (le chantier est à deux pas), ni remise à zéro
+ * des compteurs de zone (c'est la même zone). Schéma 3 homes intact : on ÉCRASE `safe` (Essentials
+ * remplace un home du même nom), aucun nom de plus, aucun /delhome (pas une seconde sans home).
+ */
+function maybeMoveCampedSafeHome() {
+  try {
+    const home = _safeHomePos;
+    const ent = bot.entity;
+    const p = ent && ent.position;
+    if (!home || !p || bot.isAlive === false) return null;   // mort : la position est celle du cadavre
+    const now = Date.now();
+    noteHostileNearSafeHome(now);   // un hostile vu près du home est NOTÉ même sans warp en vue
+    // Une autre tâche possède le bot ou re-pose `safe` elle-même (migration, installation de base,
+    // fuite, sauvetage, abri) : on ne lui coupe pas l'herbe sous le pied.
+    if (_migrating || _escaping || _baseBusy || _imminentBusy || _stillBusy) return null;
+    const foe = nearestHostile({ pos: p, entities: Object.values(bot.entities || {}), isHostile: _isFoe });
+    const persisted = safeHomeLoad(loadBaseState());
+    const lastMovedAt = Math.max(_safeHomeMovedAt, (persisted && persisted.why === 'camped') ? persisted.at : 0);
+    const d = safeHomeMove({
+      home, here: { x: p.x, y: p.y, z: p.z }, deaths: _recentDeathPositions(), now,
+      inWater: (function () { try { return isInWater(bot); } catch (e) { return true; } })(),   // illisible → prudent
+      onGround: !!ent.onGround,
+      night: (bot.time && bot.time.timeOfDay != null) ? isNight(bot) : null,
+      nearestHostileDist: foe ? foe.dist : null,
+      lastMovedAt,
+    });
+    if (!d.move) return d;
+    if (!homewarp.bookmark(bot, HOME_SAFE)) return { move: false, reason: 'sethome_failed', deaths: d.deaths };
+    const from = { x: Math.round(home.x), y: Math.round(home.y), z: Math.round(home.z) };
+    noteSafeHome(p, 'camped');
+    _safeHomeMovedAt = now;
+    const to = { x: Math.round(p.x), y: Math.round(p.y), z: Math.round(p.z) };
+    try { bot.chat('/spawnpoint'); } catch (e) {}   // les respawns aussi quittent le camp (op seulement)
+    if (!IS_MAPPER) saveBaseState(Object.assign({}, loadBaseState() || {}, { base: to }));
+    if (CONFINE) CONFINE = { x: to.x, z: to.z, radius: CONFINE.radius };
+    if (_confineDyn) _confineDyn = { x: to.x, z: to.z, radius: _confineDyn.radius };
+    const conf = CONFINE || _confineDyn;
+    if (conf) bot._mcaExploreBounds = { x: conf.x, z: conf.z, radius: Math.max(conf.radius * 2, 128) };
+    emit({ type: 'home_safe_moved', from, to, deaths: d.deaths });
+    return d;
+  } catch (e) { return null; }
+}
+
+/**
+ * Home `safe` au spawn — extrait de onSpawn, + la garde « home campé » (homeSafety.spawnSafeHomeAction).
+ * 'safe' = cible de goSpawn. On le pose TOUJOURS (fallback = position de spawn courante, même
+ * souterraine → goSpawn a toujours une cible valide) puis on l'UPGRADE dès qu'on spawne à une
+ * vraie surface (y≥58, sèche). Sans ça un bot qui respawne toujours sous terre n'avait pas de
+ * 'safe' → /home safe échouait (vécu bot1 : spawn direct y15, jamais de safe_home_set).
+ * ⚠️ JAMAIS les pieds dans l'eau (vécu world_ax2 03:00 : reconnexion dans une rivière → safe
+ * posé DANS l'eau → tous les /home safe morts (teleport-safety) → reflex surface ×190, bots
+ * qui sautillent sur place à l'infini). Pas de pose mouillée ; le watchdog 1 s re-pose dès
+ * la première surface sèche (condition élargie à !_safeHomeSet).
+ * ⚠️ HOME CAMPÉ (live 19/10) : un process NEUF (`_safeHomeSet` repart à false) respawne après un
+ * death_loop… au camp, et y re-posait `safe` — le déménagement du process précédent était annulé. Spawn
+ * campé + home persisté sain → on l'ADOPTE (rien n'est re-posé) ; un safe déjà en main ne déménage pas
+ * dans le camp ; sans rien d'autre, on pose quand même (un home connu, même campé, est mis sous veto).
+ */
+function poseSafeHomeAtSpawn() {
+  const p = bot.entity && bot.entity.position;
+  const wet = (function () { try { return isInWater(bot); } catch (e) { return false; } })();
+  if (!p || wet) return;
+  const atSurface = p.y >= SAFE_HOME_MIN_Y;
+  if (_safeHomeSet && (_safeHomeSurface || !atSurface)) return;   // rien à poser ni à améliorer
+  const act = spawnSafeHomeAction({
+    here: p, deaths: _recentDeathPositions(), now: Date.now(), hasSafe: _safeHomeSet,
+    persisted: safeHomeLoad(loadBaseState()),
+  });
+  if (act.act === 'keep') {
+    emit({ type: 'safe_home_kept', camped: true, x: Math.round(p.x), y: Math.round(p.y), z: Math.round(p.z) });
+    return;
+  }
+  if (act.act === 'adopt') {
+    const h = act.home;
+    _safeHomeSet = true;
+    _safeHomeSurface = h.y >= SAFE_HOME_MIN_Y;
+    _safeHomePos = { x: h.x, y: h.y, z: h.z };
+    _hostileNearHomeAt = 0;
+    emit({ type: 'safe_home_adopted', why: 'spawn_camped', x: h.x, y: h.y, z: h.z });
+    // L'ANCRE SUIT le home adopté. Sans ça l'auto-ancrage NO_GIVE (`!_anchorSet`, watchdog 1 s) poserait
+    // `safe` à la 1ʳᵉ position stable — à deux pas du camp que l'on fuit — et annulerait l'adoption.
+    // Même effet que `confine_anchored`, sans re-poser de home. Jamais sur un confine STATIQUE (arène).
+    if (NO_GIVE && !_anchorSet && !CONFINE && world.objective && world.objective.status === 'in_progress') {
+      _anchorSet = true;
+      _confineDyn = { x: Math.round(h.x), z: Math.round(h.z), radius: DEFAULT_CONFINE_RADIUS };
+      bot._mcaExploreBounds = { x: _confineDyn.x, z: _confineDyn.z, radius: Math.max(_confineDyn.radius * 2, 128) };
+      emit({ type: 'confine_anchored', x: _confineDyn.x, z: _confineDyn.z, radius: _confineDyn.radius, static: false, adopted: true });
+    }
+    return;
+  }
+  homewarp.bookmark(bot, 'safe');
+  noteSafeHome(p, 'spawn');
+  emit({
+    type: 'safe_home_set', surface: atSurface, x: Math.round(p.x), y: Math.round(p.y), z: Math.round(p.z),
+    ...(act.camped ? { camped: true } : {}),
+  });
+}
+
 /** Nom du bloc à une position relative au bot (null si illisible — registry/chunk pas prêt). */
 function _blockNameAt(dx, dy, dz) {
   try {
@@ -3409,9 +3666,7 @@ async function establishBase(opts = {}) {
       }
     }
     homewarp.bookmark(bot, 'safe');
-    _safeHomeSet = true;
-    _safeHomeSurface = p.y >= 58;
-    _safeHomePos = { x: p.x, y: p.y, z: p.z };
+    noteSafeHome(p, 'base');   // état du process + `safeHome` persisté (relu par le process suivant)
     // « mettre un home pour l'utiliser comme spawn » : /spawnpoint ancre le respawn ICI, donc une
     // mort ne renvoie plus au spawn du monde partagé (précédent : /spawnpoint post-kit des bots
     // ressource, cf. 'kit_done').
@@ -3930,8 +4185,8 @@ async function _recoverPickaxeInner() {
   // spawn sûr (surface avec arbres) par /home safe. Retour au chantier par /home work (cf. plus bas).
   if (NO_GIVE) {
     if (p0) { homewarp.bookmark(bot, HOME_WORK); emit({ type: 'work_bookmarked', ctx: 'pick_recovery', x: p0.x, y: p0.y, z: p0.z }); }
-    homewarp.goSpawn(bot);
-    await sleep(3500);
+    // Home campé (veto, 19/10) → pas de /home : on cherche le bois depuis ici (gather explore).
+    if (homewarp.goSpawn(bot, { ctx: 'pick_recovery' })) await sleep(3500);
   } else {
     await relocateToRegion({ forest: true });
   }
@@ -4097,10 +4352,11 @@ async function relocateToRegion(opts = {}) {
   // toute façon) mais un bot à la surface sèche >>> un bot gelé. Les appelants water/pick gèrent
   // déjà leur propre goSpawn en amont (ce guard couvre le reste).
   if (NO_GIVE) {
+    // HOME CAMPÉ (19/10) : pas d'aller simple vers le camp — on reste sur place (le veto le trace).
+    if (safeHomeVeto('relocate')) return;
     emit({ type: 'relocate_home_safe', mode: opts.forest ? 'forest' : (opts.nearSpawn ? 'near_spawn' : 'default') });
     try { stopMotion(); } catch (e) {}
-    homewarp.goSpawn(bot);
-    await sleep(3000);
+    if (homewarp.goSpawn(bot, { ctx: 'relocate' })) await sleep(3000);
     return;
   }
   // Cellule TERRE tirée de la mémoire de monde (biomes non-océan/rivière, ≥256 du spawn) :
@@ -4121,7 +4377,7 @@ async function relocateToRegion(opts = {}) {
     const confR = CONFINE || _confineDyn;
     emit({ type: 'resource_warp', x: confR.x, z: confR.z, confined: true });
     // no-give : /spreadplayers est BLOQUÉ par nogive → retour légitime /home ancre (brique 1)
-    if (NO_GIVE && _anchorSet) { await safeWarpHome(CONFINE_HOME); return; }
+    if (NO_GIVE && _anchorSet) { await safeWarpHome(CONFINE_HOME, { ctx: 'relocate_confine' }); return; }
     try { bot.chat(confineSpreadCommand(bot.username, confR)); } catch (e) {}
     await sleep(5000);
     return;
@@ -5473,9 +5729,17 @@ async function onSpawn() {
                 try { await escapeWater(bot, { emit }); } catch (e) {}
                 return;
               }
+              // HOME CAMPÉ (live 19/10, MapBot2 : water_rescue_warp:drowning > water_rescue_home_safe > … >
+              // mort) : se sauver de la noyade en se téléportant dans le camp qui vient de nous tuer n'est
+              // pas un sauvetage. Le repli reste celui d'un safe refusé : NAGER vers la rive.
+              if (safeHomeVeto('drowning')) {
+                emit({ type: 'water_rescue_no_warp', ctx: 'camped' });
+                try { await escapeWater(bot, { emit }); } catch (e) {}
+                return;
+              }
               emit({ type: 'water_rescue_home_safe' });
               abandonWorkIfDrowned();                     // chantier noyé ? → l'oublier (sinon /home work y ramène)
-              await safeWarpHome('safe');                 // float+immobile pendant l'éventuel warmup
+              await safeWarpHome('safe', { ctx: 'drowning' });   // float+immobile pendant l'éventuel warmup
               return;
             }
             // 1er choix (bot OP historique) : /tp DIRECT vers une ancre profonde SÈCHE déjà minée.
@@ -5501,7 +5765,8 @@ async function onSpawn() {
               try { stopMotion(); } catch (e) {}
               if (NO_GIVE) {
                 if (safeWarpDown()) { emit({ type: 'water_rescue_no_warp' }); try { await escapeWater(bot, { emit }); } catch (e) {} }
-                else { emit({ type: 'water_rescue_home_safe' }); abandonWorkIfDrowned(); await safeWarpHome('safe'); }
+                else if (safeHomeVeto('water_rescue')) { emit({ type: 'water_rescue_no_warp', ctx: 'camped' }); try { await escapeWater(bot, { emit }); } catch (e) {} }
+                else { emit({ type: 'water_rescue_home_safe' }); abandonWorkIfDrowned(); await safeWarpHome('safe', { ctx: 'water_rescue' }); }
               } else await relocateToRegion({ nearSpawn: true });   // bug #4 : vers le SEC near-spawn (admin)
             }
           } else {
@@ -5559,8 +5824,12 @@ async function onSpawn() {
               confine: CONFINE,
               dist: CONFINE ? Math.hypot(pA.x - CONFINE.x, pA.z - CONFINE.z) : 0,
             });
-            if (nearStatic && homewarp.bookmark(bot, CONFINE_HOME)) {
+            // HOME CAMPÉ (19/10) : l'ancre EST le home `safe` (CONFINE_HOME) — jamais posée dans un camp
+            // (≥ 2 morts récentes à ≤ 24 blocs) : ce /sethome DÉPLACERAIT un home qui marche dans le piège.
+            // Le watchdog repasse chaque seconde : on s'ancrera dès la première position stable hors du camp.
+            if (nearStatic && !_campedAt(pA) && homewarp.bookmark(bot, CONFINE_HOME)) {
               _anchorSet = true;
+              noteSafeHome(pA, 'anchor');   // le /sethome safe ci-dessus DÉPLACE le home : le veto doit le savoir
               if (!CONFINE) _confineDyn = { x: Math.round(pA.x), z: Math.round(pA.z), radius: DEFAULT_CONFINE_RADIUS };
               const eff = CONFINE || _confineDyn;
               bot._mcaExploreBounds = { x: eff.x, z: eff.z, radius: Math.max(eff.radius * 2, 128) };  // borne explore = poche confine (#54)
@@ -5587,9 +5856,8 @@ async function onSpawn() {
               && bot.entity.position.y >= 58 && !isInWater(bot)) {
             homewarp.bookmark(bot, 'safe');
             delete _homeRefusedAt.safe;
-            _safeHomeSet = true; _safeHomeSurface = true;
             const pR = bot.entity.position;
-            _safeHomePos = { x: pR.x, y: pR.y, z: pR.z };
+            noteSafeHome(pR, 'reset');   // y ≥ 58 vérifié ci-dessus → safe de surface
             emit({ type: 'safe_home_reset', x: Math.round(pR.x), y: Math.round(pR.y), z: Math.round(pR.z) });
           }
           const s = {
@@ -5602,8 +5870,11 @@ async function onSpawn() {
           // Verdict DÉGRADÉ si le /home safe vient d'être refusé : re-spammer un TP qui ne part
           // pas est le no-op qui a zombifié NethBot2 — on se sauve à pied ou on accepte la mort
           // (keepInventory ON : mourir/respawner est PLUS SAIN qu'un stall à 1.8 PV).
-          const verdict = homewarp.effectiveVerdict(homewarp.classifyImminent(s), _homeRefusedAt.safe, Date.now());
+          let verdict = homewarp.effectiveVerdict(homewarp.classifyImminent(s), _homeRefusedAt.safe, Date.now());
           if (!verdict) return;
+          // HOME CAMPÉ (live 19/10, MapBot2 : le /home safe d'urgence le renvoyait DANS le camp où il
+          // venait de mourir — ou sur place, quand il y était déjà) : même dégradation qu'un safe refusé.
+          if (verdict === 'escape' && safeHomeVeto('imminent')) verdict = 'escape_no_warp';
           _imminentBusy = true;
           // CAMP DE MORT (piste n°2) : ≥2 alertes espacées dans la même zone 64 → bannie + FUITE
           // active (vécu Bot2 : 25× imminent au même spot, il RESTAIT sous les coups des mobs armés).
@@ -5623,7 +5894,7 @@ async function onSpawn() {
             // PUIS /home safe (secure-then-warp : sur serveur à warmup, un TP sous les coups est annulé).
             emit({ type: 'imminent_escape', hp: s.health, inWater: s.inWater, lava: s.lavaNear, hostiles: s.nearbyHostiles });
             try { stopMotion(); } catch (e) {}
-            safeWarpHome('safe').catch(() => {});
+            safeWarpHome('safe', { ctx: 'imminent' }).catch(() => {});
             setTimeout(() => { _imminentBusy = false; }, 12000); // secure (≤6 s) + warmup (≤9 s), anti-spam
           } else if (verdict === 'escape_no_warp') {
             emit({ type: 'imminent_escape_no_warp', hp: s.health, inWater: s.inWater });
@@ -5693,28 +5964,9 @@ async function onSpawn() {
         }
       }
     }
-    // 'safe' = cible de goSpawn. On le pose TOUJOURS (fallback = position de spawn courante, même
-    // souterraine → goSpawn a toujours une cible valide) puis on l'UPGRADE dès qu'on spawne à une
-    // vraie surface (y≥58, sèche). Sans ça un bot qui respawne toujours sous terre n'avait pas de
-    // 'safe' → /home safe échouait (vécu bot1 : spawn direct y15, jamais de safe_home_set).
-    // ⚠️ JAMAIS les pieds dans l'eau (vécu world_ax2 03:00 : reconnexion dans une rivière → safe
-    // posé DANS l'eau → tous les /home safe morts (teleport-safety) → reflex surface ×190, bots
-    // qui sautillent sur place à l'infini). Pas de pose mouillée ; le watchdog 1 s re-pose dès
-    // la première surface sèche (condition élargie à !_safeHomeSet).
-    {
-      const p = bot.entity && bot.entity.position;
-      const wet = (function () { try { return isInWater(bot); } catch (e) { return false; } })();
-      if (p && !wet) {
-        const atSurface = p.y >= 58;
-        if (!_safeHomeSet || (!_safeHomeSurface && atSurface)) {
-          homewarp.bookmark(bot, 'safe');
-          _safeHomeSet = true;
-          if (atSurface) _safeHomeSurface = true;
-          _safeHomePos = { x: p.x, y: p.y, z: p.z };
-          emit({ type: 'safe_home_set', surface: atSurface, x: Math.round(p.x), y: Math.round(p.y), z: Math.round(p.z) });
-        }
-      }
-    }
+    // 'safe' = cible de goSpawn : posé TOUJOURS (jamais mouillé), amélioré dès une vraie surface — et
+    // jamais re-posé DANS un camp (home campé, live 19/10). Détail et historique : poseSafeHomeAtSpawn.
+    poseSafeHomeAtSpawn();
     // BASE PERSONNELLE (ouvriers seulement — un cartographe roame, une base n'a pas de sens pour
     // lui). 'establish' = aller la poser ; 'return' = relâché loin de chez lui (mort dont le
     // /spawnpoint n'a pas tenu) → rentrer ; 'stay' = déjà chez lui.
@@ -5730,8 +5982,8 @@ async function onSpawn() {
         spawn: stB && stB.worldSpawn,
       });
       if (act === 'return') {
-        emit({ type: 'base_return' });
-        homewarp.goHome(bot, 'safe');
+        // goHome passe par le veto du home campé (19/10) : base campée la nuit → on reste où l'on a respawné.
+        if (homewarp.goHome(bot, HOME_SAFE, { ctx: 'base_return' })) emit({ type: 'base_return' });
       } else if (act === 'establish') {
         // AWAIT, pas fire-and-forget (échec live : `too_close` d=1..23 sur les 3 bots). Le planner
         // autonome et le /tpa de regroupement démarrent au même spawn et prennent le pathfinder :
@@ -5944,6 +6196,9 @@ if (NO_GIVE) {
 bot.loadPlugin(pathfinder);
 bot.loadPlugin(pvp);
 bot.loadPlugin(collectBlock);
+// HOME `safe` CAMPÉ (live 19/10) : TOUT /home safe passe par homewarp.goHome, qui consulte ce veto avant
+// d'envoyer la commande (point d'entrée unique : goSpawn, safeWarpHome et les appels directs).
+bot._mcaSafeVeto = (ctx) => !!safeHomeVeto(ctx);
 
 bot.on('spawn', () => {
   _floatSettleUntil = Date.now() + 15000;
@@ -6205,6 +6460,9 @@ bot.on('death', () => {
   const nowD = Date.now();
   deathTimes = deathTimesPrune(deathTimes.concat([nowD]), nowD);
   persistDeathHistory();
+  // HOME CAMPÉ (live 19/10) : la POSITION de cette mort, persistée elle aussi AVANT tout process.exit(2)
+  // — c'est elle qui dira au process suivant (et à celui-ci) que son home `safe` est un camp.
+  recordDeathPosition(p);
   // ANTI-CAMPING (phase B, vécu V3Res1 : zombie campé sur le spawnpoint = 6 morts en 51 s,
   // et l'ancienne pause à 3 morts le laissait IDLE en punching-ball) : 2 morts en <60 s →
   // au prochain spawn on s'ARRACHE de la zone (escapeDeathCamp) avant toute autre activité.
@@ -6803,7 +7061,8 @@ setInterval(async () => {
         try { stopMotion(); } catch (e) {}
         if (NO_GIVE) {
           if (safeWarpDown()) { emit({ type: 'water_rescue_no_warp', ctx: 'ocean' }); try { await escapeWater(bot, { emit }); } catch (e) {} }
-          else { emit({ type: 'water_rescue_home_safe', ctx: 'ocean' }); await safeWarpHome('safe'); }
+          else if (safeHomeVeto('ocean')) { emit({ type: 'water_rescue_no_warp', ctx: 'ocean_camped' }); try { await escapeWater(bot, { emit }); } catch (e) {} }
+          else { emit({ type: 'water_rescue_home_safe', ctx: 'ocean' }); await safeWarpHome('safe', { ctx: 'ocean' }); }
         }
         else { try { await relocateToRegion(); } catch (e) {} }
         _oceanStuckTimes = [];                                            // post-relocate : compteur propre
@@ -6932,7 +7191,7 @@ setInterval(async () => {
         try { stopMotion(); } catch (e) {}
         try { bot.clearControlStates(); } catch (e) {}
         try {
-          if (NO_GIVE) await safeWarpHome('safe');
+          if (NO_GIVE) await safeWarpHome('safe', { ctx: 'desync_escape' });
           else await relocateToRegion();
         } catch (e) { /* best-effort */ }
         const q = bot.entity && bot.entity.position;
