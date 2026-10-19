@@ -921,13 +921,19 @@ def start_for_bot(group_id, bot_id, model=None, autonomous=False, objective="sto
     return sid
 
 
-def start_mappers(group_id, count):
+def start_mappers(group_id, count, no_give=False):
     """Lance jusqu'à `count` cartographes du roster (role=mapper) non déjà en ligne.
 
     Les secteurs sont répartis 0..k-1 / count=k sur les bots EFFECTIVEMENT lancés. Un bot dont le
     secret manque (serveur à login) est SKIPPÉ (pas d'exception qui tuerait le batch). Retourne
     {'sessions':[sids], 'launched':n, 'available':nb_dispo, 'skipped':[usernames]}.
+
+    `no_give` : True → chaque cartographe part avec --no-give (ZÉRO /give : le serveur refuse la
+    commande à un non-op, et le bot l'essayait quand même). L'option est AUSSI écrite dans le memo
+    de respawn : le self-healing (_on_pump_end → start_for_bot) relance un cartographe mort avec la
+    même option, sinon il reviendrait avec /give. Défaut False = comportement historique.
     """
+    no_give = bool(no_give)   # booléen strict : le memo est sérialisé tel quel dans le registre JSON
     group = servers_store.get_server(group_id)
     if not group:
         raise LookupError("Groupe introuvable")
@@ -972,6 +978,9 @@ def start_mappers(group_id, count):
             # cartographes boot en ECONNRESET (auto-détection impossible) pendant que les workers,
             # eux, passent. Leur respawn, lui, passe par start_for_bot (qui re-résout du groupe).
             mc_version=group.get("mc_version") or None,
+            # Même raison pour no_give : sans relais explicite, le cartographe tentait /give
+            # (refusé, non-op) alors que toute la flotte devait partir de zéro.
+            no_give=no_give,
         )
         # Self-healing mapper (Massii #1) : un cartographe tué par les mobs REVIENT (mêmes
         # règles que resource : 15 s + jitter, cap 12, garde crash-on-spawn, spawn gate).
@@ -979,7 +988,11 @@ def start_mappers(group_id, count):
         if sess is not None:
             sess["respawn"] = {"group_id": group_id, "bot_id": bot_id, "model": None,
                                "autonomous": True, "objective": "mapper",
-                               "world_label": None, "quota": None, "humanize": True}
+                               "world_label": None, "quota": None, "humanize": True,
+                               # relu par _do_respawn (rs.get("no_give", False)) → start_for_bot :
+                               # le cartographe relancé après une mort garde l'option, et
+                               # start_for_bot la ré-écrit dans son propre memo (chaîne préservée).
+                               "no_give": no_give}
             sess.setdefault("respawn_count", 0)
             _registry_sync()  # idem start_for_bot : plan de respawn persisté
         sessions.append(sid)

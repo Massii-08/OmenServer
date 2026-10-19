@@ -1840,3 +1840,133 @@ def test_start_mappers_sans_mc_version_passe_none(monkeypatch, tmp_path):
     mgr.start_mappers("g11", 1)
     assert captured["mc_version"] is None
     mgr._sessions.pop(92, None)
+
+
+# ── start_mappers × no_give : cartographes SANS /give (flotte « de zéro », 2026-10-19) ─────────
+# Avant : start_mappers n'avait aucun moyen de relayer no_give → les cartographes tentaient
+# `/give MapBot2 cooked_beef 32` (refusé par le serveur : non-op) pendant que les ouvriers,
+# lancés via start_for_bot(no_give=True), n'en tentaient aucun. Et le memo de respawn du
+# cartographe n'en gardait aucune trace → un cartographe mort REVENAIT avec /give.
+
+def _stub_mapper_group(monkeypatch):
+    """Groupe à 1 cartographe, sans login ; store/secrets stubés (rien ne touche au disque réel)."""
+    monkeypatch.setattr(mgr.servers_store, "get_server", lambda gid: {
+        "id": gid, "host": "h", "port": 25565, "intelligence": "intermediaire",
+        "language": "fr", "has_login": False, "stealth": False,
+        "bots": [{"id": "m1", "role": "mapper", "username": "EmberMap1", "auth": "offline"}],
+    })
+    monkeypatch.setattr(mgr.servers_store, "resolve_commands", lambda g: None)
+    monkeypatch.setattr(mgr.servers_store, "resolve_policy", lambda g: None)
+    monkeypatch.setattr(mgr.mc_agent_secrets, "get_secret", lambda gid, bid: None)
+
+
+def _spawn_enregistreur(monkeypatch, sid=7001):
+    """Stub de `_spawn_bot` : capture les kwargs ET enregistre une session minimale (sans process
+    ni thread de pompe) pour que start_mappers y pose son memo de respawn.
+
+    La session imite celle du vrai `_spawn_bot` pour un cartographe autonome (objective='mapper',
+    server_id) et date d'une heure → vie LONGUE pour `_respawn_plan` (pas de crash-on-spawn)."""
+    import time as _time
+    captured = {}
+
+    def fake(**kw):
+        captured.update(kw)
+        mgr._sessions[sid] = {
+            "id": sid, "status": "running", "objective": kw.get("objective"),
+            "server_id": kw.get("server_id"), "user": kw.get("user"),
+            "events": [], "transcript": [], "last_error": None,
+            "spawned_at": _time.time() - 3600,
+        }
+        return sid
+
+    monkeypatch.setattr(mgr, "_spawn_bot", fake)
+    return captured
+
+
+def test_start_mappers_no_give_relaye_au_spawn_et_au_memo(monkeypatch):
+    """no_give=True → _spawn_bot reçoit no_give=True ET le memo de respawn le garde (le
+    self-healing relance alors le cartographe avec la même option)."""
+    _stub_mapper_group(monkeypatch)
+    captured = _spawn_enregistreur(monkeypatch)
+    out = mgr.start_mappers("g12", 1, no_give=True)
+    assert out["launched"] == 1
+    assert captured["no_give"] is True
+    memo = mgr._sessions[7001]["respawn"]
+    assert memo["no_give"] is True
+    # le reste du memo (cible du respawn) n'a pas bougé
+    assert memo["group_id"] == "g12" and memo["bot_id"] == "m1"
+    assert memo["objective"] == "mapper" and memo["autonomous"] is True and memo["humanize"] is True
+
+
+def test_start_mappers_defaut_sans_no_give(monkeypatch):
+    """Rétro-compat : sans l'option, no_give=False PARTOUT (spawn + memo) → comportement historique."""
+    _stub_mapper_group(monkeypatch)
+    captured = _spawn_enregistreur(monkeypatch)
+    out = mgr.start_mappers("g12", 1)
+    assert out["launched"] == 1
+    assert captured["no_give"] is False
+    assert mgr._sessions[7001]["respawn"]["no_give"] is False
+
+
+@pytest.mark.parametrize("no_give", [True, False])
+def test_start_mappers_argv_no_give(monkeypatch, tmp_path, no_give):
+    """Bout en bout avec le VRAI `_spawn_bot` : `--no-give 1` dans l'argv Node du cartographe
+    SI ET SEULEMENT SI demandé (sans lui, le bot tente /give — c'est le bug mesuré en live)."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    cmds = []
+    FakeProc = _fake_proc_cls(5020)
+
+    class InertTimer:
+        """Neutralise le self-healing : la pompe (flux vide) finit aussitôt et armerait sinon un
+        vrai Timer de respawn qui survivrait au test."""
+        def __init__(self, delay, fn):
+            self.daemon = False
+        def start(self):
+            pass
+
+    monkeypatch.setattr(mgr.threading, "Timer", InertTimer)
+    monkeypatch.setattr(mgr, "RUNS_DIR", tmp_path / "runs")
+    monkeypatch.setattr(mgr.subprocess, "Popen", lambda cmd, **kw: cmds.append(cmd) or FakeProc())
+    _stub_mapper_group(monkeypatch)
+    out = mgr.start_mappers("g12", 1, no_give=no_give)
+    assert out["launched"] == 1
+    cmd = cmds[-1]
+    if no_give:
+        assert "--no-give" in cmd and cmd[cmd.index("--no-give") + 1] == "1"
+    else:
+        assert "--no-give" not in cmd
+    sess = mgr._sessions[out["sessions"][0]]
+    assert sess["respawn"]["no_give"] is no_give
+
+
+@pytest.mark.parametrize("no_give", [True, False])
+def test_mapper_respawn_conserve_no_give(monkeypatch, no_give):
+    """Chaîne complète du self-healing : start_mappers pose le memo → le cartographe meurt
+    naturellement → _on_pump_end le relance via start_for_bot AVEC la même option no_give.
+
+    Sans ce relais, un cartographe tué par les mobs (cas fréquent : il ne mine pas, il explore)
+    revenait avec /give et le serveur le refusait de nouveau."""
+    _stub_mapper_group(monkeypatch)
+    _spawn_enregistreur(monkeypatch)
+    mgr.start_mappers("g12", 1, no_give=no_give)
+    session = mgr._sessions[7001]
+
+    relances = {}
+
+    def fake_start_for_bot(gid, bid, **kw):
+        relances.update(gid=gid, bid=bid, **kw)
+        return 7002
+
+    class FakeTimer:
+        def __init__(self, delay, fn):
+            self.fn = fn
+            self.daemon = False
+        def start(self):
+            self.fn()   # exécute aussitôt (pas d'attente en test)
+
+    monkeypatch.setattr(mgr, "start_for_bot", fake_start_for_bot)
+    monkeypatch.setattr(mgr.threading, "Timer", FakeTimer)
+    mgr._on_pump_end(session)   # mort naturelle du process (pas user_stopped)
+    assert relances.get("gid") == "g12" and relances.get("bid") == "m1"
+    assert relances["objective"] == "mapper"
+    assert relances["no_give"] is no_give

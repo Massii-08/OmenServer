@@ -46,6 +46,9 @@ class SayReq(BaseModel):
 
 class MappersStartReq(BaseModel):
     count: int = Field(default=1, ge=1, le=20)
+    # True → cartographes lancés avec --no-give (ZÉRO /give, comme les ouvriers de /run no_give) ;
+    # l'option est mémorisée pour le self-healing. Défaut False = comportement historique.
+    no_give: bool = False
 
 
 class ApiKeyPayload(BaseModel):
@@ -344,12 +347,16 @@ def delete_bot(sid: str, bot_id: str, current_user: User = Depends(get_current_u
 
 @router.post("/servers/{sid}/mappers/start")
 def start_mappers(sid: str, req: MappersStartReq, current_user: User = Depends(get_current_user)):
-    """Lance N cartographes du roster du groupe (secteurs auto, cap au nb dispo). Admin-only."""
+    """Lance N cartographes du roster du groupe (secteurs auto, cap au nb dispo). Admin-only.
+
+    `no_give` : cartographes SANS /give (flotte « de zéro »), relancés tels quels par le self-healing."""
     _require_admin(current_user)
     if not mgr.has_api_key():
         raise HTTPException(status_code=400, detail="Aucune cle Claude configuree (renseigne-la dans le bot)")
     try:
-        return mgr.start_mappers(sid, req.count)
+        # no_give passé seulement si actif (rétro-compat monkeypatchs/tests à 2 args, comme /run)
+        extra = {"no_give": True} if req.no_give else {}
+        return mgr.start_mappers(sid, req.count, **extra)
     except LookupError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
     except OSError as exc:

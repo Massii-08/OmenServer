@@ -733,6 +733,45 @@ def test_mappers_start_count_borne(monkeypatch):
     assert c.post("/api/mc-agent/servers/abc/mappers/start", json={"count": 99}).status_code == 422
 
 
+def test_mappers_start_transmet_no_give(monkeypatch):
+    """no_give=true dans le corps → start_mappers reçoit no_give=True (cartographes SANS /give).
+
+    Avant : MappersStartReq n'avait que `count` → impossible de lancer des cartographes avec
+    --no-give. Ils tentaient `/give MapBot2 cooked_beef 32` (refusé par le serveur : non-op)
+    pendant que les ouvriers, lancés via /run no_give=true, n'en tentaient aucun."""
+    monkeypatch.setattr(mgr, "has_api_key", lambda: True)
+    captured = {}
+
+    def fake_mappers(gid, count, **kw):
+        captured.update(gid=gid, count=count, **kw)
+        return {"sessions": [1], "launched": 1, "available": 1, "skipped": []}
+
+    monkeypatch.setattr(mgr, "start_mappers", fake_mappers)
+    c = make_client()
+    resp = c.post("/api/mc-agent/servers/abc/mappers/start", json={"count": 1, "no_give": True})
+    assert resp.status_code == 200
+    assert captured == {"gid": "abc", "count": 1, "no_give": True}
+
+
+@pytest.mark.parametrize("body", [{"count": 2}, {"count": 2, "no_give": False}])
+def test_mappers_start_sans_no_give_retro_compat(monkeypatch, body):
+    """Corps sans no_give (ou no_give=false) → AUCUN no_give actif transmis : comportement
+    historique inchangé (le défaut côté manager reste False)."""
+    monkeypatch.setattr(mgr, "has_api_key", lambda: True)
+    captured = {}
+
+    def fake_mappers(gid, count, **kw):
+        captured.update(gid=gid, count=count, **kw)
+        return {"sessions": [], "launched": 0, "available": 0, "skipped": []}
+
+    monkeypatch.setattr(mgr, "start_mappers", fake_mappers)
+    c = make_client()
+    resp = c.post("/api/mc-agent/servers/abc/mappers/start", json=body)
+    assert resp.status_code == 200
+    assert captured["gid"] == "abc" and captured["count"] == 2
+    assert not captured.get("no_give")
+
+
 # --- Quota (bots ressources multi-quota) ---
 
 def test_run_passes_quota(monkeypatch):
