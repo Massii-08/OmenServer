@@ -3,6 +3,11 @@ const { test } = require('node:test');
 const assert = require('node:assert');
 const { explore, nextWaypoints } = require('./explore');
 
+// Vrai mineflayer-pathfinder si dispo (chargement optionnel, comme explore.js : tests legacy sans la lib).
+// Sert à vérifier la NATURE des buts (GoalNear 3D vs GoalNearXZ) et leur sémantique `isEnd` réelle.
+let pfGoals = null;
+try { pfGoals = require('mineflayer-pathfinder').goals; } catch (e) { pfGoals = null; }
+
 // pos type minimal avec distanceTo/clone (comme un Vec3 réel — leçon dcd874d : pas de POJO nu).
 function pos(x, y, z) {
   return {
@@ -15,8 +20,10 @@ function pos(x, y, z) {
 
 // Fake bot : un "bloc cible" caché à `target` ; findBlock ne le voit que si le bot est à ≤ maxDistance.
 // pathfinder.goto téléporte le bot au goal (simule la marche). collectBlock retire la cible.
+// Un but XZ (GoalNearXZ : x,z sans y) est enregistré avec `y: undefined, xz: true` et le fake GARDE
+// l'altitude du bot (il n'a pas de relief) ; `calls.goals` garde l'objet but brut (nature + isEnd).
 function makeBot({ target = null, profile = null } = {}) {
-  const calls = { goto: [], find: 0, collect: [] };
+  const calls = { goto: [], goals: [], find: 0, collect: [] };
   let tgt = target;
   const bot = {
     entity: { position: pos(0, 70, 0), yaw: 0 },
@@ -38,15 +45,26 @@ function makeBot({ target = null, profile = null } = {}) {
         const tx = goal && (goal.x !== undefined ? goal.x : goal.target && goal.target.x);
         const ty = goal && (goal.y !== undefined ? goal.y : goal.target && goal.target.y);
         const tz = goal && (goal.z !== undefined ? goal.z : goal.target && goal.target.z);
-        if (typeof tx === 'number' && typeof ty === 'number' && typeof tz === 'number') {
-          calls.goto.push({ x: tx, y: ty, z: tz });
-          bot.entity.position = pos(tx, ty, tz);
+        if (typeof tx === 'number' && typeof tz === 'number') {
+          const hasY = typeof ty === 'number';
+          calls.goals.push(goal);
+          calls.goto.push({ x: tx, y: hasY ? ty : undefined, z: tz, xz: !hasY });
+          bot.entity.position = pos(tx, hasY ? ty : bot.entity.position.y, tz);
         }
       },
     },
     collectBlock: { async collect(b) { calls.collect.push(b); tgt = null; } },
   };
   return { bot, calls };
+}
+
+// Horloge injectable (opts.now) : le goto du test l'avance de la durée qu'il veut simuler. Un rejet
+// « instantané » du pathfinder dure ≈ 0,3 s (mesuré world_ax5), un rejet LENT dépasse 1,5 s.
+function makeClock() {
+  const c = { t: 1000000 };
+  c.now = () => c.t;
+  c.advance = (ms) => { c.t += ms; };
+  return c;
 }
 
 // ---- nextWaypoints (géométrie pure) ----
@@ -445,14 +463,18 @@ test('explore : hook qui throw n\'empêche pas l\'exploration (best-effort)', as
 test('explore : cible dirigée jamais atteinte (goto reject) + not_found → marquée épuisée', async () => {
   const { bot } = makeBot({ target: null });
   bot._mcaExhausted = new Set();
-  // goto rejette toujours (cible inatteignable — noyée/murée) → le bot n'arrive jamais
-  bot.pathfinder.goto = async () => { throw new Error('NoPath'); };
+  // goto rejette toujours (cible inatteignable — noyée/murée) → le bot n'arrive jamais. Le rejet est LENT
+  // (2 s d'horloge : le pathfinder a cherché avant d'abandonner, comme le « timeout-to-reach » vécu).
+  // ⚠️ Un rejet INSTANTANÉ sur place est un tout autre cas : le bot est enfermé (`stuck`), la cible
+  // n'a jamais été approchée donc PAS épuisée — voir « sortie stuck » plus bas.
+  const clock = makeClock();
+  bot.pathfinder.goto = async () => { clock.advance(2000); throw new Error('NoPath'); };
   const memory = { worlds: { w: { finds: [{ material: 'oak_log', biome: 'forest', x: 800, z: 0 }], biomes: [] } } };
   const emits = [];
   const r = await explore(bot, {
     name: 'oak_log', matching: [17], memory, worldKey: 'w',
     emit: (e) => emits.push(e), step: 80, maxRadius: 80, scanRadius: 64,
-    directedRetryDelayMs: 0,
+    directedRetryDelayMs: 0, now: clock.now,
   });
   assert.strictEqual(r.ok, false);
   assert.ok(bot._mcaExhausted.has('800,0'), 'cible dirigée inatteignable marquée épuisée');
@@ -473,4 +495,276 @@ test('explore : waypoint qui mouille le bot → skip immédiat (pas de scan sur 
   // le 1er waypoint (mouillé) est SKIPPÉ sans findBlock ; les suivants (secs) scannent → find = n-1
   assert.ok(n >= 2, 'a continué vers les waypoints suivants');
   assert.strictEqual(calls.find, n - 1, 'le waypoint mouillé n\'a pas scanné, les secs oui');
+});
+
+// ─── Buts XZ : l'altitude d'un waypoint est INCONNUE (monde montagneux, world_ax5) ───────────────
+// `GoalNear(x, origin.y, z, 8)` est une sphère 3D à l'altitude COURANTE du bot. Sur terrain vallonné la
+// surface à 80+ blocs est 10-40 blocs plus haut/bas → but en l'air ou dans la roche (il faudrait un
+// pilier de 20+ blocs) → NoPath en 0,3 s à CHAQUE waypoint : 35 `explore_waypoint` en 10 s, bot
+// immobile, puis `logs not_found` (84-94 % d'échec du but logs). Même bug que la jambe de migration
+// (GoalNear(leg.x, yRef, leg.z) : moved:0 en 24 jambes) — corrigé là par GoalNearXZ.
+
+test('explore : waypoint d\'anneau → but XZ (aucun y), atteignable à N\'IMPORTE quelle altitude', async () => {
+  const { bot, calls } = makeBot({ target: null }); // bot à y=70
+  await explore(bot, { name: 'oak_log', matching: [17], step: 80, maxRadius: 80 });
+  assert.ok(calls.goals.length >= 4, 'des waypoints d\'anneau ont été tentés');
+  for (const g of calls.goals) {
+    assert.strictEqual(g.y, undefined, 'le but d\'un waypoint n\'invente aucune altitude');
+    assert.strictEqual(typeof g.x, 'number');
+    assert.strictEqual(typeof g.z, 'number');
+    if (pfGoals) {
+      assert.ok(g instanceof pfGoals.GoalNearXZ, 'GoalNearXZ, pas GoalNear 3D');
+      // surface 40 blocs plus haut / plus bas que le bot : le but doit rester atteignable (le 3D ne l'était pas)
+      assert.strictEqual(g.isEnd({ x: g.x, y: 110, z: g.z }), true, 'colline +40');
+      assert.strictEqual(g.isEnd({ x: g.x, y: 30, z: g.z }), true, 'vallée -40');
+    }
+  }
+  assert.ok(calls.goto.every((c) => c.xz === true), 'tous les gotos d\'anneau sont des buts XZ');
+});
+
+test('explore : cible dirigée find / biome (SANS y propre) → but XZ, l\'altitude courante n\'est pas imposée', async () => {
+  // find appris
+  const a = makeBot({ target: pos(640, 70, 128) });
+  const memA = { worlds: { w: { finds: [{ material: 'oak_log', biome: 'forest', x: 640, z: 128 }], biomes: [] } } };
+  const ra = await explore(a.bot, { name: 'oak_log', matching: [17], memory: memA, worldKey: 'w' });
+  assert.strictEqual(ra.directed, true);
+  assert.strictEqual(a.calls.goto[0].xz, true, 'find appris : but XZ');
+  assert.strictEqual(a.calls.goals[0].y, undefined);
+  if (pfGoals) {
+    assert.ok(a.calls.goals[0] instanceof pfGoals.GoalNearXZ);
+    assert.strictEqual(a.calls.goals[0].isEnd({ x: 640, y: 150, z: 128 }), true, 'cible en altitude : atteignable');
+  }
+  // amorce vanilla (biome connu, pas de find)
+  const b = makeBot({ target: pos(200, 70, 0) });
+  const memB = { worlds: { w: { finds: [], biomes: [{ name: 'forest', x: 200, z: 0 }] } } };
+  const rb = await explore(b.bot, { name: 'oak_log', matching: [17], memory: memB, worldKey: 'w' });
+  assert.strictEqual(rb.directed, true);
+  assert.strictEqual(b.calls.goto[0].xz, true, 'biome vanilla : but XZ');
+});
+
+test('explore : cible CAVE (porte un y) → GoalNear 3D conservé — le pathfinder doit pouvoir y descendre', async () => {
+  const { bot, calls } = makeBot({ target: pos(300, 45, -100) });
+  const memory = { worlds: { w: { finds: [], biomes: [], caves: [{ x: 300, y: 45, z: -100 }] } } };
+  await explore(bot, { name: 'iron_ore', matching: [42], memory, worldKey: 'w' });
+  assert.strictEqual(calls.goto[0].xz, false, 'la cave garde un but 3D');
+  assert.strictEqual(calls.goals[0].y, 45, 'au y de l\'entrée de la cave');
+  if (pfGoals) {
+    assert.ok(calls.goals[0] instanceof pfGoals.GoalNear && !(calls.goals[0] instanceof pfGoals.GoalNearXZ));
+    assert.strictEqual(calls.goals[0].isEnd({ x: 300, y: 110, z: -100 }), false, 'sphère 3D : pas atteignable en surface');
+  }
+});
+
+test('explore : RAPPEL dirigé au changement d\'anneau (cible sans y) → but XZ, comme le préambule', async () => {
+  const { bot } = makeBot({ target: pos(400, 70, 100) }); // loin : introuvable depuis les premiers waypoints
+  const realGoto = bot.pathfinder.goto;
+  const directedGoals = [];
+  let tries = 0;
+  bot.pathfinder.goto = async (goal) => {
+    const isDirected = goal && Math.abs(goal.x - 400) < 1.5 && Math.abs(goal.z - 100) < 1.5;
+    if (isDirected) {
+      directedGoals.push(goal);
+      if (++tries <= 2) throw new Error('NoPath'); // préambule mort-né, le rappel réussit
+    }
+    return realGoto(goal);
+  };
+  const memory = { worlds: { w: { finds: [{ material: 'oak_log', biome: 'forest', x: 400, z: 100 }], biomes: [] } } };
+  const res = await explore(bot, { name: 'oak_log', matching: [17], memory, worldKey: 'w', directedRetryDelayMs: 0 });
+  assert.strictEqual(res.directed, true);
+  assert.ok(directedGoals.length >= 3, `préambule (2) + rappel (${directedGoals.length})`);
+  assert.ok(directedGoals.every((g) => g.y === undefined), 'préambule ET rappel visent un but XZ');
+});
+
+// ─── Anti-emballement : le bot est ENFERMÉ, pas « en train d'explorer » ──────────────────────────
+// Avant : chaque goto rejeté instantanément faisait `continue` → la spirale ENTIÈRE était « parcourue »
+// sur place en quelques secondes, puis `not_found` (mensonge : rien n'avait été exploré). Maintenant :
+// 6 échecs INSTANTANÉS (< 1,5 s) SANS déplacement (< 2 blocs) d'affilée → on s'arrête et on le DIT.
+
+test('explore : 6 rejets INSTANTANÉS sans déplacement → sortie stuck, la spirale n\'est PAS parcourue', async () => {
+  const { bot } = makeBot({ target: null });
+  const clock = makeClock();
+  let attempts = 0;
+  bot.pathfinder.goto = async () => { attempts++; clock.advance(300); throw new Error('No path to the goal!'); };
+  const emits = [];
+  const total = nextWaypoints(pos(0, 70, 0), { step: 80, maxRadius: 256 }).length;
+  const res = await explore(bot, { name: 'oak_log', matching: [17], now: clock.now, emit: (e) => emits.push(e) });
+  assert.deepStrictEqual(res, { ok: false, reason: 'not_found', stuck: true });
+  assert.ok(total > 20, `garde-fou du test : la spirale complète fait ${total} waypoints`);
+  assert.strictEqual(attempts, 6, 'arrêt AU 6e échec instantané consécutif');
+  assert.strictEqual(emits.filter((e) => e.type === 'explore_waypoint').length, 6,
+    'explore_waypoint conservé tel quel (des outils d\'analyse le comptent)');
+});
+
+test('explore : 5 rejets instantanés puis un succès → PAS stuck, le compteur repart à zéro', async () => {
+  const { bot } = makeBot({ target: null });
+  const realGoto = bot.pathfinder.goto;
+  const clock = makeClock();
+  const total = nextWaypoints(pos(0, 70, 0), { step: 80, maxRadius: 256 }).length;
+  let n = 0;
+  // 5 échecs instantanés, 1 succès (le bot bouge), 5 échecs instantanés, puis tout réussit
+  bot.pathfinder.goto = async (goal) => {
+    n++;
+    if (n <= 5 || (n >= 7 && n <= 11)) { clock.advance(300); throw new Error('No path to the goal!'); }
+    return realGoto(goal);
+  };
+  const res = await explore(bot, { name: 'oak_log', matching: [17], now: clock.now });
+  assert.deepStrictEqual(res, { ok: false, reason: 'not_found' }, 'contrat historique intact, aucun champ stuck');
+  assert.strictEqual(n, total, 'toute la spirale a été tentée');
+});
+
+test('explore : rejets LENTS (≥ 1,5 s) → jamais stuck, la spirale est parcourue en entier', async () => {
+  const { bot } = makeBot({ target: null });
+  const clock = makeClock();
+  const total = nextWaypoints(pos(0, 70, 0), { step: 80, maxRadius: 256 }).length;
+  let n = 0;
+  // le pathfinder a cherché 2 s avant d'abandonner : ce n'est pas un rejet instantané, même sans bouger
+  bot.pathfinder.goto = async () => { n++; clock.advance(2000); throw new Error('Took to long to decide path to goal!'); };
+  const res = await explore(bot, { name: 'oak_log', matching: [17], now: clock.now });
+  assert.deepStrictEqual(res, { ok: false, reason: 'not_found' });
+  assert.strictEqual(n, total);
+});
+
+for (const [ms, stuck] of [[1499, true], [1500, false]]) {
+  test(`explore : seuil « instantané » STRICT — rejet en ${ms} ms → ${stuck ? 'stuck' : 'pas stuck'}`, async () => {
+    const { bot } = makeBot({ target: null });
+    const clock = makeClock();
+    bot.pathfinder.goto = async () => { clock.advance(ms); throw new Error('No path to the goal!'); };
+    const res = await explore(bot, { name: 'oak_log', matching: [17], now: clock.now });
+    assert.strictEqual(res.stuck === true, stuck);
+  });
+}
+
+test('explore : gotos GELÉS (timeout) → jamais stuck, même avec un timeout très court', async () => {
+  const { bot } = makeBot({ target: null });
+  let n = 0;
+  bot.pathfinder.goto = () => { n++; return new Promise(() => {}); }; // ne résout JAMAIS
+  bot.pathfinder.setGoal = () => {};
+  const total = nextWaypoints(pos(0, 70, 0), { step: 80, maxRadius: 160 }).length; // 17 > 6
+  // horloge RÉELLE + timeout de 5 ms : le délai mesuré est « instantané », seul le fait que ce soit
+  // NOTRE timeout (pas un rejet du pathfinder) l'exclut du compte
+  const res = await explore(bot, { name: 'oak_log', matching: [17], step: 80, maxRadius: 160, gotoTimeoutMs: 5 });
+  assert.deepStrictEqual(res, { ok: false, reason: 'not_found' });
+  assert.strictEqual(n, total);
+});
+
+test('explore : rejet rapide MAIS le bot a avancé d\'au moins 2 blocs → pas un échec instantané', async () => {
+  const { bot } = makeBot({ target: null });
+  const clock = makeClock();
+  const total = nextWaypoints(pos(0, 70, 0), { step: 80, maxRadius: 256 }).length;
+  let n = 0;
+  bot.pathfinder.goto = async () => { // chemin PARTIEL : le bot avance de 10 blocs puis le pathfinder abandonne
+    n++; clock.advance(300);
+    const p = bot.entity.position;
+    bot.entity.position = pos(p.x + 10, p.y, p.z);
+    throw new Error('No path to the goal!');
+  };
+  const res = await explore(bot, { name: 'oak_log', matching: [17], now: clock.now });
+  assert.deepStrictEqual(res, { ok: false, reason: 'not_found' });
+  assert.strictEqual(n, total);
+});
+
+test('explore : un tressautement < 2 blocs compte encore comme « sur place »', async () => {
+  const { bot } = makeBot({ target: null });
+  const clock = makeClock();
+  let n = 0;
+  bot.pathfinder.goto = async () => {
+    n++; clock.advance(300);
+    const p = bot.entity.position;
+    bot.entity.position = pos(p.x + (n % 2 ? 1.5 : -1.5), p.y, p.z); // va-et-vient de 1,5 bloc
+    throw new Error('No path to the goal!');
+  };
+  const res = await explore(bot, { name: 'oak_log', matching: [17], now: clock.now });
+  assert.strictEqual(res.stuck, true);
+  assert.strictEqual(n, 6);
+});
+
+test('explore : sortie stuck → la cible dirigée N\'EST PAS marquée épuisée (jamais approchée)', async () => {
+  const { bot } = makeBot({ target: null });
+  bot._mcaExhausted = new Set();
+  const clock = makeClock();
+  bot.pathfinder.goto = async () => { clock.advance(300); throw new Error('No path to the goal!'); };
+  const memory = { worlds: { w: { finds: [{ material: 'oak_log', biome: 'forest', x: 800, z: 0 }], biomes: [] } } };
+  const emits = [];
+  const r = await explore(bot, {
+    name: 'oak_log', matching: [17], memory, worldKey: 'w', emit: (e) => emits.push(e),
+    now: clock.now, directedRetryDelayMs: 0,
+  });
+  assert.strictEqual(r.stuck, true);
+  assert.strictEqual(bot._mcaExhausted.size, 0, 'une cible jamais approchée n\'est pas épuisée');
+  assert.ok(!emits.some((e) => e.type === 'directed_exhausted'), 'aucun directed_exhausted sur une sortie stuck');
+});
+
+// ─── explore_summary : UN event de synthèse en fin d'explore ─────────────────────────────────────
+
+test('explore_summary : un seul event, en DERNIER, compteurs justes (waypoints / reached / failedFast)', async () => {
+  const { bot } = makeBot({ target: null });
+  const realGoto = bot.pathfinder.goto;
+  const clock = makeClock();
+  let n = 0;
+  bot.pathfinder.goto = async (goal) => { // 2 rejets instantanés puis tout réussit
+    if (++n <= 2) { clock.advance(300); throw new Error('No path to the goal!'); }
+    return realGoto(goal);
+  };
+  const emits = [];
+  const res = await explore(bot, { name: 'oak_log', matching: [17], step: 80, maxRadius: 80, now: clock.now, emit: (e) => emits.push(e) });
+  assert.strictEqual(res.ok, false);
+  const sums = emits.filter((e) => e.type === 'explore_summary');
+  assert.strictEqual(sums.length, 1, 'UN seul event de synthèse');
+  assert.deepStrictEqual(sums[0], {
+    type: 'explore_summary', waypoints: 6, reached: 4, failedFast: 2, stuck: false, lastError: 'No path to the goal!',
+  });
+  assert.strictEqual(emits[emits.length - 1], sums[0], 'émis EN FIN d\'explore');
+});
+
+test('explore_summary : sortie stuck → stuck:true, lastError tronqué à 60 caractères', async () => {
+  const { bot } = makeBot({ target: null });
+  const clock = makeClock();
+  bot.pathfinder.goto = async () => { clock.advance(300); throw new Error('x'.repeat(100)); };
+  const emits = [];
+  await explore(bot, { name: 'oak_log', matching: [17], now: clock.now, emit: (e) => emits.push(e) });
+  const sums = emits.filter((e) => e.type === 'explore_summary');
+  assert.strictEqual(sums.length, 1);
+  assert.deepStrictEqual(sums[0], {
+    type: 'explore_summary', waypoints: 6, reached: 0, failedFast: 6, stuck: true, lastError: 'x'.repeat(60),
+  });
+});
+
+test('explore_summary : aussi sur une trouvaille (anneaux, dirigé) — lastError null quand aucune erreur', async () => {
+  // trouvé au 1er waypoint d'anneau
+  const a = makeBot({ target: pos(100, 70, 0) });
+  const emitsA = [];
+  const ra = await explore(a.bot, { name: 'oak_log', matching: [17], emit: (e) => emitsA.push(e) });
+  assert.strictEqual(ra.ok, true);
+  assert.deepStrictEqual(emitsA.filter((e) => e.type === 'explore_summary'), [
+    { type: 'explore_summary', waypoints: 1, reached: 1, failedFast: 0, stuck: false, lastError: null },
+  ]);
+  // trouvé par le trajet dirigé : aucun waypoint d'anneau
+  const b = makeBot({ target: pos(640, 70, 128) });
+  const memory = { worlds: { w: { finds: [{ material: 'oak_log', biome: 'forest', x: 640, z: 128 }], biomes: [] } } };
+  const emitsB = [];
+  const rb = await explore(b.bot, { name: 'oak_log', matching: [17], memory, worldKey: 'w', emit: (e) => emitsB.push(e) });
+  assert.strictEqual(rb.directed, true);
+  assert.deepStrictEqual(emitsB.filter((e) => e.type === 'explore_summary'), [
+    { type: 'explore_summary', waypoints: 0, reached: 0, failedFast: 0, stuck: false, lastError: null },
+  ]);
+});
+
+test('explore_summary : annulé en cours de route → un event ; rien tenté (annulé d\'emblée / sans position) → aucun', async () => {
+  const { bot } = makeBot({ target: null });
+  const token = { cancelled: false };
+  const realGoto = bot.pathfinder.goto;
+  let n = 0;
+  bot.pathfinder.goto = async (goal) => { if (++n === 2) token.cancelled = true; return realGoto(goal); };
+  const emits = [];
+  const res = await explore(bot, { name: 'oak_log', matching: [17], token, emit: (e) => emits.push(e) });
+  assert.strictEqual(res.reason, 'cancelled');
+  assert.deepStrictEqual(emits.filter((e) => e.type === 'explore_summary'), [
+    { type: 'explore_summary', waypoints: 2, reached: 2, failedFast: 0, stuck: false, lastError: null },
+  ]);
+  // rien tenté : pas de bruit
+  const b = makeBot({ target: null });
+  const emitsB = [];
+  assert.strictEqual((await explore(b.bot, { name: 'oak_log', matching: [17], token: { cancelled: true }, emit: (e) => emitsB.push(e) })).reason, 'cancelled');
+  b.bot.entity = null;
+  assert.strictEqual((await explore(b.bot, { name: 'oak_log', matching: [17], emit: (e) => emitsB.push(e) })).reason, 'no_pos');
+  assert.strictEqual(emitsB.length, 0, 'aucun event quand rien n\'a été tenté');
 });
