@@ -31,7 +31,9 @@ DEFAULTS: Dict[str, Any] = {
     "top_n": 25,
     "shortlist": 40,
     "exclude_red": False,
-    "lang": "fr",
+    # Italien, comme le Bond Scanner : l'Excel est fait pour être lu par papy
+    # (demande Massii du 19/10). L'écran, lui, suit la langue du site.
+    "lang": "it",
 }
 
 # (min, max) des champs numériques — l'UI les lit via GET /config.

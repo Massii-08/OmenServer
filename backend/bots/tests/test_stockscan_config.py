@@ -114,7 +114,7 @@ def test_validate_bad_values_fall_back():
     assert clean["top_n"] == cfgmod.DEFAULTS["top_n"]
     assert clean["window_h"] == 48
     assert clean["exclude_red"] is False
-    assert clean["lang"] == "fr"
+    assert clean["lang"] == "it"
     fields = sorted(w["field"] for w in warnings if w["code"] == "bad_value")
     assert fields == ["exclude_red", "lang", "top_n", "window_h"]
 
@@ -172,9 +172,15 @@ def test_load_defaults_tolerates_missing_and_corrupt(tmp_path, monkeypatch):
 
 def test_saved_file_is_plain_json(tmp_path, monkeypatch):
     monkeypatch.setattr(cfgmod, "DATA_DIR", tmp_path)
-    cfgmod.save_defaults({"lang": "it"})
+    cfgmod.save_defaults({"lang": "en"})        # une valeur DIFFÉRENTE du défaut
     data = json.loads(cfgmod.defaults_path().read_text(encoding="utf-8"))
-    assert data["lang"] == "it"
+    assert data["lang"] == "en"
+
+
+def test_the_excel_is_italian_by_default():
+    # Comme le Bond Scanner : l'Excel est lu par papy (demande Massii du 19/10).
+    assert cfgmod.DEFAULTS["lang"] == "it"
+    assert cfgmod.validate({})[0]["lang"] == "it"
 
 
 def test_validate_is_idempotent_even_at_the_top_n_ceiling():

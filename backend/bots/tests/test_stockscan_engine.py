@@ -16,6 +16,7 @@ from backend.bots.stockscan import __main__ as cli
 from backend.bots.stockscan import coach as coachmod
 from backend.bots.stockscan import config as cfgmod
 from backend.bots.stockscan import engine
+from backend.bots.stockscan import excel_out
 from backend.bots.stockscan import markets as mk
 from backend.bots.stockscan import screener as sc
 
@@ -170,7 +171,11 @@ def test_full_scan_ranks_catalysts_and_writes_files(tmp_path):
     assert json.loads((tmp_path / "progress.json").read_text(encoding="utf-8"))["phase"] == "done"
     assert results["excel"] and (tmp_path / results["excel"]).is_file()
     wb = load_workbook(str(tmp_path / results["excel"]))
-    assert wb.sheetnames == ["Italie", "Royaume-Uni", "Infos"]     # une feuille par marché
+    # une feuille par marché, en italien par défaut (comme le Bond Scanner)
+    assert results["excel"].startswith("Opportunita_Azioni_")
+    assert wb.sheetnames == ["Italia", "Regno Unito", "Info"]
+    # chaque compteur du moteur a un nom lisible dans la feuille « Info »
+    assert set(results["counts"]) <= set(excel_out.LABELS["it"]["info"]["count_names"])
     assert any("Coach :" in line for line in logs)
 
 

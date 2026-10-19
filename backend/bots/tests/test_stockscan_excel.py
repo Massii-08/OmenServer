@@ -119,9 +119,11 @@ def test_formula_injection_and_bad_links_are_neutralised(tmp_path):
 def test_info_sheet_lists_warnings_and_markets(tmp_path):
     _, wb = _open(tmp_path)
     texts = [c.value for row in wb["Infos"].iter_rows() for c in row if isinstance(c.value, str)]
-    assert "Marché en échec : switzerland (HTTP 403)" in texts
+    # le marché par son NOM, pas par son identifiant technique « switzerland »
+    assert "Marché en échec : Suisse (HTTP 403)" in texts
     assert "Colonnes du screener vides : gap" in texts
-    assert any(t.startswith("échec") for t in texts)
+    assert "échec : HTTP 403" in texts
+    assert "Sans catalyseur" in texts and "excluded_no_catalyst" not in texts
     assert "Italie (Borsa Italiana), Suisse (SIX)" in texts
     assert "17/10/2026 07:45 UTC" in texts               # plus d'ISO brut
     assert any(t.startswith("Univers : 180 titres") for t in texts)
@@ -159,4 +161,36 @@ def test_session_column_and_session_warnings():
         assert len(lab["headers"]) == len(xo.WIDTHS) == 13
         assert "awaiting_open" in lab["flags"] and "awaiting_open" in lab["reasons"]
     text = xo.warning_text({"code": "volume_adjusted", "markets": ["italy", "uk"]}, "fr")
-    assert "italy, uk" in text and "{markets}" not in text
+    assert "(Italie, Royaume-Uni)" in text and "{markets}" not in text
+    text = xo.warning_text({"code": "session_uncertain", "markets": ["italy", "atlantis"]}, "it")
+    assert text.endswith("(Italia, atlantis)")         # identifiant inconnu : tel quel
+
+
+def test_without_a_language_the_workbook_is_italian(tmp_path):
+    # Ni langue passée ni langue dans la config : italien, comme le Bond Scanner.
+    path = xo.write_workbook({"generated_at": "2026-10-17T07:00:00+00:00", "rows": [],
+                              "config": {"markets": ["italy"]}}, tmp_path)
+    assert path.name == "Opportunita_Azioni_2026-10-17.xlsx"
+    assert load_workbook(str(path)).sheetnames == ["Italia", "Info"]
+    assert xo.labels("de") is xo.LABELS["it"]
+
+
+def test_italian_info_sheet_has_no_technical_names(tmp_path):
+    # Feuille lue par papy : ni clé de compteur brute, ni ponctuation française.
+    res = _results("it")
+    res["counts"]["brand_new_counter"] = 7
+    path = xo.write_workbook(res, tmp_path)
+    texts = [c.value for row in load_workbook(str(path))["Info"].iter_rows()
+             for c in row if isinstance(c.value, str)]
+    assert "Universo" in texts and "Esclusi (notizia negativa)" in texts
+    assert not {"universe", "kept", "excluded_red"} & set(texts)
+    assert "errore: HTTP 403" in texts and "Mercato in errore: Svizzera (HTTP 403)" in texts
+    assert "brand_new_counter" in texts                 # compteur inconnu : jamais perdu
+    info = load_workbook(str(path))["Info"]
+    assert info.sheet_properties.pageSetUpPr.fitToPage and info.page_setup.fitToWidth == 1
+
+
+def test_every_language_names_the_same_counters():
+    for lang in ("fr", "en", "it"):
+        assert set(xo.LABELS[lang]["info"]["count_names"]) == set(xo.LABELS["fr"]["info"]["count_names"])
+        assert "{error}" in xo.LABELS[lang]["info"]["failed"]

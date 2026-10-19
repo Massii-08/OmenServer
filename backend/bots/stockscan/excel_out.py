@@ -106,7 +106,17 @@ LABELS: Dict[str, Dict[str, Any]] = {
                      "min_value_meur": "Échanges moyens min. (M€/jour)",
                      "window_h": "Fenêtre des news (h)", "top_n": "Lignes rendues",
                      "shortlist": "Présélection", "exclude_red": "Exclure les titres en rouge"},
-            "yes": "oui", "no": "non", "ok": "ok", "failed": "échec",
+            "yes": "oui", "no": "non", "ok": "ok", "failed": "échec : {error}",
+            "count_names": {
+                "universe": "Univers", "shortlist": "Présélection",
+                "news_requests": "Requêtes de news", "news_failed": "Requêtes en échec",
+                "news_from_cache": "News lues dans le cache du coach",
+                "candidates": "Candidats", "kept": "Retenus",
+                "excluded_no_catalyst": "Sans catalyseur",
+                "excluded_red": "Exclus (news négative)",
+                "filtered_advice": "Titres-conseils écartés",
+                "dropped_irrelevant": "News hors sujet", "coach_events": "Événements du coach",
+            },
             "source_lines": ["Univers : screener public TradingView (différé ~15 min)",
                              "News : collecteur TradingView du coach + carnets du coach",
                              "Aucun LLM : classement déterministe, raisons affichées"],
@@ -161,7 +171,17 @@ LABELS: Dict[str, Dict[str, Any]] = {
                      "min_value_meur": "Min. avg traded value (M€/day)",
                      "window_h": "News window (h)", "top_n": "Rows returned",
                      "shortlist": "Shortlist", "exclude_red": "Exclude red-flagged stocks"},
-            "yes": "yes", "no": "no", "ok": "ok", "failed": "failed",
+            "yes": "yes", "no": "no", "ok": "ok", "failed": "failed: {error}",
+            "count_names": {
+                "universe": "Universe", "shortlist": "Shortlist",
+                "news_requests": "News requests", "news_failed": "Failed requests",
+                "news_from_cache": "News read from the coach's cache",
+                "candidates": "Candidates", "kept": "Kept",
+                "excluded_no_catalyst": "No catalyst",
+                "excluded_red": "Excluded (negative news)",
+                "filtered_advice": "Advice headlines dropped",
+                "dropped_irrelevant": "Off-topic news", "coach_events": "Coach events",
+            },
             "source_lines": ["Universe: TradingView public screener (delayed ~15 min)",
                              "News: the coach's TradingView collector + coach notebooks",
                              "No LLM: deterministic ranking, reasons shown"],
@@ -218,7 +238,17 @@ LABELS: Dict[str, Dict[str, Any]] = {
                      "min_value_meur": "Scambi medi min. (M€/giorno)",
                      "window_h": "Finestra notizie (h)", "top_n": "Righe restituite",
                      "shortlist": "Preselezione", "exclude_red": "Escludere i titoli in rosso"},
-            "yes": "sì", "no": "no", "ok": "ok", "failed": "errore",
+            "yes": "sì", "no": "no", "ok": "ok", "failed": "errore: {error}",
+            "count_names": {
+                "universe": "Universo", "shortlist": "Preselezione",
+                "news_requests": "Richieste di notizie", "news_failed": "Richieste fallite",
+                "news_from_cache": "Notizie dalla cache del coach",
+                "candidates": "Candidati", "kept": "Selezionati",
+                "excluded_no_catalyst": "Senza catalizzatore",
+                "excluded_red": "Esclusi (notizia negativa)",
+                "filtered_advice": "Titoli-consiglio scartati",
+                "dropped_irrelevant": "Notizie fuori tema", "coach_events": "Eventi del coach",
+            },
             "source_lines": ["Universo: screener pubblico TradingView (ritardato ~15 min)",
                              "Notizie: collettore TradingView del coach + taccuini del coach",
                              "Nessun LLM: classifica deterministica, motivi mostrati"],
@@ -236,7 +266,7 @@ WIDTHS = [7, 40, 10, 14, 11, 11, 9, 24, 46, 52, 12, 16, 12]
 # --------------------------------------------------------------------------- #
 
 def labels(lang: Any) -> Dict[str, Any]:
-    return LABELS.get(lang) if lang in LABELS else LABELS["fr"]
+    return LABELS.get(lang) if lang in LABELS else LABELS["it"]
 
 
 def _safe_text(value: Any) -> Optional[str]:
@@ -312,10 +342,15 @@ def warning_text(warning: Dict[str, Any], lang: str) -> str:
     tpl = labels(lang)["warnings"].get(warning.get("code"))
     if not tpl:
         return str(warning.get("code") or "")
+    # Les marchés par leur NOM dans la langue du classeur (« Svizzera »), pas
+    # par leur identifiant technique (« switzerland ») ; un identifiant inconnu
+    # reste affiché tel quel.
+    market = warning.get("market")
     return tpl.replace("{columns}", ", ".join(warning.get("columns") or [])) \
-              .replace("{market}", str(warning.get("market") or "")) \
+              .replace("{market}", _market_name(market, lang, short=True) if market else "") \
               .replace("{error}", str(warning.get("error") or "")) \
-              .replace("{markets}", ", ".join(str(m) for m in warning.get("markets") or []))
+              .replace("{markets}", ", ".join(_market_name(m, lang, short=True)
+                                              for m in warning.get("markets") or []))
 
 
 def _put(ws, row: int, col: int, value: Any = None, font: Font = DATA_FONT,
@@ -464,6 +499,11 @@ def _info_sheet(ws, results: Dict[str, Any], lang: str) -> None:
     info = lab["info"]
     ws.column_dimensions["A"].width = 34
     ws.column_dimensions["B"].width = 70
+    # Imprimée, la feuille tient sur la largeur d'une page (comme celles des
+    # marchés) : sinon la colonne B part seule sur une seconde page.
+    ws.page_setup.fitToWidth = 1
+    ws.page_setup.fitToHeight = 0
+    ws.sheet_properties.pageSetUpPr.fitToPage = True
     r = 1
     ws.cell(row=r, column=1, value=lab["title"]).font = TITLE_FONT
     r += 1
@@ -498,7 +538,9 @@ def _info_sheet(ws, results: Dict[str, Any], lang: str) -> None:
     ws.cell(row=r, column=1, value=info["counts"]).font = SUBTITLE_FONT
     r += 1
     for key, value in (results.get("counts") or {}).items():
-        ws.cell(row=r, column=1, value=key).font = DATA_FONT
+        # Un compteur sans libellé (ajouté plus tard) garde sa clé : jamais perdu.
+        name = info["count_names"].get(key, key)
+        ws.cell(row=r, column=1, value=_safe_text(str(name))).font = DATA_FONT
         ws.cell(row=r, column=2, value=value).font = DATA_FONT
         r += 1
     r += 1
@@ -511,7 +553,7 @@ def _info_sheet(ws, results: Dict[str, Any], lang: str) -> None:
         market = mk.by_id(m.get("id"))
         name = market.labels.get(lang, market.labels["fr"]) if market else str(m.get("id"))
         state = ("%s (%s)" % (info["ok"], m.get("rows"))) if m.get("ok") else \
-            ("%s : %s" % (info["failed"], m.get("error") or ""))
+            info["failed"].replace("{error}", str(m.get("error") or ""))
         ws.cell(row=r, column=1, value=_safe_text(name)).font = DATA_FONT
         ws.cell(row=r, column=2, value=_safe_text(state)).font = DATA_FONT if m.get("ok") else RED_FONT
         r += 1
@@ -543,9 +585,9 @@ def write_workbook(results: Dict[str, Any], out_dir: Any, lang: Optional[str] = 
     du Bond Scanner), dans l'ordre des réglages, lignes dans l'ordre du
     classement ; puis la feuille « Infos ».
     """
-    lang = lang or (results.get("config") or {}).get("lang") or "fr"
+    lang = lang or (results.get("config") or {}).get("lang") or "it"
     if lang not in LABELS:
-        lang = "fr"
+        lang = "it"
     rows = [r for r in results.get("rows") or [] if isinstance(r, dict)]
     markets: List[Any] = list((results.get("config") or {}).get("markets") or [])
     for row in rows:                                   # un marché hors réglages (repli)

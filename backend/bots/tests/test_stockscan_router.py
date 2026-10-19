@@ -186,10 +186,10 @@ def test_config_serves_defaults_catalogue_limits_windows_langs(tmp_path, monkeyp
 
 def test_config_defaults_follow_the_last_launched_settings(tmp_path, monkeypatch):
     c, _ = make_client(tmp_path, monkeypatch)
-    _start(c, {"markets": ["uk"], "top_n": 10, "lang": "it"})
+    _start(c, {"markets": ["uk"], "top_n": 10, "lang": "en"})
     defaults = c.get(API + "/config").json()["defaults"]
     assert defaults["markets"] == ["uk"]
-    assert defaults["top_n"] == 10 and defaults["lang"] == "it"
+    assert defaults["top_n"] == 10 and defaults["lang"] == "en"
 
 
 # ================================================================

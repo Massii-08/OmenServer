@@ -531,7 +531,7 @@ const StockScanModule = {
             return (Array.isArray(v) && v.length === 2 && isFinite(Number(v[0])) && isFinite(Number(v[1])))
                 ? [Number(v[0]), Number(v[1])] : [lo, hi];
         };
-        const topR = span('top_n', 5, 100);
+        const topR = span('top_n', 5, 80);
         const shortR = span('shortlist', 10, 80);
         const capR = span('min_cap_meur', 50, 500000);
         const valR = span('min_value_meur', 0, 10000);
@@ -666,7 +666,6 @@ const StockScanModule = {
             return isFinite(n) ? n : fb;
         };
         const ex = this._el('stk-exred');
-        const lang = ['fr', 'en', 'it'].indexOf(Lang.current) >= 0 ? Lang.current : 'fr';
         return {
             markets: markets,
             min_cap_meur: num('stk-mincap', def.min_cap_meur),
@@ -675,7 +674,10 @@ const StockScanModule = {
             top_n: Math.round(num('stk-topn', def.top_n)),
             shortlist: Math.round(num('stk-shortlist', def.shortlist)),
             exclude_red: !!(ex && ex.checked),
-            lang: lang,
+            // L'Excel sort TOUJOURS en italien, comme celui du Bond Scanner : c'est
+            // papy qui le lit (demande Massii du 19/10). L'écran, lui, suit la
+            // langue du site.
+            lang: 'it',
         };
     },
 
