@@ -69,7 +69,11 @@ const { runMapper, createExpiringSet } = require('./mapper');   // createExpirin
 // (LOCATE_KINDS / parseLocateResponse ne sont plus importés : /locate est retiré des bots, cf. plus bas.
 //  structureFoundEvent est émis par mapper.js depuis les signatures VUES.)
 const { isInWater, escapeWater, findLandTarget, isFloatingStuck, recoverFloating, isFrozenDesync,
-  escapePlan, escapeReached, canReanchorSpawn, ESCAPE_SAFE_RADIUS } = require('./unstuck');
+  escapePlan, escapeReached, canReanchorSpawn, ESCAPE_SAFE_RADIUS,
+  // Fuite dès le spawn + historique de morts persisté (live 19/10, MapBot1) — décisions PURES, cf. unstuck.js.
+  spawnDanger, deathTimesPrune, deathTimesLoad, deathMemoWith, escapeArmed, deathLoopTripped } = require('./unstuck');
+// Neutres tant qu'on ne les provoque pas (enderman) : jamais une raison de fuir au spawn (même liste que nearbyHostiles).
+const { NEUTRAL_NO_PROVOKE } = require('./survival');
 const deathzones = require('./deathzones'); // ban-zone des camps de mort (≥2 alertes → fuite active)
 const { recordOceanStuck } = require('./oceanEscalate'); // baie humide PERSISTANTE → relocate forcé (live 22/06 ResBot1)
 // Verdict de zone + migration autonome (Massii 27/07). L'état de zone est PERSISTÉ (zoneState*) :
@@ -254,9 +258,20 @@ const world = loadWorld(worldFile);
 // Rôle MAPPEUR (seedé par le backend dans le world file) : combat fuite-d'abord + riposte au contact only.
 const IS_MAPPER = !!(world && world.objective && world.objective.type === 'mapper');
 let taskToken = { cancelled: true };
-let deathTimes = [];
+let deathTimes = [];        // morts récentes (10 min) — HÉRITÉES du mémo de base + celles de ce process
+// Historique de morts PERSISTÉ (live 19/10, MapBot1 : 4 morts de plus à CHAQUE génération de process).
+// `death_loop` fait process.exit(2), le self-healing relance un process NEUF : en mémoire de process
+// l'historique repartait de zéro et l'évasion n'était armée qu'après 2-3 nouvelles morts. Il vit donc
+// dans le mémo de base (loadDeathHistory / persistDeathHistory), comme la dette de mort et la zone.
+// ⚠️ Gardes de NIVEAU MODULE (piège #56) : le handler `death` et le handler `spawn` les lisent HORS de
+// onSpawn — déclarées dans onSpawn, elles lèveraient une ReferenceError et tueraient le process.
+let _deathHistoryLoaded = false;   // l'historique a été relu du mémo (UNE fois par process)
+const _bootAt = Date.now();        // démarrage de CE process : sépare ses morts propres des morts héritées
+                                   // (le garde-fou death_loop ne compte que les siennes, cf. deathLoopTripped)
 let _escapeOnSpawn = false; // anti-camping : 2 morts <60 s → au prochain spawn, escapeDeathCamp()
                             // (sans-give : fuite À PIED puis re-spawnpoint SEULEMENT si au calme)
+                            // Armé aussi par un danger visible au spawn (armSpawnEscapeIfDanger) ou par un
+                            // historique hérité qui dit « ce spawn est campé » (loadDeathHistory).
 // Fuite d'évasion EN COURS. Garde de niveau MODULE (piège #56) lue par les deux mécanismes de TP
 // automatique (enforcement confine + squad /tpa) : un yank pendant la fuite ramènerait le bot vers
 // l'ancre/le chef, donc potentiellement DANS le camp qu'il est en train de quitter — exactement la
@@ -3020,13 +3035,19 @@ function loadBaseState() {
   return _baseState;
 }
 
+// Rend true si le fichier est écrit, false sinon. Les écrivains historiques ignorent ce retour
+// (best-effort) ; l'historique de morts, lui, DOIT savoir : sa raison d'être est de survivre au process.
 function saveBaseState(st) {
   _baseState = st;
   try {
     const tmp = baseFile + '.tmp';                // write+rename = atomique (cf. saveBanked)
     fs.writeFileSync(tmp, JSON.stringify(st));
     fs.renameSync(tmp, baseFile);
-  } catch (e) { /* best-effort : sans le fichier, le bot re-marchera, il ne casse rien */ }
+    return true;
+  } catch (e) {
+    /* best-effort : sans le fichier, le bot re-marchera, il ne casse rien */
+    return false;
+  }
 }
 
 // ─── DETTE DE MORT (Massii 27/07) ───────────────────────────────────────────────────────────────
@@ -3083,6 +3104,46 @@ function persistDeathDebt(debt) {
   const next = Object.assign({}, st);
   if (debt) next.deathDebt = debt; else delete next.deathDebt;
   saveBaseState(next);
+}
+
+// ─── HISTORIQUE DE MORTS PERSISTÉ (live 19/10, MapBot1) ─────────────────────────────────────────
+// Même schéma que la dette de mort et l'état de zone : champ `deaths` du mémo de base, élagué au
+// chargement (fenêtre 10 min, cap 10), mémo d'ancien format sans le champ → historique vide.
+// La logique est PURE (unstuck.js : deathTimesLoad / deathMemoWith / escapeArmed) ; ici, la seule glue.
+
+/**
+ * Relit les morts des process précédents — UNE fois par process (appelée par le handler `spawn`, et
+ * par `death` au cas où). Si l'historique hérité dit que ce spawn est campé, ARME l'évasion tout de
+ * suite : `_escapeOnSpawn` armé à la 5ᵉ mort mourait avec le process (process.exit(2)), d'où 2-3 vies
+ * perdues à chaque génération avant de seulement penser à fuir.
+ */
+function loadDeathHistory() {
+  if (_deathHistoryLoaded) return;
+  _deathHistoryLoaded = true;
+  try {
+    const now = Date.now();
+    const inherited = deathTimesLoad(loadBaseState(), now);
+    // Fusion avec ce que ce process aurait DÉJÀ enregistré : on ne perd jamais une mort.
+    deathTimes = deathTimesPrune(inherited.concat(deathTimes), now);
+    if (inherited.length) {
+      const armed = escapeArmed(deathTimes, now);
+      if (armed) _escapeOnSpawn = true;
+      emit({ type: 'death_history_loaded', count: inherited.length, armed });
+    }
+  } catch (e) { /* best-effort : sans l'historique on retombe sur le comportement d'avant */ }
+}
+
+/**
+ * Écrit l'historique dans le mémo en PRÉSERVANT le reste (base, dette, zone : fusion sur l'état
+ * COURANT, jamais un objet neuf). Rend false — et le DIT — si le fichier n'a pas pu être écrit :
+ * c'est la seule façon de savoir que la prochaine relance repartira de zéro.
+ */
+function persistDeathHistory() {
+  try {
+    const ok = saveBaseState(deathMemoWith(loadBaseState(), deathTimes, Date.now()));
+    if (ok === false) { emit({ type: 'death_history_save_failed' }); return false; }
+    return true;
+  } catch (e) { return false; }
 }
 
 /** Nom du bloc à une position relative au bot (null si illisible — registry/chunk pas prêt). */
@@ -3360,7 +3421,11 @@ async function establishBase(opts = {}) {
     // ressource, cf. 'kit_done').
     try { bot.chat('/spawnpoint'); } catch (e) {}
     const base = { x: Math.round(p.x), y: Math.round(p.y), z: Math.round(p.z) };
-    saveBaseState({ base, worldSpawn: wspawn, personal: personal || !!st.personal });
+    // FUSION sur l'état COURANT du mémo (relu ICI, pas `st` pris avant les gotos de 90 s). Un objet
+    // neuf effaçait `deaths`, `deathDebt` et `zone` à chaque établissement de base : l'aller-retour du
+    // mémo est cassé dès qu'UN écrivain oublie les champs des autres (piège #61). Tout écrivain du
+    // mémo fusionne — un test interdit le littéral neuf.
+    saveBaseState(Object.assign({}, loadBaseState() || {}, { base, worldSpawn: wspawn, personal: personal || !!st.personal }));
     emit({
       type: 'base_established', ...base, d: Math.round(d), personal,
       source: (spot && spot.source) || 'in_place',   // aucune tentative lancée = déjà assez loin
@@ -4250,6 +4315,50 @@ async function escapeDeathCamp() {
       hostileDist: nearestHostileDist == null ? null : Math.round(nearestHostileDist),
     });
   }
+}
+
+// ─── FUITE DÈS LE SPAWN, SANS ATTENDRE DE MOURIR (live 19/10, MapBot1) ───────────────────────────
+// Journal serveur MESURÉ (cartographe non-op, sans lit) : login 17:47:20 sous la canopée du spawn
+// (les zombies n'y brûlent pas de jour) → mort à :25, :32, :37, :54 → death_loop → relance → même
+// spawn → 4 morts de plus. L'évasion ci-dessus ne s'armait QU'APRÈS des morts : chaque génération en
+// perdait 2-3 avant de seulement penser à courir. Un humain VOIT les zombies au login et part.
+// La décision est PURE (unstuck.spawnDanger : nu + hostile ≤ 12 blocs) ; ici, la seule glue.
+// ⚠️ Fonctions de NIVEAU MODULE (piège #56), comme escapeDeathCamp.
+
+/**
+ * Le bot est-il en danger visible MAINTENANT ? null sinon, la décision de spawnDanger sinon.
+ * MÊME prédicat hostile que `escapeDeathCamp` (isFleeHostile : kind OU nom listé), MOINS les neutres
+ * (enderman : jamais une raison de fuir tant qu'on ne le regarde pas — cf. nearbyHostiles).
+ * Jamais de throw : on est dans le chemin du spawn.
+ */
+function spawnDangerNow() {
+  try {
+    const pos = bot.entity && bot.entity.position;
+    if (!pos) return null;
+    const d = spawnDanger({
+      worn: _wornArmor().size,   // pièces PORTÉES (usées exclues) : 0 si l'inventaire n'est pas encore livré → prudent
+      pos,
+      entities: Object.values(bot.entities || {}),
+      isHostile: (e) => e.isValid !== false && isFleeHostile(e) && !NEUTRAL_NO_PROVOKE.has(e.name),
+    });
+    return d.flee ? d : null;
+  } catch (e) { return null; }
+}
+
+/**
+ * Au spawn : arme l'évasion SI un danger est visible (et qu'elle ne l'est pas déjà). Le test de
+ * `_escapeOnSpawn` qui suit dans onSpawn consomme le drapeau → UNE seule fuite par spawn, quelle que
+ * soit la raison (rafale de morts, historique hérité, ou ce danger-ci). Trace la raison : sans elle
+ * `death_camp_escape` ne dit pas pourquoi un bot qui n'est jamais mort part en courant.
+ * @returns true si CE danger a armé l'évasion.
+ */
+function armSpawnEscapeIfDanger() {
+  if (_escapeOnSpawn) return false;
+  const danger = spawnDangerNow();
+  if (!danger) return false;
+  _escapeOnSpawn = true;
+  emit({ type: 'spawn_danger_flee', mob: danger.mob, dist: Math.round(danger.dist * 10) / 10, worn: danger.worn });
+  return true;
 }
 
 // FONTE FINALE (exigence Massii : LIVRER des lingots d'or/fer FONDUS, pas du minerai brut).
@@ -5556,6 +5665,10 @@ async function onSpawn() {
   // mort, /tpa de regroupement, planner autonome) attend la fin de la fuite — sinon le bot
   // repartirait travailler à portée d'arc du campeur. Voir escapeDeathCamp : en sans-give c'est
   // une fuite À PIED, et le /spawnpoint n'est reposé qu'une fois au calme.
+  // + FUITE DÈS LE SPAWN (live 19/10, MapBot1) : nu ET un hostile à ≤ 12 blocs → on part TOUT DE SUITE,
+  // sans attendre d'avoir été tué (cf. armSpawnEscapeIfDanger). Évalué ICI, juste avant le test du
+  // drapeau, pour qu'une seule fuite serve toutes les raisons (rafale, historique hérité, danger vu).
+  armSpawnEscapeIfDanger();
   if (_escapeOnSpawn) {
     _escapeOnSpawn = false;
     try { await escapeDeathCamp(); } catch (e) { /* best-effort : jamais bloquer le respawn */ }
@@ -5773,6 +5886,9 @@ bot.on('spawn', () => {
   // L'état de zone est REPRIS du mémo, jamais réinitialisé : son horloge doit traverser les
   // respawns, sinon l'hystérésis de 15 min n'est jamais atteinte (le bot respawn plus souvent).
   if (!_zoneAnchoredAt) loadZoneState();
+  // Les morts des process précédents, AVANT onSpawn : s'il y a eu une rafale, l'évasion est déjà
+  // armée quand onSpawn teste `_escapeOnSpawn` (UNE fois par process — garde de niveau module).
+  loadDeathHistory();
   survivalKitUp().catch(() => {});
   onSpawn().catch((e) => emit({ type: 'error', message: String((e && e.message) || e) }));
 });
@@ -6017,8 +6133,14 @@ bot.on('death', () => {
       abandonWorkIfDeathSpot(ds.x, ds.z);
     }
   }
-  deathTimes.push(Date.now());
-  deathTimes = deathTimes.filter((t) => Date.now() - t < 10 * 60 * 1000);
+  // HISTORIQUE DE MORTS PERSISTÉ (live 19/10, MapBot1 : « 4 morts de plus » à CHAQUE génération de
+  // process, parce que le death_loop relançait un process à mémoire vide). Relu si ce n'est pas déjà
+  // fait (jamais une mort écrite sur un historique pas encore relu), puis écrit TOUT DE SUITE —
+  // avant l'évasion, avant le garde-fou : le process.exit(2) plus bas ne doit rien emporter.
+  loadDeathHistory();
+  const nowD = Date.now();
+  deathTimes = deathTimesPrune(deathTimes.concat([nowD]), nowD);
+  persistDeathHistory();
   // ANTI-CAMPING (phase B, vécu V3Res1 : zombie campé sur le spawnpoint = 6 morts en 51 s,
   // et l'ancienne pause à 3 morts le laissait IDLE en punching-ball) : 2 morts en <60 s →
   // au prochain spawn on s'ARRACHE de la zone (escapeDeathCamp) avant toute autre activité.
@@ -6026,11 +6148,11 @@ bot.on('death', () => {
   // warp est bloqué par nogive (asymétrie pinnée dans test/nogive.test.js : /spreadplayers
   // interdit, /spawnpoint autorisé) et seul le ré-ancrage passait, CIMENTANT le camping
   // (world_mn15, NethBot3 : 4 morts en 36 s en alternance shot/spawnpoint).
-  const burst = deathTimes.filter((t) => Date.now() - t < 60000).length;
   // Fix fable1 ter : le camping LENT (zombie sur le spawnpoint, morts espacées 2-7 min — MapperBot2
   // 5 morts/22 min) passait sous le radar du burst <60 s. 3 morts en 10 min = même endroit pourri
   // → warp d'évasion aussi (le shelter post-respawn fait le reste).
-  if (burst >= 2 || deathTimes.length >= 3) _escapeOnSpawn = true;
+  // (Le jugement vit dans unstuck.escapeArmed — le MÊME que celui de loadDeathHistory au démarrage.)
+  if (escapeArmed(deathTimes, nowD)) _escapeOnSpawn = true;
   // Garde-fou ultime (relevé 3→5 : le warp anti-camping gère les boucles courtes) :
   // 5 morts / 10 min → on SORT du process (miroir du starved l.1172) pour laisser le self-healing
   // backend respawner avec un world.json FRAIS (status=in_progress) en ~15 s — inventaire + quota
@@ -6038,7 +6160,13 @@ bot.on('death', () => {
   // une IMPASSE : le manager ne respawne que sur mort du process → bot idle à vie, quota jamais
   // atteint (bug review #2). NE PAS persister 'paused' avant l'exit (le manager réécrit un world.json
   // frais au respawn ; saveWorld 'paused' empêcherait onSpawn de relancer l'objectif).
-  if (deathTimes.length >= 5) {
+  // ⚠️ Ne compte que les morts de CE process (`_bootAt`), pas celles héritées du mémo : avec elles,
+  // 5 héritées + 1 = sortie à la 1ʳᵉ mort de CHAQUE relance → vies < 15 s → le backend (3 vies < 15 s
+  // d'affilée = crash_on_spawn) abandonnerait le bot pour de bon. Les héritées arment l'évasion, point.
+  if (deathLoopTripped(deathTimes, { bootAt: _bootAt, now: nowD })) {
+    // DERNIÈRE ÉCRITURE AVANT LA SORTIE — c'est ici que la relance, mémoire vide, ne relira que ce
+    // fichier. Déjà écrit plus haut ; ré-affirmé ici pour que la garantie se lise à côté du exit.
+    persistDeathHistory();
     taskCtl.cancel();
     emit({ type: 'autonomous_stalled', reason: 'death_loop' });
     process.exit(2);

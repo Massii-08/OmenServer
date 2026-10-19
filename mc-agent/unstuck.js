@@ -307,8 +307,157 @@ function canReanchorSpawn(opts = {}) {
   return d > ESCAPE_SAFE_RADIUS;
 }
 
+// --- FUITE DÈS LE SPAWN, SANS ATTENDRE DE MOURIR (live 19/10, MapBot1) ----------------------------
+//
+// Journal serveur MESURÉ (cartographe non-op, pas de lit) :
+//   17:47:20 login (-3, 70, -1) sous la canopée d'une forêt de bouleaux — les zombies n'y brûlent pas
+//   en plein jour — puis « was slain by Zombie » à :25, :32, :37, :54 → death_loop → process.exit →
+//   relance 25 s plus tard au MÊME spawn → 4 morts de plus…
+//
+// L'évasion ci-dessus ne s'armait QU'APRÈS des morts (2 en 60 s, ou 3 en 10 min) : chaque génération
+// de process perdait 2-3 vies avant de seulement penser à courir. Un humain, lui, VOIT les zombies au
+// login et part. D'où une décision PURE « y a-t-il danger MAINTENANT ? », posée au spawn.
+
+const SPAWN_DANGER_RADIUS = 12;     // plus loin, les réflexes et le planner ont le temps de voir venir
+// « Nu » = moins de 2 pièces. Même mot que caution.CAUTION_MIN_WORN et homes.DEBT_MIN_WORN : on ne
+// l'importe pas (unstuck.js reste sans dépendance, il est sur le chemin chaud de mapper.js) mais un
+// test épingle les trois valeurs — une seule définition du mot, pas trois qui divergent en silence.
+const SPAWN_DANGER_MIN_WORN = 2;
+
+/** Hostile par défaut : le `kind` de mineflayer. L'appelant injecte mieux (noms listés, neutres exclus). */
+function _defaultIsHostile(e) { return !!e && e.kind === 'Hostile mobs'; }
+
+/**
+ * PUR — faut-il fuir tout de suite, avant d'avoir pris un seul coup ?
+ * Vrai SSI le bot est NU (< `minWorn` pièces portées) ET un hostile est à ≤ `radius` blocs (3D).
+ * Le campeur n'a pas besoin de t'avoir déjà tué pour être un campeur.
+ *
+ * @param {object} opts
+ *   worn       {number}      pièces d'armure PORTÉES. Absent/NaN/négatif = 0 (inventaire pas encore
+ *                            livré juste après un spawn → « 0 = prudent », comme les autres gardes) ;
+ *   pos        {{x,y,z}}     position du bot ;
+ *   entities   {Array}       entités autour (Object.values(bot.entities)) — { position:{x,y,z}, name, kind } ;
+ *   isHostile  {function}    prédicat injectable (défaut : kind === 'Hostile mobs') ;
+ *   radius, minWorn          seuils injectables.
+ * @returns {{flee:boolean, reason:string, dist:number|null, mob:string|null, worn:number}}
+ *   reason : 'armored' | 'no_position' | 'no_hostile' | 'too_far' | 'naked_hostile_near'.
+ *   `dist`/`mob` sont renseignés dès qu'un hostile a été vu, même trop loin : ils servent à tracer
+ *   POURQUOI le bot est resté (le silence est un bug).
+ */
+function spawnDanger(opts) {
+  const o = (opts && typeof opts === 'object') ? opts : {};
+  const minWorn = Number.isFinite(o.minWorn) ? o.minWorn : SPAWN_DANGER_MIN_WORN;
+  const radius = (Number.isFinite(o.radius) && o.radius >= 0) ? o.radius : SPAWN_DANGER_RADIUS;
+  const worn = (Number.isFinite(o.worn) && o.worn > 0) ? Math.floor(o.worn) : 0;
+  const out = (flee, reason, best) => ({
+    flee, reason, worn, dist: best ? best.dist : null, mob: best ? best.mob : null,
+  });
+
+  if (worn >= minWorn) return out(false, 'armored', null);
+  const p = o.pos;
+  if (!p || !Number.isFinite(p.x) || !Number.isFinite(p.y) || !Number.isFinite(p.z)) {
+    return out(false, 'no_position', null);
+  }
+  const isHostile = typeof o.isHostile === 'function' ? o.isHostile : _defaultIsHostile;
+
+  let best = null;
+  for (const e of (Array.isArray(o.entities) ? o.entities : [])) {
+    if (!e || !e.position) continue;
+    // Un prédicat qui lève sur UNE entité ne doit ni tuer la décision ni masquer les autres.
+    let hostile = false;
+    try { hostile = !!isHostile(e); } catch (err) { hostile = false; }
+    if (!hostile) continue;
+    const d = Math.hypot(e.position.x - p.x, e.position.y - p.y, e.position.z - p.z);
+    if (!Number.isFinite(d)) continue;                       // coordonnée illisible : ni plus proche ni plus loin
+    if (!best || d < best.dist) best = { dist: d, mob: e.name || null };
+  }
+  if (!best) return out(false, 'no_hostile', null);
+  if (best.dist > radius) return out(false, 'too_far', best);
+  return out(true, 'naked_hostile_near', best);
+}
+
+// --- L'HISTORIQUE DE MORTS DOIT SURVIVRE AU PROCESS -------------------------------------------------
+//
+// `deathTimes` vivait dans la mémoire du process. Or le garde-fou `death_loop` (5 morts / 10 min) fait
+// `process.exit(2)` et le self-healing relance un process NEUF dont la mémoire est vide : l'armement de
+// l'évasion (2 morts <60 s, ou 3 en 10 min) repartait de zéro à chaque génération. Même classe que la
+// mémoire de zone (zone.js, #63/#66a) : une mémoire d'échec par process ne sert à rien quand les
+// sessions redémarrent sans cesse. L'historique rejoint donc le mémo de base, à côté de la dette de mort
+// et de l'état de zone — élagué au chargement, rétro-compatible d'un mémo qui n'a pas le champ.
+
+const DEATH_WINDOW_MS = 10 * 60 * 1000;   // la fenêtre de l'ancien `deathTimes.filter(...)`
+const DEATH_HISTORY_CAP = 10;             // le garde-fou sort à 5 : 10 suffit largement, et le fichier reste minuscule
+
+/**
+ * PUR — ne garde que les morts récentes : nombres finis, ≤ now, âgés de MOINS de `windowMs`
+ * (frontière exclusive, comme l'ancien filtre), triés du plus ancien au plus récent, plafonnés aux
+ * `cap` plus récentes. Ne mute jamais l'entrée ; toute entrée absurde → [].
+ * ⚠️ Une mort datée du FUTUR est jetée : horloge reculée ou mémo hérité d'un autre monde, elle
+ * compterait « récente » (âge négatif) jusqu'à ce que l'horloge la rattrape.
+ */
+function deathTimesPrune(times, now, opts) {
+  if (!Array.isArray(times) || !Number.isFinite(now)) return [];
+  const o = (opts && typeof opts === 'object') ? opts : {};
+  const windowMs = Number.isFinite(o.windowMs) ? o.windowMs : DEATH_WINDOW_MS;
+  const cap = Number.isFinite(o.cap) && o.cap > 0 ? o.cap : DEATH_HISTORY_CAP;
+  const kept = times
+    .filter((t) => typeof t === 'number' && Number.isFinite(t) && t <= now && (now - t) < windowMs)
+    .sort((a, b) => a - b);
+  return kept.length > cap ? kept.slice(kept.length - cap) : kept;
+}
+
+/** PUR — historique à reprendre d'un mémo (absent / ancien format sans le champ → []), élagué À LA LECTURE. */
+function deathTimesLoad(memo, now) {
+  return deathTimesPrune(memo && typeof memo === 'object' ? memo.deaths : null, now);
+}
+
+/**
+ * PUR — le mémo à écrire : une COPIE du mémo courant où seul `deaths` change (base, dette de mort,
+ * état de zone… traversent intacts). C'est l'aller-retour complet : tout écrivain du mémo doit
+ * fusionner ainsi, un `{ ... }` neuf efface les champs des autres (piège #61).
+ */
+function deathMemoWith(memo, times, now) {
+  const base = (memo && typeof memo === 'object' && !Array.isArray(memo)) ? memo : {};
+  return Object.assign({}, base, { deaths: deathTimesPrune(times, now) });
+}
+
+const ESCAPE_BURST_MS = 60 * 1000;   // « rafale » : 2 morts dans cette fenêtre…
+const ESCAPE_BURST_DEATHS = 2;
+const ESCAPE_SLOW_DEATHS = 3;        // …ou 3 morts dans la fenêtre de 10 min (camping LENT, « fix fable1 ter »)
+
+/**
+ * PUR — l'historique dit-il que CE spawn est campé ? (armement de l'évasion au prochain spawn)
+ * Extrait tel quel de `bot.on('death')` pour que la mort ET le chargement d'un process neuf jugent
+ * pareil : sans ça, le drapeau `_escapeOnSpawn` armé à la 5ᵉ mort mourait avec le process.
+ */
+function escapeArmed(times, now) {
+  const recent = deathTimesPrune(times, now);
+  const burst = recent.filter((t) => now - t < ESCAPE_BURST_MS).length;
+  return burst >= ESCAPE_BURST_DEATHS || recent.length >= ESCAPE_SLOW_DEATHS;
+}
+
+const DEATH_LOOP_LIMIT = 5;          // 5 morts / 10 min DANS CE PROCESS → process.exit(2)
+
+/**
+ * PUR — ce process est-il pris dans une boucle de morts ? Ne compte que SES morts (`t >= bootAt`).
+ * Les morts héritées d'un process précédent arment l'évasion (escapeArmed) mais ne comptent PAS ici :
+ * sinon l'historique persisté (5) + 1 ferait sortir CHAQUE relance à sa première mort, des vies de
+ * moins de 15 s, et le backend (3 vies < 15 s d'affilée = crash_on_spawn) abandonnerait le bot pour
+ * de bon. Le garde-fou mesure « CE process est-il coincé ? » (planner périmé → process neuf), pas
+ * « le monde est-il mortel ? ». Sans `bootAt`, tout compte (comportement historique).
+ */
+function deathLoopTripped(times, opts) {
+  const o = (opts && typeof opts === 'object') ? opts : {};
+  const limit = Number.isFinite(o.limit) && o.limit > 0 ? o.limit : DEATH_LOOP_LIMIT;
+  const bootAt = Number.isFinite(o.bootAt) ? o.bootAt : -Infinity;
+  return deathTimesPrune(times, o.now).filter((t) => t >= bootAt).length >= limit;
+}
+
 module.exports = {
   isInWater, findLandTarget, escapeWater, WATER, SNARES, clearSnares, isFloatingStuck, recoverFloating, isFrozenDesync,
   escapePlan, escapeReached, canReanchorSpawn,
   ESCAPE_MIN_DIST, ESCAPE_MAX_DIST, ESCAPE_SAFE_RADIUS, ESCAPE_REACHED_DIST,
+  spawnDanger, SPAWN_DANGER_RADIUS, SPAWN_DANGER_MIN_WORN,
+  deathTimesPrune, deathTimesLoad, deathMemoWith, escapeArmed, deathLoopTripped,
+  DEATH_WINDOW_MS, DEATH_HISTORY_CAP, DEATH_LOOP_LIMIT,
 };
