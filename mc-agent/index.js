@@ -947,7 +947,12 @@ async function withCraftingTable(fn) {
       } catch (e) {}
       place = await placeBlockNear(bot, 'crafting_table');
     }
-    if (!place.ok) return { ok: false, reason: 'no_table:' + (place.reason || '?') }; // sous-raison (diagnostic live)
+    if (!place.ok) {
+      // `no_table:no_space` seul ne dit rien du terrain : around/under = les 4 voisins et les 4 sols
+      // voisins (cf. placeBlockNear) → on voit ENFIN ce qui bloque la pose dans les logs de session.
+      emit({ type: 'table_place_failed', reason: place.reason, around: place.around, under: place.under });
+      return { ok: false, reason: 'no_table:' + (place.reason || '?') }; // sous-raison (diagnostic live)
+    }
   }
   await waitForBlock(place.pos, 'crafting_table'); // #3 : ne pas ouvrir la table avant qu'elle existe
   await sleep(300);                                // settle pose→ouverture (serveur + humanisation)

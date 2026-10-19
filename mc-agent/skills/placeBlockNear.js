@@ -1,7 +1,11 @@
 'use strict';
 // Pose `itemName` (ex. crafting_table) sur un bloc solide adjacent au sol du bot.
-// Pass 1 : case vide/replaceable adjacente → pose directe.
-// Pass 2 : toutes les cases sont solides → creuse une case puis pose (cas underground/enclosed).
+// Pass 1  : case vide/replaceable adjacente → pose directe.
+// Pass 1b : case occupée par un ENCOMBREMENT cassable (fleur, pousse, champignon…) → on le casse, puis pose.
+// Pass 2  : toutes les cases sont solides → creuse une case puis pose (cas underground/enclosed).
+// Pass 3  : piédestal (voisins ET sols voisins absents) → remblai, puis pose dessus.
+// Pass 4  : pose CONTRE UNE PAROI quand le sol de la case voisine manque.
+// Échec total : { ok:false, reason:'no_space', around, under } — voir `_surroundings`.
 const { Vec3 } = require('vec3');
 const { bestToolFor } = require('../tools');
 
@@ -24,6 +28,41 @@ const REPLACEABLE = new Set([
 const NON_DIGGABLE = new Set([
   'bedrock', 'water', 'lava', 'flowing_water', 'flowing_lava',
 ]);
+
+// ── ENCOMBREMENT CASSABLE (fleurs, pousses, champignons, lichen…) ─────────────────────────────────
+// Mesure live (216 sessions) : `no_table:no_space` sur spare_picks ×391, furnace, stone_pickaxe,
+// stone_sword, wooden_pickaxe — et un bot EN SURFACE (y≈117, prairie d'altitude) a échoué 4/4
+// `furnace` en 2 minutes. REPLACEABLE ne connaît que air/eau/herbes/neige : une FLEUR
+// (boundingBox 'empty') n'y figure pas → la Pass 1 la saute, la Pass 2 ne creuse que les blocs
+// PLEINS, la Pass 4 exige REPLACEABLE. Dans une prairie ou une forêt dense les 4 voisins sont donc
+// « encombrés » → `no_space`, alors qu'un joueur casserait la fleur d'un coup de poing et poserait
+// sa table. Règle GÉNÉRIQUE sur le boundingBox (chaque version de MC ajoute des fleurs : pas de
+// liste à maintenir) + une COURTE liste de ce qu'on ne casse JAMAIS.
+const NEVER_BREAK = new Set([
+  // fluides, feu, portails : « casser » ne dégage rien, et ce n'est pas du décor
+  'water', 'flowing_water', 'lava', 'flowing_lava', 'fire', 'soul_fire',
+  'nether_portal', 'end_portal', 'end_gateway', 'bubble_column',
+  // torches : ce sont souvent NOS torches de tunnel (branchMine.torchEvery) — on ne s'éteint pas soi-même
+  'torch', 'wall_torch', 'soul_torch', 'soul_wall_torch', 'redstone_torch', 'redstone_wall_torch',
+  // rails / redstone : des mécanismes (mine, piège, ferme) qu'un joueur ne démonte pas pour poser une table
+  'rail', 'powered_rail', 'detector_rail', 'activator_rail', 'redstone_wire', 'tripwire', 'tripwire_hook', 'lever',
+  // toile d'araignée : ~20 s à la main (il faut épée/cisailles) → le bot s'y enliserait
+  'cobweb',
+]);
+const NEVER_BREAK_SUFFIX = /_(button|pressure_plate)$/;     // boutons et plaques de pression = redstone aussi
+
+/**
+ * Vrai si `block` est du décor non solide qu'on peut CASSER pour libérer la case : bloc présent,
+ * boundingBox !== 'block', pas déjà posable tel quel (REPLACEABLE → Pass 1), pas dans NEVER_BREAK.
+ * Pur (aucun accès au bot) : testable sur un panel de noms.
+ */
+function isBreakableClutter(block) {
+  if (!block || !block.name) return false;                  // chunk non chargé / bloc absent
+  if (block.boundingBox === 'block') return false;          // un bloc PLEIN n'est pas du décor (Pass 2 le creuse)
+  if (REPLACEABLE.has(block.name)) return false;            // déjà posable sans rien casser
+  if (NEVER_BREAK.has(block.name) || NEVER_BREAK_SUFFIX.test(block.name)) return false;
+  return true;
+}
 
 // Blocs "remblai" sacrifiables pour créer un sol manquant (Pass 3). On EXCLUT cobblestone
 // (réservé au craft de la pioche pierre) et la table elle-même.
@@ -56,9 +95,33 @@ async function _confirmPlaced(bot, pos, tries = 6, delayMs = 200) {
   return false;
 }
 
+// Casse un encombrement. Gratuit : aucun outil requis (`bestToolFor` ne rend quelque chose que pour
+// la liane → cisailles, et reste null pour une fleur). L'échec du dig est PROPAGÉ : l'appelant décide
+// (Pass 1b : direction suivante ; Pass 4 : abandonne la case, inutile de réessayer face après face).
+async function _breakClutter(bot, block) {
+  const tool = bestToolFor(bot, block);
+  if (tool) await bot.equip(tool, 'hand');
+  await bot.dig(block);
+}
+
+// Diagnostic d'échec : noms des 4 cases voisines au niveau des PIEDS (`around`) et des 4 sols voisins
+// (`under`), dans l'ordre de `dirs` — Est, Ouest, Sud (+Z), Nord (−Z). 'unloaded' = chunk non chargé
+// (blockAt → null). L'instantané est pris à l'ÉCHEC, donc APRÈS nos tentatives : une fleur cassée y
+// apparaît en `air` — une case posable qui n'a rien donné = désync client/serveur, pas un manque de
+// place. Sans ça, un `no_table:no_space` ne disait rien du terrain (cf. fleurs, ci-dessus).
+function _surroundings(bot, base, dirs) {
+  const nameAt = (pos) => { const b = bot.blockAt(pos); return (b && b.name) || 'unloaded'; };
+  return {
+    around: dirs.map((d) => nameAt(base.plus(d))),
+    under: dirs.map((d) => nameAt(base.plus(d).offset(0, -1, 0))),
+  };
+}
+
 /**
  * Pose itemName sur le sol adjacent au bot.
- * Retourne { ok:true, pos:Vec3 } ou { ok:false, reason:string }.
+ * Retourne { ok:true, pos:Vec3 } ou { ok:false, reason:string } ; sur 'no_space', le retour porte aussi
+ * `around` / `under` (noms des 4 voisins et des 4 sols voisins). `reason` ne change JAMAIS : des
+ * appelants testent `reason === 'no_space'` et `'no_table:' + reason`.
  */
 async function placeBlockNear(bot, itemName) {
   const item = bot.inventory.items().find((i) => i.name === itemName);
@@ -88,6 +151,30 @@ async function placeBlockNear(bot, itemName) {
       await bot.equip(item, 'hand');
       await bot.placeBlock(ground, new Vec3(0, 1, 0));
       if (!(await _confirmPlaced(bot, targetPos))) continue;  // #6 : pose fantôme → autre direction
+      return { ok: true, pos: base.plus(d) };
+    } catch (e) { /* essaie la direction suivante */ }
+  }
+
+  // ── Pass 1b : la case est occupée par un ENCOMBREMENT cassable (fleur, pousse, champignon, lichen…) :
+  // boundingBox 'empty' mais pas REPLACEABLE, donc les Pass 1 et 2 la sautaient. On la casse (gratuit,
+  // sans outil), puis on pose comme en Pass 1. Placée AVANT la Pass 2 : casser une fleur ne coûte
+  // rien, creuser un mur si. ──
+  for (const d of dirs) {
+    const groundPos = base.plus(d).offset(0, -1, 0);
+    const targetPos = base.plus(d);
+    const ground = bot.blockAt(groundPos);
+    const target = bot.blockAt(targetPos);
+
+    if (!ground || ground.boundingBox !== 'block') continue;   // sans sol plein, rien où poser (→ Pass 4)
+    if (!isBreakableClutter(target)) continue;                 // torche, rail, fluide… : on n'y touche pas
+
+    try {
+      await _breakClutter(bot, target);
+      const ref = bot.blockAt(groundPos);
+      if (!_refOk(bot, ref)) continue;                         // #6 : re-vérifie la référence après le dig
+      await bot.equip(item, 'hand');                           // re-equip after dig
+      await bot.placeBlock(ref, new Vec3(0, 1, 0));
+      if (!(await _confirmPlaced(bot, targetPos))) continue;   // #6 : pose fantôme → autre direction
       return { ok: true, pos: base.plus(d) };
     } catch (e) { /* essaie la direction suivante */ }
   }
@@ -173,12 +260,19 @@ async function placeBlockNear(bot, itemName) {
   for (const d of dirs) {
     const cellPos = base.plus(d);
     const cell = bot.blockAt(cellPos);
-    if (!cell || !REPLACEABLE.has(cell.name)) continue;      // la case doit être libre
+    if (!cell) continue;
+    // la case doit être libre… ou occupée par un encombrement qu'on casse d'abord (cf. Pass 1b)
+    const clutter = isBreakableClutter(cell);
+    if (!clutter && !REPLACEABLE.has(cell.name)) continue;
+    let cleared = !clutter;                                  // l'encombrement ne se casse QU'UNE fois
     for (const s of SIDES) {
       const refPos = cellPos.plus(s);
       const ref = bot.blockAt(refPos);
       if (!ref || ref.boundingBox !== 'block') continue;     // il faut une face pleine où s'accrocher
       if (!_refOk(bot, ref)) continue;
+      if (!cleared) {                                        // on ne casse qu'une fois une PRISE trouvée
+        try { await _breakClutter(bot, cell); cleared = true; } catch (e) { break; }   // cassage impossible → case suivante
+      }
       try {
         await bot.equip(item, 'hand');
         await bot.placeBlock(ref, s.scaled(-1));             // ref + (−s) == cellPos
@@ -188,7 +282,9 @@ async function placeBlockNear(bot, itemName) {
     }
   }
 
-  return { ok: false, reason: 'no_space' };
+  // reason INCHANGÉ ('no_space') ; `around`/`under` disent CE QUI bloque (diagnostic live).
+  const diag = _surroundings(bot, base, dirs);
+  return { ok: false, reason: 'no_space', around: diag.around, under: diag.under };
 }
 
-module.exports = { placeBlockNear };
+module.exports = { placeBlockNear, isBreakableClutter };
