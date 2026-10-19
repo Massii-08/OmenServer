@@ -34,9 +34,98 @@ function isNight(bot) {
   return !!(bot && bot.time && isNightTime(bot.time.timeOfDay));
 }
 
+// ─── L'AUBE N'EST PAS LA FIN DES MONSTRES (live 19/10, spawn sous la canopée d'une vieille forêt) ──
+// Mesuré en live : 14 des 17 morts des 10 dernières minutes étaient « shot by Skeleton », avec TOUJOURS
+// la même séquence : shelter dig_in → shelter dawn → shelter out → goal logs → reflex fight_ranged →
+// reflex flee → take_cover placed:0 ok:false → mort. L'abri sortait dès que `isNight` devenait faux,
+// sans regarder si les monstres de la nuit attendaient dehors. À l'ombre d'une canopée, zombies et
+// squelettes NE BRÛLENT PAS au lever du jour : ils sont toujours là, et le bot sort droit dans leur arc.
+// Étape 3bis : entre l'aube et la sortie, tant qu'un hostile rôde ET que le bot est nu, on RESTE.
+const DAWN_WAIT_MAX_MS = 120 * 1000;   // borne DURE : au-delà on sort quand même (VITESSE — le propriétaire veut
+                                       // que rien ne traîne ; à découvert sous une canopée ils ne partiront pas)
+const DAWN_WAIT_CHECK_MS = 3000;       // on re-vérifie toutes les 3 s
+// « Nu » = moins de 2 pièces portées : le mot de caution.CAUTION_MIN_WORN, homes.DEBT_MIN_WORN et
+// unstuck.SPAWN_DANGER_MIN_WORN (copié, pas importé — ce module reste léger ; un test épingle les quatre).
+const DAWN_WAIT_MIN_WORN = 2;
+
+/**
+ * Décision PURE : attendre dans l'abri ou en sortir, à l'aube ? → 'wait' | 'go'.
+ * 'wait' SSI le bot est NU (< minWorn pièces) ET des hostiles rôdent ET on n'a pas encore attendu maxMs.
+ * Tout le reste → 'go' : un bot armé sort tout de suite, comme avant ; personne dehors, on sort ; et
+ * passé la borne on sort quand même. Entrée absurde → 'go' (jamais coincé dans le trou sur une erreur).
+ * `worn` inconnu (inventaire illisible) = 0 = nu : on attend, borné — « 0 = prudent », comme les autres gardes.
+ * @param {{hostilesNear:number|boolean, waitedMs:number, worn:number, maxMs?:number, minWorn?:number}} opts
+ */
+function dawnExitDecision(opts) {
+  const o = (opts && typeof opts === 'object') ? opts : {};
+  const minWorn = Number.isFinite(o.minWorn) ? o.minWorn : DAWN_WAIT_MIN_WORN;
+  const maxMs = (Number.isFinite(o.maxMs) && o.maxMs >= 0) ? o.maxMs : DAWN_WAIT_MAX_MS;
+  const worn = (Number.isFinite(o.worn) && o.worn > 0) ? o.worn : 0;
+  if (worn >= minWorn) return 'go';
+  const h = o.hostilesNear;
+  const hostiles = Number.isFinite(h) ? h : (h === true ? 1 : 0);
+  if (hostiles <= 0) return 'go';
+  const waited = (Number.isFinite(o.waitedMs) && o.waitedMs > 0) ? o.waitedMs : 0;
+  return waited >= maxMs ? 'go' : 'wait';
+}
+
+/**
+ * Étape 3bis — rester dans l'abri tant que dawnExitDecision dit 'wait'. Relevés LIVE (jamais mis en
+ * cache : le monde bouge pendant l'attente), un toutes les `checkMs`. Le temps attendu est le plus
+ * grand de deux compteurs : le CUMUL des pas (avec un sleep instantané, en test, la boucle reste bornée
+ * au lieu de tourner sans fin) et l'HORLOGE MURALE (quand le process rame et que les sleeps durent plus
+ * que prévu, la borne de 120 s reste de 120 s RÉELLES — « rien ne doit traîner »).
+ * Émet UN SEUL event `dawn_wait` à la sortie de l'attente (pas un par tick), et seulement si on a
+ * réellement attendu : `hostiles` = ce qui nous a retenus (au début), `hostiles_left` = ce qu'il restait
+ * en sortant, `waited_s`, `reason` : 'clear' (dégagé) | 'timeout' (borne atteinte, on sort quand même)
+ * | 'armed' (de l'armure est arrivée) | 'cancelled'.
+ * @returns {{cancelled:boolean}}
+ */
+async function _waitOutDawnMobs(bot, token, deps, emit, sleep) {
+  const maxMs = Number.isFinite(deps.dawnWaitMaxMs) ? deps.dawnWaitMaxMs : DAWN_WAIT_MAX_MS;
+  const checkMs = (Number.isFinite(deps.dawnCheckMs) && deps.dawnCheckMs > 0) ? deps.dawnCheckMs : DAWN_WAIT_CHECK_MS;
+  // Un relevé qui LÈVE vaut « rien » : on ne reste jamais coincé dans le trou sur une erreur de lecture.
+  const readHostiles = () => {
+    try { const v = deps.hostilesNear(); return Number.isFinite(v) ? v : (v ? 1 : 0); } catch (e) { return 0; }
+  };
+  // Pièces PORTÉES : injecté (index.js : _wornArmor, usées exclues), sinon les slots 5-8 du bot.
+  const readWorn = () => {
+    try {
+      if (typeof deps.worn === 'function') { const v = deps.worn(); return Number.isFinite(v) ? v : 0; }
+      const slots = bot && bot.inventory && bot.inventory.slots;
+      return Array.isArray(slots) ? slots.slice(5, 9).filter(Boolean).length : 0;
+    } catch (e) { return 0; }
+  };
+
+  const t0 = Date.now();
+  let waitedMs = 0;
+  let first = null;          // hostiles quand l'attente a COMMENCÉ (null = on n'a jamais attendu)
+  let left = 0;
+  let worn = 0;
+  const done = (reason) => {
+    if (first === null) return;                 // rien attendu → rien à dire
+    emit({ type: 'shelter', action: 'dawn_wait', hostiles: first, hostiles_left: left,
+      waited_s: Math.round(waitedMs / 1000), reason });
+  };
+  for (;;) {
+    if (token && token.cancelled) { done('cancelled'); return { cancelled: true }; }
+    left = readHostiles();
+    worn = readWorn();
+    if (dawnExitDecision({ hostilesNear: left, waitedMs, worn, maxMs }) !== 'wait') break;
+    if (first === null) first = left;
+    await sleep(checkMs);
+    waitedMs = Math.max(waitedMs + checkMs, Date.now() - t0);
+  }
+  done(worn >= DAWN_WAIT_MIN_WORN ? 'armed' : (left > 0 ? 'timeout' : 'clear'));
+  return { cancelled: false };
+}
+
 /**
  * shelterUntilDawn(bot, token, deps) → {ok, reason?} — creuse, se couvre, attend l'aube, remonte.
  * deps.sleep injectable ; maxWaitMs borne l'attente (nuit MC ≈ 7 min réels ; déf 12 min).
+ * deps.hostilesNear (() => nb d'hostiles à portée) + deps.worn (() => nb de pièces portées) : l'attente
+ * des monstres à l'aube (étape 3bis) — SANS hostilesNear injecté, elle est sautée (comportement d'origine).
+ * deps.dawnWaitMaxMs / deps.dawnCheckMs : borne (déf 120 s) et pas (déf 3 s) de cette attente.
  */
 async function shelterUntilDawn(bot, token = null, deps = {}) {
   const sleep = deps.sleep || ((ms) => new Promise((r) => setTimeout(r, ms)));
@@ -101,6 +190,13 @@ async function shelterUntilDawn(bot, token = null, deps = {}) {
   }
   emit({ type: 'shelter', action: 'dawn' });
 
+  // 3bis) L'AUBE N'EST PAS LA FIN DES MONSTRES : bot nu + hostiles dehors → on reste (borné 120 s).
+  // Branchement explicite : sans `deps.hostilesNear` l'attente n'existe pas (comportement d'origine).
+  if (typeof deps.hostilesNear === 'function') {
+    const w = await _waitOutDawnMobs(bot, token, deps, emit, sleep);
+    if (w.cancelled) return { ok: false, reason: 'cancelled' };
+  }
+
   // 4) ressortir : casser le toit éventuel puis remonter en pilier (#7)
   try {
     const roof = bot.blockAt(bot.entity.position.floored().offset(0, 2, 0));
@@ -153,4 +249,7 @@ function shouldShelter(sig = {}) {
   return { shelter: false, reason: 'safe' };
 }
 
-module.exports = { isNightTime, isNight, shelterUntilDawn, roofPlan, shouldShelter };
+module.exports = {
+  isNightTime, isNight, shelterUntilDawn, roofPlan, shouldShelter,
+  dawnExitDecision, DAWN_WAIT_MAX_MS, DAWN_WAIT_CHECK_MS, DAWN_WAIT_MIN_WORN,
+};

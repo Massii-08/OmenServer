@@ -328,6 +328,42 @@ const SPAWN_DANGER_MIN_WORN = 2;
 function _defaultIsHostile(e) { return !!e && e.kind === 'Hostile mobs'; }
 
 /**
+ * PUR — les hostiles autour de `pos`, du plus proche au plus loin : [{ dist, mob }] (distance 3D).
+ * LE balayage partagé : la fuite au spawn (spawnDanger) et l'attente de l'aube dans l'abri
+ * (shelter.dawnExitDecision, via hostilesWithin) lisent le même monde avec le même mot « hostile » —
+ * si l'un change, l'autre suit. Un prédicat qui lève sur UNE entité ne tue ni la liste ni les autres ;
+ * une coordonnée illisible est ignorée ; position illisible → []. Ne mute rien.
+ * @param {{pos:{x,y,z}, entities:Array, isHostile?:function}} opts
+ */
+function scanHostiles(opts) {
+  const o = (opts && typeof opts === 'object') ? opts : {};
+  const p = o.pos;
+  if (!p || !Number.isFinite(p.x) || !Number.isFinite(p.y) || !Number.isFinite(p.z)) return [];
+  const isHostile = typeof o.isHostile === 'function' ? o.isHostile : _defaultIsHostile;
+  const found = [];
+  for (const e of (Array.isArray(o.entities) ? o.entities : [])) {
+    if (!e || !e.position) continue;
+    let hostile = false;
+    try { hostile = !!isHostile(e); } catch (err) { hostile = false; }
+    if (!hostile) continue;
+    const d = Math.hypot(e.position.x - p.x, e.position.y - p.y, e.position.z - p.z);
+    if (!Number.isFinite(d)) continue;                       // coordonnée illisible : ni plus proche ni plus loin
+    found.push({ dist: d, mob: e.name || null });
+  }
+  return found.sort((a, b) => a.dist - b.dist);              // tri stable : à égalité, le premier rencontré
+}
+
+/**
+ * PUR — ceux de scanHostiles qui sont à ≤ `radius` blocs (frontière INCLUSIVE ; défaut = le rayon du
+ * spawn, SPAWN_DANGER_RADIUS : une seule définition de « près »).
+ */
+function hostilesWithin(opts) {
+  const o = (opts && typeof opts === 'object') ? opts : {};
+  const radius = (Number.isFinite(o.radius) && o.radius >= 0) ? o.radius : SPAWN_DANGER_RADIUS;
+  return scanHostiles(o).filter((h) => h.dist <= radius);
+}
+
+/**
  * PUR — faut-il fuir tout de suite, avant d'avoir pris un seul coup ?
  * Vrai SSI le bot est NU (< `minWorn` pièces portées) ET un hostile est à ≤ `radius` blocs (3D).
  * Le campeur n'a pas besoin de t'avoir déjà tué pour être un campeur.
@@ -358,19 +394,9 @@ function spawnDanger(opts) {
   if (!p || !Number.isFinite(p.x) || !Number.isFinite(p.y) || !Number.isFinite(p.z)) {
     return out(false, 'no_position', null);
   }
-  const isHostile = typeof o.isHostile === 'function' ? o.isHostile : _defaultIsHostile;
-
-  let best = null;
-  for (const e of (Array.isArray(o.entities) ? o.entities : [])) {
-    if (!e || !e.position) continue;
-    // Un prédicat qui lève sur UNE entité ne doit ni tuer la décision ni masquer les autres.
-    let hostile = false;
-    try { hostile = !!isHostile(e); } catch (err) { hostile = false; }
-    if (!hostile) continue;
-    const d = Math.hypot(e.position.x - p.x, e.position.y - p.y, e.position.z - p.z);
-    if (!Number.isFinite(d)) continue;                       // coordonnée illisible : ni plus proche ni plus loin
-    if (!best || d < best.dist) best = { dist: d, mob: e.name || null };
-  }
+  // Le plus proche, même hors rayon : `too_far` doit pouvoir dire QUI et À COMBIEN.
+  const near = scanHostiles({ pos: p, entities: o.entities, isHostile: o.isHostile });
+  const best = near.length ? near[0] : null;
   if (!best) return out(false, 'no_hostile', null);
   if (best.dist > radius) return out(false, 'too_far', best);
   return out(true, 'naked_hostile_near', best);
@@ -457,7 +483,7 @@ module.exports = {
   isInWater, findLandTarget, escapeWater, WATER, SNARES, clearSnares, isFloatingStuck, recoverFloating, isFrozenDesync,
   escapePlan, escapeReached, canReanchorSpawn,
   ESCAPE_MIN_DIST, ESCAPE_MAX_DIST, ESCAPE_SAFE_RADIUS, ESCAPE_REACHED_DIST,
-  spawnDanger, SPAWN_DANGER_RADIUS, SPAWN_DANGER_MIN_WORN,
+  spawnDanger, SPAWN_DANGER_RADIUS, SPAWN_DANGER_MIN_WORN, scanHostiles, hostilesWithin,
   deathTimesPrune, deathTimesLoad, deathMemoWith, escapeArmed, deathLoopTripped,
   DEATH_WINDOW_MS, DEATH_HISTORY_CAP, DEATH_LOOP_LIMIT,
 };
