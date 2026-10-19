@@ -3,9 +3,10 @@ const test = require('node:test');
 const assert = require('node:assert');
 const {
   HOME_SAFE, HOME_WORK, HOME_DEATH, HOMES, LEGACY_HOMES,
-  canBookmarkDeath, openDebt, debtAction, DEBT_TTL_MS,
+  canBookmarkDeath, openDebt, debtAction, DEBT_TTL_MS, DEBT_MIN_WORN,
   isSurfaceSpot, SAFE_HOME_MIN_Y, isSilentSafeFailure,
 } = require('./homes');
+const { CAUTION_MIN_WORN } = require('./caution');
 
 // ─── Le contrat des 3 noms ──────────────────────────────────────────────────────────────────────
 
@@ -186,4 +187,134 @@ test('une nouvelle mort remplace la dette precedente (le home suit la DERNIERE m
   assert.notDeepStrictEqual(d1, d2);
   assert.strictEqual(d2.at, 5000);
   assert.strictEqual(d2.x, 100);
+});
+
+// ─── Dette de mort × NUIT : un bot nu ne retourne pas dans le camp qui vient de le tuer ─────────
+// Trace live (run de référence, NethBot3 — 9 morts en 4 min) :
+//   16:50:22 shelter dig_in            ← le planner commence l'abri
+//   16:50:23 death_recover_home        ← /home death : TÉLÉPORTÉ au lieu de sa mort
+//   16:50:29 reflex fight zombie       ← re-tué par ce qui campe le loot
+// La décision est PURE : nuit + moins de 2 pièces portées + pas encore sur place => 'defer'.
+// Le TTL de despawn (5 min) reste la borne : une dette expirée se lève même de nuit.
+
+test('nuit + bot nu (0 piece) + pas encore sur place => on DIFFERE, on ne se teleporte pas', () => {
+  const d = openDebt({ x: 0, y: 64, z: 0 }, 0);
+  const r = debtAction({ debt: d, now: 5000, night: true, worn: 0 });
+  assert.strictEqual(r.act, 'defer');
+  assert.strictEqual(r.reason, 'night_naked');
+});
+
+test('nuit + 1 seule piece => encore differe (seuil : moins de 2 pieces portees)', () => {
+  const d = openDebt({ x: 0, y: 64, z: 0 }, 0);
+  const r = debtAction({ debt: d, now: 5000, night: true, worn: 1 });
+  assert.strictEqual(r.act, 'defer');
+  assert.strictEqual(r.reason, 'night_naked');
+});
+
+// homes.js reste sans dépendance (module pur) : il porte donc son PROPRE seuil. Ce test l'empêche de
+// dériver de celui de la prudence nocturne du cartographe/regroupement (caution.js) — « nu » doit
+// vouloir dire la même chose partout.
+test('le seuil « nu » de la dette est celui de la prudence nocturne (caution.js)', () => {
+  assert.strictEqual(DEBT_MIN_WORN, CAUTION_MIN_WORN);
+  assert.strictEqual(DEBT_MIN_WORN, 2);
+});
+
+test('nuit + 2 pieces => on recupere (arme : on peut retourner au lieu de mort)', () => {
+  const d = openDebt({ x: 0, y: 64, z: 0 }, 0);
+  assert.strictEqual(debtAction({ debt: d, now: 5000, night: true, worn: 2 }).act, 'recover');
+});
+
+test('nuit + set complet (4 pieces) => on recupere', () => {
+  const d = openDebt({ x: 0, y: 64, z: 0 }, 0);
+  assert.strictEqual(debtAction({ debt: d, now: 5000, night: true, worn: 4 }).act, 'recover');
+});
+
+test('jour + bot nu => on recupere (le garde-fou ne vaut que la nuit)', () => {
+  const d = openDebt({ x: 0, y: 64, z: 0 }, 0);
+  const r = debtAction({ debt: d, now: 5000, night: false, worn: 0 });
+  assert.strictEqual(r.act, 'recover');
+  assert.strictEqual(r.reason, undefined);
+});
+
+test('heure inconnue (night null) + bot nu => on recupere, PAS de garde-fou', () => {
+  const d = openDebt({ x: 0, y: 64, z: 0 }, 0);
+  assert.strictEqual(debtAction({ debt: d, now: 5000, night: null, worn: 0 }).act, 'recover');
+});
+
+test('appel historique sans night ni worn => comportement inchange (recover)', () => {
+  const d = openDebt({ x: 0, y: 64, z: 0 }, 0);
+  assert.strictEqual(debtAction({ debt: d, now: 5000 }).act, 'recover');
+  assert.strictEqual(debtAction({ debt: d, now: 5000, night: undefined, worn: undefined }).act, 'recover');
+});
+
+test('nuit + worn absent => compte comme 0 piece (prudent) : on differe', () => {
+  const d = openDebt({ x: 0, y: 64, z: 0 }, 0);
+  assert.strictEqual(debtAction({ debt: d, now: 5000, night: true }).act, 'defer');
+  assert.strictEqual(debtAction({ debt: d, now: 5000, night: true, worn: NaN }).act, 'defer');
+});
+
+test('le despawn prime sur le report nocturne : dette expiree la nuit => settle, pas defer', () => {
+  const d = openDebt({ x: 0, y: 64, z: 0 }, 0);
+  const r = debtAction({ debt: d, now: DEBT_TTL_MS + 1, night: true, worn: 0 });
+  assert.strictEqual(r.act, 'settle');
+  assert.strictEqual(r.reason, 'despawned');
+});
+
+test('juste avant le despawn, nuit + nu => on differe encore', () => {
+  const d = openDebt({ x: 0, y: 64, z: 0 }, 0);
+  assert.strictEqual(debtAction({ debt: d, now: DEBT_TTL_MS - 1, night: true, worn: 0 }).act, 'defer');
+  assert.strictEqual(debtAction({ debt: d, now: DEBT_TTL_MS, night: true, worn: 0 }).act, 'defer');
+});
+
+test('dette corrompue la nuit => levee (invalid), jamais differee a vie', () => {
+  const r = debtAction({ debt: { x: 0, y: 64, z: 0 }, now: 1000, night: true, worn: 0 });
+  assert.strictEqual(r.act, 'settle');
+  assert.strictEqual(r.reason, 'invalid');
+});
+
+test('pas de dette la nuit => rien a faire (et surtout rien a differer)', () => {
+  assert.strictEqual(debtAction({ debt: null, now: 0, night: true, worn: 0 }).act, 'none');
+});
+
+// Le garde-fou ne vaut qu'AVANT le départ : une fois sur place (arrived), on est déjà là, le
+// verdict reste celui de la mesure des drops — pas de re-report qui laisserait le bot planté là.
+test('arrive sur place la nuit + nu + drops restants => recover (drops_left), pas de report', () => {
+  const d = openDebt({ x: 0, y: 64, z: 0 }, 0);
+  const r = debtAction({ debt: d, now: 60000, arrived: true, dropsLeft: 3, night: true, worn: 0 });
+  assert.strictEqual(r.act, 'recover');
+  assert.strictEqual(r.reason, 'drops_left');
+});
+
+test('arrive sur place la nuit + nu + plus aucun drop => dette levee (recovered)', () => {
+  const d = openDebt({ x: 0, y: 64, z: 0 }, 0);
+  const r = debtAction({ debt: d, now: 60000, arrived: true, dropsLeft: 0, night: true, worn: 0 });
+  assert.strictEqual(r.act, 'settle');
+  assert.strictEqual(r.reason, 'recovered');
+});
+
+// La boucle de relance (60 s) : à chaque tentative on RE-DÉCIDE depuis zéro. Trois issues bornées.
+const RETRY_MS = 60000;
+
+test('relances toutes les 60 s toute la nuit : defer ... defer puis settle au despawn, jamais recover', () => {
+  const d = openDebt({ x: 0, y: 64, z: 0 }, 0);
+  const acts = [];
+  for (let t = 0; t <= DEBT_TTL_MS + RETRY_MS; t += RETRY_MS) {
+    acts.push(debtAction({ debt: d, now: t, night: true, worn: 0 }).act);
+  }
+  assert.strictEqual(acts[acts.length - 1], 'settle');
+  assert.ok(acts.slice(0, -1).length >= 5, 'plusieurs relances avant le despawn');
+  assert.ok(acts.slice(0, -1).every((a) => a === 'defer'), 'jamais de recover tant que nuit + nu');
+});
+
+test('relances : l aube se leve avant le despawn => la tentative suivante RECUPERE', () => {
+  const d = openDebt({ x: 0, y: 64, z: 0 }, 0);
+  assert.strictEqual(debtAction({ debt: d, now: 60000, night: true, worn: 0 }).act, 'defer');
+  assert.strictEqual(debtAction({ debt: d, now: 120000, night: true, worn: 0 }).act, 'defer');
+  assert.strictEqual(debtAction({ debt: d, now: 180000, night: false, worn: 0 }).act, 'recover');
+});
+
+test('relances : une armure trouvee en route (2 pieces) => la tentative suivante RECUPERE', () => {
+  const d = openDebt({ x: 0, y: 64, z: 0 }, 0);
+  assert.strictEqual(debtAction({ debt: d, now: 60000, night: true, worn: 1 }).act, 'defer');
+  assert.strictEqual(debtAction({ debt: d, now: 120000, night: true, worn: 2 }).act, 'recover');
 });
