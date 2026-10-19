@@ -377,3 +377,146 @@ test('migration, heure INCONNUE => on ne coupe pas un trek sur une supposition',
 test('migration : nombre de pieces illisible => compte comme nu (prudent)', () => {
   assert.strictEqual(migrationCaution({ worn: 'x', isNight: true }), 'stop');
 });
+
+// ─── 1quater) DISCIPLINE DE NUIT (19/10 soir, run « de zéro » world_oct9) ───────────────────────
+// 33 morts en 35 min, l'essentiel LA NUIT (13 squelettes, 11 zombies, 6 creepers, 3 araignées), flotte
+// partie de zéro : personne n'a d'armure. L'abri existait, mais plusieurs routines tiraient le bot nu
+// HORS de son trou la nuit (planner, entraide de combat, quête de nourriture, trajet bois…). Un seul
+// prédicat les gouverne toutes : `nightLockdown`. Puis deux décisions du planner : quoi faire avant un
+// skill (`nightPlannerStep`), et la comptabilité des ré-abris (`lockdownShelterNote`).
+const {
+  nightLockdown, nightPlannerStep, lockdownShelterNote,
+  NIGHT_SHELTER_GAP_MS, NIGHT_UNDERGROUND_Y, NIGHT_SURFACE_SKILLS, SHELTER_REENTER_EVENT_MS,
+} = require('./caution');
+
+test('lockdown : nuit CONNUE + nu (0 ou 1 piece) -> vrai', () => {
+  assert.strictEqual(nightLockdown({ isNight: true, worn: 0 }), true);
+  assert.strictEqual(nightLockdown({ isNight: true, worn: 1 }), true);
+});
+
+test('lockdown : 2 pieces (CAUTION_MIN_WORN, seuil UNIQUE) ou plus -> faux, comportement inchange', () => {
+  assert.strictEqual(nightLockdown({ isNight: true, worn: CAUTION_MIN_WORN }), false);
+  assert.strictEqual(nightLockdown({ isNight: true, worn: 4 }), false);
+  assert.strictEqual(nightLockdown({ isNight: true, worn: CAUTION_MIN_WORN - 1 }), true);
+});
+
+test('lockdown : de JOUR -> faux, nu ou pas', () => {
+  assert.strictEqual(nightLockdown({ isNight: false, worn: 0 }), false);
+});
+
+test('lockdown : heure INCONNUE -> faux, meme nu et entoure (convention migrationCaution : on ne fige pas sur une supposition)', () => {
+  assert.strictEqual(nightLockdown({ isNight: null, worn: 0, hostilesNear: true }), false);
+  assert.strictEqual(nightLockdown({ worn: 0 }), false);
+  assert.strictEqual(nightLockdown({}), false);
+  assert.strictEqual(nightLockdown(), false);
+  assert.strictEqual(nightLockdown(null), false);
+});
+
+test('lockdown : seul `true` vaut « nuit » (un 1 ou une chaine ne declenche rien)', () => {
+  assert.strictEqual(nightLockdown({ isNight: 1, worn: 0 }), false);
+  assert.strictEqual(nightLockdown({ isNight: 'oui', worn: 0 }), false);
+});
+
+test('lockdown : pieces lues quelle que soit la forme (nombre, Set, tableau) ; illisible = nu (prudent)', () => {
+  assert.strictEqual(nightLockdown({ isNight: true, worn: new Set(['iron_helmet', 'iron_boots']) }), false);
+  assert.strictEqual(nightLockdown({ isNight: true, worn: new Set(['iron_helmet']) }), true);
+  assert.strictEqual(nightLockdown({ isNight: true, worn: ['a', 'b', 'c'] }), false);
+  assert.strictEqual(nightLockdown({ isNight: true, worn: 'deux' }), true);
+  assert.strictEqual(nightLockdown({ isNight: true, worn: NaN }), true);
+  assert.strictEqual(nightLockdown({ isNight: true }), true);
+});
+
+test('INVARIANT : tout lockdown est un abri pour regroupCaution ET mapperCaution (pas deux lectures de « nu de nuit »)', () => {
+  for (const isNight of [true, false, null, undefined]) {
+    for (const worn of [0, 1, 2, 3, 4, undefined]) {
+      for (const hostilesNear of [true, false]) {
+        const sig = { isNight, worn, hostilesNear };
+        if (!nightLockdown(sig)) continue;
+        assert.strictEqual(regroupCaution(sig), 'shelter', JSON.stringify(sig));
+        assert.strictEqual(mapperCaution(sig), 'shelter', JSON.stringify(sig));
+      }
+    }
+  }
+});
+
+test('planner : hors lockdown -> run, quel que soit le reste (armes, jour, heure inconnue : rien ne change)', () => {
+  assert.strictEqual(nightPlannerStep({ lockdown: false, y: 70, skill: 'gatherLog', shelterBusy: true, inWater: true }), 'run');
+  assert.strictEqual(nightPlannerStep({}), 'run');
+  assert.strictEqual(nightPlannerStep(), 'run');
+  assert.strictEqual(nightPlannerStep(null), 'run');
+});
+
+test('planner : lockdown en SURFACE -> l abri AU LIEU du skill (quel que soit le skill)', () => {
+  for (const skill of ['gatherLog', 'craft', 'gather', 'descendDiagonal', 'branchMine', 'smeltIron', undefined]) {
+    assert.strictEqual(nightPlannerStep({ lockdown: true, y: 70, skill, sinceShelterMs: 5 * 60000 }), 'shelter', String(skill));
+  }
+});
+
+test('planner : un abri DEJA en cours (lance par un timer) -> on l attend, on ne creuse pas un 2e trou', () => {
+  assert.strictEqual(nightPlannerStep({ lockdown: true, y: 70, shelterBusy: true, sinceShelterMs: 5 * 60000 }), 'wait');
+});
+
+test('planner : dans l EAU -> on attend (pas de trou creuse dans l eau, le sauvetage garde la main)', () => {
+  assert.strictEqual(nightPlannerStep({ lockdown: true, y: 70, inWater: true, sinceShelterMs: 5 * 60000 }), 'wait');
+});
+
+test('planner : mini-ecart anti-boucle de 20 s entre deux abris — et PAS les 10 min historiques', () => {
+  assert.strictEqual(NIGHT_SHELTER_GAP_MS, 20000);
+  assert.ok(NIGHT_SHELTER_GAP_MS < 10 * 60 * 1000);
+  assert.strictEqual(nightPlannerStep({ lockdown: true, y: 70, sinceShelterMs: 0 }), 'wait');
+  assert.strictEqual(nightPlannerStep({ lockdown: true, y: 70, sinceShelterMs: NIGHT_SHELTER_GAP_MS - 1 }), 'wait');
+  assert.strictEqual(nightPlannerStep({ lockdown: true, y: 70, sinceShelterMs: NIGHT_SHELTER_GAP_MS }), 'shelter');
+  assert.strictEqual(nightPlannerStep({ lockdown: true, y: 70, sinceShelterMs: 30000 }), 'shelter', '30 s apres un abri interrompu : on y retourne');
+});
+
+test('planner : ecart injectable ; dernier abri inconnu -> on peut s abriter', () => {
+  assert.strictEqual(nightPlannerStep({ lockdown: true, y: 70, sinceShelterMs: 5000, gapMs: 1000 }), 'shelter');
+  assert.strictEqual(nightPlannerStep({ lockdown: true, y: 70, sinceShelterMs: 5000, gapMs: 9000 }), 'wait');
+  assert.strictEqual(nightPlannerStep({ lockdown: true, y: 70 }), 'shelter');
+  assert.strictEqual(nightPlannerStep({ lockdown: true, y: 70, sinceShelterMs: NaN }), 'shelter');
+});
+
+test('planner : SOUS TERRE la nuit ne change rien — le minage continue (shouldShelter y refuse l abri, Massii 16/07)', () => {
+  assert.strictEqual(NIGHT_UNDERGROUND_Y, 45, 'le meme seuil que maybeNightShelter');
+  for (const skill of ['branchMine', 'descendDiagonal', 'gather', 'craft', 'smeltIron', 'caveHunt']) {
+    assert.strictEqual(nightPlannerStep({ lockdown: true, y: 20, skill, sinceShelterMs: 5 * 60000 }), 'run', skill);
+  }
+});
+
+test('planner : sous terre, les buts qui RAMENENT a la surface (bois, chasse, pioche, livraison /tpa) attendent l aube', () => {
+  for (const skill of ['gatherLog', 'huntCook', 'ensurePick', 'deliverMapperArmor']) {
+    assert.ok(NIGHT_SURFACE_SKILLS.has(skill), skill);
+    assert.strictEqual(nightPlannerStep({ lockdown: true, y: 20, skill }), 'wait', skill);
+  }
+});
+
+test('planner : frontiere y=45 = SURFACE (sous terre = y < 45, comme shouldShelter) ; altitude inconnue -> attendre', () => {
+  assert.strictEqual(nightPlannerStep({ lockdown: true, y: NIGHT_UNDERGROUND_Y, skill: 'branchMine', sinceShelterMs: 5 * 60000 }), 'shelter');
+  assert.strictEqual(nightPlannerStep({ lockdown: true, y: NIGHT_UNDERGROUND_Y - 0.5, skill: 'branchMine' }), 'run');
+  assert.strictEqual(nightPlannerStep({ lockdown: true, y: null, skill: 'branchMine' }), 'wait');
+  assert.strictEqual(nightPlannerStep({ lockdown: true, skill: 'branchMine' }), 'wait');
+});
+
+test('re-abri : le 1er abri d une nuit n en est pas un, le 2e oui (trace), le 3e dans la minute est compte mais pas re-trace', () => {
+  const T = 1_700_000_000_000;
+  const a = lockdownShelterNote(null, { night: 7, now: T });
+  assert.deepStrictEqual([a.reenter, a.count, a.emit], [false, 0, false]);
+  const b = lockdownShelterNote(a.state, { night: 7, now: T + 30000 });
+  assert.deepStrictEqual([b.reenter, b.count, b.emit], [true, 1, true]);
+  const c = lockdownShelterNote(b.state, { night: 7, now: T + 50000 });
+  assert.deepStrictEqual([c.reenter, c.count, c.emit], [true, 2, false], '1x/min max');
+  const d = lockdownShelterNote(c.state, { night: 7, now: T + 30000 + SHELTER_REENTER_EVENT_MS });
+  assert.deepStrictEqual([d.reenter, d.count, d.emit], [true, 3, true], 'une minute apres le dernier event : on re-trace, avec le cumul');
+  assert.strictEqual(SHELTER_REENTER_EVENT_MS, 60000);
+});
+
+test('re-abri : une NOUVELLE nuit repart de zero ; l etat d entree n est jamais mute', () => {
+  const T = 1_700_000_000_000;
+  const s = Object.freeze({ night: 7, shelters: 4, lastEmitAt: T });
+  const n = lockdownShelterNote(s, { night: 8, now: T + 1000 });
+  assert.deepStrictEqual([n.reenter, n.count, n.emit], [false, 0, false]);
+  assert.deepStrictEqual(n.state, { night: 8, shelters: 1, lastEmitAt: 0 });
+  assert.deepStrictEqual(s, { night: 7, shelters: 4, lastEmitAt: T });
+  const z = lockdownShelterNote(undefined, {});
+  assert.strictEqual(z.reenter, false);
+});

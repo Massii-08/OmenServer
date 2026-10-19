@@ -262,3 +262,114 @@ describe('abri : attente à l\'aube tant que des monstres rôdent (étape 3bis)'
     assert.deepEqual(nude.sleeps, [3000, 3000]);
   });
 });
+
+// ─── ABRI QUITTÉ PENDANT L'ATTENTE (discipline de nuit, 19/10 soir) ─────────────────────────────
+// Le bot DÉLOGÉ de son trou (fuite, combat, sauvetage, /home d'urgence) ne doit plus « attendre
+// l'aube » debout dehors : l'abri se TERMINE ({ok:false, reason:'displaced'}) et l'appelant (la
+// discipline de nuit d'index.js) peut se ré-abriter là où il est.
+function movableBot(at = { x: 0.5, y: 63, z: 0.5 }) {
+  const bot = nightBot();
+  const floored = bot.entity.position.floored;
+  // Un Vec3 MUTÉ EN PLACE par le serveur (piège #73d) : l'abri doit garder une COPIE de son ancre.
+  bot.entity.position = { x: at.x, y: at.y, z: at.z, floored };
+  return bot;
+}
+
+describe('abri : délogé pendant l\'attente → l\'abri se termine (plus de nuit « à l\'abri » dehors)', () => {
+  it('poussé/sorti de son trou en pleine nuit → {ok:false, reason:displaced}, event tracé, pas de sortie en pilier', async () => {
+    const events = [];
+    const sleeps = [];
+    const bot = movableBot();
+    const r = await shelterUntilDawn(bot, null, {
+      emit: (e) => events.push(e),
+      sleep: async (ms) => { sleeps.push(ms); if (sleeps.length === 2) bot.entity.position.x += 3; },   // mutation EN PLACE
+      mineDown: async () => ({ ok: true }),
+      endWhenDisplaced: true,
+    });
+    assert.deepEqual(r, { ok: false, reason: 'displaced' });
+    const d = events.find((e) => e.action === 'displaced');
+    assert.ok(d, 'event displaced attendu');
+    assert.equal(d.type, 'shelter');
+    assert.equal(d.dist, 3);
+    assert.equal(sleeps.length, 2, 'détecté au pas suivant, la nuit n\'est pas attendue');
+    assert.equal(actions(events).includes('out'), false, 'pas de pilier pour sortir d\'un trou où l\'on n\'est plus');
+    assert.equal(actions(events).includes('dawn'), false);
+  });
+
+  it('immobile dans son trou → attend l\'aube exactement comme avant (aucun event de plus)', async () => {
+    const events = [];
+    const sleeps = [];
+    const bot = movableBot();
+    const r = await shelterUntilDawn(bot, null, {
+      emit: (e) => events.push(e),
+      sleep: async (ms) => { sleeps.push(ms); bot.entity.position.x += 0.1; if (sleeps.length === 3) bot.time.timeOfDay = 1000; },
+      mineDown: async () => ({ ok: true }),
+      endWhenDisplaced: true,
+    });
+    assert.equal(r.ok, true);
+    assert.equal(sleeps.length, 3);
+    assert.equal(events.some((e) => e.action === 'displaced'), false);
+    assert.ok(actions(events).includes('dawn'));
+    assert.ok(actions(events).includes('out'));
+  });
+
+  it('délogé pendant l\'attente des monstres À L\'AUBE → on arrête d\'attendre (raison displaced), pas de pilier', async () => {
+    const { bot: b0, deps, events, sleeps } = dawnHarness({ hostilesNear: () => 3, worn: () => 0, mineDown: async () => ({ ok: true }), endWhenDisplaced: true });
+    const bot = movableBot();
+    bot.time.timeOfDay = b0.time.timeOfDay;          // le jour est levé : on est directement dans l'étape 3bis
+    deps.sleep = async (ms) => { sleeps.push(ms); if (sleeps.length === 2) bot.entity.position.y += 2; };
+    const r = await shelterUntilDawn(bot, null, deps);
+    assert.deepEqual(r, { ok: false, reason: 'displaced' });
+    const w = events.find((e) => e.action === 'dawn_wait');
+    assert.equal(w.reason, 'displaced');
+    assert.equal(actions(events).includes('out'), false);
+  });
+});
+
+describe('abri : sans `endWhenDisplaced`, comportement d\'origine (bots armés, autres appelants)', () => {
+  it('délogé en pleine nuit mais option absente → l\'abri attend l\'aube comme avant (aucun event displaced)', async () => {
+    const events = [];
+    const sleeps = [];
+    const bot = movableBot();
+    const r = await shelterUntilDawn(bot, null, {
+      emit: (e) => events.push(e),
+      sleep: async (ms) => { sleeps.push(ms); if (sleeps.length === 1) bot.entity.position.x += 40; if (sleeps.length === 3) bot.time.timeOfDay = 1000; },
+      mineDown: async () => ({ ok: true }),
+    });
+    assert.equal(r.ok, true);
+    assert.equal(sleeps.length, 3);
+    assert.equal(events.some((e) => e.action === 'displaced'), false);
+  });
+});
+
+describe('abri : `endWhenDisplaced` en PRÉDICAT (relu au moment du délogement)', () => {
+  it('prédicat faux (bot armé) → délogé mais l\'abri continue ; prédicat qui lève → idem (jamais d\'erreur)', async () => {
+    for (const pred of [() => false, () => { throw new Error('boom'); }]) {
+      const events = [];
+      const sleeps = [];
+      const bot = movableBot();
+      const r = await shelterUntilDawn(bot, null, {
+        emit: (e) => events.push(e),
+        sleep: async (ms) => { sleeps.push(ms); if (sleeps.length === 1) bot.entity.position.x += 5; if (sleeps.length === 3) bot.time.timeOfDay = 1000; },
+        mineDown: async () => ({ ok: true }),
+        endWhenDisplaced: pred,
+      });
+      assert.equal(r.ok, true);
+      assert.equal(events.some((e) => e.action === 'displaced'), false);
+    }
+  });
+
+  it('prédicat qui DEVIENT vrai (la nuit tombe pendant l\'abri) → l\'abri se termine au pas suivant', async () => {
+    let lockdown = false;
+    const sleeps = [];
+    const bot = movableBot();
+    const r = await shelterUntilDawn(bot, null, {
+      emit: () => {},
+      sleep: async (ms) => { sleeps.push(ms); if (sleeps.length === 1) bot.entity.position.x += 5; if (sleeps.length === 2) lockdown = true; },
+      mineDown: async () => ({ ok: true }),
+      endWhenDisplaced: () => lockdown,
+    });
+    assert.deepEqual(r, { ok: false, reason: 'displaced' });
+    assert.equal(sleeps.length, 2);
+  });
+});

@@ -139,6 +139,9 @@ const { takeCover, pickCoverBlock } = require('./skills/takeCover');
 const {
   mapperCaution, regroupCaution, migrationCaution, equipRetryPlan, isEquipPickup, normalizeSmeltResult, PICKUP_EQUIP_DELAY_MS,
   sprintAllowed,
+  // DISCIPLINE DE NUIT (19/10 soir, run « de zéro » world_oct9 : 33 morts en 35 min, surtout la nuit) :
+  // le prédicat COMMUN (nu + nuit connue), la décision du planner avant un skill, le compte des ré-abris.
+  nightLockdown, nightPlannerStep, lockdownShelterNote, NIGHT_SHELTER_GAP_MS, NIGHT_UNDERGROUND_Y,
   // FAMINE (run world_mn15, 18/08 — 5 « starved to death » en 10 min sur des bots BLINDÉS) :
   // le déclencheur PRÉCOCE de la quête de nourriture, et son rationnement adaptatif (v7).
   foodRunNeeded, foodRunCooldownAfter, FOOD_RUN_COOLDOWN_MS,
@@ -535,7 +538,9 @@ setInterval(() => {
     // sous le nez du campeur (le spawnpoint campé est presque toujours près de la base).
     // `_foodTripBusy` idem : l'expédition vers le gibier s'éloigne de l'ancre PAR CONCEPTION (jusqu'à
     // 160 blocs) ; l'enforcement la ramènerait en /home au milieu de la marche ou de la chasse.
-    const busy = !!bot.targetDigBlock || _stillBusy || _imminentBusy || _smeltOppBusy || _armorBusy || _migrating || _escaping || _foodTripBusy;
+    // `_nightHold` idem (discipline de nuit, 19/10 soir) : un /home de rappel arracherait le bot nu à
+    // l'abri qu'il est en train de reprendre — la nuit, c'est la discipline qui possède le bot.
+    const busy = !!bot.targetDigBlock || _stillBusy || _imminentBusy || _smeltOppBusy || _armorBusy || _nightHold || _migrating || _escaping || _foodTripBusy;
     const dist = Math.hypot(p.x - conf.x, p.z - conf.z);
     if (shouldEnforceConfine({ dist, radius: conf.radius, busy, now: Date.now(), lastAt: _lastConfineEnforceAt })) {
       _lastConfineEnforceAt = Date.now();
@@ -565,6 +570,10 @@ setInterval(() => {
 // Échec (pas de candidat, /tpa non coché, refus, timeout) = on continue À PIED, jamais bloquant.
 async function tryTpToMapper(goal) {
   if (!presence) return { ok: false, reason: 'no_presence' };
+  // DISCIPLINE DE NUIT (19/10 soir) : nu de nuit, pas de /tpa vers un cartographe — il est DEHORS, lui
+  // (même règle que le squad, regroupCaution). Le cooldown n'est pas consommé : le raccourci reste
+  // disponible au premier long trajet du matin.
+  if (nightLockdownNow()) { nightGateNote('tpa_mapper'); return { ok: false, reason: 'night_lockdown' }; }
   if (Date.now() - _lastMapperTpAt < 240000) return { ok: false, reason: 'cooldown' };
   const p = bot.entity && bot.entity.position;
   if (!p) return { ok: false, reason: 'no_pos' };
@@ -696,6 +705,58 @@ async function trySquad() {
   const r = await awaitWarp({ maxMs: 15000 });
   emit({ type: 'squad_result', to: pick.name, warped: !!r.warped });
   return { ok: !!r.warped };
+}
+
+// ── DÉFENSE MUTUELLE : voler au secours d'un coéquipier attaqué ─────────────────────────────────
+// Massii 25/07 : « il faut aussi qu'ils s'aident contre les mobs ». La présence partagée
+// (heartbeat 60 s) est inutilisable ici — un combat dure quelques secondes. On lit donc la
+// perception LOCALE : les coéquipiers visibles (bot.players) et les hostiles autour.
+// Tick court (4 s, posé dans onSpawn) mais 100 % local : aucun findBlocks, coût négligeable.
+// DISCIPLINE DE NUIT (19/10 soir, NethBot3 : team_assist:spider ×3 > team_assist:creeper > … mort) :
+// nu de nuit, on ne rejoint PAS la bagarre d'un coéquipier — chacun se défend avec ses réflexes, et un
+// bot nu parti au secours fait deux morts au lieu d'une. Le choix (pickMobAssist) est quand même
+// calculé : `night_gate` ne dit « retenu » que s'il y avait réellement quelqu'un à secourir.
+// Gardes de NIVEAU MODULE (piège #56) : la fonction est appelée par le timer, et testée par extraction.
+let _assistBusy = false;
+let _lastAssistAt = 0;
+function teamAssistTick() {
+  if (_assistBusy || _stillBusy || _imminentBusy) return null;
+  if (!bot.entity || !presence) return null;
+  // Mes propres réflexes gèrent MES agresseurs : ici on ne parle que de secourir l'autre.
+  if (bot.health != null && bot.health <= DEFENSIVE_HEALTH) return null;
+  if (Date.now() - _lastAssistAt < 8000) return null;              // anti-spam de ciblage
+  try {
+    const p = bot.entity.position;
+    // Coéquipiers VISIBLES (le roster du groupe, croisé avec ce que je vois réellement).
+    const roster = presence.list().filter((m) => m.role !== 'mapper' && m.name !== bot.username);
+    const mates = [];
+    for (const m of roster) {
+      const e = bot.players[m.name] && bot.players[m.name].entity;
+      if (e && e.position) mates.push({ name: m.name, x: e.position.x, z: e.position.z });
+    }
+    if (!mates.length) return null;
+    const hostiles = nearbyHostiles(bot, 32).map((h) => ({
+      name: h.name, x: h.position.x, z: h.position.z, _e: h,
+    }));
+    const pick = pickMobAssist({
+      self: { x: p.x, z: p.z, health: bot.health },
+      mates, hostiles, isFleeOnly: (n) => isFleeOnlyMob(n, bot.health),
+    });
+    if (!pick) return null;
+    if (nightLockdownNow()) { nightGateNote('team_assist', { mob: pick.mob.name, mate: pick.mate }); return null; }
+    _lastAssistAt = Date.now();
+    _assistBusy = true;
+    emit({ type: 'team_assist', mob: pick.mob.name, mate: pick.mate, dist: pick.dist });
+    (async () => {
+      try {
+        const w = bestWeapon(bot);
+        if (w) { try { await bot.equip(w, 'hand'); } catch (e) {} }
+        bot.pvp.attack(pick.mob._e);
+      } catch (e) { /* best-effort */ }
+      finally { setTimeout(() => { _assistBusy = false; }, 5000); }
+    })();
+    return pick;
+  } catch (e) { _assistBusy = false; return null; }
 }
 
 // Warp de secours COMPLET (secure-then-warp, Massii 15/07) : se mettre en sécurité (pilier / se
@@ -1576,6 +1637,23 @@ async function huntSpidersGoal(opts = {}) {
   }, Object.assign({ token: taskToken }, opts));
 }
 
+// Déclencheur du TRAJET BOIS de runGoalSkill (/home safe vers la surface), extrait pour être testé
+// par extraction (discipline de nuit, 19/10 soir). Conditions d'origine inchangées : sans-give, but de
+// bois (ou besoin de bois prouvé), sous la surface (y < 62), au plus un aller-retour par 2 min.
+// DISCIPLINE DE NUIT : nu de nuit, pas de téléport vers la SURFACE — le skill est tenté sur place (sous
+// terre le planner ne lance déjà plus `gatherLog`, cf. caution.NIGHT_SURFACE_SKILLS ; restent les
+// crafts de bois, qui marchent si les bûches sont en poche). Cooldown NON consommé : à l'aube le
+// trajet part au premier but de bois.
+function woodTripWanted(goal) {
+  if (!NO_GIVE || !goal) return false;
+  if (!(WOOD_GOALS.has(goal.name) || _needsWoodTrip)) return false;
+  const p = bot.entity && bot.entity.position;
+  if (!p || !(p.y < 62)) return false;
+  if ((Date.now() - _lastWoodTripAt) <= 120000) return false;
+  if (nightLockdownNow()) { nightGateNote('wood_trip', { goal: goal.name }); return false; }
+  return true;
+}
+
 // Dispatch d'un but de la chaîne vers le skill réel (0 token).
 async function runGoalSkill(goal) {
   // #1 retours live : coincé dans l'eau → s'en sortir AVANT de tenter le skill (sinon le pathfinder
@@ -1598,8 +1676,7 @@ async function runGoalSkill(goal) {
   // HOME CAMPÉ (19/10) : le bois est en surface, mais pas dans le camp qui vient de nous tuer — campé
   // de nuit ou avec un hostile signalé là-haut, pas de trajet (ni signet de chantier) : on tente le
   // skill sur place, et le besoin de bois reste armé pour la prochaine passe (cooldown 2 min).
-  if (NO_GIVE && (WOOD_GOALS.has(goal.name) || _needsWoodTrip) && bot.entity && bot.entity.position
-      && bot.entity.position.y < 62 && (Date.now() - _lastWoodTripAt) > 120000) {
+  if (woodTripWanted(goal)) {
     _lastWoodTripAt = Date.now();
     if (!safeHomeVeto('wood_trip')) {
       try {
@@ -2041,7 +2118,49 @@ async function settleSurvivalKit() {
 
 // Exécute un skill de but avec timeout + TÉLÉMÉTRIE d'échec : sans la raison dans les logs live,
 // un stall est indiagnosticable à distance (vécu Surv2 : stone_sword ×5 sans explication).
-let lastShelterT = 0; // anti re-trigger : 1 abri par nuit max
+let lastShelterT = 0; // anti re-trigger : 1 abri par nuit max (heure de DÉBUT du dernier abri)
+
+// ─── DISCIPLINE DE NUIT (19/10 soir, run « de zéro » world_oct9) — état et prédicat COMMUNS ─────
+// 33 morts en 35 min, l'essentiel LA NUIT, flotte partie de zéro (personne n'a d'armure). L'abri
+// existait ; ce qui tuait, c'est tout ce qui en TIRAIT le bot nu — mesuré dans les sessions :
+//   - NethBot3 : l'abri lancé par le timer de squad (regroupNightGuard) creusait son trou pendant que
+//     le planner, lui, repartait couper du bois à côté (shelter dig_in 701 s → goal logs 763 s → aube
+//     1197 s : ~8 min de nuit au travail, nu) ; et l'entraide de combat l'envoyait dans la bagarre d'un
+//     coéquipier (team_assist:spider ×3 > team_assist:creeper > … mort) ;
+//   - NethBot1 : abri raté AU RESPAWN (chunks pas encore chargés → `void_below`) → écart « 1 abri /
+//     10 min » armé → retour au travail en pleine nuit, 4 morts d'affilée en reprenant `logs`.
+// `nightLockdownNow()` est le prédicat unique (caution.nightLockdown sur l'état réel) que consultent :
+// le planner (holdForNight), l'entraide (teamAssistTick), la quête de nourriture (foodRunTick), le
+// trajet bois (woodTripWanted), le /tpa vers un cartographe (tryTpToMapper), la chasse au démarrage
+// du cartographe. Le squad/regroupement passe déjà par regroupCaution (plus large : test-pinné).
+// ⚠️ NIVEAU MODULE (piège #56) : tout ceci est lu par des timers ET par le planner.
+let _shelterInFlight = null;   // promesse de l'abri EN COURS — un seul trou à la fois, les autres appelants le rejoignent
+// Un COMPTEUR et pas un booléen (même raison que _skillInFlight/_autoRunners) : un vieux planner qui finit
+// sa retenue (jeton annulé au respawn) ne doit pas déclarer « plus retenu » pendant que le nouveau l'est encore.
+let _nightHold = 0;            // planners retenus par la discipline de nuit : immobilité LÉGITIME (desync, confine)
+let _lockdownShelters = null;  // comptabilité des abris de la nuit (caution.lockdownShelterNote → `shelter_reenter`)
+const _nightGateAt = {};       // throttle des events `night_gate` : 1×/min par routine retenue
+const NIGHT_HOLD_POLL_MS = 2000;            // pas de re-décision du planner retenu
+const NIGHT_HOLD_MAX_MS = 15 * 60 * 1000;   // garde-fou : une nuit MC ≈ 8,7 min (+ 2 min d'aube) — jamais retenu à vie sur une heure figée
+
+/** Discipline de nuit MAINTENANT ? Nu (< 2 pièces PORTÉES, usées exclues) + nuit CONNUE. `bot.time`
+ *  absent (juste après un spawn) → heure inconnue → false (convention de caution.nightLockdown). */
+function nightLockdownNow() {
+  let worn = 0;
+  try { worn = _wornArmor().size; } catch (e) { worn = 0; }   // inventaire illisible → 0 = prudent
+  const known = !!(bot && bot.time && bot.time.timeOfDay != null);
+  return nightLockdown({ isNight: known ? isNight(bot) : null, worn });
+}
+
+/** Trace qu'une routine a été RETENUE par la discipline de nuit (1×/min par routine) : sans elle, un
+ *  gate muet est indiscernable d'une fonctionnalité morte (#55a). */
+function nightGateNote(what, extra) {
+  const now = Date.now();
+  if (now - (_nightGateAt[what] || 0) < 60000) return false;
+  _nightGateAt[what] = now;
+  emit(Object.assign({ type: 'night_gate', what }, extra || {}));
+  return true;
+}
 
 // Abri nocturne PARTAGÉ (kit + roaming mappeur, hole §1.4) : nuit + (mort récente OU PV ≤10) + pas
 // d'abri depuis 10 min → trou couvert jusqu'à l'aube (borné 13 min). Retourne true si on s'est abrité.
@@ -2053,8 +2172,19 @@ let lastShelterT = 0; // anti re-trigger : 1 abri par nuit max
 // process, il survit à la mort). Un mappeur nu de nuit s'abrite, cooldown ou pas ; l'espacement
 // minimal de 60 s reste, lui, pour qu'un abri qui ÉCHOUE (impossible de creuser/se murer) ne
 // devienne pas une boucle chaude.
+// DISCIPLINE DE NUIT (19/10 soir) — deux règles de plus, pour TOUS les appelants :
+//   1. UN SEUL ABRI À LA FOIS. Un 2e appelant (planner, squad, regroupement, cartographe…) REJOINT
+//      l'abri en cours — il attend sa fin et rend true — au lieu de repartir travailler à côté du trou
+//      (vu NethBot3) ou d'en creuser un second.
+//   2. En lockdown (nu + nuit connue, HORS de l'eau), l'écart tombe à 20 s (NIGHT_SHELTER_GAP_MS) quel
+//      que soit l'appelant : un abri raté ou interrompu se reprend tout de suite. Dans l'eau, l'écart
+//      historique reste (on ne creuse pas de trou en pleine eau, le sauvetage garde la main).
 const FORCED_SHELTER_MIN_GAP_MS = 60 * 1000;
 async function maybeNightShelter(proactive = false, opts = {}) {
+  if (_shelterInFlight) {
+    try { await _shelterInFlight; } catch (e) { /* l'abri en cours a ses propres garde-fous */ }
+    return true;
+  }
   const deathsRecent = deathTimes.filter((t) => Date.now() - t < 10 * 60 * 1000).length;
   // Décision d'abri déléguée à shouldShelter (skills/shelter) : sensible à l'OBSCURITÉ (lightLevel
   // ≤7) en plus de la nuit — un bot dans une grotte sombre / à l'ombre profonde de jour se terre
@@ -2069,34 +2199,53 @@ async function maybeNightShelter(proactive = false, opts = {}) {
   const hostilesNear = (() => { try { const e = bot.nearestEntity((x) => x && x.kind === 'Hostile mobs'); return !!(e && bot.entity && e.position.distanceTo(bot.entity.position) <= 8); } catch (e) { return false; } })();
   // Sous terre (y<45, seuil historique) : pas d'abri du tout — un mineur s'enterrait en boucle
   // dans sa propre mine (dark permanent + nu en chaîne armure), 10-13 min perdues par cycle.
-  const sig = { night: isNight(bot), lightLevel, naked, lowHp: (bot.health != null && bot.health <= 10), hostilesNear, proactive, underground: !!(_pp && _pp.y < 45) };
-  const _shelterGap = opts.force ? FORCED_SHELTER_MIN_GAP_MS : 10 * 60 * 1000;
+  const sig = { night: isNight(bot), lightLevel, naked, lowHp: (bot.health != null && bot.health <= 10), hostilesNear, proactive, underground: !!(_pp && _pp.y < NIGHT_UNDERGROUND_Y) };
+  let inWater = false;
+  try { inWater = isInWater(bot); } catch (e) { inWater = false; }
+  const lockdown = !inWater && nightLockdownNow();
+  const _shelterGap = lockdown ? NIGHT_SHELTER_GAP_MS : (opts.force ? FORCED_SHELTER_MIN_GAP_MS : 10 * 60 * 1000);
   if (shouldShelter(sig).shelter && Date.now() - lastShelterT > _shelterGap) {
     lastShelterT = Date.now();
-    // MAPPEUR (Massii 2026-07-15) : d'abord REVENIR au home 'safe' de surface (/home safe, visible),
-    // puis se terrer là — plutôt que de creuser un trou au hasard là où la nuit l'a surpris.
-    // ⚠️ HOME CAMPÉ (live 19/10) : c'était le 1ᵉʳ maillon de la boucle mortelle de MapBot2
-    // (mapper_home_return > safe_warp > fight > dig_in > flee > mort, 8 fois en 3 min). goHome passe par
-    // le veto : campé la nuit, le /home ne part pas et on se terre LÀ où la nuit nous a surpris.
-    if (IS_MAPPER && _safeHomeSet) {
-      try {
-        if (homewarp.goHome(bot, HOME_SAFE, { ctx: 'mapper_night' })) {
-          emit({ type: 'mapper_home_return', home: 'safe' });
-          await sleep(4000);
-        }
-      } catch (e) {}
+    // RÉ-ABRI (2e abri ou plus de la même nuit) = un abri INTERROMPU : le compteur à lire en live.
+    if (lockdown) {
+      const note = lockdownShelterNote(_lockdownShelters, { night: bot.time ? bot.time.day : null, now: lastShelterT });
+      _lockdownShelters = note.state;
+      if (note.emit) emit({ type: 'shelter_reenter', count: note.count });
     }
-    _stillBusy = true;    // terré jusqu'à l'aube (≤13 min immobile) : immobilité légitime, pas un desync
-    try {
-      // `hostilesNear` + `worn` : l'attente des monstres à l'AUBE (shelter étape 3bis, live 19/10 —
-      // 14 morts sur 17 « shot by Skeleton » juste après la sortie d'abri, sous une canopée où ils ne
-      // brûlent pas). SANS ce branchement l'attente n'existe pas et rien ne le dit : tests verts, bot
-      // qui ressort droit dans l'arc des squelettes (piège #61). Le garde-fou extérieur lui laisse sa borne.
-      await withTimeout(shelterUntilDawn(bot, taskToken, {
-        emit, hostilesNear: hostilesNearNow, worn: () => _wornArmor().size,
-      }), 13 * 60 * 1000 + DAWN_WAIT_MAX_MS,
-      () => { try { stopMotion(); } catch (e) {} });
-    } finally { _stillBusy = false; }
+    const run = (async () => {
+      // MAPPEUR (Massii 2026-07-15) : d'abord REVENIR au home 'safe' de surface (/home safe, visible),
+      // puis se terrer là — plutôt que de creuser un trou au hasard là où la nuit l'a surpris.
+      // ⚠️ HOME CAMPÉ (live 19/10) : c'était le 1ᵉʳ maillon de la boucle mortelle de MapBot2
+      // (mapper_home_return > safe_warp > fight > dig_in > flee > mort, 8 fois en 3 min). goHome passe par
+      // le veto : campé la nuit, le /home ne part pas et on se terre LÀ où la nuit nous a surpris.
+      if (IS_MAPPER && _safeHomeSet) {
+        try {
+          if (homewarp.goHome(bot, HOME_SAFE, { ctx: 'mapper_night' })) {
+            emit({ type: 'mapper_home_return', home: 'safe' });
+            await sleep(4000);
+          }
+        } catch (e) {}
+      }
+      _stillBusy = true;    // terré jusqu'à l'aube (≤13 min immobile) : immobilité légitime, pas un desync
+      try {
+        // `hostilesNear` + `worn` : l'attente des monstres à l'AUBE (shelter étape 3bis, live 19/10 —
+        // 14 morts sur 17 « shot by Skeleton » juste après la sortie d'abri, sous une canopée où ils ne
+        // brûlent pas). SANS ce branchement l'attente n'existe pas et rien ne le dit : tests verts, bot
+        // qui ressort droit dans l'arc des squelettes (piège #61). Le garde-fou extérieur lui laisse sa borne.
+        // `endWhenDisplaced` (discipline de nuit, 19/10 soir) : en lockdown, un bot DÉLOGÉ de son trou
+        // termine l'abri au lieu d'« attendre l'aube » debout dehors — la discipline le ré-abrite 20 s plus
+        // tard. Relu AU MOMENT du délogement (un abri ouvert au crépuscule, avant que `isNight` ne bascule,
+        // est couvert aussi). Armé : toujours faux, l'abri attend l'aube comme avant.
+        await withTimeout(shelterUntilDawn(bot, taskToken, {
+          emit, hostilesNear: hostilesNearNow, worn: () => _wornArmor().size,
+          endWhenDisplaced: () => nightLockdownNow(),
+        }), 13 * 60 * 1000 + DAWN_WAIT_MAX_MS,
+        () => { try { stopMotion(); } catch (e) {} });
+      } finally { _stillBusy = false; }
+    })();
+    // Posé SANS await intermédiaire depuis la décision : un appelant concurrent voit l'abri en cours.
+    _shelterInFlight = run;
+    try { await run; } finally { if (_shelterInFlight === run) _shelterInFlight = null; }
     return true;
   }
   return false;
@@ -2794,11 +2943,69 @@ function checkZoneVerdict() {
 // Le NOUVEAU planner recevrait alors {ok:false} en rafale instantanée → failStreak 4 → stalled.
 function migrationOwnsBot() { return taskCtl.active === 'migration'; }
 
+// ─── DISCIPLINE DE NUIT — LE PLANNER (19/10 soir) ────────────────────────────────────────────────
+// AVANT chaque skill : nu + nuit connue → le planner NE LANCE RIEN (caution.nightPlannerStep). En
+// surface il s'abrite — ou rejoint l'abri qu'un timer vient d'ouvrir (squad/regroupement), au lieu de
+// repartir couper du bois à côté (NethBot3) — et s'y remet 20 s après une interruption (fuite,
+// sauvetage, combat, abri raté au respawn : NethBot1). Sous terre il mine (la nuit n'y change rien),
+// sauf les buts qui le ramèneraient dehors (bois, chasse, pioche, livraison). Il rend la main à l'aube
+// ou dès qu'il porte 2 pièces. Réflexes de fuite, sauvetage d'eau et watchdog PV tournent à part :
+// rien de vital n'est retenu ici. Hors abri et hors de l'eau, la survie du kit tourne comme avant
+// chaque skill (riposte, fuite, manger) ; dans l'abri, rien ne doit l'en faire sortir.
+// → { held: le planner a été retenu, cancelled }
+async function holdForNight(g) {
+  const t0 = Date.now();
+  let held = false;
+  let reason = null;
+  try {
+    for (;;) {
+      if (taskToken.cancelled || migrationOwnsBot()) { reason = 'cancelled'; return { held, cancelled: true }; }
+      if (!nightLockdownNow()) {
+        reason = (bot.time && bot.time.timeOfDay != null && isNight(bot)) ? 'armored' : 'dawn';
+        break;
+      }
+      if (Date.now() - t0 > NIGHT_HOLD_MAX_MS) { reason = 'max'; break; }
+      const p = bot.entity && bot.entity.position;
+      let inWater = false;
+      try { inWater = isInWater(bot); } catch (e) { inWater = false; }
+      const step = nightPlannerStep({
+        lockdown: true, y: p ? p.y : null, skill: g && g.skill,
+        shelterBusy: !!_shelterInFlight, inWater, sinceShelterMs: Date.now() - lastShelterT,
+      });
+      if (step === 'run') { reason = 'underground'; break; }
+      if (!held) {
+        held = true;
+        _nightHold++;
+        emit({ type: 'night_hold', goal: g && g.name, skill: g && g.skill, y: p ? Math.round(p.y) : null, step });
+      }
+      if (step === 'shelter') {
+        // false = refusé à la marge (écart à la ms près, sous-sol tout juste atteint) : on re-décide.
+        if (!(await maybeNightShelter(true, { force: true }))) await sleep(NIGHT_HOLD_POLL_MS);
+        continue;
+      }
+      if (!_shelterInFlight && !inWater) await settleSurvivalKit();
+      await sleep(NIGHT_HOLD_POLL_MS);
+    }
+  } finally {
+    if (held) {
+      _nightHold = Math.max(0, _nightHold - 1);
+      emit({ type: 'night_hold_end', goal: g && g.name, reason, held_s: Math.round((Date.now() - t0) / 1000) });
+    }
+  }
+  return { held, cancelled: false };
+}
+
 async function runSkillWithTelemetry(g) {
   if (migrationOwnsBot()) return { ok: false, reason: 'cancelled' };
   await foodTripYield();                                      // expédition vers le gibier en cours : on n'y vole pas le pathfinder
   await settleSurvivalKit();                                  // survie d'abord, le craft ensuite
   if (taskToken.cancelled || migrationOwnsBot()) return { ok: false, reason: 'cancelled' };
+  // DISCIPLINE DE NUIT : nu + nuit connue → l'abri AU LIEU du skill (cf. holdForNight). Retenu, on rend
+  // la main SANS lancer le skill : à l'aube le planner re-dérive son but sur l'état du matin. Pas de
+  // `ok` dans ce retour → ni échec (failStreak) ni succès : une nuit n'est pas un verdict sur le but.
+  const _night = await holdForNight(g);
+  if (_night.cancelled || taskToken.cancelled || migrationOwnsBot()) return { ok: false, reason: 'cancelled' };
+  if (_night.held) return { held: 'night' };
   // NUIT + (mort récente OU PV bas) pendant le kit → ABRI jusqu'à l'aube (vécu Surv4 : 7 morts
   // nocturnes en boucle ; un trou couvert coûte 2 blocs et sauve le kit).
   if (await maybeNightShelter() && taskToken.cancelled) return { ok: false, reason: 'cancelled' };
@@ -2895,7 +3102,10 @@ async function startMapper() {
   // 3 vagues de chasse et la pêche) : ≤ 70 s au pire, immédiat s'il y a déjà de quoi manger ou aucune
   // proie en vue — sauf à vraie faim (< 6 points) de jour : l'expédition vers le gibier ajoute au plus
   // FOOD_TRIP_MS (75 s) de marche, qui a son propre plafond hors du budget de 60 s.
-  try { await withTimeout(huntCookGoal(6), HUNT_COOK_TIMEOUT_MS + FOOD_TRIP_MS, () => { try { stopMotion(); } catch (e) {} }); } catch (e) {}
+  // DISCIPLINE DE NUIT (19/10 soir) : cartographe nu de nuit → pas de chasse (mapperNightGuard le terre
+  // juste après) ; la faim attendra l'aube, ou la chair de zombie ramassée après un combat.
+  if (nightLockdownNow()) nightGateNote('mapper_start_hunt');
+  else { try { await withTimeout(huntCookGoal(6), HUNT_COOK_TIMEOUT_MS + FOOD_TRIP_MS, () => { try { stopMotion(); } catch (e) {} }); } catch (e) {} }
   emit({ type: 'mapper_started', world: bot._worldKey, sector: mapperSector });
   // ── /locate RETIRÉ (Massii 2026-07-26 : « les bots ne doivent pas utiliser de commandes comme
   // /locate »). C'est une commande d'opérateur qui RÉVÈLE la position de structures qu'un joueur ne
@@ -5337,52 +5547,9 @@ async function onSpawn() {
       }, 8000);
     }
 
-    // ── DÉFENSE MUTUELLE : voler au secours d'un coéquipier attaqué ─────────────────────────
-    // Massii 25/07 : « il faut aussi qu'ils s'aident contre les mobs ». La présence partagée
-    // (heartbeat 60 s) est inutilisable ici — un combat dure quelques secondes. On lit donc la
-    // perception LOCALE : les coéquipiers visibles (bot.players) et les hostiles autour.
-    // Tick court (4 s) mais 100 % local : aucun findBlocks, coût négligeable.
-    if (REGROUP && !IS_MAPPER) {
-      let _assistBusy = false;
-      let _lastAssistAt = 0;
-      setInterval(() => {
-        if (_assistBusy || _stillBusy || _imminentBusy) return;
-        if (!bot.entity || !presence) return;
-        // Mes propres réflexes gèrent MES agresseurs : ici on ne parle que de secourir l'autre.
-        if (bot.health != null && bot.health <= DEFENSIVE_HEALTH) return;
-        if (Date.now() - _lastAssistAt < 8000) return;              // anti-spam de ciblage
-        try {
-          const p = bot.entity.position;
-          // Coéquipiers VISIBLES (le roster du groupe, croisé avec ce que je vois réellement).
-          const roster = presence.list().filter((m) => m.role !== 'mapper' && m.name !== bot.username);
-          const mates = [];
-          for (const m of roster) {
-            const e = bot.players[m.name] && bot.players[m.name].entity;
-            if (e && e.position) mates.push({ name: m.name, x: e.position.x, z: e.position.z });
-          }
-          if (!mates.length) return;
-          const hostiles = nearbyHostiles(bot, 32).map((h) => ({
-            name: h.name, x: h.position.x, z: h.position.z, _e: h,
-          }));
-          const pick = pickMobAssist({
-            self: { x: p.x, z: p.z, health: bot.health },
-            mates, hostiles, isFleeOnly: (n) => isFleeOnlyMob(n, bot.health),
-          });
-          if (!pick) return;
-          _lastAssistAt = Date.now();
-          _assistBusy = true;
-          emit({ type: 'team_assist', mob: pick.mob.name, mate: pick.mate, dist: pick.dist });
-          (async () => {
-            try {
-              const w = bestWeapon(bot);
-              if (w) { try { await bot.equip(w, 'hand'); } catch (e) {} }
-              bot.pvp.attack(pick.mob._e);
-            } catch (e) { /* best-effort */ }
-            finally { setTimeout(() => { _assistBusy = false; }, 5000); }
-          })();
-        } catch (e) { _assistBusy = false; }
-      }, 4000);
-    }
+    // ── DÉFENSE MUTUELLE : voler au secours d'un coéquipier attaqué (corps : teamAssistTick, au
+    // niveau MODULE depuis la discipline de nuit du 19/10 — testé par extraction, piège #56).
+    if (REGROUP && !IS_MAPPER) setInterval(() => { teamAssistTick(); }, 4000);
 
     // ── ÉQUIPE (gated REGROUP) : entraide matérielle, cohésion, puis séparation ──────────────
     // Cas qui l'a motivé (mesuré world_ax4) : un bot à 3 pièces d'armure gardait 6 lingots
@@ -6755,7 +6922,9 @@ setInterval(async () => {
       } catch (e) { return false; }
     })();
     const ok = oregrab.shouldGrab({
-      busy: _imminentBusy || panicInFlight || _armorBusy || _smeltOppBusy || _baseBusy,
+      // `_shelterInFlight` (discipline de nuit, 19/10 soir) : terré, on ne marche pas vers un minerai et
+      // on ne creuse pas la paroi de son propre abri pour un bloc de fer.
+      busy: _imminentBusy || panicInFlight || _armorBusy || _smeltOppBusy || _baseBusy || !!_shelterInFlight,
       digging: !!bot.targetDigBlock,
       inWater: (function () { try { return isInWater(bot); } catch (e) { return false; } })(),
       hostilesNear: hostile,
@@ -6946,7 +7115,13 @@ let _lastFoodRunAt = 0;
 // rapporte RIEN dit quelque chose de la ZONE, pas de l'instant — on passe donc en sourdine (15 min)
 // jusqu'au premier gain, qui rétablit le régime nerveux. Niveau MODULE (piège #56).
 let _foodRunCooldownMs = FOOD_RUN_COOLDOWN_MS;
-setInterval(async () => {
+// Corps du timer extrait en fonction de NIVEAU MODULE (discipline de nuit, 19/10 soir) : testé par
+// extraction comme le reste de la glue.
+// DISCIPLINE DE NUIT : nu de nuit, PAS de quête — elle chasse en surface, warpe un mineur affamé au
+// /home safe et marche vers le gibier : tout ce qui sort un bot nu de son trou. La faim de la nuit se
+// gère avec ce qu'on a en poche (filet « manger » ci-dessus) ou la chair de zombie ramassée après un
+// combat (wireCombatLoot). Le rationnement n'est PAS consommé : à l'aube la quête part au 1er tick.
+async function foodRunTick() {
   if (_foodRunBusy) return;
   if (_imminentBusy || panicInFlight || _armorBusy || _baseBusy) return;   // la survie passe devant
   try {
@@ -6956,6 +7131,7 @@ setInterval(async () => {
       food: bot.food, foodItems: stock, now: Date.now(), lastRunAt: _lastFoodRunAt,
       cooldownMs: _foodRunCooldownMs,
     })) return;
+    if (nightLockdownNow()) { nightGateNote('food_run', { food: bot.food }); return; }
     _foodRunBusy = true;
     _lastFoodRunAt = Date.now();
     const runStartedAt = Date.now();
@@ -6981,7 +7157,8 @@ setInterval(async () => {
     });
   } catch (e) { /* watchdog : ne crash jamais */ }
   finally { _foodRunBusy = false; }
-}, 30000);
+}
+setInterval(() => { foodRunTick().catch(() => {}); }, 30000);
 
 // ── PLUS DE PIOCHE → EN REFAIRE UNE (Massii 2026-07-26 : « si ils n'ont plus de pioche ils doivent
 // en faire une »). La capacité existait (`recoverPickaxe`, buts wooden_pickaxe/stone_pickaxe) mais
@@ -7006,7 +7183,9 @@ setInterval(async () => {
     if (!bot.inventory || !bot.entity) return;
     if (hasPick()) return;
     // `_migrating` (fix 18/08) : la table qu'on irait chercher volerait le pathfinder à la jambe.
-    if (_imminentBusy || panicInFlight || _armorBusy || _baseBusy || _migrating) return;
+    // `_shelterInFlight` (discipline de nuit, 19/10 soir) : le craft va chercher une table jusqu'à 48 blocs
+    // (withCraftingTable) — pas question de sortir du trou pour ça, la pioche attendra l'aube.
+    if (_imminentBusy || panicInFlight || _armorBusy || _baseBusy || _migrating || _shelterInFlight) return;
     const plan = pickaxeRecraftPlan(bot.inventory.items());
     const now = Date.now();
     if (now - _lastPickMissingAt >= PICK_MISSING_EMIT_MS) {
@@ -7387,7 +7566,9 @@ setInterval(async () => {
     // Immobilités légitimes LONGUES (fonte ≤3 min, abri ≤13 min, armure) → reset. Le DIG n'en est
     // PLUS une (vécu world_ax2 : 3 bots gelés EN PLEIN minage, targetDigBlock figé → l'ancien
     // reset rendait le desync invisible) → on échantillonne quand même, fenêtre doublée (10 min).
-    if (_stillBusy || _smeltOppBusy || _armorBusy) { _posSamples = []; return; }
+    // `_nightHold` (discipline de nuit, 19/10 soir) : le planner retenu attend l'aube SANS bouger
+    // (abri d'un autre appelant, eau, but de surface sous terre) — immobilité légitime, pas un desync.
+    if (_stillBusy || _smeltOppBusy || _armorBusy || _nightHold) { _posSamples = []; return; }
     const p = bot.entity && bot.entity.position;
     if (!p) return;
     _posSamples.push({ x: p.x, y: p.y, z: p.z });

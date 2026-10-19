@@ -75,6 +75,87 @@ function migrationCaution(sig = {}) {
   return (sig && sig.isNight === true) ? 'stop' : 'walk';
 }
 
+// ─── 1quater) DISCIPLINE DE NUIT (19/10 soir, run « de zéro » world_oct9) ───────────────────────
+// 33 morts en 35 min, l'essentiel LA NUIT (13 squelettes, 11 zombies, 6 creepers, 3 araignées), flotte
+// partie de zéro : personne n'a d'armure. Un joueur nu en hard passe la nuit dans un trou couvert, et le
+// code avait ce trou (maybeNightShelter → shelterUntilDawn)… mais PLUSIEURS routines en tiraient le bot :
+// le planner repartait couper du bois à côté de l'abri qu'un timer (squad) venait de creuser ; l'entraide
+// de combat l'envoyait dans la bagarre d'un coéquipier ; la quête de nourriture et le trajet bois le
+// promenaient ; et un abri raté ou interrompu armait l'écart « 1 abri / 10 min » → retour au travail en
+// pleine nuit (NethBot1 : 4 morts d'affilée en reprenant `logs` après un abri `void_below` au respawn).
+// `nightLockdown` est LE prédicat que toutes ces routines consultent : une seule définition, le seuil de
+// l'abri du cartographe (CAUTION_MIN_WORN). À la différence de mapperCaution/regroupCaution, la nuit doit
+// être CONNUE (`isNight === true`) — `null` (bot.time pas encore livré) → false, convention de
+// migrationCaution : on ne fige pas un bot sur une supposition. Le cas « heure inconnue + hostiles »
+// reste couvert là où il l'était (regroupCaution, plus large : tout lockdown y est un abri, test-pinné).
+function nightLockdown(sig = {}) {
+  if (!sig || sig.isNight !== true) return false;
+  const n = _wornCount(sig.worn);
+  const worn = Number.isFinite(n) ? n : 0;   // illisible = nu (prudent), comme mapperCaution
+  return worn < CAUTION_MIN_WORN;
+}
+
+// Sous terre, la nuit ne change rien (il y fait noir jour et nuit) et shouldShelter y refuse l'abri par
+// conception (Massii 16/07 : un mineur nu s'enterrait 10-13 min en boucle dans sa propre mine). Même
+// seuil que maybeNightShelter (`y < 45`) : une seule frontière surface/sous-sol pour les deux.
+const NIGHT_UNDERGROUND_Y = 45;
+// …sauf pour les buts qui RAMÈNENT le bot à la surface ou le téléportent : bois (gatherLog → explore de
+// surface ; il couvre logs/plank_buffer/armor_fuel/gift_planks), chasse (huntCook), récupération de
+// pioche (ensurePick = /home safe + expédition bois), livraison d'armure (/tpa vers un cartographe).
+// Sous terre la nuit, ceux-là attendent l'aube ; tout le reste (minage, craft, fonte) continue.
+const NIGHT_SURFACE_SKILLS = new Set(['gatherLog', 'huntCook', 'ensurePick', 'deliverMapperArmor']);
+// Mini-écart anti-boucle entre deux abris en lockdown (l'écart historique est de 10 min, 60 s forcé).
+// Il protège d'une boucle chaude (abri qui échoue à l'instant : chunks pas encore chargés au respawn →
+// `void_below`, rien à poser) sans interdire la REPRISE d'un abri interrompu (fuite, sauvetage, combat).
+const NIGHT_SHELTER_GAP_MS = 20000;
+
+/**
+ * PUR — le planner, juste avant de lancer un skill, face à la discipline de nuit.
+ * sig = { lockdown: bool (nightLockdown), y: altitude du bot, skill: nom du skill du but,
+ *         shelterBusy: bool (un abri est déjà en cours, lancé par un autre appelant),
+ *         inWater: bool, sinceShelterMs: ms depuis le DÉBUT du dernier abri, gapMs? }
+ * → 'run'     : lancer le skill (hors lockdown — comportement inchangé —, ou sous terre hors surface) ;
+ *   'shelter' : s'abriter AU LIEU du skill ;
+ *   'wait'    : ne rien lancer, re-décider un peu plus tard (abri en cours, eau, mini-écart, but de
+ *               surface sous terre, altitude inconnue).
+ * Ordre des tests : en surface, l'abri en cours puis l'eau passent AVANT l'écart — on ne creuse ni un
+ * 2e trou ni dans l'eau, quel que soit le temps écoulé. Dernier abri inconnu (NaN) → abri permis.
+ */
+function nightPlannerStep(sig = {}) {
+  if (!sig || !sig.lockdown) return 'run';
+  const y = sig.y;
+  if (!(typeof y === 'number' && Number.isFinite(y))) return 'wait';
+  if (y < NIGHT_UNDERGROUND_Y) return NIGHT_SURFACE_SKILLS.has(sig.skill) ? 'wait' : 'run';
+  if (sig.shelterBusy) return 'wait';
+  if (sig.inWater) return 'wait';
+  const gap = Number.isFinite(Number(sig.gapMs)) && sig.gapMs != null ? Number(sig.gapMs) : NIGHT_SHELTER_GAP_MS;
+  const since = Number(sig.sinceShelterMs);
+  if (sig.sinceShelterMs != null && Number.isFinite(since) && since < gap) return 'wait';
+  return 'shelter';
+}
+
+// Un ré-abri (2e abri ou plus de la même nuit) est l'indice d'un abri INTERROMPU — c'est le compteur à
+// lire en live. Tracé au plus une fois par minute, avec le cumul de la nuit.
+const SHELTER_REENTER_EVENT_MS = 60000;
+
+/**
+ * PUR — comptabilité des abris d'une nuit de discipline (event `shelter_reenter`).
+ * state = { night, shelters, lastEmitAt } | null (rendu par l'appel précédent, jamais muté)
+ * sig = { night: identifiant de la nuit (bot.time.day — une nuit MC tient dans un même `day`), now }
+ * → { state, reenter: ce nouvel abri est-il un ré-abri, count: ré-abris de la nuit, emit: tracer maintenant }
+ */
+function lockdownShelterNote(state, sig = {}) {
+  const night = (sig && sig.night != null) ? sig.night : null;
+  const now = Number(sig && sig.now) || 0;
+  const fresh = !state || state.night !== night;
+  const shelters = (fresh ? 0 : (Number(state.shelters) || 0)) + 1;
+  const last = fresh ? 0 : (Number(state.lastEmitAt) || 0);
+  const count = shelters - 1;
+  const reenter = count > 0;
+  const emit = reenter && (last === 0 || now - last >= SHELTER_REENTER_EVENT_MS);
+  return { state: { night, shelters, lastEmitAt: emit ? now : last }, reenter, count, emit };
+}
+
 // ─── 2) Ré-essai d'équipement ───────────────────────────────────────────────────────────────────
 
 // `bot.equip` échoue surtout EN MOUVEMENT (le serveur refuse le changement de slot pendant un
@@ -427,6 +508,8 @@ function surfaceTripNeeded(sig = {}) {
 
 module.exports = {
   mapperCaution, CAUTION_MIN_WORN, regroupCaution, migrationCaution,
+  nightLockdown, nightPlannerStep, lockdownShelterNote,
+  NIGHT_SHELTER_GAP_MS, NIGHT_UNDERGROUND_Y, NIGHT_SURFACE_SKILLS, SHELTER_REENTER_EVENT_MS,
   equipRetryPlan, EQUIP_RETRY_WAIT_MS, EQUIP_MAX_ATTEMPTS, EQUIP_RETRY_COOLDOWN_MS,
   isEquipPickup, PICKUP_EQUIP_DELAY_MS,
   normalizeSmeltResult,

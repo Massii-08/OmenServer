@@ -69,6 +69,22 @@ function dawnExitDecision(opts) {
   return waited >= maxMs ? 'go' : 'wait';
 }
 
+// ─── ABRI QUITTÉ (discipline de nuit, 19/10 soir) ────────────────────────────────────────────────
+// L'attente ne regardait que l'horloge : un bot DÉLOGÉ de son trou (fuite réflexe, riposte pvp qui
+// poursuit sa cible, sauvetage d'eau, /home d'urgence) restait « à l'abri » jusqu'au matin, debout
+// dehors — et la discipline de nuit d'index.js, qui attend la fin de l'abri en cours avant de se
+// ré-abriter, attendait avec lui. Le trou fait 1×1 : en sortir, c'est quitter sa colonne (≥ 1,5 bloc
+// à plat) ou remonter au niveau du sol (≥ 1,5 en hauteur — un saut fait 1,25, il ne compte pas).
+const SHELTER_DISPLACED_BLOCKS = 1.5;
+
+/** PUR : le bot a-t-il quitté son abri ? anchor/pos = {x,y,z}. Coordonnée absente/absurde → false
+ *  (jamais déclaré dehors sur une donnée manquante — c'est aussi la rétro-compat des faux bots). */
+function shelterDisplaced(anchor, pos, maxBlocks = SHELTER_DISPLACED_BLOCKS) {
+  const ok = (p) => !!p && Number.isFinite(p.x) && Number.isFinite(p.y) && Number.isFinite(p.z);
+  if (!ok(anchor) || !ok(pos)) return false;
+  return Math.hypot(pos.x - anchor.x, pos.z - anchor.z) >= maxBlocks || Math.abs(pos.y - anchor.y) >= maxBlocks;
+}
+
 /**
  * Étape 3bis — rester dans l'abri tant que dawnExitDecision dit 'wait'. Relevés LIVE (jamais mis en
  * cache : le monde bouge pendant l'attente), un toutes les `checkMs`. Le temps attendu est le plus
@@ -78,10 +94,11 @@ function dawnExitDecision(opts) {
  * Émet UN SEUL event `dawn_wait` à la sortie de l'attente (pas un par tick), et seulement si on a
  * réellement attendu : `hostiles` = ce qui nous a retenus (au début), `hostiles_left` = ce qu'il restait
  * en sortant, `waited_s`, `reason` : 'clear' (dégagé) | 'timeout' (borne atteinte, on sort quand même)
- * | 'armed' (de l'armure est arrivée) | 'cancelled'.
- * @returns {{cancelled:boolean}}
+ * | 'armed' (de l'armure est arrivée) | 'cancelled' | 'displaced' (délogé du trou : attendre n'a plus
+ * de sens). `isDisplaced` (optionnel) = le relevé « abri quitté » de shelterUntilDawn.
+ * @returns {{cancelled:boolean, displaced?:boolean}}
  */
-async function _waitOutDawnMobs(bot, token, deps, emit, sleep) {
+async function _waitOutDawnMobs(bot, token, deps, emit, sleep, isDisplaced = null) {
   const maxMs = Number.isFinite(deps.dawnWaitMaxMs) ? deps.dawnWaitMaxMs : DAWN_WAIT_MAX_MS;
   const checkMs = (Number.isFinite(deps.dawnCheckMs) && deps.dawnCheckMs > 0) ? deps.dawnCheckMs : DAWN_WAIT_CHECK_MS;
   // Un relevé qui LÈVE vaut « rien » : on ne reste jamais coincé dans le trou sur une erreur de lecture.
@@ -109,6 +126,7 @@ async function _waitOutDawnMobs(bot, token, deps, emit, sleep) {
   };
   for (;;) {
     if (token && token.cancelled) { done('cancelled'); return { cancelled: true }; }
+    if (isDisplaced && isDisplaced()) { done('displaced'); return { cancelled: false, displaced: true }; }
     left = readHostiles();
     worn = readWorn();
     if (dawnExitDecision({ hostilesNear: left, waitedMs, worn, maxMs }) !== 'wait') break;
@@ -126,6 +144,8 @@ async function _waitOutDawnMobs(bot, token, deps, emit, sleep) {
  * deps.hostilesNear (() => nb d'hostiles à portée) + deps.worn (() => nb de pièces portées) : l'attente
  * des monstres à l'aube (étape 3bis) — SANS hostilesNear injecté, elle est sautée (comportement d'origine).
  * deps.dawnWaitMaxMs / deps.dawnCheckMs : borne (déf 120 s) et pas (déf 3 s) de cette attente.
+ * deps.endWhenDisplaced (booléen ou () => booléen, relu au délogement) : un bot DÉLOGÉ de son trou (cf.
+ * shelterDisplaced) termine l'abri → {ok:false, reason:'displaced'} (sans lui : comportement d'origine).
  */
 async function shelterUntilDawn(bot, token = null, deps = {}) {
   const sleep = deps.sleep || ((ms) => new Promise((r) => setTimeout(r, ms)));
@@ -182,19 +202,42 @@ async function shelterUntilDawn(bot, token = null, deps = {}) {
     }
   } catch (e) { /* best-effort */ }
 
-  // 3) attendre l'aube (borné, annulable) — les réflexes survie tournent en parallèle
+  // ANCRE de l'abri, relevée une fois le bot terré et couvert. COPIE des coordonnées : `entity.position`
+  // est un Vec3 MUTÉ EN PLACE par le serveur (piège #73d) — une référence gardée « bougerait » avec lui.
+  const _p0 = bot.entity && bot.entity.position;
+  const anchor = _p0 ? { x: _p0.x, y: _p0.y, z: _p0.z } : null;
+  // Délogé ? → tracé UNE fois (l'abri se termine dans la foulée), avec l'écart mesuré. OPT-IN
+  // (`deps.endWhenDisplaced`, booléen ou prédicat relu au moment du délogement — posé par la discipline
+  // de nuit pour un bot NU) : sans lui, l'abri attend l'aube comme avant, où que soit le bot.
+  const endOnLeave = () => {
+    try { return typeof deps.endWhenDisplaced === 'function' ? !!deps.endWhenDisplaced() : !!deps.endWhenDisplaced; }
+    catch (e) { return false; }   // prédicat qui lève → comportement d'origine
+  };
+  const left = () => {
+    if (!deps.endWhenDisplaced) return false;
+    const p = bot.entity && bot.entity.position;
+    if (!shelterDisplaced(anchor, p) || !endOnLeave()) return false;
+    emit({ type: 'shelter', action: 'displaced',
+      dist: Math.round(Math.hypot(p.x - anchor.x, p.z - anchor.z)), dy: Math.round(p.y - anchor.y) });
+    return true;
+  };
+
+  // 3) attendre l'aube (borné, annulable) — les réflexes survie tournent en parallèle. Un bot DÉLOGÉ
+  // (cf. shelterDisplaced) n'attend plus rien : l'abri se termine, l'appelant décide (se ré-abriter).
   const t0 = Date.now();
   while (isNight(bot) && Date.now() - t0 < maxWaitMs) {
     if (token && token.cancelled) return { ok: false, reason: 'cancelled' };
     await sleep(5000);
+    if (left()) return { ok: false, reason: 'displaced' };
   }
   emit({ type: 'shelter', action: 'dawn' });
 
   // 3bis) L'AUBE N'EST PAS LA FIN DES MONSTRES : bot nu + hostiles dehors → on reste (borné 120 s).
   // Branchement explicite : sans `deps.hostilesNear` l'attente n'existe pas (comportement d'origine).
   if (typeof deps.hostilesNear === 'function') {
-    const w = await _waitOutDawnMobs(bot, token, deps, emit, sleep);
+    const w = await _waitOutDawnMobs(bot, token, deps, emit, sleep, left);
     if (w.cancelled) return { ok: false, reason: 'cancelled' };
+    if (w.displaced) return { ok: false, reason: 'displaced' };
   }
 
   // 4) ressortir : casser le toit éventuel puis remonter en pilier (#7)
@@ -252,4 +295,5 @@ function shouldShelter(sig = {}) {
 module.exports = {
   isNightTime, isNight, shelterUntilDawn, roofPlan, shouldShelter,
   dawnExitDecision, DAWN_WAIT_MAX_MS, DAWN_WAIT_CHECK_MS, DAWN_WAIT_MIN_WORN,
+  shelterDisplaced, SHELTER_DISPLACED_BLOCKS,
 };

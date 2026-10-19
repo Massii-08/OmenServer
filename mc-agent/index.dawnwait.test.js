@@ -18,6 +18,7 @@ const vm = require('node:vm');
 const SRC = fs.readFileSync(path.join(__dirname, 'index.js'), 'utf8');
 const U = require('./unstuck');
 const SH = require('./skills/shelter');
+const C = require('./caution');
 const { isFleeHostile } = require('./skills/fleeFrom');
 const { NEUTRAL_NO_PROVOKE } = require('./survival');
 
@@ -119,9 +120,16 @@ function shelterSandbox({ worn = 0, entities = [zombie(6), zombie(8, 2, 'skeleto
     // le shelterUntilDawn « réel » du test : il capture les deps, qui sont ce qu'on veut vérifier
     shelterUntilDawn: async (b, tok, deps) => { captured.calls.push({ b, tok, deps }); return { ok: true }; },
     withTimeout: (p, ms) => { captured.timeouts.push(ms); return p; },
+    // discipline de nuit (19/10 soir) : ce que maybeNightShelter lit en plus — un seul abri à la fois,
+    // l'écart de 20 s en lockdown, la comptabilité des ré-abris (cf. index.nightlockdown.test.js).
+    // Ce bot n'a pas de `bot.time` : heure inconnue → pas de lockdown → comportement d'avant, à l'identique.
+    _shelterInFlight: null, _lockdownShelters: null, isInWater: () => false,
+    nightLockdown: C.nightLockdown, lockdownShelterNote: C.lockdownShelterNote,
+    NIGHT_SHELTER_GAP_MS: C.NIGHT_SHELTER_GAP_MS, NIGHT_UNDERGROUND_Y: C.NIGHT_UNDERGROUND_Y,
   });
   run(sb, fnSrc('isThreatHostile'));
   run(sb, fnSrc('hostilesNearNow'));
+  run(sb, fnSrc('nightLockdownNow'));
   run(sb, fnSrc('maybeNightShelter'));
   return sb;
 }

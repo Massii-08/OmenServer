@@ -127,3 +127,33 @@ test('DAWN_WAIT_CHECK_MS : on re-vérifie toutes les 3 s, et la borne est un mul
   assert.strictEqual(DAWN_WAIT_CHECK_MS, 3000);
   assert.strictEqual(DAWN_WAIT_MAX_MS % DAWN_WAIT_CHECK_MS, 0);
 });
+
+// ─── ABRI QUITTÉ (discipline de nuit, 19/10 soir) ─────────────────────────────────────────────────
+// L'attente de l'aube ne regardait que l'horloge : un bot DÉLOGÉ (fuite réflexe, combat, sauvetage,
+// /home d'urgence) restait « à l'abri » jusqu'au matin… debout dehors, nu, à 100 blocs de son trou —
+// et la discipline de nuit, qui attend la fin de l'abri en cours pour se ré-abriter, attendait avec lui.
+const { shelterDisplaced, SHELTER_DISPLACED_BLOCKS } = require('./shelter');
+
+test('shelterDisplaced : immobile, poussé contre la paroi, ou qui SAUTE dans son trou → toujours à l abri', () => {
+  const a = { x: 10.5, y: 63, z: -4.5 };
+  assert.strictEqual(shelterDisplaced(a, { x: 10.5, y: 63, z: -4.5 }), false);
+  assert.strictEqual(shelterDisplaced(a, { x: 10.9, y: 63, z: -4.1 }), false, 'poussé par un zombie, reste dans la colonne');
+  assert.strictEqual(shelterDisplaced(a, { x: 10.5, y: 64.25, z: -4.5 }), false, 'un saut (1,25) ne sort pas du trou');
+});
+
+test('shelterDisplaced : sorti de sa colonne (≥ 1,5 bloc) ou ressorti du trou (dy ≥ 1,5) → délogé', () => {
+  const a = { x: 10.5, y: 63, z: -4.5 };
+  assert.strictEqual(SHELTER_DISPLACED_BLOCKS, 1.5);
+  assert.strictEqual(shelterDisplaced(a, { x: 12.1, y: 63, z: -4.5 }), true, 'un pas de côté hors du trou 1×1');
+  assert.strictEqual(shelterDisplaced(a, { x: 10.5, y: 65, z: -4.5 }), true, 'remonté au niveau du sol');
+  assert.strictEqual(shelterDisplaced(a, { x: 10.5, y: 60, z: -4.5 }), true, 'le fond a cédé (grotte dessous)');
+  assert.strictEqual(shelterDisplaced(a, { x: 140, y: 70, z: 22 }), true, 'téléporté (/home safe d urgence)');
+});
+
+test('shelterDisplaced : coordonnées absentes ou absurdes → JAMAIS délogé (jamais sorti du trou sur une donnée manquante)', () => {
+  assert.strictEqual(shelterDisplaced(null, { x: 0, y: 0, z: 0 }), false);
+  assert.strictEqual(shelterDisplaced({ x: 0, y: 0, z: 0 }, null), false);
+  assert.strictEqual(shelterDisplaced({}, { x: 99, y: 0, z: 0 }), false);
+  assert.strictEqual(shelterDisplaced({ x: 0, y: 0, z: 0 }, { x: NaN, y: 0, z: 0 }), false);
+  assert.strictEqual(shelterDisplaced(), false);
+});
