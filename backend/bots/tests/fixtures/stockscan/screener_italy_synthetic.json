@@ -1,0 +1,292 @@
+{
+ "_synthetic": "FIXTURE SYNTHETIQUE - forme tiree de tradingview-screener 3.2.2 (PyPI, 2026), valeurs inventees mais plausibles. A remplacer par une capture `python -m backend.bots.stockscan --probe` (conteneur cloud : 403).",
+ "totalCount": 212,
+ "data": [
+  {
+   "s": "MIL:UCG",
+   "d": [
+    "UCG",
+    "UniCredit S.p.A.",
+    "stock",
+    [
+     "common"
+    ],
+    "MIL",
+    "EUR",
+    62.1,
+    1.2,
+    0.4,
+    9500000.0,
+    1.1,
+    8600000.0,
+    590000000.0,
+    96000000000.0,
+    "EUR",
+    "Finance",
+    "Major Banks",
+    "Italy",
+    2.1,
+    5.3,
+    65.0,
+    40.2,
+    1793232000,
+    4.8,
+    9.1
+   ]
+  },
+  {
+   "s": "MIL:ENI",
+   "d": [
+    "ENI",
+    "Eni S.p.A.",
+    "stock",
+    [
+     "common"
+    ],
+    "MIL",
+    "EUR",
+    15.48,
+    2.31,
+    1.1,
+    31000000.0,
+    2.4,
+    13000000.0,
+    480000000.0,
+    50200000000.0,
+    "EUR",
+    "Energy Minerals",
+    "Integrated Oil",
+    "Italy",
+    4.1,
+    3.0,
+    16.9,
+    12.1,
+    1792800000,
+    6.4,
+    11.2
+   ]
+  },
+  {
+   "s": "MIL:STLAM",
+   "d": [
+    "STLAM",
+    "Stellantis N.V.",
+    "stock",
+    [
+     "common"
+    ],
+    "MIL",
+    "EUR",
+    9.12,
+    -6.5,
+    -4.0,
+    62000000.0,
+    3.1,
+    20000000.0,
+    560000000.0,
+    27000000000.0,
+    "EUR",
+    "Consumer Durables",
+    "Motor Vehicles",
+    "Netherlands",
+    -8.0,
+    -12.0,
+    14.0,
+    8.9,
+    null,
+    7.1,
+    5.0
+   ]
+  },
+  {
+   "s": "MIL:LDO",
+   "d": [
+    "LDO",
+    "Leonardo S.p.A.",
+    "stock",
+    [
+     "common"
+    ],
+    "MIL",
+    "EUR",
+    48.3,
+    9.4,
+    6.0,
+    14000000.0,
+    4.2,
+    3300000.0,
+    670000000.0,
+    28000000000.0,
+    "EUR",
+    "Electronic Technology",
+    "Aerospace & Defense",
+    "Italy",
+    22.5,
+    30.1,
+    48.9,
+    22.0,
+    null,
+    1.1,
+    24.0
+   ]
+  },
+  {
+   "s": "MIL:RACE",
+   "d": [
+    "RACE",
+    "Ferrari N.V.",
+    "stock",
+    [
+     "common"
+    ],
+    "MIL",
+    "EUR",
+    402.0,
+    0.2,
+    0.0,
+    300000.0,
+    0.8,
+    380000.0,
+    120000000.0,
+    73000000000.0,
+    "EUR",
+    "Consumer Durables",
+    "Motor Vehicles",
+    "Netherlands",
+    0.5,
+    -1.0,
+    470.0,
+    360.0,
+    1793750400,
+    0.7,
+    48.0
+   ]
+  },
+  {
+   "s": "MIL:ENEL",
+   "d": [
+    "ENEL",
+    "Enel S.p.A.",
+    "stock",
+    [
+     "common"
+    ],
+    "MIL",
+    "EUR",
+    7.9,
+    -0.4,
+    -0.1,
+    22000000.0,
+    0.9,
+    24000000.0,
+    170000000.0,
+    80000000000.0,
+    "EUR",
+    "Utilities",
+    "Electric Utilities",
+    "Italy",
+    -0.8,
+    1.9,
+    8.3,
+    6.4,
+    null,
+    5.9,
+    12.5
+   ]
+  },
+  {
+   "s": "MIL:TINY",
+   "d": [
+    "TINY",
+    "Tiny Industrie S.p.A.",
+    "stock",
+    [
+     "common"
+    ],
+    "MIL",
+    "EUR",
+    2.1,
+    12.0,
+    3.0,
+    400000.0,
+    6.0,
+    90000.0,
+    840000.0,
+    1100000000.0,
+    "EUR",
+    "Producer Manufacturing",
+    null,
+    "Italy",
+    15.0,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null
+   ]
+  },
+  {
+   "s": "",
+   "d": [
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null
+   ]
+  },
+  {
+   "s": "MIL:NOPRICE",
+   "d": [
+    "NOPRICE",
+    "Sans Cours S.p.A.",
+    "stock",
+    [
+     "common"
+    ],
+    "MIL",
+    "EUR",
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    "EUR",
+    null,
+    null,
+    "Italy",
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null
+   ]
+  }
+ ]
+}
