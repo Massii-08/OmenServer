@@ -81,7 +81,8 @@ function _invMap(bot) {
 //      ingrédients sont consommés, le produit est par terre. Un worker qui hoarde bûches + pierres
 //      (une pile par roche : deepslate, tuff, diorite…) y arrive vite. Piste probable de l'incident
 //      ci-dessus, NON confirmée en live : dans ce cas `craft_no_effect` est le bon verdict, et le
-//      remède de fond (libérer une case avant de crafter) reste à faire en amont.
+//      remède de fond (libérer une case AVANT de crafter) est le bloc « PLACE POUR LE RÉSULTAT »
+//      plus bas.
 // On exige donc de VOIR le produit arriver : la quantité en inventaire doit AUGMENTER par rapport à
 // l'avant-craft. Sondage toutes les 50 ms, 600 ms au plus — de quoi absorber un inventaire local en
 // retard sans geler le planner plus d'une demi-seconde par tour. Sinon `craft_no_effect`, qui sort
@@ -122,6 +123,139 @@ async function _awaitCraftEffect(bot, itemName, before, sleep) {
   }
 }
 
+// ─── PLACE POUR LE RÉSULTAT (19/10) ───────────────────────────────────────────────────────────
+// Le remède de fond du cas n°2 ci-dessus, l'inventaire PLEIN. `putSelectedItemRange` (mineflayer)
+// fusionne le résultat dans les piles NON PLEINES du même item, puis dans la 1re case vide — et sans
+// l'un ni l'autre il le JETTE au sol pendant que `bot.craft` rend la main normalement. Les ouvriers
+// ramassent en masse terre, gravier, granite, diorite, andésite, tuf, cobbled_deepslate, netherrack :
+// une pile par roche, les 36 cases partent vite.
+// AVANT de crafter, si l'inventaire n'a AUCUNE case vide ET qu'aucune pile existante du produit ne
+// peut en absorber le rendement (count × résultat de la recette), on jette UNE pile de déchet. Le
+// contrôle d'effet reste le juge final : s'il n'y a rien de jetable on ne jette rien, le craft se
+// fait, et c'est lui qui rendra `craft_no_effect`.
+// Les déchets forment une LISTE BLANCHE ordonnée : tout ce qui n'y figure pas — outils, armure,
+// nourriture, bois/planches/bâtons, minerais/lingots/charbon, table, four, torches, seau, canne… —
+// n'est jamais jeté, par construction (pas une liste d'exclusion qu'un nouvel item contournerait).
+//   ⚠️ `quota.junkItems` n'est PAS réutilisable ici. C'est l'inverse : une liste d'EXCLUSION (« tout
+//   ce qui n'est pas gardé est du déchet »), écrite pour le mode quota sous terre — elle jetterait les
+//   bûches, les seaux, les cannes, le bouclier… ; elle ne garde que la PREMIÈRE pile de cobble (pas
+//   32 pièces) ; et elle rend TOUT le déchet d'un coup, sans ordre, alors qu'ici il en faut UNE, la
+//   plus anodine d'abord.
+//   ℹ️ Recouvrement connu avec `dirt.POSABLE` (le tampon de blocs d'abri) : la terre part en premier.
+//   On jette la PLUS PETITE pile du palier — la grosse reste pour sceller un toit — et la terre se
+//   re-ramasse en quelques coups de pelle (cf. `needDirtBuffer` au démarrage du cartographe).
+const COBBLE_KEEP = 32;   // réserve de cobble (four = 8, outils, murs de lave) : jamais en dessous
+// Du plus anodin au moins anodin ; `keep` = quantité TOTALE (toutes piles) qui doit rester APRÈS le jet.
+const JUNK_TIERS = [
+  { names: ['dirt', 'coarse_dirt', 'rooted_dirt'], keep: 0 },
+  { names: ['gravel'], keep: 0 },
+  { names: ['granite', 'diorite', 'andesite', 'tuff', 'calcite'], keep: 0 },
+  { names: ['netherrack'], keep: 0 },
+  { names: ['cobbled_deepslate'], keep: COBBLE_KEEP },   // « au-delà de 32 », par nom
+  { names: ['cobblestone'], keep: COBBLE_KEEP },
+];
+
+// Quelle pile jeter pour libérer UNE case ? Fonction PURE : `items` = [{ name, count, … }] (l'inventaire
+// utile, 36 cases) → l'élément choisi (la référence, jamais une copie) ou `null` si rien n'est jetable.
+// Palier le plus anodin d'abord (JUNK_TIERS) ; dans un palier, la plus PETITE pile (case libérée au
+// moindre coût ; à égalité, la première rencontrée). Une pile de cobble n'est jetable que si le TOTAL
+// restant après son départ garde au moins COBBLE_KEEP : sous 32 on ne touche à rien, et une pile
+// unique n'est jamais jetée (il resterait 0).
+// `opts.exclude` (Set ou tableau de noms) : ce que la recette consomme ou produit n'est jamais jeté.
+function pickJunkToToss(items, opts) {
+  const ex = opts && opts.exclude;
+  const exclude = ex instanceof Set ? ex : new Set(Array.isArray(ex) ? ex : []);
+  const list = (Array.isArray(items) ? items : []).filter((it) => it && it.name && Number(it.count) > 0);
+  const total = {};
+  for (const it of list) total[it.name] = (total[it.name] || 0) + Number(it.count);
+  for (const tier of JUNK_TIERS) {
+    let best = null;
+    for (const it of list) {
+      if (!tier.names.includes(it.name) || exclude.has(it.name)) continue;
+      if (total[it.name] - Number(it.count) < tier.keep) continue;       // le départ de CETTE pile percerait la réserve
+      if (!best || Number(it.count) < Number(best.count)) best = it;
+    }
+    if (best) return best;
+  }
+  return null;
+}
+
+// Faut-il faire de la place ? Fonction PURE. Oui ssi AUCUNE case n'est vide (`emptySlots === 0` ; `null`
+// = nombre inconnu → on ne jette rien) ET que les piles existantes du produit ne peuvent pas en
+// absorber `need` exemplaires (mineflayer complète les piles non pleines AVANT de chercher une case
+// vide). `stackSize` = taille de pile par défaut quand une pile n'expose pas la sienne.
+// Pessimiste à dessein : un craft qui VIDE une pile d'ingrédients libère une case que ce calcul ne
+// voit pas (dernière bûche, dernier lingot) — on jette alors une pile de déchet pour rien. Le coût
+// est une pile de terre ; deviner quelles piles la recette videra (mineflayer prend dans la 1re pile
+// trouvée) coûterait plus cher en code que ça ne rapporte.
+function needsRoomFor({ emptySlots, items, product, need, stackSize } = {}) {
+  if (emptySlots !== 0) return false;
+  const want = Number(need) > 0 ? Number(need) : 1;
+  let room = 0;
+  for (const it of (Array.isArray(items) ? items : [])) {
+    if (!it || it.name !== product) continue;
+    const cap = Number(it.stackSize) > 0 ? Number(it.stackSize) : (Number(stackSize) > 0 ? Number(stackSize) : 64);
+    room += Math.max(0, cap - (Number(it.count) || 0));
+  }
+  return room < want;
+}
+
+// Cases vides de l'inventaire utile (9..44) ; `null` si le bot ne permet pas de le savoir (vieux stub).
+function _emptySlots(bot) {
+  try {
+    const inv = bot.inventory;
+    if (!inv) return null;
+    if (typeof inv.emptySlotCount === 'function') {
+      const n = inv.emptySlotCount();
+      return Number.isFinite(n) ? n : null;
+    }
+    if (Array.isArray(inv.slots)) {
+      let n = 0;
+      for (let i = 9; i <= 44; i++) if (!inv.slots[i]) n++;
+      return n;
+    }
+  } catch (e) { /* illisible → inconnu */ }
+  return null;
+}
+
+// Noms des ingrédients que la recette CONSOMME (delta négatif) : jamais jetables, même si c'est du cobble.
+function _ingredientNames(bot, recipe) {
+  const items = bot.registry && bot.registry.items;
+  const out = [];
+  if (!items || !recipe || !Array.isArray(recipe.delta)) return out;
+  for (const d of recipe.delta) {
+    if (d && d.count < 0 && items[d.id] && items[d.id].name) out.push(items[d.id].name);
+  }
+  return out;
+}
+
+// Jette UNE pile visée. `tossStack` (case précise) est préféré : `toss(type, null, count)` prélève dans
+// la 1re pile du type, pas forcément celle qu'on a choisie, et ne libérerait alors aucune case.
+async function _tossItem(bot, item) {
+  try {
+    if (typeof bot.tossStack === 'function' && Number.isInteger(item.slot)) { await bot.tossStack(item); return true; }
+    if (typeof bot.toss === 'function') { await bot.toss(item.type, null, item.count); return true; }
+  } catch (e) { /* case bougée, assertion… : on laisse le craft se faire, le contrôle d'effet tranchera */ }
+  return false;
+}
+
+// Libère une case si le résultat du craft n'a nulle part où aller. Rend le NOM de la pile jetée, ou
+// `null` (rien jeté : de la place, pas d'information, rien de jetable, ou jet impossible).
+async function _makeRoom(bot, id, product, recipe, crafts) {
+  const emptySlots = _emptySlots(bot);
+  if (emptySlots !== 0) return null;                    // 1er filtre, sans lire l'inventaire : de la place (ou inconnu)
+  let items = null;
+  try { items = typeof bot.inventory.items === 'function' ? bot.inventory.items() : null; } catch (e) { items = null; }
+  if (!Array.isArray(items)) return null;
+  const perCraft = recipe && recipe.result && Number(recipe.result.count) > 0 ? Number(recipe.result.count) : 1;
+  const need = (Number(crafts) > 0 ? Number(crafts) : 1) * perCraft;
+  const def = bot.registry && bot.registry.items && bot.registry.items[id];
+  if (!needsRoomFor({ emptySlots, items, product, need, stackSize: def && def.stackSize })) return null;
+  const junk = pickJunkToToss(items, { exclude: [product].concat(_ingredientNames(bot, recipe)) });
+  if (!junk) return null;
+  return (await _tossItem(bot, junk)) ? junk.name : null;
+}
+
 // PLANCHES HÉTÉROGÈNES — le blocage du bouclier (world_mn14 : 235 `craft_failed:table_present`,
 // 5 `no_recipe`, 0 succès en 3 h alors que 3 boucliers étaient sortis plus tôt dans le run).
 //
@@ -140,7 +274,7 @@ async function _awaitCraftEffect(bot, itemName, before, sleep) {
 // `reason` n'est renseigné QUE quand le bois était réellement en cause : sur tous les autres
 // chemins le retour de craftItem reste octet pour octet celui d'avant (des tests le figent en
 // deepStrictEqual, et un champ surprise dans un résultat d'échec est une dette, pas un service).
-async function _homogenizePlanks(bot, id, table, sleep) {
+async function _homogenizePlanks(bot, id, table, sleep, freed) {
   // Vieux stub / bot partiel : on ne tente rien plutôt que de planter (contrat inchangé).
   if (typeof bot.recipesAll !== 'function') return { ok: false };
   const items = bot.registry && bot.registry.items;
@@ -162,25 +296,33 @@ async function _homogenizePlanks(bot, id, table, sleep) {
   const plan = planksPlan(inv, need);
   if (plan.action === 'none') return { ok: false };                          // l'échec vient d'ailleurs
   if (plan.action !== 'craft_planks') return { ok: false, reason: plan.reason };
-  const r = await craftItem(bot, { name: plan.plankName, count: plan.logs, _fixPlanks: false, _sleep: sleep });
+  const r = await craftItem(bot, { name: plan.plankName, count: plan.logs, _fixPlanks: false, _sleep: sleep, _freed: freed });
   return r.ok ? { ok: true, reason: 'crafted' } : { ok: false, reason: 'planks_craft_failed' };
 }
 
 // `_fixPlanks: false` = garde-fou anti-récursion pour le craft des planches lui-même. Il est
 // redondant (la recette des planches n'en CONSOMME pas → `plankNeed` rend 0), mais deux crans
 // valent mieux qu'un sur un chemin qui tourne en boucle 3 h dans le noir.
-// `_sleep` = attente injectable du sondage d'effet (tests) ; défaut setTimeout. Même convention
-// « sous-tiret = réservé aux tests / à la récursion » que `_fixPlanks`.
-async function craftItem(bot, { name, count = 1, _fixPlanks = true, _sleep } = {}) {
+// `_sleep` = attente injectable du sondage d'effet (tests) ; défaut setTimeout. `_freed` = tableau
+// qui cumule les piles jetées par la conversion de planches (récursion) et par le craft lui-même.
+// Même convention « sous-tiret = réservé aux tests / à la récursion » que `_fixPlanks`.
+//
+// Retour : { ok:true } | { ok:false, reason } — + `freed: '<nom>'` UNIQUEMENT si une pile a été jetée
+// pour faire de la place (« PLACE POUR LE RÉSULTAT » plus haut ; plusieurs piles → noms séparés par
+// une virgule). craft.js n'a pas d'`emit` : l'information voyage dans le résultat, et un résultat où
+// rien n'a été jeté reste octet pour octet celui d'avant (des tests le figent en deepStrictEqual).
+async function craftItem(bot, { name, count = 1, _fixPlanks = true, _sleep, _freed } = {}) {
   const id = _itemId(bot, name);
   if (id == null) return { ok: false, reason: 'unknown_item' };
   const sleep = typeof _sleep === 'function' ? _sleep : _realSleep;
+  const freed = Array.isArray(_freed) ? _freed : [];
+  const done = (r) => (freed.length ? Object.assign({}, r, { freed: freed.join(',') }) : r);
   const table = _nearestTable(bot);
   let recipes = bot.recipesFor(id, null, 1, table) || [];
   if (!recipes.length && !table) recipes = bot.recipesFor(id, null, 1, null) || []; // recette 2x2 sans table
   if (!recipes.length) {
     if (!_fixPlanks) return { ok: false, reason: 'no_recipe' };
-    const fix = await _homogenizePlanks(bot, id, table, sleep);
+    const fix = await _homogenizePlanks(bot, id, table, sleep, freed);
     if (fix.ok) recipes = bot.recipesFor(id, null, 1, table) || [];
     // ⚠️ `reason` reste EXACTEMENT 'no_recipe' : `craftSmart` (index.js) teste cette chaîne pour
     // décider d'aller chercher une table. Le détail voyage à côté, dans `planks`, et seulement
@@ -188,20 +330,23 @@ async function craftItem(bot, { name, count = 1, _fixPlanks = true, _sleep } = {
     if (!recipes.length) {
       const out = { ok: false, reason: 'no_recipe' };
       if (fix.reason) out.planks = fix.reason;
-      return out;
+      return done(out);
     }
   }
   // Le produit est celui DEMANDÉ : `recipesFor(id, …)` ne rend que des recettes qui le fabriquent.
-  // Lu AVANT le craft — un stock préexistant ne doit pas passer pour un effet.
   const produced = String(name).toLowerCase();
+  // De la place pour le résultat AVANT de crafter (inventaire plein → mineflayer le jetterait au sol).
+  const tossed = await _makeRoom(bot, id, produced, recipes[0], count);
+  if (tossed) freed.push(tossed);
+  // Lu AVANT le craft — un stock préexistant ne doit pas passer pour un effet.
   const before = _countOf(bot, produced);
   try { await bot.craft(recipes[0], count, table || undefined); }
-  catch (e) { return { ok: false, reason: 'craft_failed' }; }
+  catch (e) { return done({ ok: false, reason: 'craft_failed' }); }
   // Inventaire illisible (vieux stub partiel) : rien à constater, contrat historique `{ok:true}`.
-  if (before === null) return { ok: true };
-  return (await _awaitCraftEffect(bot, produced, before, sleep))
+  if (before === null) return done({ ok: true });
+  return done((await _awaitCraftEffect(bot, produced, before, sleep))
     ? { ok: true }
-    : { ok: false, reason: 'craft_no_effect' };
+    : { ok: false, reason: 'craft_no_effect' });
 }
 
 // Décision PURE : que faire quand un craft 3×3 a échoué ?
@@ -224,4 +369,7 @@ function tablePlan({ tableInReach = false, tableSeen = false, hasTableItem = fal
   return 'craft_then_place';
 }
 
-module.exports = { craftItem, _nearestTable, tableKey, tablePlan, TABLE_REACH, TABLE_SEEK, EFFECT_POLL_MS, EFFECT_TIMEOUT_MS };
+module.exports = {
+  craftItem, _nearestTable, tableKey, tablePlan, TABLE_REACH, TABLE_SEEK, EFFECT_POLL_MS, EFFECT_TIMEOUT_MS,
+  pickJunkToToss, needsRoomFor, COBBLE_KEEP, JUNK_TIERS,
+};
