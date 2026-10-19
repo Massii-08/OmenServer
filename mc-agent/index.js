@@ -30,6 +30,7 @@ const { createMemory } = require('./memory');
 const { bestWeapon, bestToolFor } = require('./tools');
 const { shouldSprint, applyPathfinderBounds, withTempMovements } = require('./movement');   // sprint « vrai joueur » ON par défaut (Massii 2026-06-22) + bornage A* (anti-OOM 2026-07-25)
 const { installBridgeGuard } = require('./bridges');   // pas de pont au-dessus d'une vallée / de l'eau (Massii 19/10)
+const { copySafetySettings, createMovesKeeper } = require('./pluginMoves');   // fuite de Movements des plugins collect/pvp (19/10)
 const { createGoalTrace, installGoalTrace } = require('./goalTrace');   // DIAG GoalChanged : qui pose un but pendant un goto ? (aucun effet sur le bot)
 const vec3Lib = require('vec3'); // watchdog anti-jam (blocs barrants)
 const { gather, woodExpeditionCount } = require('./skills/gather');
@@ -76,6 +77,7 @@ const { recordOceanStuck } = require('./oceanEscalate'); // baie humide PERSISTA
 // n'était jamais atteinte — c'est pourquoi la migration n'a jamais tiré de la journée.
 const {
   zoneVerdict, verdictTelemetry, pickMigrationTarget, migrationLeg, legHeading, LEG_STUCK_MIN, legDigRetry, legIsGood, minDistFor,
+  ironUnits, ironSampleGain,
   zoneFailureKind, zoneStateInit, zoneStateLoad, zoneStateAfterMigration, MAX_LEGS, MIGRATE_MIN_PROGRESS, LOADED_RADIUS,
   LOGS_NOT_FOUND_MAX, windowAdd, windowSum, windowPrune, ZONE_WINDOW_MS,
   zoneStateAfterFailedMigration, migrationEarlyExitOk, pruneFailedTargets, migrationArrivalOk,
@@ -371,6 +373,11 @@ let panicInFlight = false;    // garde de ré-entrée onPanic. DOIT rester au ni
 // déclarée dans onSpawn, elle lèverait une ReferenceError au 1er tick (le smoke test ne le voit pas).
 const _goalTrace = createGoalTrace({});
 let _goalTraceInstalled = false;   // le wrapper ne se pose qu'UNE fois par process (cf. onSpawn)
+// FUITE DE MOVEMENTS (19/10, cf. pluginMoves.js) : collect/pvp posent leur Movements d'usine et ne
+// rendent jamais la nôtre. Le gardien se pose UNE fois par process (envelopper deux fois collect, ou
+// écouter deux fois stoppedAttacking, doublerait les restaurations). NIVEAU MODULE, comme ses sœurs.
+let _pluginMovesInstalled = false;
+let _movesKeeper = null;
 setInterval(() => {
   try {
     const d = _goalTrace.drain();
@@ -2004,17 +2011,18 @@ function noteZoneFailure(goalName, reason) {
 // Rendement fer : mesuré par ÉCHANTILLONNAGE de l'inventaire (branchMine n'émet pas par minerai,
 // et un event par bloc serait un emballement). On ne compte que les HAUSSES : un dépôt à la base
 // fait baisser le stock sans que la zone y soit pour rien.
+// ⚠️ SEULE SOURCE du fer de zone (fix 19/10) : le ramassage opportuniste ajoutait aussi +1 par
+// minerai cassé, puis cet échantillon recomptait le même brut arrivé en poche — chaque fer ramassé
+// comptait DOUBLE (rendement gonflé, verdict `exhausted` retardé). Décision pure : zone.ironSampleGain.
 let _lastIronSample = null;
 function sampleZoneIron() {
   try {
-    const inv = buildCtxInv(bot);
-    const n = (inv.raw_iron || 0) + (inv.iron_ingot || 0);
-    if (_lastIronSample != null && n > _lastIronSample) {
-      const gained = n - _lastIronSample;
-      _zoneIronMined += gained;
-      _zoneIronWin = windowAdd(_zoneIronWin, gained, Date.now());   // le RENDEMENT courant
+    const r = ironSampleGain(_lastIronSample, ironUnits(buildCtxInv(bot)));
+    if (r.gained > 0) {
+      _zoneIronMined += r.gained;
+      _zoneIronWin = windowAdd(_zoneIronWin, r.gained, Date.now());   // le RENDEMENT courant
     }
-    _lastIronSample = n;
+    _lastIronSample = r.last;
   } catch (e) { /* best-effort */ }
 }
 
@@ -5045,6 +5053,31 @@ async function onSpawn() {
       }
       emit(Object.assign({ type: 'bridge_guard_on' }, on));
     }
+    // LA FUITE DE MOVEMENTS (19/10, décision : on la corrige) : `collectBlock.collect` et `pvp.attack`
+    // posent LEUR Movements d'usine et ne rendent JAMAIS la nôtre — après la 1re récolte, tous les
+    // trajets suivants partaient à placeCost 1 (probablement LA cause des ponts). Deux parades :
+    //   1. nos réglages de sécurité RECOPIÉS dans leurs Movements (placeCost, liquidCost, replaceables
+    //      sans eau/lave, échafaudage, blocs à éviter, chute max, parkour, tour, canDig) — copies
+    //      profondes, aucun Set/tableau partagé : collectBlock remet dontCreateFlow /
+    //      dontMineUnderFallingBlock à false chez LUI à chaque collect, ça ne touche pas la nominale ;
+    //   2. la nominale RENDUE à la fin de chaque usage (collect enveloppé, `stoppedAttacking`), jamais
+    //      pendant qu'un autre collect ou combat court. `_mcaMoves` = la Movements active légitime,
+    //      fenêtre withTempMovements comprise : pas de conflit avec elle.
+    // Le garde-fou anti-pont reste posé sur les trois (ci-dessus).
+    if (!_pluginMovesInstalled) {
+      _pluginMovesInstalled = true;
+      const copied = {};
+      try { copied.collectBlock = copySafetySettings(moves, bot.collectBlock && bot.collectBlock.movements).length; } catch (e) { copied.collectBlock = 0; }
+      try { copied.pvp = copySafetySettings(moves, bot.pvp && bot.pvp.movements).length; } catch (e) { copied.pvp = 0; }
+      let collect = false;
+      let pvpWatch = false;
+      try {
+        _movesKeeper = createMovesKeeper({ bot, emit });
+        collect = _movesKeeper.wrapCollect(bot.collectBlock);
+        pvpWatch = _movesKeeper.watchPvp(bot);
+      } catch (e) { /* best-effort : sans gardien, on retombe sur l'ancien comportement */ }
+      emit({ type: 'moves_keeper_on', collect, pvp: pvpWatch, copied });
+    }
     bot.pathfinder.setMovements(moves);
     // ANTI-OOM (crash live 25/07 : NethBot2 → 2 Go de heap en 38 s → FATAL heap out of memory,
     // juste après `survival:flee`). mineflayer-pathfinder livre `searchRadius = -1` = espace de
@@ -6191,10 +6224,11 @@ setInterval(async () => {
       if (!scopeNow().run) break;                        // migration lancée pendant l'equip : pas de dig sous ses jambes
       try {
         await withTimeout(bot.dig(blk), 12000, () => { try { bot.stopDigging(); } catch (e) {} });
-        emit({ type: 'ore_grabbed', ore: blk.name, y: Math.round(blk.position.y) });
-        if (/iron/i.test(String(blk.name))) {
-          _zoneIronMined += 1;                                     // rendement de la zone courante
-          _zoneIronWin = windowAdd(_zoneIronWin, 1, Date.now());   // ... et sa fenêtre glissante
+        // ⚠️ withTimeout ne rejette JAMAIS : un dig raté (sorti de portée, interrompu) rendait {ok:false}
+        // en silence et l'event tombait quand même. On relit le bloc (fix 19/10). Le fer, lui, ne se
+        // compte plus ici : sampleZoneIron le voit arriver dans l'inventaire (une seule source).
+        if (oregrab.oreGone(blk, bot.blockAt(blk.position))) {
+          emit({ type: 'ore_grabbed', ore: blk.name, y: Math.round(blk.position.y) });
         }
       } catch (e) { /* best-effort : le bloc peut disparaître ou être hors ligne de vue */ }
       break;                                             // un seul par passe : on reste ponctuel

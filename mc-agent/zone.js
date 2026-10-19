@@ -491,6 +491,31 @@ function legDigRetry({ moved, cancelled = false } = {}) {
   return moved < LEG_STUCK_MIN;
 }
 
+// ─── FER DE ZONE : UNE SEULE SOURCE, L'INVENTAIRE (défaut vu le 19/10) ───────────────────────────
+// Le ramassage opportuniste ajoutait +1 par minerai de fer cassé, puis l'échantillonnage recomptait
+// le même `raw_iron` en le voyant arriver dans l'inventaire : chaque fer ramassé comptait DOUBLE,
+// d'où un rendement de zone gonflé (et un verdict `exhausted` retardé d'autant). On ne garde que
+// l'inventaire : il voit TOUT le fer gagné (ramassage, branch-mine, grotte), une seule fois.
+
+/** Fer porté, en unités de minerai : brut + lingots, les blocs comptent 9. (PUR)
+ *  Invariant au craft et à la fonte (3 bruts → 3 lingots, 9 lingots → 1 bloc : même total), donc
+ *  ces conversions ne passent jamais pour un rendement. */
+function ironUnits(inv) {
+  if (!inv || typeof inv !== 'object') return 0;
+  const n = (k) => (Number.isFinite(inv[k]) && inv[k] > 0 ? inv[k] : 0);
+  return n('raw_iron') + n('iron_ingot') + 9 * (n('raw_iron_block') + n('iron_block'));
+}
+
+/** Fer gagné depuis l'échantillon précédent. (PUR)
+ *  Seules les HAUSSES comptent : un dépôt à la base ou un craft d'armure fait baisser le stock sans
+ *  que la zone y soit pour rien, et la hausse suivante repart de la nouvelle base. Premier
+ *  échantillon (`last` null) = simple référence ; lecture illisible = aucun gain, référence gardée. */
+function ironSampleGain(last, current) {
+  if (typeof current !== 'number' || !Number.isFinite(current) || current < 0) return { gained: 0, last };
+  if (typeof last !== 'number' || !Number.isFinite(last)) return { gained: 0, last: current };
+  return { gained: Math.max(0, current - last), last: current };
+}
+
 // ─── L'ÉTAT DE ZONE DOIT SURVIVRE AU PROCESS (cause racine trouvée le 27/07 au soir) ────────────
 //
 // La migration n'a JAMAIS tiré de la journée, alors que la flotte était visiblement noyée
@@ -638,6 +663,7 @@ function legIsGood({ treesNear = 0, inWater = false, biome = null } = {}) {
 
 module.exports = {
   zoneVerdict, verdictTelemetry, pickMigrationTarget, migrationLeg, legHeading, LEG_STUCK_MIN, legDigRetry, legIsGood, isWetBiome, minDistFor, zoneFailureKind,
+  ironUnits, ironSampleGain,
   zoneStateInit, zoneStateLoad, zoneStateAfterMigration, zoneStateAfterFailedMigration,
   migrationEarlyExitOk, pruneFailedTargets, FAR_EARLY_EXIT_FRACTION, MIGRATE_ARRIVED_RADIUS,
   migrationArrivalOk, ARRIVAL_DEPLETED_RADIUS,

@@ -175,9 +175,22 @@ function mayApproach(scope, oreName) {
   return !!scope.approach || (!!scope.detour && isDetourWorthy(oreName));
 }
 
+/**
+ * Le dig a-t-il RÉELLEMENT enlevé le minerai ? (PUR)
+ * `withTimeout` ne rejette jamais : un dig raté (bot sorti de portée, minage interrompu) rend
+ * `{ok:false}` sans exception — l'event `ore_grabbed` tombait quand même. On relit le bloc : il doit
+ * être devenu AUTRE CHOSE (air, eau qui a coulé dedans, gravier tombé). Relecture impossible (chunk
+ * déchargé) → non : on ne compte pas ce qu'on n'a pas vu.
+ */
+function oreGone(before, after) {
+  if (!before || !after) return false;
+  if (before.type != null && after.type != null) return after.type !== before.type;
+  return !!before.name && !!after.name && after.name !== before.name;
+}
+
 module.exports = {
   WANTED_ORES, isWantedOre, canHarvest, shouldGrab,
   VALUABLE_DROPS, isValuableDrop, DETOUR_ORES, isDetourWorthy,
   oreStepPlan, ORE_STEP_MAX, ORE_REACH,
-  grabScope, mayApproach, REACH_SCAN,
+  grabScope, mayApproach, REACH_SCAN, oreGone,
 };

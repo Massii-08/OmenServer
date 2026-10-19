@@ -1154,3 +1154,68 @@ test('legDigRetry : position illisible → pas de repli (on ne creuse pas à l a
   assert.strictEqual(legDigRetry({}), false);
   assert.strictEqual(legDigRetry(), false);
 });
+
+// ─── FER DE ZONE : UNE SEULE SOURCE, L'INVENTAIRE (défaut vu le 19/10) ───────────────────────────
+// Le ramassage opportuniste ajoutait +1 par minerai de fer cassé, PUIS sampleZoneIron recomptait le
+// même `raw_iron` en le voyant arriver dans l'inventaire : chaque fer ramassé comptait double, ce qui
+// gonflait le rendement de zone (et retardait d'autant le verdict `exhausted`).
+const { ironUnits, ironSampleGain } = require('./zone');
+
+test('ironUnits : brut + lingots, et les blocs comptent pour 9 (invariant au craft / à la fonte)', () => {
+  assert.strictEqual(ironUnits({}), 0);
+  assert.strictEqual(ironUnits({ raw_iron: 3, iron_ingot: 2 }), 5);
+  assert.strictEqual(ironUnits({ raw_iron_block: 1, iron_block: 2 }), 27);
+  // fondre 3 bruts en 3 lingots, ou 9 lingots en 1 bloc : la quantité de fer ne bouge pas
+  assert.strictEqual(ironUnits({ raw_iron: 3 }), ironUnits({ iron_ingot: 3 }));
+  assert.strictEqual(ironUnits({ iron_ingot: 9 }), ironUnits({ iron_block: 1 }));
+  assert.strictEqual(ironUnits(null), 0);
+});
+
+test('ironSampleGain : seules les HAUSSES comptent ; le 1er échantillon ne fait que poser la référence', () => {
+  assert.deepStrictEqual(ironSampleGain(null, 5), { gained: 0, last: 5 });
+  assert.deepStrictEqual(ironSampleGain(5, 8), { gained: 3, last: 8 });
+  assert.deepStrictEqual(ironSampleGain(8, 2), { gained: 0, last: 2 }, 'dépôt / craft d armure : pas un rendement négatif');
+  assert.deepStrictEqual(ironSampleGain(2, 4), { gained: 2, last: 4 }, 'la hausse suivante repart de la nouvelle base');
+});
+
+test('ironSampleGain : le même fer n est compté qu une fois, quel que soit le nombre d échantillons', () => {
+  let last = null;
+  let total = 0;
+  for (const n of [0, 1, 1, 1, 2, 2]) { const r = ironSampleGain(last, n); total += r.gained; last = r.last; }
+  assert.strictEqual(total, 2);
+});
+
+test('ironSampleGain : lecture illisible → aucun gain, référence conservée', () => {
+  assert.deepStrictEqual(ironSampleGain(4, NaN), { gained: 0, last: 4 });
+  assert.deepStrictEqual(ironSampleGain(4, -1), { gained: 0, last: 4 });
+  assert.deepStrictEqual(ironSampleGain(4, undefined), { gained: 0, last: 4 });
+});
+
+// ─── Câblage dans index.js ───────────────────────────────────────────────────────────────────────
+const _fs = require('node:fs');
+const _path = require('node:path');
+const _src = _fs.readFileSync(_path.join(__dirname, 'index.js'), 'utf8');
+
+test('index.js : le fer de zone n a qu UN point d entrée — sampleZoneIron (inventaire)', () => {
+  assert.strictEqual((_src.match(/_zoneIronMined \+=/g) || []).length, 1, 'un seul site qui ajoute au cumul');
+  assert.strictEqual((_src.match(/_zoneIronWin = windowAdd\(/g) || []).length, 1, 'un seul site qui alimente la fenêtre');
+  const fn = _src.match(/function sampleZoneIron\(\) \{[\s\S]*?\n\}\n/);
+  assert.ok(fn, 'sampleZoneIron introuvable');
+  assert.match(fn[0], /_zoneIronMined \+=/);
+  assert.match(fn[0], /_zoneIronWin = windowAdd\(/);
+  assert.match(fn[0], /ironSampleGain\(/);
+  assert.match(fn[0], /ironUnits\(/);
+});
+
+test('index.js : migrationLegTo retente la jambe EN CREUSANT via legDigRetry, event une fois par migration', () => {
+  const fn = _src.match(/async function migrationLegTo\([\s\S]*?\n\}\n/);
+  assert.ok(fn, 'migrationLegTo introuvable');
+  const body = fn[0];
+  assert.match(body, /withTempMovements\(bot, Movements, \{ canDig: false \}, walkLeg\)/);
+  assert.match(body, /legDigRetry\(\{ moved, cancelled: !!\(tok && tok\.cancelled\) \}\)/);
+  assert.match(body, /withTempMovements\(bot, Movements, \{ canDig: true \}, walkLeg\)/);
+  assert.match(body, /type: 'zone_migration_leg_dig'/);
+  assert.match(body, /_legDigEmitted\.has\(tok\)/);
+  assert.ok(body.indexOf('canDig: false }, walkLeg') < body.indexOf('canDig: true }, walkLeg'), 'sans creuser D ABORD');
+  assert.match(_src, /^const _legDigEmitted = new WeakSet\(\);/m, 'niveau MODULE (piège #56)');
+});

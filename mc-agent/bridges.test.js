@@ -354,3 +354,19 @@ test('withTempMovements hérite du garde-fou : MÊME tableau exclusionAreasPlace
   });
   assert.strictEqual(tower, 'success');
 });
+
+// ─── Câblage dans index.js (un test qui injecte ne prouve pas qu'on BRANCHE, pièges #61/#68b) ───
+test('index.js : garde-fou posé sur les 3 Movements (nominale, collectBlock, pvp) avant la pose', () => {
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const src = fs.readFileSync(path.join(__dirname, 'index.js'), 'utf8');
+  assert.match(src, /require\('\.\/bridges'\)/);
+  const at = src.indexOf("emit(Object.assign({ type: 'bridge_guard_on' }, on));");
+  assert.ok(at > 0, 'event bridge_guard_on introuvable');
+  const block = src.slice(at - 900, at);
+  assert.match(block, /\['nominal', moves\]/);
+  assert.match(block, /\['collectBlock', bot\.collectBlock && bot\.collectBlock\.movements\]/);
+  assert.match(block, /\['pvp', bot\.pvp && bot\.pvp\.movements\]/);
+  assert.match(block, /installBridgeGuard\(m, bridgeAt\)/);
+  assert.ok(at < src.indexOf('bot.pathfinder.setMovements(moves);', at), 'garde-fou posé AVANT la pose de la nominale');
+});

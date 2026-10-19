@@ -207,3 +207,54 @@ test('mayApproach : contourner une paroi = un goto → seulement sans autre traj
   assert.strictEqual(mayApproach(mig, 'diamond_ore'), false);
   assert.strictEqual(mayApproach(null, 'diamond_ore'), false);
 });
+
+// ─── ore_grabbed SEULEMENT si le bloc a vraiment disparu (défaut vu le 19/10) ───────────────────
+// `withTimeout` ne rejette jamais : un dig raté (bot parti hors de portée, minage interrompu)
+// rendait `{ok:false}`, ignoré — l'event et le compteur de fer tombaient quand même.
+const { oreGone } = require('./oregrab');
+
+test('oreGone : le bloc est devenu autre chose (air, eau qui coule, gravier tombé) → miné', () => {
+  const ore = { type: 21, name: 'iron_ore' };
+  assert.strictEqual(oreGone(ore, { type: 0, name: 'air' }), true);
+  assert.strictEqual(oreGone(ore, { type: 35, name: 'water' }), true);
+  assert.strictEqual(oreGone(ore, { type: 13, name: 'gravel' }), true);
+});
+
+test('oreGone : le minerai est toujours là → PAS miné (dig raté)', () => {
+  assert.strictEqual(oreGone({ type: 21, name: 'iron_ore' }, { type: 21, name: 'iron_ore' }), false);
+});
+
+test('oreGone : relecture impossible (chunk déchargé) → on ne compte pas ce qu on n a pas vu', () => {
+  assert.strictEqual(oreGone({ type: 21, name: 'iron_ore' }, null), false);
+  assert.strictEqual(oreGone(null, { type: 0, name: 'air' }), false);
+  assert.strictEqual(oreGone(), false);
+});
+
+// ─── Câblage dans index.js (un test qui injecte ne prouve pas qu'on BRANCHE, pièges #61/#68b) ───
+const _fs = require('node:fs');
+const _path = require('node:path');
+const _src = _fs.readFileSync(_path.join(__dirname, 'index.js'), 'utf8');
+
+test('index.js : le timer de ramassage consulte grabScope (migration, trajet en cours, reliquat du nôtre)', () => {
+  assert.match(_src, /oregrab\.grabScope\(\{\s*migrating: _migrating,\s*goal: bot\.pathfinder \? bot\.pathfinder\.goal : null,\s*ownGoal: _oreGrabGoal,/);
+  assert.match(_src, /if \(!scope\.run\) return;/);
+  assert.match(_src, /^let _oreGrabGoal = null;/m, '_oreGrabGoal lu par un timer : NIVEAU MODULE (piège #56)');
+  assert.match(_src, /maxDistance: scope\.scan/);
+  assert.match(_src, /maxDist: scope\.maxDist/);
+  assert.match(_src, /if \(!scope\.drops\) return;/);
+  assert.match(_src, /oregrab\.mayApproach\(scopeNow\(\), blk\.name\)/);
+  // tous les goto du ramassage passent par oreGrabGoto (sinon grabScope ne reconnaît pas notre reliquat)
+  const t0 = _src.indexOf('setInterval(async () => {\n  if (_oreGrabBusy) return;');
+  const t1 = _src.indexOf('}, 800);', t0);
+  assert.ok(t0 > 0 && t1 > t0, 'timer de ramassage introuvable');
+  assert.strictEqual(/bot\.pathfinder\.goto\(/.test(_src.slice(t0, t1)), false, 'goto direct dans le timer : passer par oreGrabGoto');
+});
+
+test('index.js : ore_grabbed émis UNE fois, seulement si le bloc a disparu, et sans compter le fer', () => {
+  assert.strictEqual((_src.match(/type: 'ore_grabbed'/g) || []).length, 1);
+  const at = _src.indexOf("type: 'ore_grabbed'");
+  const before = _src.slice(at - 400, at);
+  assert.match(before, /oregrab\.oreGone\(blk, bot\.blockAt\(blk\.position\)\)/, 'garde oreGone juste avant l event');
+  const after = _src.slice(at, at + 400);
+  assert.strictEqual(/_zoneIron(Mined|Win)/.test(after), false, 'le fer se compte à l inventaire (sampleZoneIron), pas ici');
+});
