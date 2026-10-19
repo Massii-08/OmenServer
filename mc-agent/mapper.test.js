@@ -435,6 +435,235 @@ test('runMapper : 2 jambes ratées d\'affilée → 3e jambe COURTE (8-24 blocs) 
   assert.ok(attempts[2] <= 24 + 1e-6, `3e jambe ${attempts[2].toFixed(0)} blocs — pas raccourcie`);
 });
 
+// ─── ALTITUDE DES JAMBES : un waypoint SANS y = « altitude libre » (terrain vallonné) ───────────
+// Mesuré live sur world_ax5 (monde montagneux, spawn vers y=100) : les 2 cartographes restaient
+// collés au spawn (< 40 blocs après 15 min) — `mapper_turn unreachable` en rafale (1 000-2 400/h),
+// `mapper_relocate trapped`, puis `autonomous_stalled jam_loop`. Cause : chaque jambe visait un
+// `GoalNear(x, y COURANT, z, 8)`, c'est-à-dire un but 3D à l'altitude où se tient le bot. Dès que la
+// surface à 30-160 blocs est 10-40 blocs plus haut ou plus bas, aucun nœud standable n'entre dans le
+// rayon 3D → NoPath INSTANTANÉ (le même bug que la migration de zone, déjà corrigé en `GoalNearXZ`).
+// Contrat : waypoint SANS y → altitude libre (but XZ) ; AVEC y → altitude RÉELLE (la remontée en
+// surface, dont le y sort de `surfaceYAt`) → but 3D.
+
+test('runMapper : jambe NORMALE → waypoint SANS y (l’altitude courante n’est qu’une supposition)', async () => {
+  const bot = fakeMapperBot();
+  const gotos = [];
+  const token = { cancelled: false };
+  await runMapper(bot, {
+    worldKey: 'overworld',
+    emit: () => {},
+    goto: async (wp) => {
+      gotos.push(wp);
+      bot.entity.position = vec3(wp.x, 64, wp.z);
+      if (gotos.length >= 5) token.cancelled = true;
+    },
+    sleep: async () => {},
+  }, token);
+  assert.ok(gotos.length >= 5, `seulement ${gotos.length} jambes`);
+  for (const wp of gotos) {
+    assert.ok(Number.isFinite(wp.x) && Number.isFinite(wp.z), 'x/z doivent rester des nombres finis');
+    assert.ok(wp.y == null, `jambe avec y=${wp.y} : but 3D inatteignable dès que la surface cible est à +/-10 blocs`);
+  }
+});
+
+test('runMapper frontier : jambe vers une cellule frontière → waypoint SANS y', async () => {
+  const bot = fakeMapperBot();
+  const gotos = [];
+  const token = { cancelled: false };
+  await runMapper(bot, {
+    worldKey: 'overworld', memory: { worlds: { overworld: { biomes: [] } } }, frontier: true,
+    emit: () => {},
+    goto: async (wp) => {
+      gotos.push(wp);
+      bot.entity.position = vec3(wp.x, 64, wp.z);
+      if (gotos.length >= 4) token.cancelled = true;
+    },
+    sleep: async () => {},
+  }, token);
+  assert.ok(gotos.length >= 4, `seulement ${gotos.length} jambes`);
+  // sanity : on est bien dans la branche FRONTIÈRE (la cible est le CENTRE d'une cellule 128 → x,z ≡ 64)
+  assert.strictEqual(((gotos[0].x % 128) + 128) % 128, 64, 'la 1re jambe n’est pas une cible frontière');
+  for (const wp of gotos) {
+    assert.ok(wp.y == null, `jambe frontière avec y=${wp.y}`);
+  }
+});
+
+test('runMapper : traversée d’ÎLE → jambe longue SANS y (cap vers l’autre rive)', async () => {
+  const bot = fakeMapperBot();
+  bot.blockAt = (p) => {                       // île : eau partout au-delà de 10 blocs
+    if (p.y > 63) return { name: 'air', boundingBox: 'empty', biome: { name: 'plains', id: 1 } };
+    const d = Math.sqrt(p.x * p.x + p.z * p.z);
+    if (d > 10) return { name: 'water', boundingBox: 'empty', biome: { name: 'ocean', id: 0 } };
+    return { name: 'stone', boundingBox: 'block', biome: { name: 'plains', id: 1 } };
+  };
+  const gotos = [];
+  const token = { cancelled: false };
+  await runMapper(bot, {
+    worldKey: 'overworld',
+    emit: (e) => { if (e.type === 'mapper_crossing') token.cancelled = true; },
+    goto: async (wp) => { gotos.push(wp); },
+    sleep: async () => {},
+  }, token);
+  const cross = gotos[gotos.length - 1];
+  assert.ok(cross, 'aucune jambe de traversée');
+  assert.ok(Math.hypot(cross.x, cross.z) >= 100 - 1e-6, 'sanity : ce n’est pas la jambe de traversée (≥100)');
+  assert.ok(cross.y == null, `traversée avec y=${cross.y}`);
+});
+
+test('runMapper : RELOCALISATION (N jambes inatteignables) → jambe longue SANS y', async () => {
+  const bot = fakeMapperBot();
+  const gotos = [];
+  let relocating = false;                      // vrai dès que mapper_relocate a été émis (juste avant la jambe)
+  const token = { cancelled: false };
+  await runMapper(bot, {
+    worldKey: 'overworld',
+    emit: (e) => { if (e.type === 'mapper_relocate') relocating = true; },
+    goto: async (wp) => {
+      gotos.push({ wp, relocating });
+      if (relocating) token.cancelled = true;
+      throw new Error('no path');              // bot muré : toutes les jambes sont rejetées
+    },
+    sleep: async () => {},
+  }, token);
+  const reloc = gotos.find((g) => g.relocating);
+  assert.ok(reloc, 'jamais de jambe de relocalisation');
+  assert.ok(Math.hypot(reloc.wp.x, reloc.wp.z) >= 100 - 1e-6, 'sanity : ce n’est pas la jambe de relocalisation (≥100)');
+  assert.ok(gotos.length >= 7, `${gotos.length} jambes seulement : les 6 jambes normales qui précèdent n’ont pas été vues`);
+  for (const g of gotos) assert.ok(g.wp.y == null, `jambe (relocating=${g.relocating}) avec y=${g.wp.y}`);
+});
+
+test('runMapper : la remontée en SURFACE garde son y RÉEL — seules les jambes devinées perdent le leur', async () => {
+  const bot = fakeMapperBot();
+  bot.entity.position = vec3(0, 40, 0);        // enterré : le dessus de la pierre est à y=63 → surface visée = 64
+  const gotos = [];
+  const token = { cancelled: false };
+  await runMapper(bot, {
+    worldKey: 'overworld',
+    emit: () => {},
+    goto: async (wp) => {
+      gotos.push(wp);
+      bot.entity.position = vec3(wp.x, wp.y != null ? wp.y : 64, wp.z);
+      if (gotos.length >= 3) token.cancelled = true;
+    },
+    sleep: async () => {},
+  }, token);
+  assert.ok(gotos.length >= 3);
+  assert.strictEqual(gotos[0].y, 64, 'la remontée doit viser top+1 avec son vrai y (but 3D)');
+  for (const wp of gotos.slice(1)) assert.ok(wp.y == null, `jambe suivante avec y=${wp.y}`);
+});
+
+test('runMapper (goto PAR DÉFAUT) : waypoint sans y → GoalNearXZ (rayon 8), jamais un GoalNear 3D', async () => {
+  const { goals } = require('mineflayer-pathfinder');
+  const bot = fakeMapperBot();
+  const seen = [];
+  const token = { cancelled: false };
+  bot.pathfinder.goto = async (goal) => {      // stub : capture le BUT réellement construit
+    seen.push(goal);
+    bot.entity.position = vec3(goal.x, 64, goal.z);
+    if (seen.length >= 3) token.cancelled = true;
+  };
+  await runMapper(bot, { worldKey: 'overworld', emit: () => {}, sleep: async () => {} }, token);
+  assert.ok(seen.length >= 3, `seulement ${seen.length} buts`);
+  for (const g of seen) {
+    assert.ok(g instanceof goals.GoalNearXZ, `but ${g.constructor.name} : une jambe devinée doit viser GoalNearXZ`);
+    assert.ok(!(g instanceof goals.GoalNear), 'GoalNear 3D interdit pour une jambe sans y');
+    assert.strictEqual(g.rangeSq, 64, 'rayon 8 (rangeSq 64) conservé');
+    assert.ok(Number.isFinite(g.x) && Number.isFinite(g.z), 'x/z du but doivent être finis (pas NaN)');
+    assert.strictEqual(g.y, undefined, 'un but XZ ne porte aucun y');
+  }
+});
+
+test('runMapper (goto PAR DÉFAUT) : la remontée en surface (y réel) reste un GoalNear 3D, les jambes suivantes passent en XZ', async () => {
+  const { goals } = require('mineflayer-pathfinder');
+  const bot = fakeMapperBot();
+  bot.entity.position = vec3(0, 40, 0);        // enterré → 1re jambe = remontée
+  const seen = [];
+  const token = { cancelled: false };
+  bot.pathfinder.goto = async (goal) => {
+    seen.push(goal);
+    bot.entity.position = vec3(goal.x, goal.y != null ? goal.y : 64, goal.z);
+    if (seen.length >= 3) token.cancelled = true;
+  };
+  await runMapper(bot, { worldKey: 'overworld', emit: () => {}, sleep: async () => {} }, token);
+  assert.ok(seen.length >= 3);
+  assert.ok(seen[0] instanceof goals.GoalNear, `remontée : ${seen[0].constructor.name} au lieu de GoalNear 3D`);
+  assert.strictEqual(seen[0].y, 64, 'la remontée garde son y réel (top+1)');
+  assert.strictEqual(seen[0].rangeSq, 64);
+  for (const g of seen.slice(1)) {
+    assert.ok(g instanceof goals.GoalNearXZ, `jambe suivante : ${g.constructor.name}`);
+  }
+});
+
+test('runMapper (goto PAR DÉFAUT) : terrain VALLONNÉ → le mapper PROGRESSE au lieu de s’enliser en `unreachable`', async () => {
+  // MODÈLE MINIMAL du pathfinder (ce n'est PAS le vrai) : un but est atteignable ssi une case de
+  // SURFACE — le seul endroit où l'on se tient — satisfait `goal.isEnd`. Les vraies classes de buts
+  // servent telles quelles : 3D contre XZ se joue donc exactement comme dans mineflayer-pathfinder
+  // (cf. le diagnostic de `migrationLegTo` : « aucun nœud standable n'entre dans le rayon 3D »).
+  // Relief : bandes de 32 blocs alternant plaine (surface y=64) et plateau (y=94, +30).
+  const surfaceAt = (x) => 64 + (((Math.floor(x / 32) % 2) + 2) % 2) * 30;
+  const mulberry32 = (a) => () => {            // rng déterministe : le test ne dépend pas du hasard
+    a |= 0; a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+  const bot = fakeMapperBot();
+  bot.entity.position = vec3(0.5, surfaceAt(0) + 1, 0.5);
+  bot.blockAt = (p) => (p.y > surfaceAt(p.x)
+    ? { name: 'air', boundingBox: 'empty', biome: { name: 'plains', id: 1 } }
+    : { name: 'stone', boundingBox: 'block', biome: { name: 'plains', id: 1 } });
+  bot.pathfinder.goto = async (goal) => {
+    let best = null;
+    for (let dx = -8; dx <= 8; dx++) {
+      for (let dz = -8; dz <= 8; dz++) {
+        const node = { x: goal.x + dx, y: surfaceAt(goal.x + dx) + 1, z: goal.z + dz };
+        const d = dx * dx + dz * dz;
+        if (goal.isEnd(node) && (!best || d < best.d)) best = { node, d };
+      }
+    }
+    if (!best) throw new Error('NoPath');
+    bot.entity.position = vec3(best.node.x + 0.5, best.node.y, best.node.z + 0.5);
+  };
+  const events = [];
+  let arrivals = 0;
+  const token = { cancelled: false };
+  await runMapper(bot, {
+    worldKey: 'overworld',
+    rng: mulberry32(7),
+    emit: (e) => { events.push(e); if (events.length > 600) token.cancelled = true; },
+    onArrive: async () => { if (++arrivals >= 12) token.cancelled = true; },
+    sleep: async () => {},
+  }, token);
+  const unreachable = events.filter((e) => e.type === 'mapper_turn' && e.reason === 'unreachable').length;
+  assert.strictEqual(unreachable, 0, `${unreachable} jambes « unreachable » : le but dépend encore de l’altitude courante`);
+  assert.ok(arrivals >= 12, `seulement ${arrivals} arrivées sur terrain vallonné`);
+  const p = bot.entity.position;
+  assert.ok(Math.hypot(p.x, p.z) > 100, `le mapper n’a progressé que de ${Math.hypot(p.x, p.z).toFixed(0)} blocs`);
+});
+
+test('index.js : le goto branché sur runMapper applique la MÊME règle (y absent → GoalNearXZ)', () => {
+  // Garde-fou de CÂBLAGE (classe #61/#64). index.js est trop gros pour être exécuté ici, et un `goto`
+  // qui construirait encore `GoalNear(wp.x, wp.y, …)` avec un y absent ferait `Math.floor(undefined)` =
+  // NaN : la correction de mapper.js serait MORTE en prod (ou pire, régressive) sans qu'aucun autre
+  // test ne rougisse. On relit donc le source du lambda passé à `runMapper` dans startMapper.
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const src = fs.readFileSync(path.join(__dirname, 'index.js'), 'utf8');
+  const call = src.indexOf('await runMapper(bot, {');
+  assert.ok(call > 0, 'appel `await runMapper(bot, {` introuvable dans index.js');
+  const from = src.indexOf('goto: async (wp) =>', call);
+  assert.ok(from > call, 'lambda `goto: async (wp) =>` introuvable dans l’appel runMapper');
+  const end = src.indexOf('}, mapperToken);', from);
+  assert.ok(end > from, 'fin de l’appel runMapper introuvable');
+  const lambda = src.slice(from, end);
+  // UNE seule expression (et pas trois `match` indépendants) : elle fige aussi l'ORDRE des branches,
+  // donc une inversion du ternaire — qui garderait chaque morceau présent — fait rougir le test.
+  assert.match(lambda,
+    /wp\.y == null\s*\?\s*new pfGoals\.GoalNearXZ\(\s*wp\.x,\s*wp\.z,\s*8\s*\)\s*:\s*new pfGoals\.GoalNear\(\s*wp\.x,\s*wp\.y,\s*wp\.z,\s*8\s*\)/,
+    'le goto d’index.js doit valoir `wp.y == null ? new pfGoals.GoalNearXZ(wp.x, wp.z, 8) : new pfGoals.GoalNear(wp.x, wp.y, wp.z, 8)` '
+    + '(même règle que le goto par défaut de mapper.js) — si tu l’as reformulé, adapte ce garde-fou, ne le supprime pas');
+});
+
 test('runMapper : hook onArrive appelé à CHAQUE arrivée (chasse opportuniste du kit)', async () => {
   const bot = fakeMapperBot();
   let arrivals = 0;

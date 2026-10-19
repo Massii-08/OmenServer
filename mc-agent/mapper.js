@@ -164,7 +164,8 @@ function surfaceYAt(bot, x, z, fromY) {
  *  opts.worldKey  : clé de monde (label || dimension) — obligatoire pour les events
  *  opts.memory    : mémoire bootstrap du groupe (océans connus + biais cellules mappées)
  *  opts.getSector : () => {index,count}|null — lu à chaque jambe (re-balance live via stdin)
- *  opts.emit      : hook events ; opts.goto : injectable (défaut pathfinder.goto GoalNear)
+ *  opts.emit      : hook events ; opts.goto : injectable (défaut pathfinder.goto), reçoit un waypoint
+ *                   `{x, z}` (y ABSENT = altitude libre → but XZ) ou `{x, y, z}` (y RÉEL → but 3D)
  *  opts.fleeFrom  : injecté dans survivalTick ; opts.sleep/rng/now : injectables (tests)
  *  opts.onPeriodic/periodicEvery : hook toutes les N arrivées (ex. re-tentative kit)
  *  opts.teleport  : watcher TP (teleport.js, #10) — pending consommé en tête de boucle → RÉ-ANCRAGE
@@ -185,9 +186,22 @@ async function runMapper(bot, opts = {}, token = { cancelled: false }) {
   const periodicEvery = opts.periodicEvery || 10;
   const sampleRings = opts.sampleRings != null ? opts.sampleRings : SAMPLE_RINGS;
 
+  // ALTITUDE DES JAMBES (mesuré live sur world_ax5, monde montagneux, spawn vers y=100) : les
+  // cartographes restaient collés au spawn (< 40 blocs après 15 min), `mapper_turn unreachable`
+  // en rafale (1 000-2 400/h) puis `mapper_relocate trapped` puis `jam_loop`. Chaque jambe visait un
+  // `GoalNear(x, y COURANT, z, 8)` : un but 3D à l'altitude où se tient le bot, alors que la surface
+  // à 30-160 blocs est 10-40 blocs plus haut ou plus bas → aucun nœud standable dans le rayon 3D →
+  // NoPath INSTANTANÉ. Même bug que la migration de zone (index.js `migrationLegTo`), même remède.
+  //   - y ABSENT/null : on ne sait pas à quelle altitude est la surface là-bas (le y d'une jambe n'a
+  //     jamais été qu'une supposition) → `GoalNearXZ`, l'altitude est libre ;
+  //   - y PRÉSENT : altitude RÉELLE (la remontée en surface, tirée de `surfaceYAt`) → `GoalNear` 3D.
+  // Contrepartie assumée : un but XZ laisse le pathfinder choisir son altitude (il peut finir dans
+  // une grotte ou un ravin) ; le filet « enterré → remonte » de la boucle (plus bas) le rattrape.
   const doGoto = opts.goto || (async (wp) => {
     const { goals } = require('mineflayer-pathfinder');
-    await bot.pathfinder.goto(new goals.GoalNear(wp.x, wp.y, wp.z, 8));
+    await bot.pathfinder.goto(wp.y == null
+      ? new goals.GoalNearXZ(wp.x, wp.z, 8)
+      : new goals.GoalNear(wp.x, wp.y, wp.z, 8));
   });
 
   const localSeen = new Set();   // cellules visitées
@@ -410,7 +424,7 @@ async function runMapper(bot, opts = {}, token = { cancelled: false }) {
         // terre locale : on y VA À PIED (jamais de warp aveugle). Eau sur le chemin → skip.
         if (!isOceanCell(memory, worldKey, cell.center.x, cell.center.z) && !waterAhead(bot, here0, cell.center)) {
           try {
-            await doGoto({ x: cell.center.x, y: here0.y, z: cell.center.z });
+            await doGoto({ x: cell.center.x, z: cell.center.z });   // sans y : altitude libre (cf. doGoto)
             record();
             continue;
           } catch (e) {
@@ -506,7 +520,7 @@ async function runMapper(bot, opts = {}, token = { cancelled: false }) {
         const crossHeading = clampToSector(drawHeading(rng, sec, opts.overlapDeg), sec);
         const cross = legTarget(here, crossHeading, rng, { minDist: 100, maxDist: 160 });
         emit({ type: 'mapper_crossing', heading: Number(crossHeading.toFixed(2)) });
-        try { await doGoto({ x: cross.x, y: here.y, z: cross.z }); } catch (e) { /* escapeWater prend le relais */ }
+        try { await doGoto({ x: cross.x, z: cross.z }); } catch (e) { /* escapeWater prend le relais */ }   // sans y : altitude libre
         heading = crossHeading;
         blockedStreak = 0;
         record();
@@ -529,7 +543,8 @@ async function runMapper(bot, opts = {}, token = { cancelled: false }) {
     // après des échecs consécutifs : jambes COURTES (8-24) pour se dégager du terrain difficile
     // (jungle dense, falaises) au lieu de re-payer un long timeout sur une cible lointaine.
     if (failStreak >= 2) target = legTarget(here, heading, rng, { minDist: 8, maxDist: 24 });
-    try { await doGoto({ x: target.x, y: here.y, z: target.z }); }
+    // sans y : `here.y` n'est que l'altitude COURANTE, pas celle de la surface là-bas (cf. doGoto)
+    try { await doGoto({ x: target.x, z: target.z }); }
     catch (e) {
       // jambe inatteignable (falaise/mur) : dégager les lianes (#9) puis tourner franchement
       failStreak++;
@@ -546,7 +561,7 @@ async function runMapper(bot, opts = {}, token = { cancelled: false }) {
         const escHeading = clampToSector(drawHeading(rng, sec, opts.overlapDeg), sec);
         const esc = legTarget(here, escHeading, rng, { minDist: 100, maxDist: 160 });
         emit({ type: 'mapper_relocate', reason: 'trapped', streak: failStreak });
-        try { await doGoto({ x: esc.x, y: here.y, z: esc.z }); } catch (e2) { /* escapeWater relaie */ }
+        try { await doGoto({ x: esc.x, z: esc.z }); } catch (e2) { /* escapeWater relaie */ }   // sans y : altitude libre
         heading = escHeading;
         failStreak = 0;
         record();
