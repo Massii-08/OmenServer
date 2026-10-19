@@ -1,13 +1,14 @@
 'use strict';
 // ABRI NOCTURNE (vécu Surv4 : 7 morts de nuit pendant le kit) — le réflexe humain sans armure :
-// se creuser un trou de 2 blocs, se boucher au-dessus, ATTENDRE L'AUBE, ressortir en pilier (#7).
-// Best-effort : un trou sans toit protège déjà des squelettes/creepers ; les réflexes restent ON.
+// creuser 3 blocs sous ses pieds, se boucher au-dessus, ATTENDRE L'AUBE, ressortir en pilier (#7).
+// Le bot (2 blocs de haut) tient alors ENTIER sous la surface, dans une CELLULE FERMÉE (cf. _buildCell).
+// Les réflexes restent ON pendant l'attente.
 const { Vec3 } = require('vec3');
 const { mineDown } = require('./mineDown');
 const { panicWall } = require('./panicWall');
-const { pillarUp, SCAFFOLD } = require('./pillarUp');
+const { pillarUp } = require('./pillarUp');
 const { POSABLE } = require('../dirt');
-const { bestToolFor } = require('../tools');
+const { bestToolFor, toolCategoryFor } = require('../tools');
 
 // Creuse en ÉQUIPANT le bon outil (Massii 2026-07-26 : « neth1 casse la pierre avec ses mains »).
 // Ce module appelait `bot.dig` NU trois fois : la pierre à la main c'est ~7,5 s par bloc contre
@@ -138,6 +139,358 @@ async function _waitOutDawnMobs(bot, token, deps, emit, sleep, isDisplaced = nul
   return { cancelled: false };
 }
 
+// ─── LA CELLULE FERMÉE (19/10 soir) ──────────────────────────────────────────────────────────────
+// Mesure live (20 sessions) : 120 abris → 46 abandonnés (39 `void_below`, 7 `dig_failed`), et 10 SEULEMENT
+// avec un toit. Trois causes, toutes physiques — reproduites dans test/shelter.cell.test.js, un monde
+// simulé où l'ancien code donne exactement la signature live (`dig_in > no_roof`, bot resté en surface) :
+//   1. `mineDown(bot, { depth: 2 })` : mineDown lit `count` (1 par défaut) → UN bloc creusé. La case du
+//      toit (pieds + 2) tombait AU-DESSUS du sol, sans aucun bloc voisin contre lequel poser sur terrain
+//      plat → pose impossible, et en SILENCE (ni `roofed` ni `no_roof`). Un `count: 2` naïf échouait aussi :
+//      le 2e coup partait avant que le bot soit retombé → `void_below` (cf. mineDown, option `land`).
+//   2. Le bot ne tombait souvent PAS dans son propre trou : sa boîte fait 0,6 de large ; pas centrée, elle
+//      déborde sur la case voisine (≈ 84 % des positions au hasard) et il reste DEBOUT sur le bord quand on
+//      creuse sous son centre — les 29 `no_roof` : resté en surface, il n'avait pas de paroi où miner un bloc.
+//   3. Un bloc cassé n'est ramassable qu'après 10 ticks (0,5 s) : la poche était lue tout de suite, vide, et
+//      le code minait alors les parois de SON PROPRE abri pour trouver de quoi poser.
+// Le geste juste, celui du joueur : se centrer, creuser 3 blocs en attendant chaque atterrissage, attendre
+// le ramassage, poser le toit contre la paroi naturelle (à fleur du sol), colmater ce qui reste ouvert.
+// Pourquoi 3 et pas 2 : à 2 de profondeur la tête est au niveau du sol et la case du toit AU-DESSUS, sans
+// voisin plein — il faut alors un bloc de support (géré, cf. _placeRoof, mais c'est un bloc de plus).
+const SHELTER_PIT_DEPTH = 3;
+const SHELTER_MIN_DEPTH = 2;      // en dessous, la tête dépasse du sol : ce n'est plus un abri
+const CHUNK_WAIT_MS = 2500;       // respawn : les chunks arrivent en ~1 s — sinon `blockAt` → null → void_below
+const PICKUP_WAIT_MS = 1500;      // 10 ticks de délai de ramassage + chute de l'item au fond du puits
+const STEP_MAX = 3;               // sol non plein sous les pieds → UN pas vers un voisin au sol plein, ≤ 3 blocs
+const STEP_TIMEOUT_MS = 4000;
+const SPOT_RADIUS = 2;            // « au même endroit »
+const SPOT_TTL_MS = 10 * 60 * 1000;
+const SPOT_MAX_FAILS = 2;         // 2 échecs au même endroit → plan B « mur sur place », sans re-creuser
+// Blocs de toit/paroi : SANS gravité (sable et gravier retomberaient sur la tête), la terre d'abord — elle
+// se reprend à la main à l'aube, la pierre non (sans pioche, rien ne tombe). Planches en dernier recours.
+const CELL_BLOCKS = ['dirt', 'coarse_dirt', 'grass_block', 'rooted_dirt', 'cobblestone', 'cobbled_deepslate',
+  'stone', 'deepslate', 'tuff', 'granite', 'diorite', 'andesite', 'netherrack'];
+const _CARD = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+const _FLUID = new Set(['water', 'lava', 'flowing_water', 'flowing_lava']);
+// Sol où creuser : plein et cassable — ni feuillage (rien dessous), ni glace (le trou se remplit d'eau),
+// ni bloc utile du camp, ni incassable.
+const _NO_DIG = /^(bedrock|barrier|ice|packed_ice|blue_ice|frosted_ice|crafting_table|furnace|blast_furnace|smoker|chest|trapped_chest|barrel|spawner|end_portal_frame|reinforced_deepslate)$|_leaves$|_bed$/;
+
+function _solid(b) { return !!b && b.boundingBox === 'block'; }
+function _clear(b) { return !!b && b.boundingBox === 'empty' && !_FLUID.has(b.name); }
+function _xyz(p) { return !!p && Number.isFinite(p.x) && Number.isFinite(p.y) && Number.isFinite(p.z); }
+function _hasPick(bot) {
+  try { return ((bot.inventory && bot.inventory.items()) || []).some((i) => /_pickaxe$/.test(i.name)); } catch (e) { return false; }
+}
+/** Sol où creuser VITE : plein, cassable ; à mains nues seulement s'il rend un bloc (pas la pierre sans pioche :
+ *  7,5 s par bloc et RIEN qui tombe — donc pas de toit). */
+function _diggable(b, pick) { return _solid(b) && !_NO_DIG.test(b.name) && (pick || toolCategoryFor(b.name) !== 'pickaxe'); }
+
+/** Le bloc de toit/paroi à poser (ordre CELL_BLOCKS, puis planches), ou null. */
+function cellBlockItem(bot) {
+  const items = (bot.inventory && bot.inventory.items()) || [];
+  for (const name of CELL_BLOCKS) { const it = items.find((i) => i.name === name && i.count > 0); if (it) return it; }
+  return items.find((i) => typeof i.name === 'string' && i.name.endsWith('_planks') && i.count > 0) || null;
+}
+/** Combien de blocs de toit/paroi en poche. */
+function cellBlockCount(bot) {
+  let n = 0;
+  for (const i of ((bot.inventory && bot.inventory.items()) || [])) {
+    if (i && (CELL_BLOCKS.includes(i.name) || (typeof i.name === 'string' && i.name.endsWith('_planks')))) n += i.count || 0;
+  }
+  return n;
+}
+
+/** Mémoire des creusages ratés (« 2 échecs au même endroit → plan B »). Injectable (deps.spotMemory). */
+function createSpotMemory() {
+  let spot = null;
+  const same = (x, z, now) => !!spot && now - spot.at <= SPOT_TTL_MS && Math.hypot(spot.x - x, spot.z - z) <= SPOT_RADIUS;
+  return {
+    fails(x, z, now) { return same(x, z, now) ? spot.n : 0; },
+    fail(x, z, now) { if (same(x, z, now)) { spot.n += 1; spot.at = now; } else spot = { x, z, n: 1, at: now }; return spot.n; },
+    clear() { spot = null; },
+  };
+}
+// NIVEAU MODULE : l'abri suivant (la discipline de nuit se ré-abrite 20 s plus tard) doit s'en souvenir.
+const _spots = createSpotMemory();
+
+/** Respawn : attend que le monde sous les pieds soit lu (borné, en NOMBRE de pas). */
+async function _waitWorld(bot, sleep) {
+  const steps = Math.ceil(CHUNK_WAIT_MS / 250);
+  for (let i = 0; i <= steps; i++) {
+    const p = bot.entity && bot.entity.position;
+    if (_xyz(p) && bot.blockAt(p.offset(0, -1, 0))) return true;
+    if (i < steps) await sleep(250);
+  }
+  return false;
+}
+
+/** Peut-on se tenir en `f` (pieds) et y creuser ? `deep` = colonne pleine jusqu'au fond du puits ;
+ *  `open` = côtés de la FUTURE cellule (au fond du puits) qui ne sont pas pleins — chacun coûtera un bloc. */
+function _footingAt(bot, f, pick) {
+  if (!_clear(bot.blockAt(f)) || !_clear(bot.blockAt(f.offset(0, 1, 0)))) return null;
+  if (!_diggable(bot.blockAt(f.offset(0, -1, 0)), pick)) return null;
+  let deep = true;
+  for (let d = 2; d <= SHELTER_PIT_DEPTH + 1 && deep; d++) deep = _solid(bot.blockAt(f.offset(0, -d, 0)));
+  return { pos: f, deep, open: _openSides(bot, f.offset(0, -SHELTER_PIT_DEPTH, 0)) };
+}
+
+/** Le voisin (≤ STEP_MAX) où creuser : colonne pleine d'abord, puis la cellule la plus fermée, puis le plus
+ *  proche. `avoid` = cases ratées. */
+function _pickFooting(bot, feet, pick, avoid) {
+  let best = null;
+  for (let dx = -STEP_MAX; dx <= STEP_MAX; dx++) {
+    for (let dz = -STEP_MAX; dz <= STEP_MAX; dz++) {
+      const dist = Math.hypot(dx, dz);
+      if ((!dx && !dz) || dist > STEP_MAX) continue;
+      if (avoid && avoid.some((a) => a.x === feet.x + dx && a.z === feet.z + dz)) continue;
+      for (const dy of [0, -1, 1]) {
+        const c = _footingAt(bot, feet.offset(dx, dy, dz), pick);
+        if (!c) continue;
+        const score = (c.deep ? 0 : 10) + c.open + dist + Math.abs(dy) * 0.5;
+        if (!best || score < best.score) best = { pos: c.pos, score };
+        break;
+      }
+    }
+  }
+  return best ? best.pos : null;
+}
+
+/** UN pas vers `f` (injectable deps.stepTo ; sinon le pathfinder, borné). → true si arrivé sur la case. */
+async function _stepTo(bot, f, deps) {
+  try {
+    if (typeof deps.stepTo === 'function') await deps.stepTo(f);
+    else if (bot.pathfinder && typeof bot.pathfinder.goto === 'function') {
+      const { goals } = require('mineflayer-pathfinder');
+      let timer = null;
+      try {
+        await Promise.race([
+          bot.pathfinder.goto(new goals.GoalBlock(f.x, f.y, f.z)),
+          new Promise((resolve, reject) => { timer = setTimeout(() => reject(new Error('step_timeout')), STEP_TIMEOUT_MS); }),
+        ]);
+      } finally { if (timer) clearTimeout(timer); }
+    } else return false;
+  } catch (e) { try { if (bot.pathfinder) bot.pathfinder.setGoal(null); } catch (e2) { /* best-effort */ } }
+  const p = bot.entity && bot.entity.position;
+  return !!(_xyz(p) && Math.floor(p.x) === f.x && Math.floor(p.z) === f.z);
+}
+
+/** Recentre la position dans SA case — le geste de mineflayer-pathfinder à chaque fin de trajet (fullStop) :
+ *  < 0,5 bloc, sans changer de case. Sinon la boîte (0,6) déborde sur la voisine et le bot reste debout sur
+ *  le bord du trou qu'il creuse sous son centre. */
+function _centerInBlock(bot) {
+  const e = bot.entity;
+  const p = e && e.position;
+  if (!_xyz(p)) return false;
+  const cx = Math.floor(p.x) + 0.5;
+  const cz = Math.floor(p.z) + 0.5;
+  let moved = false;
+  if (Math.abs(p.x - cx) > 0.1) { p.x = cx; moved = true; }
+  if (Math.abs(p.z - cz) > 0.1) { p.z = cz; moved = true; }
+  if (e.velocity) { e.velocity.x = 0; e.velocity.z = 0; }
+  try { if (typeof bot.clearControlStates === 'function') bot.clearControlStates(); } catch (er) { /* best-effort */ }
+  return moved;
+}
+
+/** Les 8 côtés de la cellule (4 aux pieds, 4 à la tête) qui ne sont pas pleins. */
+function _openSides(bot, feet) {
+  let n = 0;
+  for (const dy of [0, 1]) for (const [dx, dz] of _CARD) if (!_solid(bot.blockAt(feet.offset(dx, dy, dz)))) n++;
+  return n;
+}
+
+/** Attend que les blocs creusés arrivent en poche (délai de ramassage) jusqu'à en avoir `need`, borné en
+ *  nombre de pas. → le nombre en poche. */
+async function _waitCellBlocks(bot, sleep, need) {
+  const steps = Math.ceil(PICKUP_WAIT_MS / 100);
+  for (let i = 0; i <= steps; i++) {
+    if (cellBlockCount(bot) >= need) break;
+    if (i < steps) await sleep(100);
+  }
+  return cellBlockCount(bot);
+}
+
+/**
+ * COLMATER les côtés ouverts de la cellule (pieds et tête), contre N'IMPORTE quelle face pleine voisine de la
+ * case à boucher — jamais contre l'intérieur de la cellule (c'est de l'air, et c'est le bot). panicWall ne sait
+ * poser que sur le bloc DU DESSOUS : à côté d'une grotte il pontait d'abord sous le côté, un bloc gâché.
+ * → nombre de blocs posés.
+ */
+async function _sealSides(bot, feet) {
+  const inside = (p) => p.x === feet.x && p.z === feet.z && (p.y === feet.y || p.y === feet.y + 1);
+  const FACES = [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]];
+  let placed = 0;
+  for (const dy of [0, 1]) {
+    for (const [dx, dz] of _CARD) {
+      const t = feet.offset(dx, dy, dz);
+      if (_solid(bot.blockAt(t))) continue;
+      for (const [rx, ry, rz] of FACES) {
+        const rp = t.offset(rx, ry, rz);
+        if (inside(rp)) continue;
+        const ref = bot.blockAt(rp);
+        if (!_solid(ref)) continue;
+        const item = cellBlockItem(bot);
+        if (!item) return placed;
+        try { await bot.equip(item, 'hand'); await bot.placeBlock(ref, new Vec3(-rx, -ry, -rz)); } catch (e) { continue; }
+        if (_solid(bot.blockAt(t))) { placed++; break; }
+      }
+    }
+  }
+  return placed;
+}
+
+/**
+ * Le TOIT, au-dessus de la tête (pieds + 2) : déjà plein (plafond de grotte, feuillage) → rien à faire ;
+ * sinon contre une paroi pleine voisine de la case (puits de 3 : le sol tout autour) ; sinon (puits de 2,
+ * cellule murée : rien autour de la case) un bloc de SUPPORT posé sur une paroi à hauteur de tête, puis le
+ * toit contre ce support. → { ok, placed, how: 'natural' | 'wall' | 'support' | null }
+ */
+async function _placeRoof(bot, feet) {
+  const roof = feet.offset(0, 2, 0);
+  if (_solid(bot.blockAt(roof))) return { ok: true, placed: 0, how: 'natural' };
+  let placed = 0;
+  const put = async (ref, face) => {
+    const item = cellBlockItem(bot);
+    if (!item) return false;
+    try { await bot.equip(item, 'hand'); await bot.placeBlock(ref, face); placed++; return true; } catch (e) { return false; }
+  };
+  for (const [dx, dz] of _CARD) {
+    const ref = bot.blockAt(roof.offset(dx, 0, dz));
+    if (!_solid(ref)) continue;
+    await put(ref, new Vec3(-dx, 0, -dz));
+    if (_solid(bot.blockAt(roof))) return { ok: true, placed, how: 'wall' };
+  }
+  for (const [dx, dz] of _CARD) {
+    const base = bot.blockAt(feet.offset(dx, 1, dz));
+    const sup = roof.offset(dx, 0, dz);
+    if (!_solid(base) || !_clear(bot.blockAt(sup))) continue;
+    if (!(await put(base, new Vec3(0, 1, 0)))) continue;
+    const support = bot.blockAt(sup);
+    if (!_solid(support)) continue;
+    await put(support, new Vec3(-dx, 0, -dz));
+    if (_solid(bot.blockAt(roof))) return { ok: true, placed, how: 'support' };
+  }
+  return { ok: false, placed, how: null };
+}
+
+/**
+ * Mise à l'abri : creuser ICI (ou à 1 pas, ou plan B « mur sur place »), couvrir, colmater, puis UNE ligne
+ * `{type:'shelter', action:'sealed', sealed, why, mode, depth, placed, moved, took_ms}` — la mesure live
+ * du taux de cellules fermées. → { ok, mode: 'pit' | 'walled', depth } | { ok:false, reason }
+ * Sans coordonnées (faux bots des tests d'origine) : le chemin d'origine — creuser, sinon se murer.
+ */
+async function _buildCell(bot, token, deps, sleep, emit) {
+  const t0 = Date.now();
+  const digDown = deps.mineDown || mineDown;          // injectables (tests)
+  const wallIn = deps.wallIn || panicWall;
+  const seal = deps.seal || _sealSides;
+  const spots = deps.spotMemory || _spots;
+  const now = typeof deps.now === 'function' ? deps.now : Date.now;
+  const located = _xyz(bot.entity && bot.entity.position) && typeof bot.blockAt === 'function';
+  let moved = false;
+  let placed = 0;
+  const line = (o) => emit(Object.assign({ type: 'shelter', action: 'sealed' }, o,
+    { placed, moved, took_ms: Date.now() - t0 }));
+
+  // ── 1) CREUSER ──────────────────────────────────────────────────────────────────────────────────
+  let down = null;
+  let depth = 0;
+  const dig = async (opts) => { try { return (await digDown(bot, opts, token)) || { ok: false, reason: 'dig_failed' }; } catch (e) { return { ok: false, reason: 'dig_failed' }; } };
+  if (!located) {
+    down = await dig({ count: SHELTER_PIT_DEPTH });
+    depth = down.ok ? SHELTER_PIT_DEPTH : 0;
+  } else {
+    // L'abri POSSÈDE le bot : un trajet en cours (timer qui l'a lancé, planner) le tirerait hors du trou.
+    try { if (bot.pathfinder && typeof bot.pathfinder.setGoal === 'function') bot.pathfinder.setGoal(null); } catch (e) { /* best-effort */ }
+    await _waitWorld(bot, sleep);
+    const pick = _hasPick(bot);
+    const here = () => bot.entity.position.floored();
+    const attempt = async () => {
+      _centerInBlock(bot);
+      const y0 = bot.entity.position.y;
+      const r = await dig({ count: SHELTER_PIT_DEPTH, land: { sleep } });
+      return { r, depth: Math.max(0, Math.round(y0 - bot.entity.position.y)) };
+    };
+    const f0 = here();
+    if (spots.fails(f0.x, f0.z, now()) >= SPOT_MAX_FAILS) {
+      down = { ok: false, reason: 'spot_failed' };
+    } else {
+      if (!_diggable(bot.blockAt(f0.offset(0, -1, 0)), pick)) {
+        const to = _pickFooting(bot, f0, pick, null);
+        if (to && await _stepTo(bot, to, deps)) moved = true;
+      }
+      let a = await attempt();
+      if (a.depth < SHELTER_MIN_DEPTH && !(token && token.cancelled)) {
+        // Raté ici (grotte, bloc incassable, sol qui ne cède pas) : noté, puis UN essai à côté.
+        const fx = here();
+        spots.fail(fx.x, fx.z, now());
+        const to = _pickFooting(bot, fx, pick, [fx]);
+        if (to && await _stepTo(bot, to, deps)) {
+          moved = true;
+          const b = await attempt();
+          if (b.depth >= a.depth) a = b;
+          if (b.depth < SHELTER_MIN_DEPTH) { const fb = here(); spots.fail(fb.x, fb.z, now()); }
+        }
+      }
+      down = a.r;
+      depth = a.depth;
+      if (depth >= SHELTER_MIN_DEPTH) spots.clear();
+    }
+  }
+  if (token && token.cancelled) { line({ sealed: false, why: 'cancelled', mode: 'pit', depth }); return { ok: false, reason: 'cancelled' }; }
+
+  // ── 2) PLAN B : SE MURER SUR PLACE (mesure world_ax4 25/07 : 40 % des abris échouaient — un abri raté =
+  // une nuit ENTIÈRE à découvert). Un vrai joueur se boxe avec ce qu'il a ; panicWall gère même la
+  // grotte ouverte (pontage). Aussi à 1 bloc de profondeur : la tête dépasse, il faut murer.
+  let mode = 'pit';
+  const pitOk = located ? depth >= SHELTER_MIN_DEPTH : !!(down && down.ok);
+  if (!pitOk) {
+    const reason = (down && down.reason) || 'shallow';
+    const walled = await wallIn(bot);
+    if (!walled || !walled.ok) {
+      emit({ type: 'shelter', action: 'abort', reason });
+      line({ sealed: false, why: 'abort:' + reason, mode: 'none', depth });
+      return { ok: false, reason };
+    }
+    placed += walled.placed || 0;
+    mode = 'walled';
+    emit({ type: 'shelter', action: 'walled_in', placed: walled.placed || 0, after: reason });
+  }
+
+  if (!located) {
+    // faux bots sans coordonnées : rien à mesurer — l'event d'origine, puis la ligne.
+    if (!cellBlockItem(bot)) emit({ type: 'shelter', action: 'no_roof' });
+    line({ sealed: false, why: 'no_position', mode, depth });
+    return { ok: true, mode, depth };
+  }
+
+  // ── 3) TOIT (au-dessus de la tête), avec les blocs qu'on vient de creuser. Le délai de ramassage (10 ticks)
+  // impose d'ATTENDRE qu'ils soient en poche — assez pour le toit ET les côtés ouverts — au lieu de miner
+  // les parois de son propre abri comme avant.
+  const feet = bot.entity.position.floored();
+  const roofed0 = _solid(bot.blockAt(feet.offset(0, 2, 0)));
+  // Un toit contre la paroi coûte 1 bloc ; sans paroi autour de la case (puits de 2, cellule murée), 2 (support + toit).
+  const roofDirect = _CARD.some(([dx, dz]) => _solid(bot.blockAt(feet.offset(dx, 2, dz))));
+  const need = (roofed0 ? 0 : (roofDirect ? 1 : 2)) + _openSides(bot, feet);
+  if (need > 0 && depth > 0) await _waitCellBlocks(bot, sleep, need);
+  const hadBlock = cellBlockCount(bot) > 0;
+  let roof = { ok: roofed0, placed: 0, how: 'natural' };
+  if (!roof.ok && hadBlock) roof = await _placeRoof(bot, feet);
+  placed += roof.placed || 0;
+  if (roof.ok && roof.how !== 'natural') emit({ type: 'shelter', action: 'roofed', how: roof.how });
+  if (!roof.ok && !hadBlock) emit({ type: 'shelter', action: 'no_roof' });
+
+  // ── 4) COLMATER ce qui reste ouvert aux pieds ou à la tête (grotte voisine, cellule murée incomplète)
+  if (_openSides(bot, feet) > 0 && cellBlockItem(bot)) {
+    try { const n = await seal(bot, feet); placed += Number(n && n.placed != null ? n.placed : n) || 0; } catch (e) { /* best-effort */ }
+  }
+  const open = _openSides(bot, feet);
+  const roofed = _solid(bot.blockAt(feet.offset(0, 2, 0)));
+  const sealed = roofed && open === 0;
+  const why = sealed ? 'ok' : (!roofed ? (hadBlock ? 'roof_failed' : 'no_block') : 'open_sides');
+  line({ sealed, why, mode, depth, open, roof: roof.how || null });
+  return { ok: true, mode, depth };
+}
+
 /**
  * shelterUntilDawn(bot, token, deps) → {ok, reason?} — creuse, se couvre, attend l'aube, remonte.
  * deps.sleep injectable ; maxWaitMs borne l'attente (nuit MC ≈ 7 min réels ; déf 12 min).
@@ -151,56 +504,12 @@ async function shelterUntilDawn(bot, token = null, deps = {}) {
   const sleep = deps.sleep || ((ms) => new Promise((r) => setTimeout(r, ms)));
   const emit = deps.emit || (() => {});
   const maxWaitMs = deps.maxWaitMs || 12 * 60 * 1000;
-  const digDown = deps.mineDown || mineDown;          // injectables (tests)
-  const wallIn = deps.wallIn || panicWall;
   emit({ type: 'shelter', action: 'dig_in' });
 
-  // 1) se terrer : 2 blocs vers le bas (mineDown a déjà les garde-fous lave/vide)
-  const down = await digDown(bot, { depth: 2 }, token);
-  let dugIn = !!down.ok;
-  if (!down.ok) {
-    // PLAN B : SE MURER SUR PLACE (mesure live world_ax4 25/07 — 40 % des abris échouaient :
-    // void_below 19, dig_failed 17, danger_below 9 — et un abri raté = une nuit ENTIÈRE à
-    // découvert, tous mobs confondus). Creuser n'est pas la seule façon de se mettre à l'abri :
-    // un vrai joueur se boxe avec ce qu'il a. panicWall gère même la grotte ouverte (pontage).
-    const walled = await wallIn(bot);
-    if (!walled || !walled.ok) {
-      emit({ type: 'shelter', action: 'abort', reason: down.reason });
-      return { ok: false, reason: down.reason };
-    }
-    emit({ type: 'shelter', action: 'walled_in', placed: walled.placed || 0, after: down.reason });
-  }
-
-  // 2) toit : bloc de l'inventaire, sinon on en MINE un (terre/gravier drop sans outil) — auto-suffisant.
-  try {
-    const head2 = bot.entity.position.floored().offset(0, 2, 0);
-    let block = bot.inventory.items().find((i) => SCAFFOLD.includes(i.name));
-    if (!block) {
-      const feet = bot.entity.position.floored();
-      for (const d of [new Vec3(1, 0, 0), new Vec3(-1, 0, 0), new Vec3(0, 0, 1), new Vec3(0, 0, -1)]) {
-        const wall = bot.blockAt(feet.plus(d));
-        if (wall && wall.boundingBox === 'block' && wall.name !== 'bedrock') {
-          await _digWithTool(bot, wall); await sleep(300);
-          block = bot.inventory.items().find((i) => SCAFFOLD.includes(i.name));
-          if (block) break;
-        }
-      }
-    }
-    if (block) {
-      for (const d of [new Vec3(1, 0, 0), new Vec3(-1, 0, 0), new Vec3(0, 0, 1), new Vec3(0, 0, -1)]) {
-        const wall = bot.blockAt(head2.plus(d));
-        if (!wall || wall.boundingBox !== 'block') continue;
-        try {
-          await bot.equip(block, 'hand');
-          await bot.placeBlock(wall, d.scaled(-1));
-          const roof = bot.blockAt(head2);
-          if (roof && roof.boundingBox === 'block') { emit({ type: 'shelter', action: 'roofed' }); break; }
-        } catch (e) { /* paroi suivante */ }
-      }
-    } else {
-      emit({ type: 'shelter', action: 'no_roof' });
-    }
-  } catch (e) { /* best-effort */ }
+  // 1-2) la CELLULE : creuser (ou se murer), se couvrir, colmater — une ligne `sealed` par abri.
+  const cellRes = await _buildCell(bot, token, deps, sleep, emit);
+  if (!cellRes.ok) return { ok: false, reason: cellRes.reason };
+  const dugIn = cellRes.mode === 'pit';
 
   // ANCRE de l'abri, relevée une fois le bot terré et couvert. COPIE des coordonnées : `entity.position`
   // est un Vec3 MUTÉ EN PLACE par le serveur (piège #73d) — une référence gardée « bougerait » avec lui.
@@ -257,7 +566,9 @@ async function shelterUntilDawn(bot, token = null, deps = {}) {
     emit({ type: 'shelter', action: 'out', ok: true, mode: 'walled' });
     return { ok: true };
   }
-  const up = await pillarUp(bot, { height: 2 }, token, { sleep: deps.pillarSleep || deps.sleep });
+  // Pilier de la hauteur RÉELLEMENT creusée : il rebouche le puits en remontant (aucun trou laissé dans le
+  // monde), et à 3 de profondeur il ramène les pieds au niveau du sol.
+  const up = await pillarUp(bot, { height: Math.max(1, cellRes.depth || 2) }, token, { sleep: deps.pillarSleep || deps.sleep });
   emit({ type: 'shelter', action: 'out', ok: up.ok });
   return { ok: true };
 }
@@ -296,4 +607,5 @@ module.exports = {
   isNightTime, isNight, shelterUntilDawn, roofPlan, shouldShelter,
   dawnExitDecision, DAWN_WAIT_MAX_MS, DAWN_WAIT_CHECK_MS, DAWN_WAIT_MIN_WORN,
   shelterDisplaced, SHELTER_DISPLACED_BLOCKS,
+  createSpotMemory, cellBlockItem, SHELTER_PIT_DEPTH, SHELTER_MIN_DEPTH, CELL_BLOCKS,
 };

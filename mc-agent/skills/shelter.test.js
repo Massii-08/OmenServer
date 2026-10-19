@@ -157,3 +157,38 @@ test('shelterDisplaced : coordonnées absentes ou absurdes → JAMAIS délogé (
   assert.strictEqual(shelterDisplaced({ x: 0, y: 0, z: 0 }, { x: NaN, y: 0, z: 0 }), false);
   assert.strictEqual(shelterDisplaced(), false);
 });
+
+// ─── LA CELLULE FERMÉE : les blocs de toit/paroi (19/10 soir) ───────────────────────────────────
+const { cellBlockItem, CELL_BLOCKS, SHELTER_PIT_DEPTH, SHELTER_MIN_DEPTH, createSpotMemory } = require('./shelter');
+
+test('cellBlockItem : JAMAIS un bloc à gravité (sable/gravier retomberaient sur la tête du bot)', () => {
+  for (const n of ['sand', 'red_sand', 'gravel', 'suspicious_sand']) assert.ok(!CELL_BLOCKS.includes(n), n);
+  const inv = (items) => ({ inventory: { items: () => items } });
+  assert.strictEqual(cellBlockItem(inv([{ name: 'sand', count: 9 }, { name: 'gravel', count: 9 }])), null);
+});
+
+test('cellBlockItem : la TERRE d abord (elle se reprend à la main à l aube), la pierre ensuite, les planches en dernier', () => {
+  const inv = (items) => ({ inventory: { items: () => items } });
+  assert.strictEqual(cellBlockItem(inv([{ name: 'cobblestone', count: 5 }, { name: 'dirt', count: 1 }])).name, 'dirt');
+  assert.strictEqual(cellBlockItem(inv([{ name: 'oak_planks', count: 5 }, { name: 'cobblestone', count: 1 }])).name, 'cobblestone');
+  assert.strictEqual(cellBlockItem(inv([{ name: 'oak_planks', count: 5 }])).name, 'oak_planks');
+  assert.strictEqual(cellBlockItem(inv([{ name: 'dirt', count: 0 }])), null, 'une pile vide ne compte pas');
+});
+
+test('profondeur : 3 blocs (le bot ENTIER sous la surface, toit à fleur du sol) ; en dessous de 2, ce n est plus un abri', () => {
+  assert.strictEqual(SHELTER_PIT_DEPTH, 3);
+  assert.strictEqual(SHELTER_MIN_DEPTH, 2);
+});
+
+test('createSpotMemory : 2 échecs au même endroit (≤ 2 blocs) sont cumulés ; ailleurs, ou 10 min plus tard, on repart de zéro', () => {
+  const m = createSpotMemory();
+  const T = 1_700_000_000_000;
+  assert.strictEqual(m.fails(10, 10, T), 0);
+  m.fail(10, 10, T);
+  m.fail(11, 9, T + 1000);
+  assert.strictEqual(m.fails(10, 10, T + 2000), 2, 'à 1,4 bloc : le même endroit');
+  assert.strictEqual(m.fails(20, 10, T + 2000), 0, 'à 10 blocs : un autre endroit');
+  assert.strictEqual(m.fails(10, 10, T + 1000 + 10 * 60 * 1000 + 1), 0, 'oublié après 10 min');
+  m.clear();
+  assert.strictEqual(m.fails(10, 10, T + 3000), 0);
+});
