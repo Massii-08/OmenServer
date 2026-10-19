@@ -394,7 +394,11 @@ async function fleeDeathCamp(fromPos) {
   emit({ type: 'death_camp_flee', via: 'foot', x: tx, z: tz });
   try { stopMotion(); } catch (e) {}
   try {
-    await withTimeout(bot.pathfinder.goto(new pfGoals.GoalNear(tx, Math.round(fromPos.y), tz, 4)),
+    // But XZ : l'altitude à 90 blocs est INCONNUE. L'ancien GoalNear(tx, y_du_camp, tz, 4) était une
+    // sphère 3D inatteignable sur relief → NoPath instantané, `withTimeout` l'avale en silence et le bot
+    // restait dans le camp qu'il était censé fuir (même cause qu'explore, la migration et fleeFrom ;
+    // la fuite « walk » de death_camp_escape vise déjà GoalNearXZ).
+    await withTimeout(bot.pathfinder.goto(new pfGoals.GoalNearXZ(tx, tz, 4)),
       90000, () => { try { stopMotion(); } catch (e) {} });
   } catch (e) { /* best-effort */ }
 }

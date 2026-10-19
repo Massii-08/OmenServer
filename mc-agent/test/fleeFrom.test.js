@@ -3,11 +3,11 @@ const { test } = require('node:test');
 const assert = require('node:assert');
 const { fleeFrom } = require('../skills/fleeFrom');
 
-function fakeBot({ threat = null } = {}) {
+function fakeBot({ threat = null, pos = { x: 0, y: 64, z: 0 } } = {}) {
   const calls = { goals: [] };
   return {
     calls,
-    entity: { position: { x: 0, y: 64, z: 0 } },
+    entity: { position: pos },
     nearestEntity(pred) { return (threat && pred(threat)) ? threat : null; },
     pathfinder: { setGoal(g, dyn) { calls.goals.push({ g, dyn }); } },
   };
@@ -82,4 +82,96 @@ test('fleeFrom pose un but à DESTINATION (plus aucun GoalInvert)', () => {
   const g = bot.calls.goals[0].g;
   assert.ok(!/Invert/i.test(g.constructor.name),
     `but inversé encore posé (${g.constructor.name}) — c'est le crash OOM`);
+});
+
+// ─── But de fuite XZ : l'altitude à 20 blocs est INCONNUE (terrain vallonné) ─────────────────────
+// `GoalNear(dest.x, from.y, dest.z, 2)` est une sphère 3D à l'altitude de DÉPART : sur une pente la
+// surface à 20 blocs est 5-10 blocs plus haut/bas → but en l'air ou dans la roche → NoPath, et comme
+// `fleeFrom` ne fait que `setGoal` (pas de goto à attendre) l'échec est SILENCIEUX : le bot reste
+// planté sous les coups (mortalité hard). Même cause que les waypoints d'explore et la jambe de
+// migration, même remède : GoalNearXZ (x,z seulement). Concret → heuristique positive et décroissante
+// (A* fini, borné par applyPathfinderBounds), donc toujours aucun GoalInvert.
+const { goals } = require('mineflayer-pathfinder');
+const fs = require('node:fs');
+const path = require('node:path');
+
+// Relief jouet : surface = heightmap, marche à 4 voisins, dénivelé ≤ 1 par pas. BFS borné : vrai si un nœud
+// satisfaisant `goal.isEnd` est ATTEIGNABLE depuis `start` (= « la fuite aboutit »). N'utilise que l'API
+// publique des buts (isEnd), pas les internes de la lib.
+function reachable(goal, height, start, maxNodes = 60000) {
+  const seen = new Set([`${start.x},${start.z}`]);
+  const q = [{ x: start.x, y: height(start.x, start.z), z: start.z }];
+  for (let i = 0; i < q.length && i < maxNodes; i++) {
+    const n = q[i];
+    if (goal.isEnd(n)) return true;
+    for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+      const x = n.x + dx, z = n.z + dz, k = `${x},${z}`;
+      if (seen.has(k)) continue;
+      const y = height(x, z);
+      if (Math.abs(y - n.y) > 1) continue;     // marche : pas plus d'un bloc de dénivelé
+      seen.add(k);
+      q.push({ x, y, z });
+    }
+  }
+  return false;
+}
+
+test('fleeFrom : le but de fuite est XZ — aucune altitude inventée (rayon 2-3, dynamic=false, heuristique positive)', () => {
+  const skeleton = { type: 'mob', name: 'skeleton', position: { x: 10, y: 64, z: 0 } };
+  const bot = fakeBot({ threat: skeleton });                       // bot (0,64,0), menace à l'est → fuite à l'ouest
+  assert.strictEqual(fleeFrom(bot), true);
+  const { g, dyn } = bot.calls.goals[0];
+  assert.strictEqual(dyn, false, 'destination figée (inchangé)');
+  assert.ok(g instanceof goals.GoalNearXZ, `GoalNearXZ attendu, posé : ${g.constructor.name}`);
+  assert.strictEqual(g.y, undefined, 'aucun y dans le but de fuite');
+  assert.strictEqual(g.x, -FLEE_DIST);
+  assert.strictEqual(g.z, 0);
+  const r = Math.sqrt(g.rangeSq);
+  assert.ok(r >= 2 && r <= 3, `rayon 2-3 (posé : ${r})`);
+  // but CONCRET : heuristique positive et qui décroît en se rapprochant de la destination (A* fini)
+  const hStart = g.heuristic({ x: 0, y: 64, z: 0 });
+  const hHalf = g.heuristic({ x: -10, y: 64, z: 0 });
+  assert.ok(hStart > hHalf && hHalf > 0, `h décroissante et > 0 (${hStart} > ${hHalf} > 0)`);
+});
+
+for (const [label, slope, threatX] of [
+  ['colline : la fuite MONTE', 0.5, -10],          // menace à l'ouest → fuite à l'est, surface +10 blocs à x=+20
+  ['vallée : la fuite DESCEND', 0.5, 10],          // menace à l'est → fuite à l'ouest, surface -10 blocs à x=-20
+]) {
+  test(`fleeFrom sur relief jouet (${label}) → la destination est ATTEIGNABLE ; l'ancien GoalNear 3D ne l'était pas`, () => {
+    const height = (x) => Math.round(70 + slope * x);
+    const start = { x: 0, z: 0 };
+    const threat = { type: 'mob', name: 'zombie', position: { x: threatX, y: 70, z: 0 } };
+    const bot = fakeBot({ threat, pos: { x: 0, y: 70, z: 0 } });
+    assert.strictEqual(fleeFrom(bot), true);
+    const g = bot.calls.goals[0].g;
+    assert.strictEqual(reachable(g, height, start), true, 'le but posé par fleeFrom est atteignable sur la pente');
+    // TÉMOIN : le relief est discriminant — l'ancien but (sphère 3D r=2 à l'altitude de départ) est
+    // inatteignable ici, sinon ce test passerait aussi sur le code d'avant le fix.
+    const dest = fleeTarget({ x: 0, y: 70, z: 0 }, threat.position);
+    const old = new goals.GoalNear(dest.x, dest.y, dest.z, 2);
+    assert.strictEqual(reachable(old, height, start), false, 'témoin : le but 3D d\'avant est inatteignable sur cette pente');
+  });
+}
+
+test('fleeFrom sur terrain plat : toujours atteignable (pas de régression de la fuite de base)', () => {
+  const threat = { type: 'mob', name: 'zombie', position: { x: -5, y: 70, z: 3 } };
+  const bot = fakeBot({ threat, pos: { x: 0, y: 70, z: 0 } });
+  assert.strictEqual(fleeFrom(bot), true);
+  assert.strictEqual(reachable(bot.calls.goals[0].g, () => 70, { x: 0, z: 0 }), true);
+});
+
+// ─── Garde de câblage : fleeDeathCamp (index.js, fuite à PIED de 90 blocs) ────────────────────────
+// index.js n'est pas importable (il démarre le bot) : comme test/movement_tempmoves.test.js, on lit la
+// source. Même bug que fleeFrom : `GoalNear(tx, Math.round(fromPos.y), tz, 4)` = sphère 3D à l'altitude
+// du camp de mort, inatteignable à 90 blocs sur relief → `withTimeout` avale le rejet, le bot reste dans
+// le camp qu'il était censé fuir. (Précédent : la fuite « walk » de death_camp_escape vise déjà
+// GoalNearXZ.)
+test('index.js : fleeDeathCamp fuit en but XZ — plus aucun GoalNear 3D à l\'altitude du camp', () => {
+  const src = fs.readFileSync(path.join(__dirname, '..', 'index.js'), 'utf8');
+  const m = src.match(/async function fleeDeathCamp\([\s\S]*?\n\}\n/);
+  assert.ok(m, 'fleeDeathCamp introuvable dans index.js (renommée ? adapter ce garde)');
+  const body = m[0];
+  assert.ok(/new pfGoals\.GoalNearXZ\(\s*tx\s*,\s*tz\s*,/.test(body), 'la fuite à pied doit viser GoalNearXZ(tx, tz, r)');
+  assert.ok(!/new pfGoals\.GoalNear\(/.test(body), 'aucun GoalNear 3D (y deviné) dans fleeDeathCamp');
 });
