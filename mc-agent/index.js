@@ -2525,8 +2525,14 @@ async function startMapper() {
     goto: async (wp) => {
       // stop-pour-répondre : pas de nouvelle jambe tant que le bot « tape » sa réponse.
       while (Date.now() < _convoPauseUntil) await sleep(250);
+      // MÊME RÈGLE que le goto par défaut de mapper.js : y ABSENT = altitude libre → but XZ (le y des
+      // jambes n'était que l'altitude COURANTE du bot → NoPath instantané sur terrain vallonné, mesuré
+      // sur world_ax5) ; y PRÉSENT = altitude réelle (remontée en surface) → but 3D.
+      const goal = wp.y == null
+        ? new pfGoals.GoalNearXZ(wp.x, wp.z, 8)
+        : new pfGoals.GoalNear(wp.x, wp.y, wp.z, 8);
       const r = await withTimeout(
-        bot.pathfinder.goto(new pfGoals.GoalNear(wp.x, wp.y, wp.z, 8)),
+        bot.pathfinder.goto(goal),
         45000, () => { try { stopMotion(); } catch (e) {} });
       if (r && r.ok === false) throw new Error(r.reason || 'goto_failed');
     },
