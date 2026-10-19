@@ -51,7 +51,7 @@ const { huntPassive } = require('./skills/hunt');
 const { fishCatch } = require('./skills/fish');   // pêche : la nourriture qui ne s'épuise pas
 const { nearestPassive, survivalTick, nearbyHostiles, lavaNearby, armorPoints, weaponDamage } = require('./survival');
 const { loadWorld, saveWorld, setObjective, clearObjective } = require('./worldModel');
-const { _nearestTable, tablePlan, TABLE_REACH, TABLE_SEEK } = require('./skills/craft'); // craftItem déjà importé plus haut
+const { _nearestTable, tableKey, tablePlan, TABLE_REACH, TABLE_SEEK } = require('./skills/craft'); // craftItem déjà importé plus haut
 const { placeBlockNear } = require('./skills/placeBlockNear');
 const { smelt, logsToConvert } = require('./skills/smelt');
 const { descendDiagonal } = require('./skills/descendDiagonal');
@@ -62,7 +62,7 @@ const { classifyAuthPrompt, genPassword, resolveAuthChat } = require('./auth');
 const { loadMemory, worldKey, resolveBiome } = require('./worldMemory');
 const { driestCell, oreBase } = require('./ores');         // warp near-spawn DRY-AWARE + normalisation type (fix #8)
 const { recordAnchor, pickDryAnchor } = require('./anchors'); // ancres profondes SÈCHES (anti boucle de noyade)
-const { runMapper } = require('./mapper');
+const { runMapper, createExpiringSet } = require('./mapper');   // createExpiringSet : liste noire des tables inutilisables (withCraftingTable)
 // (LOCATE_KINDS / parseLocateResponse ne sont plus importés : /locate est retiré des bots, cf. plus bas.
 //  structureFoundEvent est émis par mapper.js depuis les signatures VUES.)
 const { isInWater, escapeWater, findLandTarget, isFloatingStuck, recoverFloating, isFrozenDesync,
@@ -858,6 +858,18 @@ async function reclaimBlock(pos, blockName = 'crafting_table') {
   try { emit({ type: 'reclaim_failed', block: blockName, x: pos && pos.x, y: pos && pos.y, z: pos && pos.z }); } catch (e) {}
 }
 
+// TABLES INUTILISABLES — liste noire à OUBLI (30 min). Run du 17-18/08 (216 sessions) :
+// `reclaim_failed` ×11 565 et `table_recycled` ×11 440, quasi 1:1. Une table INATTEIGNABLE (dans le
+// tunnel/la grotte d'un autre, derrière un mur, au-dessus d'un vide) était re-vue à CHAQUE craft :
+// marche de 30 s, reprise ratée, table neuve semée — puis rebelote au craft suivant, à l'infini
+// (~30-60 s perdues par craft). Dès qu'on a la PREUVE qu'une table est inutilisable (on ne l'a pas
+// atteinte / on n'a pas pu la reprendre), `withCraftingTable` ne la cherche plus. TTL fini : le
+// terrain change (un coéquipier ouvre un passage, la table finit reprise par un autre).
+// ⚠️ NIVEAU MODULE, comme `_smeltOppBusy`/`panicInFlight` : un état lu par plusieurs appels doit
+// survivre à chacun (déclaré dans `onSpawn` = ReferenceError en prod alors que les tests passent,
+// piège #56). Il survit aux respawns d'un même process, pas à un process neuf.
+const _badTables = createExpiringSet({ ttlMs: 30 * 60 * 1000 });
+
 // Garantit une table à portée le temps d'exécuter fn (un craft), puis reprend la table si on l'a posée.
 // ⚠️ findBlock(6) > portée d'interaction (~4.5) : une table « proche » peut être INATTEIGNABLE (jungle :
 // posée sous la canopée pendant que le bot est dans l'arbre) → on s'en APPROCHE d'abord ; si le craft
@@ -869,7 +881,15 @@ async function withCraftingTable(fn) {
   let lastFail = null;   // dernier échec de fn() — propagé dans la raison (le libellé nu
                          // `table_present` a fait pointer 3 h de logs vers la table alors que
                          // la vraie cause était `no_recipe`, run world_mn14)
-  const t = _nearestTable(bot, TABLE_SEEK);
+  // Marque une table INUTILISABLE : liste noire + UN event par table (pas un par tentative).
+  const blacklistTable = (pos, why) => {
+    try {
+      if (!pos || _badTables.has(tableKey(pos))) return;
+      _badTables.add(tableKey(pos));
+      emit({ type: 'table_blacklisted', why, x: pos.x, y: pos.y, z: pos.z });
+    } catch (e) { /* best-effort : l'observabilité ne doit jamais casser un craft */ }
+  };
+  const t = _nearestTable(bot, TABLE_SEEK, { exclude: _badTables });
   if (t) {
     try {
       if (bot.entity.position.distanceTo(t.position) > 3) {
@@ -878,6 +898,10 @@ async function withCraftingTable(fn) {
           30000, () => { try { stopMotion(); } catch (e) {} }
         );
       }
+      // ⚠️ `withTimeout` ne REJETTE jamais (timeout comme erreur, il RÉSOUT `{ ok:false, reason }`) :
+      // le catch ci-dessous ne voit donc PAS un goto raté. Seule la DISTANCE dit si on est arrivé.
+      // Resté trop loin pour crafter (> TABLE_REACH - 1) = inatteignable → plus jamais re-tentée.
+      if (bot.entity.position.distanceTo(t.position) > TABLE_REACH - 1) blacklistTable(t.position, 'unreachable');
     } catch (e) { /* pas de chemin → on tentera la table portable */ }
     const r0 = await fn();
     if (r0.ok) return r0;                          // table existante atteinte → craft passé
@@ -887,9 +911,12 @@ async function withCraftingTable(fn) {
   // reclaim) → placeBlockNear échouait 'unknown_item' pour toujours. Une table se re-craft
   // en 2×2 SANS table (4 planks) → on la re-fabrique avant de la poser.
   let hasTableItem = ((bot.inventory && bot.inventory.items()) || []).some((i) => i.name === 'crafting_table');
+  // Les tables en liste noire sont INVISIBLES pour le plan : une table inatteignable « en vue »
+  // déclenchait `recycle` à chaque craft, une autre à portée de vue mais inutilisable faisait
+  // conclure `use_existing` (donc ne rien poser) alors qu'on ne pouvait pas s'en servir.
   const plan = tablePlan({
-    tableInReach: !!_nearestTable(bot, TABLE_REACH),
-    tableSeen: !!_nearestTable(bot, TABLE_SEEK),
+    tableInReach: !!_nearestTable(bot, TABLE_REACH, { exclude: _badTables }),
+    tableSeen: !!_nearestTable(bot, TABLE_SEEK, { exclude: _badTables }),
     hasTableItem,
   });
   // Une table est DÉJÀ à portée de craft : en poser une seconde ne peut RIEN changer (l'échec
@@ -902,7 +929,7 @@ async function withCraftingTable(fn) {
   // Table ABANDONNÉE en vue (une mort ou un timeout a coupé le cycle avant la reprise) : aller
   // la REPRENDRE plutôt que d'en fabriquer une neuve → le terrain se nettoie au lieu de se joncher.
   if (plan === 'recycle') {
-    const litter = _nearestTable(bot, TABLE_SEEK);
+    const litter = _nearestTable(bot, TABLE_SEEK, { exclude: _badTables });
     if (litter) {
       try {
         if (bot.entity.position.distanceTo(litter.position) > 3) {
@@ -913,6 +940,14 @@ async function withCraftingTable(fn) {
         }
         await reclaimBlock(litter.position);
       } catch (e) { /* pas de chemin → on retombe sur la fabrication */ }
+      // `reclaimBlock` ne LÈVE jamais (il avale ses échecs et n'émet que `reclaim_failed`) : le seul
+      // moyen de savoir que la reprise a raté est de regarder si la table est TOUJOURS là. Si oui elle
+      // est inutilisable (hors de portée, incassable…) → liste noire, sinon on la retenterait — 30 s de
+      // marche + 2 reprises ratées — à chaque craft suivant.
+      try {
+        const left = bot.blockAt(litter.position);
+        if (left && left.name === 'crafting_table') blacklistTable(litter.position, 'reclaim_failed');
+      } catch (e) { /* best-effort */ }
       hasTableItem = ((bot.inventory && bot.inventory.items()) || []).some((i) => i.name === 'crafting_table');
       emit({ type: 'table_recycled', ok: hasTableItem });
     }
@@ -940,7 +975,12 @@ async function withCraftingTable(fn) {
       } catch (e) {}
       place = await placeBlockNear(bot, 'crafting_table');
     }
-    if (!place.ok) return { ok: false, reason: 'no_table:' + (place.reason || '?') }; // sous-raison (diagnostic live)
+    if (!place.ok) {
+      // `no_table:no_space` seul ne dit rien du terrain : around/under = les 4 voisins et les 4 sols
+      // voisins (cf. placeBlockNear) → on voit ENFIN ce qui bloque la pose dans les logs de session.
+      emit({ type: 'table_place_failed', reason: place.reason, around: place.around, under: place.under });
+      return { ok: false, reason: 'no_table:' + (place.reason || '?') }; // sous-raison (diagnostic live)
+    }
   }
   await waitForBlock(place.pos, 'crafting_table'); // #3 : ne pas ouvrir la table avant qu'elle existe
   await sleep(300);                                // settle pose→ouverture (serveur + humanisation)
@@ -2691,8 +2731,14 @@ async function startMapper() {
     goto: async (wp) => {
       // stop-pour-répondre : pas de nouvelle jambe tant que le bot « tape » sa réponse.
       while (Date.now() < _convoPauseUntil) await sleep(250);
+      // MÊME RÈGLE que le goto par défaut de mapper.js : y ABSENT = altitude libre → but XZ (le y des
+      // jambes n'était que l'altitude COURANTE du bot → NoPath instantané sur terrain vallonné, mesuré
+      // sur world_ax5) ; y PRÉSENT = altitude réelle (remontée en surface) → but 3D.
+      const goal = wp.y == null
+        ? new pfGoals.GoalNearXZ(wp.x, wp.z, 8)
+        : new pfGoals.GoalNear(wp.x, wp.y, wp.z, 8);
       const r = await withTimeout(
-        bot.pathfinder.goto(new pfGoals.GoalNear(wp.x, wp.y, wp.z, 8)),
+        bot.pathfinder.goto(goal),
         45000, () => { try { stopMotion(); } catch (e) {} });
       if (r && r.ok === false) throw new Error(r.reason || 'goto_failed');
     },
@@ -3018,20 +3064,65 @@ function settleDeathDebt(reason) {
   emit({ type: 'death_debt_settled', reason });
 }
 
+// Dette DIFFÉRÉE (de nuit, bot nu : cf. homes.debtAction → 'defer') : on ne se téléporte PAS au lieu de
+// mort — là où les monstres viennent de nous tuer — et on re-décide 60 s plus tard (aube levée, armure
+// trouvée, ou TTL de despawn → dette levée : la boucle est bornée par les 5 min de la dette).
+// ⚠️ GARDES DE NIVEAU MODULE, comme `_deathDebtBusy` (l.~267) : le timer les lit HORS de tout onSpawn.
+// Déclarées dans onSpawn, elles lèveraient un ReferenceError au premier tir et TUERAIENT le process
+// alors que les tests passent (piège #56, vécu avec `panicInFlight`).
+let _deathDebtRetryTimer = null;   // UNE seule relance en attente à la fois
+let _deathDebtDeferredAt = null;   // `at` de la dette dont le report est déjà tracé → UNE trace par dette
+const DEATH_DEBT_RETRY_MS = 60000;
+
+/** Diffère la récupération : trace UNE fois par dette, arme UNE relance (jamais deux en attente). */
+function deferDeathDebt(debt, reason) {
+  if (_deathDebtDeferredAt !== debt.at) {
+    _deathDebtDeferredAt = debt.at;
+    emit({ type: 'death_debt_deferred', reason });
+  }
+  if (_deathDebtRetryTimer) return;
+  _deathDebtRetryTimer = setTimeout(() => {
+    _deathDebtRetryTimer = null;
+    // Mort entre-temps : le prochain `spawn` relance de toute façon (onSpawn relit la dette persistée).
+    if (bot.isAlive === false) return;
+    // `.catch` OBLIGATOIRE : un rejet non géré tue le process (Node ≥ 15).
+    recoverDeathDebt().catch(() => { /* best-effort : la dette reste, le TTL la lèvera */ });
+  }, DEATH_DEBT_RETRY_MS);
+}
+
 /**
  * Récupération post-respawn : /home death → tuer tout ce qui traîne → ramasser → ne lever la dette
  * QUE s'il ne reste plus rien au sol. Sinon la dette reste et le prochain respawn y revient.
  * Prioritaire sur la reprise de chaîne ; les réflexes de survie restent armés pendant toute la manœuvre.
+ * DE NUIT et NU (< 2 pièces portées) on ne part pas : la dette est différée (deferDeathDebt). Sinon le
+ * bot est arraché à son abri et renvoyé là où il vient de mourir — 9 morts en 4 min (run de référence).
  */
 async function recoverDeathDebt() {
   if (_deathDebtBusy) return;
   const debt0 = loadDeathDebt();
-  const first = debtAction({ debt: debt0, now: Date.now() });
+  // Heure + armure relues à CHAQUE décision (la première, puis le re-contrôle après l'attente plus bas).
+  // `bot.time` peut manquer juste après un spawn/une reconnexion : `null` = inconnu → pas de garde-fou
+  // (même convention que mapperNightGuard / regroupNightGuard).
+  const decide = () => {
+    let worn = 0;
+    try { worn = _wornArmor().size; } catch (e) { /* inventaire pas encore livré → 0 = prudent */ }
+    return debtAction({
+      debt: debt0, now: Date.now(), worn,
+      night: (bot.time && bot.time.timeOfDay != null) ? isNight(bot) : null,
+    });
+  };
+  const first = decide();
   if (first.act === 'none') return;
   if (first.act === 'settle') { settleDeathDebt(first.reason); return; }
+  if (first.act === 'defer') { deferDeathDebt(debt0, first.reason); return; }
   _deathDebtBusy = true;
   try {
     await sleep(1500);
+    // Re-contrôle : au spawn d'un process fraîchement relancé (self-healing après death_loop) l'heure
+    // n'est parfois pas encore livrée → la 1re décision a pu passer faute de savoir. Après l'attente
+    // elle l'est : nuit + nu → on diffère au lieu de se téléporter. (`return` → le finally lève la garde.)
+    const again = decide();
+    if (again.act === 'defer') { deferDeathDebt(debt0, again.reason); return; }
     emit({ type: 'death_recover_home', x: debt0.x, y: debt0.y, z: debt0.z });
     homewarp.goHome(bot, HOME_DEATH);
     await awaitWarp({ maxMs: 8000 }); // atterrissage OU warmup teleport-delay
@@ -3053,8 +3144,15 @@ async function recoverDeathDebt() {
 
 const DEATH_DROP_RADIUS = 16;   // rayon de mesure des drops restants (cf. homewarp.dropsWithin)
 const DEATH_CLEAR_RADIUS = 12;  // hostiles à écarter avant de ramasser
+// Seuil d'engagement : un bot NU (< 2 pièces portées — le même « nu » que homes.DEBT_MIN_WORN et
+// caution.CAUTION_MIN_WORN) ET à ≤ 5 cœurs n'a pas les moyens de « tuer tout » : un coup de
+// squelette ou de creeper le finit.
+const DEATH_CLEAR_MIN_WORN = 2;
+const DEATH_CLEAR_MIN_HP = 10;
 
-/** Engage les hostiles proches du lieu de mort (borné) : « le but est de tuer tout, pas de fuir ». */
+/** Engage les hostiles proches du lieu de mort (borné) : « le but est de tuer tout, pas de fuir ».
+ *  … SAUF nu ET blessé (< 2 pièces, PV ≤ 10) : on cesse d'engager et les réflexes de fuite existants
+ *  prennent le relais. Le cas armuré est inchangé. Relu à chaque tour : les PV baissent en combattant. */
 async function clearHostilesAround() {
   const deadline = Date.now() + 20000;
   while (Date.now() < deadline) {
@@ -3064,6 +3162,13 @@ async function clearHostilesAround() {
       target = list && list.length ? list[0] : null;
     } catch (e) { target = null; }
     if (!target) return;
+    let worn = 0;
+    try { worn = _wornArmor().size; } catch (e) { /* inventaire pas encore livré → 0 = prudent */ }
+    if (worn < DEATH_CLEAR_MIN_WORN && bot.health != null && bot.health <= DEATH_CLEAR_MIN_HP) {
+      try { bot.pvp && bot.pvp.stop(); } catch (e) {}
+      emit({ type: 'death_clear_aborted', reason: 'naked_low_hp', health: bot.health, worn });
+      return;
+    }
     // Même séquence que le réflexe de défense : arme en main PUIS attaque (au poing = 1 dégât).
     try {
       const w = bestWeapon(bot);

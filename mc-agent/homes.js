@@ -113,12 +113,32 @@ function openDebt(pos, now) {
   };
 }
 
+// ─── De NUIT, un bot nu ne retourne pas dans le camp qui vient de le tuer ────────────────────────
+// Trace live (run de référence, NethBot3 — 9 morts en 4 min) :
+//   16:50:22 shelter dig_in         ← le planner commence l'abri
+//   16:50:23 death_recover_home     ← /home death : TÉLÉPORTÉ au lieu de sa mort
+//   16:50:29 reflex fight zombie    ← re-tué par ce qui campe le loot
+// La récupération démarre au spawn, HORS du gestionnaire de tâches : elle arrachait le bot à son
+// abri nocturne pour le renvoyer exactement là où les monstres viennent de le tuer — une boucle de
+// mort. Sous ce nombre de pièces portées (même seuil que `caution.CAUTION_MIN_WORN`), un bot ne
+// survit pas à une nuit à découvert en difficulté hard : on DIFFÈRE jusqu'à l'aube ou jusqu'à ce
+// qu'il ait de quoi encaisser. La borne reste le despawn vanilla (5 min) : tant que la dette est
+// valide on peut attendre, passé le TTL elle se lève — de nuit comme de jour.
+const DEBT_MIN_WORN = 2;
+
 /**
  * Que faire de la dette maintenant ? (pur)
- * @param {{debt: object|null, now: number, arrived?: boolean, dropsLeft?: number, ttlMs?: number}} o
- * @returns {{act: 'none'|'recover'|'settle', reason?: string}}
+ * @param {{debt: object|null, now: number, arrived?: boolean, dropsLeft?: number, ttlMs?: number,
+ *          night?: boolean|null, worn?: number}} o
+ *   `night` : true = il fait nuit, false = jour, null/absent = heure INCONNUE (bot.time pas encore
+ *   livré juste après un spawn) → aucun garde-fou, comportement d'avant. `worn` : nombre de pièces
+ *   d'armure portées (absent/NaN = 0, prudent).
+ * @returns {{act: 'none'|'recover'|'defer'|'settle', reason?: string}}
  *   'recover' → /home death (puis tuer tout et ramasser) ;
+ *   'defer'   → PAS MAINTENANT : nuit + moins de 2 pièces portées, avant le départ. La dette reste
+ *               ouverte, l'appelant ne se téléporte pas et re-décide plus tard (relance) ;
  *   'settle'  → /delhome death, dette levée, retour au travail par /home work.
+ *   Priorité : dette absente/corrompue/expirée (TTL) > mesure sur place (`arrived`) > report nocturne.
  */
 function debtAction(o = {}) {
   const debt = o.debt;
@@ -130,11 +150,13 @@ function debtAction(o = {}) {
   if ((o.now - debt.at) > ttl) return { act: 'settle', reason: 'despawned' };
   if (o.arrived && (o.dropsLeft || 0) <= 0) return { act: 'settle', reason: 'recovered' };
   if (o.arrived) return { act: 'recover', reason: 'drops_left' };
+  // Avant le départ seulement (`arrived` a déjà tranché plus haut : sur place, on ne re-diffère pas).
+  if (o.night === true && (o.worn || 0) < DEBT_MIN_WORN) return { act: 'defer', reason: 'night_naked' };
   return { act: 'recover' };
 }
 
 module.exports = {
   HOME_SAFE, HOME_WORK, HOME_DEATH, HOMES, LEGACY_HOMES,
-  canBookmarkDeath, openDebt, debtAction, DEBT_TTL_MS,
+  canBookmarkDeath, openDebt, debtAction, DEBT_TTL_MS, DEBT_MIN_WORN,
   isSurfaceSpot, SAFE_HOME_MIN_Y, isSilentSafeFailure,
 };

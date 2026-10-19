@@ -2,7 +2,7 @@
 const { describe, it, before } = require('node:test');
 const assert = require('node:assert/strict');
 const { Vec3 } = require('vec3');
-const { placeBlockNear } = require('../skills/placeBlockNear');
+const { placeBlockNear, isBreakableClutter } = require('../skills/placeBlockNear');
 
 // ─── Mock bot factory ────────────────────────────────────────────────────────
 
@@ -21,6 +21,7 @@ function makeBot({ position, blocks = {}, inventory = [], toolFor = null }) {
   const equipCalls = [];
   const digCalls = [];
   const placeBlockCalls = [];
+  const order = [];   // chronologie dig/place (« on casse AVANT de poser »)
 
   return {
     entity: { position: new Vec3(position[0], position[1], position[2]) },
@@ -32,12 +33,18 @@ function makeBot({ position, blocks = {}, inventory = [], toolFor = null }) {
     equip: async (item, slot) => { equipCalls.push({ item: item && item.name, slot }); },
     dig: async (block) => {
       digCalls.push({ block });
-      // Simulate the block becoming air after digging
-      const k = `${Math.floor(block.x)},${Math.floor(block.y)},${Math.floor(block.z)}`;
+      order.push('dig:' + (block && block.name));
+      // Simulate the block becoming air after digging. Le vrai Block porte `.position` (blockAt
+      // l'attache) : on lit la case LÀ — l'ancienne lecture de block.x visait une clé NaN, donc le
+      // bloc cassé ne devenait jamais de l'air dans le mock (invisible tant qu'aucun test ne
+      // regardait ce qui reste après le cassage).
+      const p = (block && block.position) || block;
+      const k = `${Math.floor(p.x)},${Math.floor(p.y)},${Math.floor(p.z)}`;
       blockMap[k] = { name: 'air', boundingBox: 'empty' };
     },
     placeBlock: async (refBlock, face) => {
       placeBlockCalls.push({ refBlock, face });
+      order.push('place:' + (refBlock && refBlock.name));
       // Simule le bloc posé apparaissant à refBlock.position + face (comme le vrai monde)
       if (refBlock && refBlock.position && face) {
         const p = refBlock.position.plus(face);
@@ -48,6 +55,7 @@ function makeBot({ position, blocks = {}, inventory = [], toolFor = null }) {
     _equipCalls: equipCalls,
     _digCalls: digCalls,
     _placeBlockCalls: placeBlockCalls,
+    _order: order,
     // registry for bestToolFor (pickaxe for stone)
     registry: {
       blocksByName: {
@@ -412,5 +420,326 @@ describe('placeBlockNear : tunnel INONDE', () => {
     Object.assign(bot._blockMap, blocks);
     const r = await placeBlockNear(bot, 'crafting_table');
     assert.equal(r.ok, true, 'on doit pouvoir poser DANS l eau (le bloc chasse le fluide)');
+  });
+});
+
+// ─── ENCOMBREMENT CASSABLE : fleurs & petite végétation non solide ───────────────────────────────
+// Mesure live (run de 216 sessions) : `no_table:no_space` sur spare_picks ×391, furnace,
+// stone_pickaxe, stone_sword, wooden_pickaxe — et un bot EN SURFACE (y≈117, prairie d'altitude) a
+// échoué 4/4 `furnace` en 2 minutes. Cause : REPLACEABLE ne connaît que air/eau/herbes/neige. Une
+// FLEUR (boundingBox 'empty') n'est ni remplaçable (Pass 1 la saute), ni creusable (Pass 2 ne creuse
+// que les blocs PLEINS), ni acceptée par la Pass 4 → dans un champ de fleurs les 4 voisins sont
+// « encombrés » alors qu'un joueur casserait la fleur d'un coup de poing et poserait sa table.
+
+const emptyBlock = (name) => ({ name, boundingBox: 'empty' });
+const solidBlock = (name) => ({ name, boundingBox: 'block' });
+
+describe('isBreakableClutter', () => {
+  it('panel de base : poppy oui ; torche, eau, lave, pierre, air non', () => {
+    assert.equal(isBreakableClutter(emptyBlock('poppy')), true);
+    assert.equal(isBreakableClutter(emptyBlock('torch')), false);
+    assert.equal(isBreakableClutter(emptyBlock('water')), false);
+    assert.equal(isBreakableClutter(emptyBlock('lava')), false);
+    assert.equal(isBreakableClutter(solidBlock('stone')), false);
+    assert.equal(isBreakableClutter(emptyBlock('air')), false);
+  });
+
+  it('règle GÉNÉRIQUE : toute petite végétation non solide est cassable (pas une liste de fleurs)', () => {
+    const vegetation = [
+      'dandelion', 'poppy', 'blue_orchid', 'allium', 'azure_bluet', 'red_tulip', 'orange_tulip',
+      'white_tulip', 'pink_tulip', 'oxeye_daisy', 'cornflower', 'lily_of_the_valley', 'torchflower',
+      'wither_rose', 'pink_petals', 'dead_bush', 'sweet_berry_bush', 'oak_sapling', 'cherry_sapling',
+      'brown_mushroom', 'red_mushroom', 'crimson_fungus', 'warped_fungus', 'crimson_roots',
+      'warped_roots', 'nether_sprouts', 'glow_lichen', 'vine', 'hanging_roots', 'small_dripleaf',
+      'moss_carpet', 'white_carpet', 'leaf_litter', 'bush', 'firefly_bush', 'cactus_flower',
+      'sunflower', 'lilac', 'rose_bush', 'peony', 'tall_seagrass', 'powder_snow', 'sculk_vein',
+      // un nom qu'AUCUNE liste ne connaît : seul le boundingBox décide
+      'some_future_flower_nobody_listed',
+    ];
+    for (const n of vegetation) assert.equal(isBreakableClutter(emptyBlock(n)), true, n + ' doit être cassable');
+  });
+
+  it('JAMAIS : fluides, feu, portails, colonne de bulles', () => {
+    for (const n of ['water', 'flowing_water', 'lava', 'flowing_lava', 'fire', 'soul_fire',
+      'nether_portal', 'end_portal', 'end_gateway', 'bubble_column']) {
+      assert.equal(isBreakableClutter(emptyBlock(n)), false, n + ' ne doit jamais être cassé');
+    }
+  });
+
+  it('JAMAIS : torches — ce sont souvent NOS torches de tunnel', () => {
+    for (const n of ['torch', 'wall_torch', 'soul_torch', 'soul_wall_torch',
+      'redstone_torch', 'redstone_wall_torch']) {
+      assert.equal(isBreakableClutter(emptyBlock(n)), false, n + ' ne doit jamais être cassé');
+    }
+  });
+
+  it('JAMAIS : rails et redstone (mécanismes) — ni leviers, boutons, plaques de pression', () => {
+    for (const n of ['rail', 'powered_rail', 'detector_rail', 'activator_rail', 'redstone_wire',
+      'tripwire', 'tripwire_hook', 'lever', 'stone_button', 'oak_button', 'crimson_button',
+      'polished_blackstone_button', 'stone_pressure_plate', 'oak_pressure_plate',
+      'light_weighted_pressure_plate', 'heavy_weighted_pressure_plate']) {
+      assert.equal(isBreakableClutter(emptyBlock(n)), false, n + ' ne doit jamais être cassé');
+    }
+  });
+
+  it('JAMAIS : la toile d\'araignée (20 s à la main — on ne s\'y engage pas)', () => {
+    assert.equal(isBreakableClutter(emptyBlock('cobweb')), false);
+  });
+
+  it('un bloc PLEIN n\'est pas de l\'encombrement, quel que soit son nom (feuilles, cactus, tronc)', () => {
+    for (const n of ['oak_leaves', 'cactus', 'oak_log', 'stone', 'crafting_table']) {
+      assert.equal(isBreakableClutter(solidBlock(n)), false, n);
+    }
+  });
+
+  it('déjà REPLACEABLE → pas « encombrement » (la Pass 1 pose dedans SANS casser)', () => {
+    for (const n of ['air', 'cave_air', 'short_grass', 'fern', 'tall_grass', 'snow', 'seagrass', 'kelp']) {
+      assert.equal(isBreakableClutter(emptyBlock(n)), false, n);
+    }
+  });
+
+  it('bloc absent (chunk non chargé, null/undefined) → false', () => {
+    assert.equal(isBreakableClutter(null), false);
+    assert.equal(isBreakableClutter(undefined), false);
+  });
+});
+
+describe('placeBlockNear — Pass 1b (encombrement cassable)', () => {
+  // 4 voisins = 4 fleurs différentes, 4 sols pleins : le cas « prairie fleurie » du bug
+  function meadow() {
+    return makeBot({
+      position: [0, 64, 0],
+      blocks: {
+        '1,63,0': solidBlock('grass_block'), '1,64,0': emptyBlock('poppy'),
+        '-1,63,0': solidBlock('grass_block'), '-1,64,0': emptyBlock('dandelion'),
+        '0,63,1': solidBlock('grass_block'), '0,64,1': emptyBlock('blue_orchid'),
+        '0,63,-1': solidBlock('grass_block'), '0,64,-1': emptyBlock('oxeye_daisy'),
+      },
+      inventory: ['crafting_table'],
+    });
+  }
+
+  it('fleur sur les 4 voisins : casse la fleur de la 1re direction, PUIS pose la table à sa place', async () => {
+    const bot = meadow();
+    const r = await placeBlockNear(bot, 'crafting_table');
+    assert.equal(r.ok, true, 'la prairie fleurie ne doit plus donner no_space');
+    assert.deepEqual([r.pos.x, r.pos.y, r.pos.z], [1, 64, 0]);
+    assert.equal(bot._digCalls.length, 1, 'une seule fleur cassée — pas tout le champ');
+    assert.equal(bot._digCalls[0].block.name, 'poppy');
+    assert.equal(bot._placeBlockCalls.length, 1);
+    // la table s'accroche au SOL plein, face du dessus (jamais dans le vide)
+    assert.equal(bot._placeBlockCalls[0].refBlock.name, 'grass_block');
+    assert.deepEqual(
+      [bot._placeBlockCalls[0].face.x, bot._placeBlockCalls[0].face.y, bot._placeBlockCalls[0].face.z],
+      [0, 1, 0]);
+    assert.deepEqual(bot._order, ['dig:poppy', 'place:grass_block'], 'on casse AVANT de poser');
+    assert.ok(bot._equipCalls.some((e) => e.item === 'crafting_table'), 'doit équiper la table');
+  });
+
+  it('la fleur est préférée à un MUR : on ne creuse pas la pierre quand une fleur suffit (1b avant 2)', async () => {
+    // Est = mur de pierre (la Pass 2 le creuserait en 1er), Ouest = fleur. Avec 1b avant 2,
+    // c'est la fleur qui saute — gratuit, sans outil, sans abîmer le décor.
+    const bot = makeBot({
+      position: [0, 64, 0],
+      blocks: {
+        '1,63,0': solidBlock('stone'), '1,64,0': solidBlock('stone'),
+        '-1,63,0': solidBlock('grass_block'), '-1,64,0': emptyBlock('dandelion'),
+      },
+      inventory: ['crafting_table'],
+    });
+    const r = await placeBlockNear(bot, 'crafting_table');
+    assert.equal(r.ok, true);
+    assert.equal(r.pos.x, -1, 'posée côté fleur');
+    assert.equal(bot._digCalls.length, 1);
+    assert.equal(bot._digCalls[0].block.name, 'dandelion', 'on ne creuse PAS la pierre');
+  });
+
+  it('une torche n\'est JAMAIS cassée : seule la fleur voisine saute', async () => {
+    const bot = makeBot({
+      position: [0, 64, 0],
+      blocks: {
+        '1,63,0': solidBlock('grass_block'), '1,64,0': emptyBlock('torch'),
+        '-1,63,0': solidBlock('grass_block'), '-1,64,0': emptyBlock('wall_torch'),
+        '0,63,1': solidBlock('grass_block'), '0,64,1': emptyBlock('soul_torch'),
+        '0,63,-1': solidBlock('grass_block'), '0,64,-1': emptyBlock('poppy'),
+      },
+      inventory: ['crafting_table'],
+    });
+    const r = await placeBlockNear(bot, 'crafting_table');
+    assert.equal(r.ok, true);
+    assert.equal(r.pos.z, -1, 'posée sur la case de la fleur (nord)');
+    assert.deepEqual(bot._digCalls.map((c) => c.block.name), ['poppy'], 'aucune torche cassée');
+  });
+
+  it('QUE des torches autour : on ne casse rien et on rend no_space (plutôt que d\'éteindre le tunnel)', async () => {
+    const bot = makeBot({
+      position: [0, 64, 0],
+      blocks: {
+        '1,63,0': solidBlock('stone'), '1,64,0': emptyBlock('torch'),
+        '-1,63,0': solidBlock('stone'), '-1,64,0': emptyBlock('wall_torch'),
+        '0,63,1': solidBlock('stone'), '0,64,1': emptyBlock('soul_torch'),
+        '0,63,-1': solidBlock('stone'), '0,64,-1': emptyBlock('redstone_wall_torch'),
+      },
+      inventory: ['crafting_table'],
+    });
+    const r = await placeBlockNear(bot, 'crafting_table');
+    assert.equal(r.ok, false);
+    assert.equal(r.reason, 'no_space');
+    assert.equal(bot._digCalls.length, 0, 'aucune torche ne doit être cassée');
+    assert.equal(bot._placeBlockCalls.length, 0);
+  });
+
+  it('eau : comportement inchangé — posée DIRECTEMENT (REPLACEABLE, Pass 1), aucun cassage', async () => {
+    const bot = makeBot({
+      position: [0, 64, 0],
+      blocks: {
+        '1,63,0': solidBlock('stone'), '1,64,0': emptyBlock('water'),
+        '-1,63,0': solidBlock('stone'), '-1,64,0': emptyBlock('water'),
+      },
+      inventory: ['crafting_table'],
+    });
+    const r = await placeBlockNear(bot, 'crafting_table');
+    assert.equal(r.ok, true);
+    assert.equal(bot._digCalls.length, 0, 'on ne casse pas de l\'eau');
+    assert.equal(bot._placeBlockCalls.length, 1);
+  });
+
+  it('cassage refusé sur la 1re fleur (rejet) → on tente la direction suivante, sans planter', async () => {
+    const bot = meadow();
+    const realDig = bot.dig;
+    bot.dig = async (block) => {
+      if (block.name === 'poppy') throw new Error('dig refusé par le serveur');
+      return realDig(block);
+    };
+    const r = await placeBlockNear(bot, 'crafting_table');
+    assert.equal(r.ok, true, 'la 2e fleur doit prendre le relais');
+    assert.equal(r.pos.x, -1, 'ouest = direction suivante après l\'est');
+    assert.equal(bot._digCalls[bot._digCalls.length - 1].block.name, 'dandelion');
+  });
+
+  it('pose fantôme APRÈS cassage (placeBlock sans effet serveur) → jamais un succès silencieux (#6)', async () => {
+    // Une seule fleur : chaque pose non confirmée coûte ~1,2 s d'attente réelle (6 × 200 ms).
+    const bot = makeBot({
+      position: [0, 64, 0],
+      blocks: { '1,63,0': solidBlock('grass_block'), '1,64,0': emptyBlock('poppy') },
+      inventory: ['crafting_table'],
+    });
+    bot.placeBlock = async () => { /* aucun effet serveur : la table n'apparaît jamais */ };
+    const r = await placeBlockNear(bot, 'crafting_table');
+    assert.equal(r.ok, false, 'une pose non confirmée ne doit JAMAIS être un succès');
+    assert.equal(r.reason, 'no_space');
+    // le diagnostic décrit ce qui RESTE à l'échec : la fleur a bien été cassée (air), le sol est plein
+    // → une case parfaitement posable qui n'a rien donné = désync client/serveur, pas un manque de place
+    assert.equal(r.around[0], 'air');
+    assert.equal(r.under[0], 'grass_block');
+  });
+
+  it('Pass 4 : sol voisin ABSENT mais paroi pleine + fleur sur la case → casse la fleur, pose contre la paroi', async () => {
+    const bot = makeBot({
+      position: [0.5, 64, 0.5],
+      blocks: {
+        '0,63,0': solidBlock('stone'),              // sol sous le bot
+        '1,64,0': emptyBlock('poppy'),              // case cible occupée par une fleur
+        // PAS de sol en 1,63,0 → Pass 1/1b/2 abandonnent
+        '1,64,1': solidBlock('stone'),              // paroi latérale où s'accrocher
+      },
+      inventory: ['crafting_table'],
+    });
+    const r = await placeBlockNear(bot, 'crafting_table');
+    assert.equal(r.ok, true, 'la fleur ne doit pas empêcher la pose contre la paroi');
+    assert.equal(r.pos.x, 1);
+    assert.equal(bot._digCalls.length, 1);
+    assert.equal(bot._digCalls[0].block.name, 'poppy');
+    assert.deepEqual(bot._order, ['dig:poppy', 'place:stone'], 'on casse AVANT de poser');
+    // face = cible − référence (equals : `scaled(-1)` produit des −0 que deepEqual distinguerait de 0)
+    assert.ok(bot._placeBlockCalls[0].face.equals(new Vec3(0, 0, -1)), 'face = cible − référence');
+  });
+
+  it('Pass 4 : une torche sur la case n\'est PAS cassée, même avec une paroi pleine à côté', async () => {
+    const bot = makeBot({
+      position: [0.5, 64, 0.5],
+      blocks: {
+        '0,63,0': solidBlock('stone'),
+        '1,64,0': emptyBlock('torch'),
+        '1,64,1': solidBlock('stone'),
+      },
+      inventory: ['crafting_table'],
+    });
+    const r = await placeBlockNear(bot, 'crafting_table');
+    assert.equal(r.ok, false);
+    assert.equal(r.reason, 'no_space');
+    assert.equal(bot._digCalls.length, 0);
+  });
+
+  it('Pass 4 : cassage impossible (rejet) → pas de boucle sur les 6 faces, no_space propre', async () => {
+    const bot = makeBot({
+      position: [0.5, 64, 0.5],
+      blocks: {
+        '0,63,0': solidBlock('stone'),
+        '1,64,0': emptyBlock('poppy'),
+        '1,64,1': solidBlock('stone'),
+        '1,64,-1': solidBlock('stone'),
+        '2,64,0': solidBlock('stone'),
+      },
+      inventory: ['crafting_table'],
+    });
+    let digs = 0;
+    bot.dig = async () => { digs += 1; throw new Error('dig refusé'); };
+    const r = await placeBlockNear(bot, 'crafting_table');
+    assert.equal(r.ok, false);
+    assert.equal(r.reason, 'no_space');
+    assert.equal(digs, 1, 'un cassage qui échoue ne se retente pas face après face');
+  });
+});
+
+// ─── DIAGNOSTIC : savoir CE QUI bloque quand tout échoue ─────────────────────────────────────────
+// Le prochain `no_table:no_space` ne doit plus être muet : `reason` reste inchangé (des appelants
+// testent `reason === 'no_space'` et `'no_table:' + reason`), mais le retour décrit le terrain —
+// `around` = les 4 cases voisines (niveau pieds), `under` = les 4 sols voisins, dans l'ordre
+// Est, Ouest, Sud (+Z), Nord (−Z).
+describe('placeBlockNear — diagnostic d\'échec (around / under)', () => {
+  it('échec total : reason inchangé + around/under décrivent les 4 voisins dans l\'ordre E, O, S, N', async () => {
+    const bot = makeBot({
+      position: [0, 64, 0],
+      blocks: {
+        '1,63,0': solidBlock('stone'),     '1,64,0': solidBlock('bedrock'),      // est : bedrock (incassable)
+        '-1,63,0': solidBlock('dirt'),     '-1,64,0': emptyBlock('torch'),       // ouest : torche (jamais cassée)
+        '0,63,1': emptyBlock('water'),     '0,64,1': emptyBlock('cobweb'),       // sud : toile, sol = eau (non plein)
+        /* nord : '0,63,-1' absent (chunk non chargé) */ '0,64,-1': emptyBlock('lava'),
+      },
+      inventory: ['crafting_table'],
+    });
+    const r = await placeBlockNear(bot, 'crafting_table');
+    assert.equal(r.ok, false);
+    assert.equal(r.reason, 'no_space', 'reason NE CHANGE PAS : des appelants le testent');
+    assert.deepEqual(r.around, ['bedrock', 'torch', 'cobweb', 'lava']);
+    assert.deepEqual(r.under, ['stone', 'dirt', 'water', 'unloaded'], 'sol absent = « unloaded »');
+  });
+
+  it('unknown_item reste un retour minimal (rien à diagnostiquer côté terrain)', async () => {
+    const bot = makeBot({ position: [0, 64, 0], blocks: {}, inventory: ['dirt'] });
+    const r = await placeBlockNear(bot, 'crafting_table');
+    assert.equal(r.reason, 'unknown_item');
+  });
+});
+
+// ─── Câblage index.js : l'échec de pose doit être ÉMIS (sinon le diagnostic n'existe qu'en test) ─
+// Un test qui injecte ne prouve pas qu'on BRANCHE : withCraftingTable est une closure d'index.js,
+// on épingle donc le câblage dans la source (même patron que movement_tempmoves.test.js).
+describe('index.js — withCraftingTable émet table_place_failed avant de renvoyer no_table', () => {
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const src = fs.readFileSync(path.join(__dirname, '..', 'index.js'), 'utf8');
+
+  it('emit({ type: \'table_place_failed\', reason, around, under }) juste avant le return \'no_table:…\'', () => {
+    const m = src.match(/emit\(\{\s*type:\s*'table_place_failed'([^}]*)\}\);[\s\S]{0,160}?reason:\s*'no_table:'/);
+    assert.ok(m, 'l\'event table_place_failed doit précéder le retour no_table: dans withCraftingTable');
+    assert.match(m[1], /reason:\s*place\.reason/);
+    assert.match(m[1], /around:\s*place\.around/);
+    assert.match(m[1], /under:\s*place\.under/);
+  });
+
+  it('un seul site d\'émission (pas de doublon ailleurs dans index.js)', () => {
+    assert.equal((src.match(/'table_place_failed'/g) || []).length, 1);
   });
 });

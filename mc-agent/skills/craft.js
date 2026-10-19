@@ -16,10 +16,47 @@ function _itemId(bot, name) {
 const TABLE_REACH = 6;    // portée de craft (bot.craft)
 const TABLE_SEEK = 48;    // portée de RECHERCHE (on marche jusqu'à la table trouvée)
 
-function _nearestTable(bot, maxDistance = TABLE_REACH) {
+// Clé d'une table dans la LISTE NOIRE des tables inutilisables (cf. `_nearestTable` / `exclude`) :
+// les coordonnées ENTIÈRES du bloc, « x,y,z ». `Math.floor` (pas `|0`, qui tronque vers zéro :
+// -2.1 donnerait -2 au lieu du bloc -3), et surtout pas `Vec3.toString()` — son format « (x, y, z) »
+// n'est pas un contrat de la lib. Une position fractionnaire désigne le bloc qui la contient.
+function tableKey(pos) {
+  return Math.floor(pos.x) + ',' + Math.floor(pos.y) + ',' + Math.floor(pos.z);
+}
+
+// Table de craft la plus proche dans `maxDistance`.
+//
+// `opts.exclude` = LISTE NOIRE de tables INUTILISABLES : tout objet exposant `has(clé)` (clé =
+// `tableKey`) — en pratique un `createExpiringSet`. Run du 17-18/08 (216 sessions) :
+// `reclaim_failed` ×11 565 et `table_recycled` ×11 440, quasi 1:1. Une table INATTEIGNABLE (dans le
+// tunnel d'un autre, derrière un mur, au-dessus d'un vide) était re-vue à CHAQUE craft : marche de
+// 30 s, reprise ratée, table neuve semée — puis rebelote au craft suivant, à l'infini.
+//
+// Sans `exclude`, le chemin est EXACTEMENT l'historique (un seul `findBlock` — des tests figent la
+// forme de l'appel, et le `hasTable` du contexte planner passe aussi par là). Avec, `findBlock` ne
+// suffit plus : il ne rend que la PLUS PROCHE, donc si c'est justement la table interdite on reste
+// aveugle à toutes les autres. On demande plusieurs candidates (`findBlocks`, count 16 : ça borne
+// le coût du scan), on les TRIE nous-mêmes par distance au bot (l'ordre rendu par la lib n'est pas
+// un contrat) et on prend la 1re non exclue. `null` si toutes le sont — y compris le cas limite où
+// les 16 plus proches sont noires : le bot en pose alors une neuve, qu'il reprend ensuite.
+function _nearestTable(bot, maxDistance = TABLE_REACH, opts = {}) {
   const def = bot.registry && bot.registry.blocksByName && bot.registry.blocksByName.crafting_table;
   if (!def) return null;
-  return bot.findBlock({ matching: [def.id], maxDistance }) || null;
+  const exclude = opts && opts.exclude;
+  if (!exclude) return bot.findBlock({ matching: [def.id], maxDistance }) || null;
+
+  const found = bot.findBlocks({ matching: [def.id], maxDistance, count: 16 }) || [];
+  const from = bot.entity && bot.entity.position;
+  // Distance² maison : les positions rendues peuvent être des Vec3 OU des objets nus (stubs).
+  // Sans position du bot on garde l'ordre de la lib (qui trie déjà par distance, mais sans le garantir).
+  const d2 = (p) => (p.x - from.x) ** 2 + (p.y - from.y) ** 2 + (p.z - from.z) ** 2;
+  const ordered = from ? found.slice().sort((a, b) => d2(a) - d2(b)) : found;
+  for (const pos of ordered) {
+    if (exclude.has(tableKey(pos))) continue;
+    const block = bot.blockAt(pos);
+    if (block) return block;      // chunk évaporé entre deux appels → blockAt nul → candidate suivante
+  }
+  return null;
 }
 
 function _invMap(bot) {
@@ -121,4 +158,4 @@ function tablePlan({ tableInReach = false, tableSeen = false, hasTableItem = fal
   return 'craft_then_place';
 }
 
-module.exports = { craftItem, _nearestTable, tablePlan, TABLE_REACH, TABLE_SEEK };
+module.exports = { craftItem, _nearestTable, tableKey, tablePlan, TABLE_REACH, TABLE_SEEK };

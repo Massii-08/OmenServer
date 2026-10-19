@@ -37,7 +37,8 @@ function makeBot({ target = null, biome = null, worldKey = null } = {}) {
         const tx = goal && (goal.x !== undefined ? goal.x : goal.target && goal.target.x);
         const ty = goal && (goal.y !== undefined ? goal.y : goal.target && goal.target.y);
         const tz = goal && (goal.z !== undefined ? goal.z : goal.target && goal.target.z);
-        if (typeof tx === 'number') { calls.goto.push({ x: tx, y: ty, z: tz }); bot.entity.position = pos(tx, ty, tz); }
+        // But XZ (GoalNearXZ des waypoints d'explore : pas de y) → le fake garde l'altitude du bot.
+        if (typeof tx === 'number') { calls.goto.push({ x: tx, y: ty, z: tz }); bot.entity.position = pos(tx, typeof ty === 'number' ? ty : bot.entity.position.y, tz); }
       },
     },
     collectBlock: {
