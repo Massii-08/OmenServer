@@ -257,6 +257,18 @@ def _meta(run_dir) -> Dict[str, Any]:
     return meta if isinstance(meta, dict) else {}
 
 
+def _run_config(job_id: str) -> Optional[Dict[str, Any]]:
+    """Config d'un run telle qu'écrite à son lancement (``config.json``), ou None
+    si le fichier est absent, illisible ou n'est pas un objet JSON.
+
+    Rendue TELLE QUELLE, sans revalidation : elle a été validée à SON lancement,
+    et la compléter avec les défauts d'aujourd'hui décrirait un scan qui n'a
+    jamais tourné ainsi.
+    """
+    config = _read_json(_run_dir(job_id) / "config.json")
+    return config if isinstance(config, dict) else None
+
+
 def _mtime_iso(path) -> Optional[str]:
     try:
         return datetime.fromtimestamp(Path(path).stat().st_mtime).isoformat(timespec="seconds")
@@ -523,25 +535,39 @@ def stocks_config(current_user: User = Depends(require_role("admin", "money"))):
 @router.post("/run")
 def stocks_run(data: Optional[RunRequest] = None,
                current_user: User = Depends(require_role("admin", "money"))):
-    """Config partielle -> validée, enregistrée comme défauts, scan lancé.
+    """Config partielle -> validée, scan lancé, PUIS enregistrée comme défauts.
 
     Ne lance JAMAIS un second scan par-dessus un scan vivant : on rend celui
-    qui tourne (``already_running``), avec la config validée et ses
-    avertissements pour que l'UI les montre quand même.
+    qui tourne (``already_running``). La demande n'a alors donné lieu à AUCUN
+    scan, donc elle ne laisse aucune trace :
+
+    - ses réglages ne deviennent pas les défauts : ceux-ci suivent le dernier
+      scan réellement LANCÉ, pas le dernier clic (un lancement raté non plus) ;
+    - la réponse décrit le scan VIVANT, pas la demande : ``config`` est son
+      ``config.json`` tel qu'écrit à son lancement (``None`` s'il est absent
+      ou illisible) et ``warnings`` est vide, car les avertissements d'une
+      demande refusée ne décrivent aucun scan. L'UI fusionne ``config`` dans
+      ses réglages puis affiche ``warnings`` : avec ceux de la demande, elle
+      montrerait des réglages et des avertissements qui ne correspondent à
+      aucun scan.
     """
     clean, warnings = scan_config.validate(_payload(data))
-    try:
-        # Le dernier réglage lancé devient le réglage proposé la fois suivante.
-        scan_config.save_defaults(clean)
-    except OSError as e:
-        # Confort seulement : un disque capricieux ne doit pas bloquer le scan.
-        logger.warning("[Scanner d'actions] défauts non enregistrés: %r", e)
     try:
         started = _start_run(current_user.username, clean)
     except Exception as e:  # noqa: BLE001 — déjà journalisé par _start_run
         raise HTTPException(status_code=500,
                             detail="Lancement du scan impossible (voir le journal du serveur)"
                             ) from e
+    if started["already_running"]:
+        return {"job_id": started["job_id"], "already_running": True,
+                "warnings": [], "config": _run_config(started["job_id"])}
+    try:
+        # Le dernier réglage lancé devient le réglage proposé la fois suivante.
+        scan_config.save_defaults(clean)
+    except OSError as e:
+        # Confort seulement : le scan est déjà parti, un disque capricieux ne
+        # doit pas transformer son lancement en erreur.
+        logger.warning("[Scanner d'actions] défauts non enregistrés: %r", e)
     return {"job_id": started["job_id"], "already_running": started["already_running"],
             "warnings": warnings, "config": clean}
 

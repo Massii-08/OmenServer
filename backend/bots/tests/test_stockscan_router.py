@@ -251,9 +251,10 @@ def test_run_does_not_stack_a_second_run(tmp_path, monkeypatch):
     assert r.status_code == 200
     body = r.json()
     assert body["job_id"] == first and body["already_running"] is True
-    # l'UI montre quand même la config validée et ses avertissements
-    assert {"code": "unknown_market", "value": "atlantis"} in body["warnings"]
-    assert body["config"]["markets"] == ["italy"]
+    # la réponse décrit le scan qui TOURNE (lancé sans corps = les défauts), pas
+    # la demande refusée ni ses avertissements — détail dans les tests « refusé »
+    assert body["config"] == cfgmod.DEFAULTS
+    assert body["warnings"] == []
     assert len(list((tmp_path / "runs").iterdir())) == 1
     assert len(h["launches"]) == 1
 
@@ -265,6 +266,141 @@ def test_the_live_run_is_detected_from_disk_after_a_backend_restart(tmp_path, mo
     body = c.post(API + "/run", json={}).json()
     assert body["job_id"] == first and body["already_running"] is True
     assert len(h["launches"]) == 1
+
+
+# --- Un lancement REFUSÉ (un scan tourne déjà) ne laisse AUCUNE trace ---------
+# L'UI fusionne ``config`` dans ses réglages puis affiche ``warnings`` ; le
+# serveur propose comme défauts « le dernier réglage LANCÉ ». Un clic refusé n'a
+# rien lancé : ni défauts écrasés, ni réponse qui décrit un scan inexistant.
+
+LIVE_CFG = {"markets": ["italy"], "top_n": 10, "shortlist": 30, "lang": "it"}
+# Différente en tout, et fautive : marché inconnu, top_n hors bornes (écrêté, et
+# la présélection suit), de quoi produire plusieurs avertissements.
+REFUSED_CFG = {"markets": ["uk", "spain", "atlantis"], "top_n": 9999, "lang": "en"}
+
+
+def _defaults_text(tmp_path):
+    return (tmp_path / "data" / "defaults.json").read_text(encoding="utf-8")
+
+
+def test_a_refused_run_never_overwrites_the_saved_defaults(tmp_path, monkeypatch):
+    c, h = make_client(tmp_path, monkeypatch)
+    first = c.post(API + "/run", json=LIVE_CFG).json()
+    before = _defaults_text(tmp_path)
+    assert json.loads(before) == first["config"]      # le scan lancé a enregistré le sien
+
+    r = c.post(API + "/run", json=REFUSED_CFG)
+    assert r.status_code == 200, r.text
+    assert r.json()["already_running"] is True
+    assert _defaults_text(tmp_path) == before         # pas même réécrit
+    # ce que l'UI proposera au prochain « Nouveau scan »
+    assert c.get(API + "/config").json()["defaults"] == first["config"]
+    assert len(h["launches"]) == 1
+
+
+def test_a_refused_run_answers_with_the_live_scans_config_and_no_warnings(tmp_path, monkeypatch):
+    c, h = make_client(tmp_path, monkeypatch)
+    first = c.post(API + "/run", json=LIVE_CFG).json()
+    requested, would_warn = cfgmod.validate(REFUSED_CFG)
+    assert would_warn and requested != first["config"]   # la prémisse : demande fautive et différente
+
+    r = c.post(API + "/run", json=REFUSED_CFG)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["job_id"] == first["job_id"] and body["already_running"] is True
+    on_disk = json.loads((_rd(tmp_path, first["job_id"]) / "config.json").read_text(encoding="utf-8"))
+    assert body["config"] == on_disk == first["config"]
+    assert body["config"] != requested
+    assert body["warnings"] == []
+    assert len(h["launches"]) == 1
+
+
+def test_a_refused_run_hands_back_the_live_config_as_written_not_revalidated(tmp_path, monkeypatch):
+    """Le config.json a été validé à SON lancement : le revalider le « complèterait »
+    avec les défauts d'aujourd'hui. Un scan lancé avant un déploiement qui ajoute un
+    champ (l'auto-deploy tourne chaque minute) serait décrit avec un réglage qu'il n'a pas."""
+    c, _ = make_client(tmp_path, monkeypatch)
+    first = _start(c)
+    legacy = {"markets": ["italy"], "top_n": 10}          # config d'avant un champ ajouté
+    (_rd(tmp_path, first) / "config.json").write_text(json.dumps(legacy), encoding="utf-8")
+
+    body = c.post(API + "/run", json={"lang": "en"}).json()
+    assert body["already_running"] is True
+    assert body["config"] == legacy
+    assert body["warnings"] == []
+
+
+def test_a_refused_run_reads_the_config_of_the_live_scan_not_of_the_newest_run(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+    first = c.post(API + "/run", json=LIVE_CFG).json()
+    _age(_rd(tmp_path, first["job_id"]), 600)             # le scan vivant n'est plus le plus récent...
+    newer = _seed_run(tmp_path, VALID_ID, age_days=0)     # ...un run terminé l'est, avec une autre config
+    (newer / "config.json").write_text(json.dumps({"markets": ["germany"], "top_n": 55}),
+                                       encoding="utf-8")
+
+    body = c.post(API + "/run", json=REFUSED_CFG).json()
+    assert body["job_id"] == first["job_id"] and body["already_running"] is True
+    assert body["config"] == first["config"]
+
+
+@pytest.mark.parametrize("content", [
+    None,                                   # fichier absent
+    b"",                                    # vide
+    b'{"markets": ["ital',                  # coupé en plein vol
+    b"pas du json",
+    b"\xff\xfe\x00",                        # pas de l'UTF-8
+    b"null", b"42", b'"texte"', b"[1, 2]",  # du JSON, mais pas une config (pas un objet)
+], ids=["absent", "vide", "coupe", "pas-du-json", "pas-utf8", "null", "nombre", "texte", "liste"])
+def test_a_refused_run_with_a_missing_or_unreadable_live_config_still_answers(
+        tmp_path, monkeypatch, content):
+    c, h = make_client(tmp_path, monkeypatch)
+    first = _start(c, LIVE_CFG)
+    before = _defaults_text(tmp_path)
+    config_file = _rd(tmp_path, first) / "config.json"
+    if content is None:
+        config_file.unlink()
+    else:
+        config_file.write_bytes(content)
+
+    r = c.post(API + "/run", json=REFUSED_CFG)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["job_id"] == first and body["already_running"] is True
+    assert body["config"] is None
+    assert body["warnings"] == []
+    assert _defaults_text(tmp_path) == before
+    assert len(h["launches"]) == 1
+
+
+def test_a_refused_run_after_a_backend_restart_reads_the_config_from_disk(tmp_path, monkeypatch):
+    """Après un restart d'uvicorn le registre mémoire est vide alors que le moteur
+    détaché tourne toujours : seul le disque sait quelle config il exécute."""
+    c, h = make_client(tmp_path, monkeypatch)
+    first = c.post(API + "/run", json=LIVE_CFG).json()
+    before = _defaults_text(tmp_path)
+    sr._stock_jobs.clear()                 # registre perdu (restart uvicorn)
+
+    r = c.post(API + "/run", json=REFUSED_CFG)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["job_id"] == first["job_id"] and body["already_running"] is True
+    assert body["config"] == first["config"]
+    assert body["warnings"] == []
+    assert _defaults_text(tmp_path) == before
+    assert len(h["launches"]) == 1
+
+
+def test_a_launch_failure_does_not_save_its_settings_as_defaults(tmp_path, monkeypatch):
+    """Les défauts suivent le dernier réglage LANCÉ : un lancement raté (500)
+    n'a rien lancé, comme un lancement refusé."""
+    c, _ = make_client(tmp_path, monkeypatch)
+
+    def boom(run_dir, job, username):
+        raise OSError("plus de pid disponible")
+
+    monkeypatch.setattr(sr, "_launch_subprocess", boom)
+    assert c.post(API + "/run", json=LIVE_CFG).status_code == 500
+    assert not (tmp_path / "data" / "defaults.json").exists()
 
 
 def test_run_starts_again_once_the_previous_one_finished(tmp_path, monkeypatch):
