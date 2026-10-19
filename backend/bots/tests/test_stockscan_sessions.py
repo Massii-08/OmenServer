@@ -5,6 +5,7 @@ européenne comparait le volume PARTIEL du jour en Europe (médiane 0,22-0,30)
 au volume COMPLET de la veille aux États-Unis (médiane 1,17) — 21 lignes US
 sur 25 — et confirmait des news du lundi avec des cours du vendredi.
 """
+from collections import Counter
 from datetime import datetime, timezone
 
 from backend.bots.stockscan import sessions as ss
@@ -116,23 +117,103 @@ def test_missing_rel_volume_stays_missing():
 
 
 # --------------------------------------------------------------------------- #
-# Présélection : une part réservée à chaque marché
+# Présélection : la MOITIÉ réservée à parts égales, le reste au mérite
 # --------------------------------------------------------------------------- #
 
+_PREFIX = {"america": "US", "italy": "IT", "france": "FR", "germany": "DE",
+           "switzerland": "CH"}
+
+
+def _ranked(*groups):
+    """``("america", 3), ("italy", 2)`` -> US0, US1, US2, IT0, IT1 (dans cet ordre)."""
+    return [{"symbol": "%s%d" % (_PREFIX.get(market, market), i), "market": market}
+            for market, count in groups for i in range(count)]
+
+
+def _in_rank_order(picked, ranked):
+    positions = [ranked.index(r) for r in picked]
+    return positions == sorted(positions)
+
+
+def test_half_of_the_shortlist_is_reserved():
+    # Verrou : le partage INTÉGRAL de la présélection donnait, sur le snapshot
+    # réel du 19/10, 4 lignes US sur 23 et 17 candidats sans catalyseur.
+    assert ss.SHORTLIST_RESERVED_SHARE == 0.5
+
+
 def test_quota_reserves_slots_for_every_market_then_fills_by_rank():
-    ranked = [{"symbol": "US%d" % i, "market": "america"} for i in range(10)] + \
-             [{"symbol": "IT%d" % i, "market": "italy"} for i in range(10)]
+    ranked = _ranked(("america", 10), ("italy", 10))
     picked = ss.shortlist_with_quota(ranked, 6, ["america", "italy"])
-    syms = [r["symbol"] for r in picked]
-    # 3 places réservées par marché, ordre du classement conservé
-    assert syms == ["US0", "US1", "US2", "IT0", "IT1", "IT2"]
+    # moitié réservée : 3 places // 2 marchés = 1 chacun, puis le mérite (les
+    # US, mieux classés ici) ; ordre du classement conservé
+    assert [r["symbol"] for r in picked] == ["US0", "US1", "US2", "US3", "US4", "IT0"]
+
+
+def test_reserved_half_is_split_evenly_and_the_rest_goes_to_merit():
+    # La configuration réelle : 40 places, 5 marchés -> 20 réservées (4 par
+    # marché) et 20 au classement global. Les US, mieux classés ici, prennent
+    # les 20 places au mérite : 24 US et 4 par place européenne, la répartition
+    # de la version de référence sur le snapshot du 19/10.
+    markets = ["switzerland", "italy", "germany", "france", "america"]
+    ranked = _ranked(("america", 50), ("switzerland", 10), ("italy", 10),
+                     ("germany", 10), ("france", 10))
+    picked = ss.shortlist_with_quota(ranked, 40, markets)
+    assert Counter(r["market"] for r in picked) == {
+        "america": 24, "switzerland": 4, "italy": 4, "germany": 4, "france": 4}
+    # chaque marché garde ses MEILLEURS titres, dans l'ordre du classement
+    assert [r["symbol"] for r in picked if r["market"] == "italy"] == ["IT0", "IT1", "IT2", "IT3"]
+    assert _in_rank_order(picked, ranked)
+
+
+def test_reserve_never_exceeds_half_of_an_odd_shortlist():
+    # 15 places : la moitié réservée est arrondie vers le BAS (7), soit 3 par
+    # marché — pas 4.
+    ranked = _ranked(("america", 20), ("italy", 10))
+    picked = ss.shortlist_with_quota(ranked, 15, ["america", "italy"])
+    assert Counter(r["market"] for r in picked) == {"america": 12, "italy": 3}
+
+
+def test_reserve_is_shared_among_the_markets_actually_present():
+    # Un marché demandé mais absent du classement (screener en échec) ne garde
+    # pas de place : la moitié réservée se partage entre les marchés PRÉSENTS.
+    ranked = _ranked(("america", 20), ("italy", 10))
+    picked = ss.shortlist_with_quota(ranked, 12, ["america", "italy", "france"])
+    assert Counter(r["market"] for r in picked) == {"america": 9, "italy": 3}
 
 
 def test_quota_gives_unused_slots_back_to_the_global_ranking():
-    ranked = [{"symbol": "US%d" % i, "market": "america"} for i in range(10)] + \
-             [{"symbol": "IT0", "market": "italy"}]
-    picked = ss.shortlist_with_quota(ranked, 6, ["america", "italy"])
-    assert [r["symbol"] for r in picked] == ["US0", "US1", "US2", "US3", "US4", "IT0"]
+    # 12 places, 2 marchés -> 3 réservées chacun ; l'Italie n'a qu'un titre.
+    ranked = _ranked(("america", 20), ("italy", 1))
+    picked = ss.shortlist_with_quota(ranked, 12, ["america", "italy"])
+    assert [r["symbol"] for r in picked] == ["US%d" % i for i in range(11)] + ["IT0"]
+
+
+def test_short_market_places_go_to_merit_not_to_the_other_quotas():
+    # 12 places, 3 marchés -> 2 réservées chacun. L'Italie n'en remplit qu'une :
+    # la place restante revient au CLASSEMENT GLOBAL (ici un titre américain),
+    # elle n'agrandit pas la réserve de la France.
+    ranked = _ranked(("america", 20), ("italy", 1), ("france", 10))
+    picked = ss.shortlist_with_quota(ranked, 12, ["america", "italy", "france"])
+    assert [r["symbol"] for r in picked] == \
+        ["US%d" % i for i in range(9)] + ["IT0", "FR0", "FR1"]
+
+
+def test_every_market_keeps_at_least_one_place():
+    # Petite présélection, beaucoup de marchés : 10 // 2 = 5 places réservées
+    # pour 8 marchés tomberait à 0 par marché — chacun en garde UNE.
+    markets = ["m%d" % i for i in range(8)]
+    ranked = _ranked(("m0", 30), *[(m, 2) for m in markets[1:]])
+    picked = ss.shortlist_with_quota(ranked, 10, markets)
+    counts = Counter(r["market"] for r in picked)
+    assert set(counts) == set(markets) and len(picked) == 10
+    assert counts["m0"] == 3                     # sa place réservée + les 2 du mérite
+    assert _in_rank_order(picked, ranked)
+
+
+def test_single_market_is_a_plain_ranking_cut():
+    ranked = _ranked(("italy", 30))
+    picked = ss.shortlist_with_quota(ranked, 12, ["america", "italy"])
+    assert picked == ranked[:12]
 
 
 def test_quota_never_returns_more_than_asked_nor_duplicates():
@@ -140,3 +221,8 @@ def test_quota_never_returns_more_than_asked_nor_duplicates():
               enumerate(["a", "b", "c", "a", "b", "c", "a"])]
     picked = ss.shortlist_with_quota(ranked, 4, ["a", "b", "c"])
     assert len(picked) == 4 and len({r["symbol"] for r in picked}) == 4
+    # plus de marchés que de places : une place réservée chacun dépasserait la
+    # taille demandée — on coupe, sans doublon, dans l'ordre du classement
+    picked = ss.shortlist_with_quota(ranked, 2, ["a", "b", "c"])
+    assert len(picked) == 2 and len({r["symbol"] for r in picked}) == 2
+    assert _in_rank_order(picked, ranked)

@@ -51,6 +51,17 @@ MIN_ELAPSED = 0.2
 # séance qu'on croit ouverte et qui ne l'est pas (férié).
 IMPLAUSIBLE_MEDIAN = 3.0
 
+# Part de la présélection RÉSERVÉE à parts égales entre les marchés présents ;
+# le reste va au classement global. Le partage INTÉGRAL (toute la présélection
+# répartie à parts égales), rejoué sur le snapshot réel du 19/10 à 13:30 UTC,
+# donnait 8 places par marché et une liste finale de 23 lignes dont 4
+# américaines et 17 candidats sans catalyseur — pour des États-Unis qui font
+# 61 % de l'univers et ont 60 sociétés qui publient leurs résultats sous
+# 7 jours. La version de référence (cette moitié + le volume « à l'heure »
+# rapporté à la médiane de son marché) donnait 24 US et 4 par place
+# européenne, et tous les marchés dans la liste finale (16 US, 9 Europe).
+SHORTLIST_RESERVED_SHARE = 0.5
+
 
 def _hm(text: str) -> Tuple[int, int]:
     hour, minute = text.split(":")
@@ -133,17 +144,19 @@ def adjust_rel_volume(rows: List[Dict[str, Any]],
 
 def shortlist_with_quota(ranked: Sequence[Dict[str, Any]], size: int,
                          markets: Iterable[str]) -> List[Dict[str, Any]]:
-    """Présélection de ``size`` lignes : une part égale RÉSERVÉE à chaque
-    marché (dans son ordre de classement), le reste au classement global.
+    """Présélection de ``size`` lignes : la part ``SHORTLIST_RESERVED_SHARE``
+    est RÉSERVÉE à parts égales entre les marchés présents (chacun ses
+    meilleurs titres, au moins une place), le reste au classement global.
 
     Les places qu'un marché ne remplit pas reviennent au classement global ;
-    la sortie garde l'ordre de ``ranked``.
+    jamais plus de ``size`` lignes ; la sortie garde l'ordre de ``ranked``
+    (avec un seul marché, cela revient à couper le classement).
     """
     size = max(0, int(size))
     present = [m for m in dict.fromkeys(markets) if any(r.get("market") == m for r in ranked)]
     chosen = set()
     if present and size:
-        per_market = size // len(present)
+        per_market = max(1, int(size * SHORTLIST_RESERVED_SHARE) // len(present))
         for market_id in present:
             taken = 0
             for index, row in enumerate(ranked):
