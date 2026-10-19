@@ -99,6 +99,26 @@ def test_parse_gbx_is_divided_by_hundred():
     assert shel["market_cap_meur"] == 175500.0
 
 
+def test_parse_gbx_value_traded_is_in_pounds_not_pence():
+    # Chiffres RÉELS de la sonde du 19/10 (LSE:RR.) : 13 313 707 titres ×
+    # 1327,2 pence = 1,767e10 pence = 176,7 M£, et TradingView rend
+    # ``Value.Traded`` = 176 699 519 — donc en LIVRES, alors que ``close`` et
+    # ``currency`` sont en pence. Le convertir comme des pence le rendait
+    # cent fois trop petit.
+    uk = mk.by_id("uk")
+    payload = {"totalCount": 1, "data": [{"s": "LSE:RR.", "d": _values(
+        name="RR.", description="Rolls-Royce Holdings plc", currency="GBX",
+        close=1327.2, volume=13313707, average_volume_10d_calc=20748745.0,
+        **{"Value.Traded": 176699519.304},
+        market_cap_basic=111914036139, fundamental_currency_code="GBP")}]}
+    rows, _ = sc.parse_response(payload, uk)
+    rr = rows[0]
+    assert rr["value_traded_meur"] == round(176699519.304 * 1.17 / 1e6, 2)
+    # le montant moyen, lui, est calculé depuis le cours en pence : inchangé
+    assert rr["avg_value_meur"] == round(20748745.0 * 1327.2 * 0.0117 / 1e6, 2)
+    assert rr["market_cap_meur"] == round(111914036139 * 1.17 / 1e6, 2)
+
+
 def test_parse_dedups_symbols_and_tolerates_short_rows():
     payload = {"totalCount": 2, "data": [
         {"s": "MIL:ENI", "d": ["ENI", "Eni", "stock", ["common"], "MIL", "EUR", 15.0]},
