@@ -8,13 +8,15 @@
 // seuil lu au mauvais endroit ne plante jamais : il rend juste la fonctionnalité morte (piège #61).
 //
 //   runEnsureFood  — la sortie « nourriture » : butin → remontée (à sec seulement) → chasse.
-//   runHuntCook    — la chaîne chasse → cuisson → pêche, UNE vague, jamais de trajet lointain.
+//   runHuntCook    — la chaîne chasse → cuisson → pêche, UNE vague. Un seul trajet lointain, et
+//                    seulement à vraie faim : l'EXPÉDITION vers le terrain à animaux (foodTrip.js).
 //
 // Les deux se partagent UN budget (food.createBudget) : chaque phase reçoit min(son plafond, ce qui
 // reste du total). Retiré de la chaîne (trop long pour ce qu'ils rapportent) : le trajet vers l'eau
 // connue (jusqu'à 300 s), la chasse à la ficelle (90 s) et les 3 vagues de 120 s. La ficelle vient
 // désormais du ramassage opportuniste APRÈS un combat contre une araignée.
 const F = require('./food');
+const TRIP = require('./foodTrip');
 const { surfaceTripNeeded, FOOD_SURFACE_Y } = require('./caution');
 
 const _noop = () => {};
@@ -94,11 +96,19 @@ async function runEnsureFood(d) {
  * `target` garde son sens historique (« pièces de viande voulues ») et se convertit en points :
  * 4 → 12 (le seuil du kit), 6 → 18 (≈ celui d'ensureFood). Un GAIN de points est un succès, même
  * sous le but : une chasse qui rapporte nourrit, et le planner / le timer re-décident ensuite.
+ *
+ * EXPÉDITION (optionnelle, 19/10) — deps en plus : { tripState():{isDay,y,migrating,ordered,busy,tripBusy},
+ *          grazingCell():{x,z,biome,dist}|null, tripLock?():bool, tripUnlock?():void,
+ *          tripWalk({cell,ms,token,cancel}):Promise<{ok,arrived,legs}>, tripTried?(cell):void }
+ * Aucun gibier à ≤ 32 blocs ET vraie faim (< 6 points) ET jour ET surface (foodTrip.shouldFoodTrip) :
+ * UNE marche vers la cellule à animaux la plus proche connue (≤ 75 s, hors budget), puis la chasse
+ * habituelle sur place avec le budget INTACT. Sans ces deps (ou à la moindre porte fermée) le
+ * comportement est strictement celui d'avant.
  */
 async function runHuntCook(d, target, opts = {}) {
   const emit = d.emit || _noop;
   const now = d.now || Date.now;
-  const budget = opts.budget || F.createBudget(opts.budgetMs != null ? opts.budgetMs : F.HUNT_COOK_BUDGET_MS, now);
+  let budget = opts.budget || F.createBudget(opts.budgetMs != null ? opts.budgetMs : F.HUNT_COOK_BUDGET_MS, now);
   const waves = opts.waves != null ? opts.waves : 1;
   const huntMs = opts.huntMs != null ? opts.huntMs : F.HUNT_WAVE_MS;
   const goal = opts.goalPoints != null ? opts.goalPoints : Number(target) * F.RAW_PIECE_POINTS;
@@ -113,70 +123,147 @@ async function runHuntCook(d, target, opts = {}) {
 
   const stats = { kills: 0, cooked: 0, fished: 0 };
   let why = 'no_passive';             // la raison d'échec la plus précise connue, affinée au fil des phases
+  let tripReason = null;              // l'expédition : pourquoi on est parti / pourquoi pas (tracé dans le bilan)
+  let trip = null;                    // l'expédition EN COURS : { cell, t0, pts0, kills0, locked, closed, arrived, legs }
+
+  // FIN d'expédition — UNE seule fois (idempotente), sur TOUS les chemins de sortie. Relâche le verrou
+  // (sinon le confine / le squad ne ramèneraient plus jamais le bot), annonce la fin (chaque
+  // `food_trip` a son `food_trip_done`) et, si l'expédition n'a rien rapporté, ÉCARTE la cellule : la
+  // même ne sera pas re-visée avant 20 min. Une expédition interrompue (tâche annulée, exception) n'est
+  // pas un échec de la cellule : elle reste éligible.
+  const closeTrip = (aborted) => {
+    const t = trip;
+    if (!t || t.closed) return;
+    t.closed = true;
+    let got = 0;
+    try { got = points() - t.pts0; } catch (e) { got = 0; }
+    const kills = stats.kills - t.kills0;
+    if (t.locked) { try { d.tripUnlock(); } catch (e) { /* best-effort : le verrou ne doit pas masquer la suite */ } }
+    const ev = { type: 'food_trip_done', got: Math.max(0, got), took_ms: now() - t.t0, kills, arrived: t.arrived, legs: t.legs };
+    if (aborted) ev.aborted = true;
+    emit(ev);
+    if (!aborted && !(kills > 0 || got > 0) && typeof d.tripTried === 'function') {
+      try { d.tripTried(t.cell); } catch (e) { /* best-effort */ }
+    }
+  };
+
   // Sortie UNIQUE : toute tentative laisse EXACTEMENT une trace (un échec silencieux finit toujours
   // par cacher un bug pendant des runs — #55a) et mesure ce qu'elle a coûté.
   const finish = (res) => {
-    emit({
+    closeTrip(res.reason === 'cancelled');
+    const ev = {
       type: 'hunt_cook_done', before, after: points(), goal, took_ms: now() - t0,
       kills: stats.kills, cooked: stats.cooked, fished: stats.fished,
       ok: !!res.ok, reason: res.reason || null,
-    });
+    };
+    if (tripReason) ev.trip = tripReason;   // « pourquoi il n'est pas parti » : sans ça `no_prey:no_passive` reste muet
+    emit(ev);
     return res;
   };
 
-  // 1) CHASSE — une vague, SEULEMENT si une proie est EN VUE. Le jeton dérivé s'arrête tout seul dès
-  //    que le but est atteint (huntPassive le relit à chaque proie) et est coupé à la fin de la vague :
-  //    rien ne court en fond après nous.
-  for (let wave = 0; wave < waves; wave++) {
-    if (cancelled()) return finish({ ok: false, reason: 'cancelled' });
-    if (points() >= goal) break;
-    if (budget.left() < F.MIN_PHASE_MS) { why = 'no_time'; break; }
-    if (!safe(d.passiveInView, false)) break;                   // illisible → pas de proie : on ne part pas à l'aveugle
-    why = 'no_gain';
-    const ctl = F.boundedToken(parent, () => points() >= goal);
-    let r = null;
-    try {
-      r = await d.hunt({ count: F.HUNT_MAX_KILLS, token: ctl.token, ms: budget.take(huntMs), cancel: ctl.cancel });
-    } catch (e) { r = null; }
-    ctl.cancel();
-    if (cancelled()) return finish({ ok: false, reason: 'cancelled' });
-    if (r && r.kills) stats.kills += r.kills;
-    if (!r || !r.ok) { why = 'hunt_failed'; break; }
-  }
+  try {
+    // 0) EXPÉDITION — aucun gibier à ≤ 32 blocs : la chasse ne partirait pas, et le bot reste à 0 point.
+    //    Si la faim est VRAIE (< 6 points), qu'il fait jour et qu'on est en surface (décision pure
+    //    foodTrip.shouldFoodTrip), UNE marche vers la cellule à animaux la plus proche CONNUE, puis la
+    //    chasse ci-dessous rejoue sur place. La marche a son propre plafond (75 s) : elle n'est PAS
+    //    facturée au budget de chasse, qu'on recrée avec ce qu'il restait AVANT de partir.
+    if (_tripWired(d) && !cancelled() && !safe(d.passiveInView, false)) {
+      let world = {};
+      try { world = d.tripState() || {}; } catch (e) { world = {}; }   // monde illisible → heure inconnue → on reste
+      const verdict = TRIP.shouldFoodTrip(Object.assign({}, world, {
+        points: points(), passiveInView: false, leftMs: budget.left(),
+      }));
+      tripReason = verdict.reason;
+      if (verdict.go) {
+        let cell = null;
+        try { cell = d.grazingCell() || null; } catch (e) { cell = null; }
+        if (!cell) tripReason = 'no_cell';
+        else if (typeof d.tripLock === 'function' && d.tripLock() === false) tripReason = 'trip_busy';
+        else {
+          tripReason = 'went';
+          trip = {
+            cell, t0: now(), pts0: points(), kills0: stats.kills,
+            locked: typeof d.tripLock === 'function', closed: false, arrived: false, legs: null,
+          };
+          emit({
+            type: 'food_trip', toX: cell.x, toZ: cell.z, biome: cell.biome,
+            dist: Math.round(Number(cell.dist) || 0), points: trip.pts0,
+          });
+          const leftBefore = budget.left();
+          // Le jeton se coupe tout seul dès qu'un gibier est en vue (la marche s'arrête à sa jambe
+          // et on chasse) ou que le but est atteint ; il suit aussi la tâche (annulée = on s'arrête).
+          const ctl = F.boundedToken(parent, () => safe(d.passiveInView, false) || points() >= goal);
+          let r = null;
+          try { r = await d.tripWalk({ cell, ms: TRIP.FOOD_TRIP_MS, token: ctl.token, cancel: ctl.cancel }); } catch (e) { r = null; }
+          ctl.cancel();
+          trip.arrived = !!(r && r.arrived);
+          trip.legs = r && r.legs != null ? r.legs : null;
+          budget = F.createBudget(leftBefore, now);
+          // (tâche annulée PENDANT la marche : la boucle de chasse ci-dessous s'arrête sur `cancelled()`)
+        }
+      }
+    }
 
-  // 2) CUISSON — un four EN POCHE, ≥ 2 crus du même type, du temps ET un but pas encore atteint : cuire
-  //    est un MOYEN d'y arriver (3 → 8 points la pièce), pas un rituel. Le cru qui atteint déjà le but
-  //    se mange tel quel. Le plus abondant d'abord ; le nombre de pièces est rogné par le temps restant.
-  {
-    let stacks = [];
-    try { stacks = d.rawStacks() || []; } catch (e) { stacks = []; }
-    for (const st of stacks) {
+    // 1) CHASSE — une vague, SEULEMENT si une proie est EN VUE. Le jeton dérivé s'arrête tout seul dès
+    //    que le but est atteint (huntPassive le relit à chaque proie) et est coupé à la fin de la vague :
+    //    rien ne court en fond après nous.
+    for (let wave = 0; wave < waves; wave++) {
       if (cancelled()) return finish({ ok: false, reason: 'cancelled' });
       if (points() >= goal) break;
-      const plan = F.cookPlan({ raw: st.count, furnace: safe(d.hasFurnace, false), leftMs: budget.left() });
-      if (plan.cook <= 0) break;                                   // trié par abondance : les suivants n'iront pas mieux
-      try { stats.cooked += Number(await d.cook({ name: st.name, out: st.out, count: plan.cook, maxMs: plan.maxMs })) || 0; }
-      catch (e) { break; }
-    }
-  }
-
-  // 3) PÊCHE — canne en poche, de l'eau à ≤ 16 blocs (vérifié par fishCatch), et le but pas déjà atteint.
-  if (!cancelled() && points() < goal) {
-    const fp = F.fishPlan({ rod: safe(d.hasRod, false), leftMs: budget.left() });
-    if (fp.fish) {
+      if (budget.left() < F.MIN_PHASE_MS) { why = 'no_time'; break; }
+      if (!safe(d.passiveInView, false)) break;                   // illisible → pas de proie : on ne part pas à l'aveugle
+      why = 'no_gain';
       const ctl = F.boundedToken(parent, () => points() >= goal);
-      let fr = null;
-      try { fr = await d.fish({ ms: fp.ms, token: ctl.token, cancel: ctl.cancel }); } catch (e) { fr = null; }
+      let r = null;
+      try {
+        r = await d.hunt({ count: F.HUNT_MAX_KILLS, token: ctl.token, ms: budget.take(huntMs), cancel: ctl.cancel });
+      } catch (e) { r = null; }
       ctl.cancel();
-      if (fr && fr.caught) stats.fished += fr.caught;
-      if (fr && fr.reason) why = _zoneNeutral(fr.reason);
+      if (cancelled()) return finish({ ok: false, reason: 'cancelled' });
+      if (r && r.kills) stats.kills += r.kills;
+      if (!r || !r.ok) { why = 'hunt_failed'; break; }
     }
-  }
-  if (cancelled()) return finish({ ok: false, reason: 'cancelled' });
 
-  const after = points();
-  if (after >= goal || after > before) return finish({ ok: true, got: after });
-  return finish({ ok: false, reason: `no_prey:${why}` });
+    // 2) CUISSON — un four EN POCHE, ≥ 2 crus du même type, du temps ET un but pas encore atteint : cuire
+    //    est un MOYEN d'y arriver (3 → 8 points la pièce), pas un rituel. Le cru qui atteint déjà le but
+    //    se mange tel quel. Le plus abondant d'abord ; le nombre de pièces est rogné par le temps restant.
+    {
+      let stacks = [];
+      try { stacks = d.rawStacks() || []; } catch (e) { stacks = []; }
+      for (const st of stacks) {
+        if (cancelled()) return finish({ ok: false, reason: 'cancelled' });
+        if (points() >= goal) break;
+        const plan = F.cookPlan({ raw: st.count, furnace: safe(d.hasFurnace, false), leftMs: budget.left() });
+        if (plan.cook <= 0) break;                                   // trié par abondance : les suivants n'iront pas mieux
+        try { stats.cooked += Number(await d.cook({ name: st.name, out: st.out, count: plan.cook, maxMs: plan.maxMs })) || 0; }
+        catch (e) { break; }
+      }
+    }
+
+    // 3) PÊCHE — canne en poche, de l'eau à ≤ 16 blocs (vérifié par fishCatch), et le but pas déjà atteint.
+    if (!cancelled() && points() < goal) {
+      const fp = F.fishPlan({ rod: safe(d.hasRod, false), leftMs: budget.left() });
+      if (fp.fish) {
+        const ctl = F.boundedToken(parent, () => points() >= goal);
+        let fr = null;
+        try { fr = await d.fish({ ms: fp.ms, token: ctl.token, cancel: ctl.cancel }); } catch (e) { fr = null; }
+        ctl.cancel();
+        if (fr && fr.caught) stats.fished += fr.caught;
+        if (fr && fr.reason) why = _zoneNeutral(fr.reason);
+      }
+    }
+    if (cancelled()) return finish({ ok: false, reason: 'cancelled' });
+
+    const after = points();
+    if (after >= goal || after > before) return finish({ ok: true, got: after });
+    return finish({ ok: false, reason: `no_prey:${why}` });
+  } finally {
+    // L'expédition se ferme avec la SORTIE (finish) : le verrou couvre donc aussi la cuisson et la pêche —
+    // le bot est alors loin de l'ancre, et un /home du confine en plein four abandonnerait le four et ses
+    // pièces sur place. Ici, le filet : une exception inattendue relâche le verrou sans accuser la cellule
+    // (no-op si `finish` a déjà fermé l'expédition).
+    closeTrip(true);
+  }
 }
 
 // Les raisons d'échec d'un skill alimentent le verdict de ZONE (index.js noteZoneFailure → zone.js
@@ -190,6 +277,13 @@ function _zoneNeutral(reason) {
 // Lecture défensive d'une dépendance booléenne : illisible → valeur de repli (côté prudent).
 function safe(fn, fallback) {
   try { return typeof fn === 'function' ? !!fn() : fallback; } catch (e) { return fallback; }
+}
+
+// L'expédition n'existe que si ses TROIS dépendances obligatoires sont câblées (état du monde, cellule,
+// marche) : un câblage partiel — tests anciens, appelant qui n'en veut pas — retombe sur le
+// comportement d'avant, sans exception. Le verrou et la mémoire des cellules ratées sont optionnels.
+function _tripWired(d) {
+  return typeof d.tripState === 'function' && typeof d.grazingCell === 'function' && typeof d.tripWalk === 'function';
 }
 
 module.exports = { runEnsureFood, runHuntCook };

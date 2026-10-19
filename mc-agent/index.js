@@ -164,6 +164,14 @@ const {
   COMBAT_LOOT_RADIUS, COMBAT_LOOT_ITEMS, COMBAT_LOOT_MS, COMBAT_LOOT_HOSTILE_RADIUS, COMBAT_LOOT_SETTLE_MS,
 } = require('./food');
 const { runEnsureFood, runHuntCook } = require('./foodRun');
+// L'EXPÉDITION VERS LE GIBIER (19/10) : à vraie faim, de jour, en surface, sans aucun passif à ≤ 32 blocs,
+// UNE marche vers la cellule à animaux la plus proche connue de la carte du groupe. Les décisions pures
+// (où, faut-il partir, quelle jambe, quelles cellules écarter) sont dans foodTrip.js, l'ordre des
+// phases dans foodRun.runHuntCook ; le câblage sur le bot (foodTrip*) est juste avant huntCookGoal.
+const {
+  pickGrazingCell, foodTripLeg, triedCellsLoad, triedCellsAdd, FOOD_TRIP_MEMO_KEY,
+  FOOD_TRIP_MS, FOOD_TRIP_YIELD_MAX_MS, FOOD_TRIP_NEAR, FOOD_TRIP_ARRIVED, FOOD_TRIP_LEG_MS, FOOD_TRIP_LEG_MIN_MS, FOOD_TRIP_MAX_LEGS, FOOD_TRIP_STUCK_MAX,
+} = require('./foodTrip');
 
 function parseArgs(argv) {
   const o = {};
@@ -290,6 +298,11 @@ let _escapeOnSpawn = false; // anti-camping : 2 morts <60 s → au prochain spaw
 // l'ancre/le chef, donc potentiellement DANS le camp qu'il est en train de quitter — exactement la
 // classe de bug déjà vécue avec `_migrating`.
 let _escaping = false;
+// EXPÉDITION VERS LE GIBIER EN COURS (marche + chasse sur place, cf. foodTripLock). Garde de niveau
+// MODULE (piège #56), de la même famille que `_migrating`/`_escaping` : lue par l'enforcement confine,
+// le squad et la décision elle-même (une seule expédition à la fois). Sans elle, l'ancre ou le chef
+// ramèneraient le bot en /home ou /tpa au milieu de la marche — et l'expédition n'aboutirait jamais.
+let _foodTripBusy = false;
 // Génération de fuite : le bot peut MOURIR pendant sa course (c'est même le cas nominal quand le
 // camp est tenace) → un nouveau onSpawn relance une évasion pendant que l'ancienne attend encore
 // son `goto`. Sans ce jeton, la vieille invocation reprendrait la main après coup et poserait un
@@ -518,7 +531,9 @@ setInterval(() => {
     // qu'on est précisément en train de quitter (même classe que les autres gardes busy).
     // `_escaping` idem : ramener le bot à l'ancre pendant une fuite anti-camping le remettrait
     // sous le nez du campeur (le spawnpoint campé est presque toujours près de la base).
-    const busy = !!bot.targetDigBlock || _stillBusy || _imminentBusy || _smeltOppBusy || _armorBusy || _migrating || _escaping;
+    // `_foodTripBusy` idem : l'expédition vers le gibier s'éloigne de l'ancre PAR CONCEPTION (jusqu'à
+    // 160 blocs) ; l'enforcement la ramènerait en /home au milieu de la marche ou de la chasse.
+    const busy = !!bot.targetDigBlock || _stillBusy || _imminentBusy || _smeltOppBusy || _armorBusy || _migrating || _escaping || _foodTripBusy;
     const dist = Math.hypot(p.x - conf.x, p.z - conf.z);
     if (shouldEnforceConfine({ dist, radius: conf.radius, busy, now: Date.now(), lastAt: _lastConfineEnforceAt })) {
       _lastConfineEnforceAt = Date.now();
@@ -657,7 +672,9 @@ async function trySquad() {
   // Exactement la même classe que le yank du confine — un TP qui ignore une tâche longue.
   // `_escaping` (fuite anti-camping) est de la même famille : le /tpa arracherait le bot en pleine
   // évasion et le ré-ancrage post-fuite jugerait une zone qu'il n'a jamais atteinte.
-  const busy = !!bot.targetDigBlock || _stillBusy || _imminentBusy || _smeltOppBusy || _armorBusy || _migrating || _escaping;
+  // `_foodTripBusy` aussi : le bot est parti À PIED chercher du gibier loin de la squad, le /tpa le
+  // ramènerait au chef au milieu de la marche (ou de la chasse sur place) sans qu'il ait mangé.
+  const busy = !!bot.targetDigBlock || _stillBusy || _imminentBusy || _smeltOppBusy || _armorBusy || _migrating || _escaping || _foodTripBusy;
   const pick = squadTarget({
     // `y`/`ironZone` de SOI : sans eux un mineur productif se croirait « rien du tout » et
     // remonterait rejoindre un flâneur resté en surface — l'inverse exact du but.
@@ -1189,7 +1206,9 @@ const SKILL_TIMEOUT_MS = Number(args.skillTimeout || 90000);
 // gatherLog 180s (phase 3) : une chasse au bois honnête (biais dirigé + anneaux ≤128) tient en
 // <3 min — au-delà la zone est déforestée et le kit-relocate forêt est plus rentable que d'insister
 // (vécu V3Res1/4 : 480s × 4 tentatives = 32 min d'anneaux stériles avant le stall).
-const SKILL_TIMEOUTS = { descendDiagonal: 900000, branchMine: 900000, caveHunt: 900000, huntCook: 90000, smeltCharcoal: 300000, gather: 480000, gatherLog: 180000, ensurePick: 480000, fish: 300000 };
+// huntCook + FOOD_TRIP_MS (75 s) : l'EXPÉDITION vers le gibier (marche vers la cellule à animaux la plus
+// proche connue) a son propre plafond, hors du budget de 60 s — un garde-fou de 90 s la couperait en route.
+const SKILL_TIMEOUTS = { descendDiagonal: 900000, branchMine: 900000, caveHunt: 900000, huntCook: 90000 + FOOD_TRIP_MS, smeltCharcoal: 300000, gather: 480000, gatherLog: 180000, ensurePick: 480000, fish: 300000 };
 function timeoutFor(skill) { return SKILL_TIMEOUTS[skill] || SKILL_TIMEOUT_MS; }
 function withTimeout(promise, ms, onTimeout) {
   return new Promise((resolve) => {
@@ -1258,6 +1277,137 @@ async function smeltCharcoalGoal(count) {
   return smeltWithFurnace(top[0], 'charcoal', Math.min(count, top[1]), fuel);
 }
 
+// ── EXPÉDITION VERS LE GIBIER (Massii 19/10 : « l'important c'est la VITESSE… et dans le pire des cas il
+// y a la viande de zombie »). Mesure live : TOUS les bots à 0 point de nourriture, `hunt_cook_done
+// reason:no_prey:no_passive` à chaque sortie — aucun animal à ≤ 32 blocs du spawn (forêt dense), des
+// PLAINES à ~140 blocs. À vraie faim (< 6 points), de jour, en surface et sans gibier en vue : UNE
+// marche vers la cellule à animaux la plus proche CONNUE de la carte du groupe (≤ 75 s, hors budget),
+// puis la chasse habituelle sur place. La décision (foodTrip.shouldFoodTrip) et l'ordre des phases
+// (foodRun.runHuntCook) sont purs et testés avec des dépendances fausses ; ici, le câblage sur le bot.
+// `_foodTripBusy` (tête de fichier) couvre la marche ET la chasse sur place : lue par le confine et le squad.
+
+/** L'état du monde que lit la décision pure `shouldFoodTrip`. */
+function foodTripState() {
+  const p = bot.entity && bot.entity.position;
+  let inWater = false;
+  try { inWater = isInWater(bot); } catch (e) { inWater = false; }
+  const owner = taskCtl.active;      // 'autonomous' (planner ET mappeur) ou rien ; tout autre nom = un ORDRE direct (follow, guard, take…) ou la migration
+  return {
+    // `bot.time` peut manquer juste après un spawn : null = heure inconnue → la décision ne part PAS,
+    // plutôt que de conclure « il fait jour » et marcher 75 s au crépuscule.
+    isDay: (bot.time && bot.time.timeOfDay != null) ? !isNight(bot) : null,
+    y: p ? p.y : NaN,
+    migrating: _migrating,
+    ordered: !!(owner && owner !== 'autonomous'),
+    // Mêmes gardes que le ramassage après combat (lootAfterCombat) : la survie passe devant, et un
+    // combat en cours (bot.pvp.target) n'est pas le moment de partir marcher.
+    busy: !!(_imminentBusy || panicInFlight || _armorBusy || _baseBusy || _escaping || _deathDebtBusy || inWater
+      || (bot.pvp && bot.pvp.target)),
+    tripBusy: _foodTripBusy,
+    // Serveur de test (bot OP) : ensureFood se /give à manger en dernier recours — instantané, alors que
+    // marcher 75 s ne ferait que le retarder. L'expédition est pour les bots SANS /give.
+    canGive: !NO_GIVE,
+  };
+}
+
+/** La cellule à gibier la plus proche CONNUE (carte du groupe), hors cellules ratées depuis < 20 min. */
+function foodTripCell() {
+  const p = bot.entity && bot.entity.position;
+  if (!p) return null;
+  const now = Date.now();
+  return pickGrazingCell({
+    from: { x: p.x, z: p.z },
+    biomes: loadWorldCells().biomes,
+    avoid: triedCellsLoad(loadBaseState(), now),
+    now,
+  });
+}
+
+/** Verrou de l'expédition (niveau MODULE) : true = pris ; false = une autre expédition est déjà en vol. */
+function foodTripLock() {
+  if (_foodTripBusy) return false;
+  _foodTripBusy = true;
+  return true;
+}
+function foodTripUnlock() { _foodTripBusy = false; }
+
+/**
+ * Le planner CÈDE le pathfinder pendant l'expédition. Le timer de nourriture tourne EN PARALLÈLE du planner :
+ * un nouveau but de celui-ci (explore, gather, craft…) volerait la jambe en cours (GoalChanged), et la marche
+ * — qui se ré-arme à chaque jambe — lui volerait la sienne en retour : ping-pong sans progrès, 2 jambes sur
+ * place et l'expédition abandonne. Seuls les NOUVEAUX buts attendent (les buts déjà en vol sont bornés et
+ * finissent), au plus FOOD_TRIP_YIELD_MAX_MS, et dès que la tâche est annulée (mort, migration). Hors
+ * expédition : un test de booléen, rien d'autre. `taskToken` est lu À CHAQUE tour (global, voulu ici).
+ */
+async function foodTripYield() {
+  const t0 = Date.now();
+  while (_foodTripBusy && !taskToken.cancelled && Date.now() - t0 < FOOD_TRIP_YIELD_MAX_MS) await sleep(500);
+}
+
+/**
+ * Écarte une cellule ratée pendant 20 min — dans le MÉMO DE BASE, pas en mémoire de process : le
+ * self-healing relance le bot toutes les quelques minutes, et une liste gardée en variable repartait
+ * de zéro à chaque respawn (la cellule qui venait d'échouer était alors re-visée aussitôt — pièges #52/#66a).
+ * Fusion sur l'état COURANT, jamais un objet neuf : la base, la dette de mort et la zone y vivent aussi.
+ */
+function foodTripMark(cell) {
+  const now = Date.now();
+  const st = loadBaseState() || {};
+  saveBaseState(Object.assign({}, st, { [FOOD_TRIP_MEMO_KEY]: triedCellsAdd(triedCellsLoad(st, now), cell, now) }));
+}
+
+/**
+ * La MARCHE vers la cellule : droit devant, par JAMBES de 64 blocs. Le pathfinder ne voit pas au-delà
+ * des chunks chargés (view-distance 6 = 96 blocs) : un `goto` direct vers un but à 140 blocs rend NoPath
+ * en quelques secondes (mesuré sur la migration de zone : `hop_failed moved:8`). `GoalNearXZ` rayon 16
+ * (l'altitude est libre : un `GoalNear` 3D vers un point lointain = NoPath instantané en terrain vallonné)
+ * et `canDig:false` (le bot suit la surface, il ne plonge ni dans une grotte ni dans une colline).
+ *
+ * BORNÉE de bout en bout : chaque jambe ≤ min(30 s, ce qui reste des `ms`) ET la boucle s'arrête dès
+ * qu'il reste < 3 s — un plafond qui n'est pas appliqué est un plafond qui ment. Le jeton dérivé que
+ * donne runHuntCook (tâche annulée / gibier en vue / but atteint) est relu entre deux jambes ET à 2 Hz
+ * pendant une jambe : sans ce second point, un troupeau repéré à mi-jambe serait laissé derrière nous
+ * avant que la jambe ne finisse. Une jambe qui n'avance pas dévie le cap (zone.legHeading) ; 2 de suite → on renonce.
+ */
+async function foodTripWalk({ cell, ms, token }) {
+  const t0 = Date.now();
+  const left = () => ms - (Date.now() - t0);
+  const p0 = bot.entity && bot.entity.position;
+  const start = p0 ? { x: p0.x, z: p0.z } : null;
+  let legs = 0;
+  let stuck = 0;
+  const watch = setInterval(() => {
+    try { if (token.cancelled) stopMotion(); } catch (e) { /* watcher : ne crash jamais */ }
+  }, 500);
+  try {
+    await withTempMovements(bot, Movements, { canDig: false }, async () => {
+      while (!token.cancelled && legs < FOOD_TRIP_MAX_LEGS && stuck < FOOD_TRIP_STUCK_MAX && left() > FOOD_TRIP_LEG_MIN_MS) {
+        const p = bot.entity && bot.entity.position;
+        if (!p) break;
+        // COPIE des coordonnées AVANT la jambe : la référence `entity.position` n'est PAS fiable — la physique la
+        // REMPLACE à chaque tick, mais le paquet `position` du serveur (téléport, rubber-band) la MUTE sur place
+        // (Vec3.set). Comparer `pn` à un `p` gardé donnerait alors `moved` = 0 : la jambe passerait pour « sur
+        // place » et 2 jambes suffiraient à abandonner la marche, quoi qu'il arrive (piège #61).
+        const from = { x: p.x, z: p.z };
+        const leg = foodTripLeg({ from, to: cell, stuck });
+        if (!leg) break;                                              // arrivé
+        legs++;
+        const legMs = Math.min(FOOD_TRIP_LEG_MS, left());             // calculé AVANT le goto : le plafond d'une jambe ne dépend pas de ce que le goto fait
+        await withTimeout(
+          bot.pathfinder.goto(new pfGoals.GoalNearXZ(leg.x, leg.z, FOOD_TRIP_NEAR)),
+          legMs, () => { try { stopMotion(); } catch (e) {} });
+        const pn = bot.entity && bot.entity.position;
+        const moved = pn ? Math.hypot(pn.x - from.x, pn.z - from.z) : 0;
+        stuck = moved < LEG_STUCK_MIN ? stuck + 1 : 0;                // jambe sur place → cap dévié à la suivante
+      }
+    });
+  } finally { clearInterval(watch); }
+  const pe = bot.entity && bot.entity.position;
+  const remaining = pe ? Math.hypot(pe.x - cell.x, pe.z - cell.z) : Infinity;
+  const moved = (pe && start) ? Math.hypot(pe.x - start.x, pe.z - start.z) : 0;
+  return { ok: true, arrived: remaining <= FOOD_TRIP_ARRIVED, legs, moved: Math.round(moved) };
+}
+
 // Stock de nourriture : chasse (UNE vague ≤ 45 s, SEULEMENT si une proie est EN VUE) → cuisson (four EN
 // POCHE, ≥ 2 crus, du temps) → pêche locale (canne EN POCHE, eau ≤ 16 blocs, ≤ 40 s), le tout dans UN
 // budget de 60 s. Massii 19/10 : « l'important c'est la VITESSE : pas de choix qui font trop durer, et
@@ -1270,6 +1420,11 @@ async function smeltCharcoalGoal(count) {
 // (`huntSpidersGoal`, 90 s). Ces fonctions restent définies plus bas, testées, simplement plus appelées
 // d'ici (réutilisables pour un mode « expédition »). La ficelle vient désormais du ramassage
 // opportuniste APRÈS un combat contre une araignée (cf. wireCombatLoot).
+//
+// SEUL trajet lointain conservé : l'EXPÉDITION vers le gibier (foodTrip*, juste au-dessus) — à vraie
+// faim (< 6 points), de jour, en surface, quand AUCUN passif n'est à ≤ 32 blocs. Sans elle la chasse ne
+// part jamais (rien en vue) et le bot reste à 0 point. Plafond propre de 75 s, HORS du budget de 60 s
+// (les garde-fous des appelants portent donc `+ FOOD_TRIP_MS`).
 //
 // `opts` : { budget?, budgetMs?, waves=1, huntMs=45000, goalPoints? }. `waves` reste réglable pour qui
 // veut EXPLICITEMENT davantage ; aucun appelant actuel (kit, hook de descente, démarrage mappeur,
@@ -1310,6 +1465,15 @@ async function huntCookGoal(target, opts = {}) {
     fish: ({ ms, token, cancel }) => withTimeout(
       fishGoal(FISH_TARGET, { token, maxDistance: FISH_RADIUS, totalMs: ms, perCatchMs: 20000, gotoMs: 12000 }),
       ms + 3000, () => { try { cancel(); } catch (e) {} try { stopMotion(); } catch (e) {} }),
+    // EXPÉDITION VERS LE GIBIER (cf. foodTrip* plus haut) : aucun passif à ≤ 32 blocs + vraie faim +
+    // jour + surface → une marche vers la cellule à animaux la plus proche connue, puis la chasse
+    // ci-dessus rejoue sur place. Toujours câblée : TOUS les appelants (timer, kit, descente, mappeur) y passent.
+    tripState: () => foodTripState(),
+    grazingCell: () => foodTripCell(),
+    tripLock: () => foodTripLock(),
+    tripUnlock: () => foodTripUnlock(),
+    tripWalk: (o) => foodTripWalk(o),
+    tripTried: (cell) => foodTripMark(cell),
     emit,
   }, target, opts);
 }
@@ -1457,11 +1621,13 @@ async function runGoalSkill(goal) {
     // Sans-give : chasse best-effort AVANT la descente (bornée à 70 s, jamais bloquante — cf. goals.js,
     // le but food_stock bloquant stallait à vie sur no_prey). Surface seulement. Compté en POINTS
     // (cru et chair putréfiée comprises) : 12 points en poche, on descend sans chasser. Et sans proie
-    // en vue, huntCookGoal rend la main aussitôt (il ne lance plus de pêche ni de trajet lointain).
+    // en vue, huntCookGoal rend la main aussitôt (il ne lance plus de pêche ni de trajet lointain) —
+    // SAUF à vraie faim (< 6 points), de jour : l'EXPÉDITION vers le gibier (≤ 75 s de marche en plus,
+    // d'où `+ FOOD_TRIP_MS` : sous terre il n'y a plus un seul animal, c'est ICI ou jamais).
     if (NO_GIVE && goal.skill === 'descendDiagonal') {
       const _y = bot.entity && bot.entity.position ? bot.entity.position.y : 0;
       if (_y >= 45 && foodPoints(buildCtxInv(bot)) < STOCK_POINTS) {
-        try { await withTimeout(huntCookGoal(4), HUNT_COOK_TIMEOUT_MS, () => { try { stopMotion(); } catch (e) {} }); } catch (e) {}
+        try { await withTimeout(huntCookGoal(4), HUNT_COOK_TIMEOUT_MS + FOOD_TRIP_MS, () => { try { stopMotion(); } catch (e) {} }); } catch (e) {}
       }
       // ⭐ Steering STRATÉGIQUE vers le SEC (mur de l'eau, run water-wall) : descendre « où on
       // est » en zone aquifère = fuite permanente = 0 minage (vécu homedeath : smelt:0 après des
@@ -2628,6 +2794,7 @@ function migrationOwnsBot() { return taskCtl.active === 'migration'; }
 
 async function runSkillWithTelemetry(g) {
   if (migrationOwnsBot()) return { ok: false, reason: 'cancelled' };
+  await foodTripYield();                                      // expédition vers le gibier en cours : on n'y vole pas le pathfinder
   await settleSurvivalKit();                                  // survie d'abord, le craft ensuite
   if (taskToken.cancelled || migrationOwnsBot()) return { ok: false, reason: 'cancelled' };
   // NUIT + (mort récente OU PV bas) pendant le kit → ABRI jusqu'à l'aube (vécu Surv4 : 7 morts
@@ -2724,8 +2891,9 @@ async function startMapper() {
   try { if (needDirtBuffer(bot.inventory.items(), 8)) await gather(bot, { name: ['dirt', 'grass_block', 'gravel'], count: 8, maxDistance: 48 }, mapperToken); } catch (e) {}
   // BORNÉ (19/10 : ce démarrage — qui se rejoue à CHAQUE respawn — pouvait durer des minutes entre
   // 3 vagues de chasse et la pêche) : ≤ 70 s au pire, immédiat s'il y a déjà de quoi manger ou aucune
-  // proie en vue.
-  try { await withTimeout(huntCookGoal(6), HUNT_COOK_TIMEOUT_MS, () => { try { stopMotion(); } catch (e) {} }); } catch (e) {}
+  // proie en vue — sauf à vraie faim (< 6 points) de jour : l'expédition vers le gibier ajoute au plus
+  // FOOD_TRIP_MS (75 s) de marche, qui a son propre plafond hors du budget de 60 s.
+  try { await withTimeout(huntCookGoal(6), HUNT_COOK_TIMEOUT_MS + FOOD_TRIP_MS, () => { try { stopMotion(); } catch (e) {} }); } catch (e) {}
   emit({ type: 'mapper_started', world: bot._worldKey, sector: mapperSector });
   // ── /locate RETIRÉ (Massii 2026-07-26 : « les bots ne doivent pas utiliser de commandes comme
   // /locate »). C'est une commande d'opérateur qui RÉVÈLE la position de structures qu'un joueur ne
@@ -6791,8 +6959,10 @@ setInterval(async () => {
       wait_min: Math.round(_foodRunCooldownMs / 60000),
     });
     // 70 s (19/10 : « la VITESSE ») et non plus 240 s : ensureFood tient dans un budget de 60 s dont
-    // chaque phase est rognée, ces 10 s de marge ne sont qu'un garde-fou d'exécution.
-    await withTimeout(ensureFood(), FOOD_RUN_TIMEOUT_MS, () => { try { stopMotion(); } catch (e) {} });
+    // chaque phase est rognée, ces 10 s de marge ne sont qu'un garde-fou d'exécution. + FOOD_TRIP_MS :
+    // l'EXPÉDITION vers le gibier (aucun passif en vue, vraie faim, jour) a son propre plafond de 75 s,
+    // HORS du budget — le garde-fou de 70 s la couperait en route et laisserait le reste tourner en fond.
+    await withTimeout(ensureFood(), FOOD_RUN_TIMEOUT_MS + FOOD_TRIP_MS, () => { try { stopMotion(); } catch (e) {} });
     // Le VERDICT de la passe : ce qu'on a RAMENÉ, pas ce qu'on a tenté. Tracé, parce qu'un
     // rationnement muet est indistinguable d'un mécanisme mort (#55a). `points` (réserve en points
     // de faim après la passe) et `took_ms` MESURENT la vitesse en live.
