@@ -346,7 +346,7 @@ test('spawn sain : pose `safe` ici comme avant (et le mémorise)', () => {
 
 test('spawn CAMPÉ (process neuf après un death_loop) + home persisté sain → ADOPTÉ, rien re-posé dans le camp, l ancre suit', () => {
   const disk = { memo: campedMemo({ safeHome: { x: 300, y: 75, z: 80, at: T0 - 4 * MIN, why: 'camped' } }) };
-  const sb = spawnAt({ disk });
+  const sb = spawnAt({ disk, IS_MAPPER: false });   // OUVRIER : l'ancre ET la poche suivent le home adopté
   sb.poseSafeHomeAtSpawn();
   assert.deepStrictEqual(sb.chat, [], 'pas de /sethome safe au camp');
   assert.strictEqual(sb._safeHomeSet, true);
@@ -354,6 +354,15 @@ test('spawn CAMPÉ (process neuf après un death_loop) + home persisté sain →
   assert.ok(sb.events.some((e) => e.type === 'safe_home_adopted' && e.x === 300));
   assert.strictEqual(sb._anchorSet, true, 'sinon l auto-ancrage reposerait `safe` à deux pas du camp');
   assert.deepStrictEqual(plain(sb._confineDyn), { x: 300, z: 80, radius: 140 });
+});
+
+test('spawn CAMPÉ + home sain, CARTOGRAPHE → home adopté et ancre posée, mais AUCUNE poche (il doit aller loin)', () => {
+  const disk = { memo: campedMemo({ safeHome: { x: 300, y: 75, z: 80, at: T0 - 4 * MIN, why: 'camped' } }) };
+  const sb = spawnAt({ disk, IS_MAPPER: true });
+  sb.poseSafeHomeAtSpawn();
+  assert.deepStrictEqual(sb.chat, [], 'pas de /sethome safe au camp');
+  assert.strictEqual(sb._anchorSet, true, 'l ancre empêche l auto-ancrage de reposer `safe` dans le camp');
+  assert.strictEqual(sb._confineDyn, null, 'un cartographe n est jamais confiné');
 });
 
 test('spawn campé + home persisté sain, mais confine STATIQUE (arène) → adopté sans toucher à l ancre', () => {

@@ -522,7 +522,9 @@ async function tryEstablishCamp() {
 setInterval(() => {
   try {
     const conf = CONFINE || _confineDyn;
-    if (!conf || !_anchorSet || !NO_GIVE) return;
+    // Cartographes : jamais confinés (leur travail est d'aller LOIN) — depuis qu'ils tournent en NO_GIVE
+    // (19/10), l'auto-ancrage leur posait un confine de 140 blocs et ce rappel les ramenait à la base.
+    if (!conf || !_anchorSet || !NO_GIVE || IS_MAPPER) return;
     if (!(world.objective && world.objective.status === 'in_progress')) return;
     const p = bot.entity && bot.entity.position;
     if (!p) return;
@@ -3559,9 +3561,11 @@ function poseSafeHomeAtSpawn() {
     // Même effet que `confine_anchored`, sans re-poser de home. Jamais sur un confine STATIQUE (arène).
     if (NO_GIVE && !_anchorSet && !CONFINE && world.objective && world.objective.status === 'in_progress') {
       _anchorSet = true;
-      _confineDyn = { x: Math.round(h.x), z: Math.round(h.z), radius: DEFAULT_CONFINE_RADIUS };
-      bot._mcaExploreBounds = { x: _confineDyn.x, z: _confineDyn.z, radius: Math.max(_confineDyn.radius * 2, 128) };
-      emit({ type: 'confine_anchored', x: _confineDyn.x, z: _confineDyn.z, radius: _confineDyn.radius, static: false, adopted: true });
+      if (!IS_MAPPER) {   // cartographe : l'ancre (anti re-pose dans le camp) oui, la poche non
+        _confineDyn = { x: Math.round(h.x), z: Math.round(h.z), radius: DEFAULT_CONFINE_RADIUS };
+        bot._mcaExploreBounds = { x: _confineDyn.x, z: _confineDyn.z, radius: Math.max(_confineDyn.radius * 2, 128) };
+        emit({ type: 'confine_anchored', x: _confineDyn.x, z: _confineDyn.z, radius: _confineDyn.radius, static: false, adopted: true });
+      }
     }
     return;
   }
@@ -6031,10 +6035,12 @@ async function onSpawn() {
             if (nearStatic && !_campedAt(pA) && homewarp.bookmark(bot, CONFINE_HOME)) {
               _anchorSet = true;
               noteSafeHome(pA, 'anchor');   // le /sethome safe ci-dessus DÉPLACE le home : le veto doit le savoir
-              if (!CONFINE) _confineDyn = { x: Math.round(pA.x), z: Math.round(pA.z), radius: DEFAULT_CONFINE_RADIUS };
+              if (!CONFINE && !IS_MAPPER) _confineDyn = { x: Math.round(pA.x), z: Math.round(pA.z), radius: DEFAULT_CONFINE_RADIUS };   // cartographe : le home oui, la poche non
               const eff = CONFINE || _confineDyn;
-              bot._mcaExploreBounds = { x: eff.x, z: eff.z, radius: Math.max(eff.radius * 2, 128) };  // borne explore = poche confine (#54)
-              emit({ type: 'confine_anchored', x: eff.x, z: eff.z, radius: eff.radius, static: !!CONFINE });
+              if (eff) {   // null pour un cartographe (pas de poche) : home posé, ni borne ni confine
+                bot._mcaExploreBounds = { x: eff.x, z: eff.z, radius: Math.max(eff.radius * 2, 128) };  // borne explore = poche confine (#54)
+                emit({ type: 'confine_anchored', x: eff.x, z: eff.z, radius: eff.radius, static: !!CONFINE });
+              }
               // Les compteurs de zone jugent la zone où l'on vient de s'ancrer : on repart de zéro.
               if (!_zoneAnchoredAt) loadZoneState();   // reprend l'horloge persistée, ne la remet pas à zéro
               tryEstablishCamp().catch(() => {});
