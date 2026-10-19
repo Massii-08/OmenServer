@@ -12,7 +12,9 @@ de la réponse vient du code source du paquet open source ``tradingview-screener
 3.2.2 (PyPI, 2026) — ``{"totalCount": N, "data": [{"s": "MIL:ENI", "d": [...]}]}``,
 les valeurs de ``d`` dans l'ordre des ``columns`` demandées. La commande
 ``python -m backend.bots.stockscan --probe <dossier>`` enregistre la vraie
-réponse ; tant qu'elle n'a pas tourné, la fixture des tests est SYNTHÉTIQUE.
+réponse. Format confirmé le 19/10 par une capture RÉELLE depuis l'Omen
+(fixture ``screener_snapshot_2026-10-19T1330Z.json``, 5 marchés × 20 lignes) ;
+la fixture italienne des tests reste synthétique.
 
 Découpage habituel : ``build_query`` et ``parse_response`` sont PURS (testables
 hors ligne), ``ScreenerClient`` porte l'I/O (fonction ``post`` injectable).
@@ -43,7 +45,15 @@ HEADERS = {
 }
 
 # Ordre = ordre des valeurs de ``d`` dans la réponse. Ne JAMAIS réordonner sans
-# régénérer les fixtures.
+# régénérer les fixtures ; une colonne nouvelle s'AJOUTE À LA FIN.
+#
+# Les quatre dernières (19/10) : ``relative_volume_intraday|5`` = le « Relative
+# Volume at Time » de TradingView (volume cumulé du jour rapporté à la moyenne
+# À LA MÊME HEURE), comparable d'une place ouverte à une place fermée là où le
+# 10 j compare un volume partiel à une journée complète ; ``current_session``
+# (market / pre_market / post_market / out_of_session), ``time`` (ouverture de
+# la barre journalière, UNIX UTC : la séance que décrivent les chiffres) et
+# ``timezone`` (IANA) disent l'état RÉEL de la place, fériés compris.
 COLUMNS: Tuple[str, ...] = (
     "name", "description", "type", "typespecs", "exchange", "currency",
     "close", "change", "gap", "volume", "relative_volume_10d_calc",
@@ -52,6 +62,7 @@ COLUMNS: Tuple[str, ...] = (
     "Perf.W", "Perf.1M", "price_52_week_high", "price_52_week_low",
     "earnings_release_next_trading_date_fq", "dividends_yield_current",
     "price_earnings_ttm",
+    "relative_volume_intraday|5", "current_session", "time", "timezone",
 )
 
 # Une colonne n'est déclarée « morte » que si l'échantillon est assez grand :
@@ -235,6 +246,7 @@ def parse_response(payload: Any, market: mk.Market,
             "gap_pct": _num(d.get("gap")),
             "volume": _num(d.get("volume")),
             "rel_volume": _num(d.get("relative_volume_10d_calc")),
+            "rel_volume_time": _num(d.get("relative_volume_intraday|5")),
             "avg_value_meur": _meur(avg_value_local, currency, market),
             "value_traded_meur": _meur(_num(d.get("Value.Traded")), traded_currency, market),
             "market_cap_meur": _meur(_num(d.get("market_cap_basic")), cap_currency, market),

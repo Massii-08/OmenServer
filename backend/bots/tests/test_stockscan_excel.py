@@ -86,7 +86,8 @@ def test_market_sheet_layout_and_rows(tmp_path):
     assert ws.cell(row=r, column=5).number_format == xo.FMT_PCT
     assert ws.cell(row=r, column=7).value == 72
     assert ws.cell(row=r, column=8).value == "résultats proches, nouveau"
-    assert ws.cell(row=r, column=9).value == "volume ×2,4 · 3 news en 48 h · résultats le 24/10/2026"
+    assert ws.cell(row=r, column=9).value == \
+        "volume ×2,4 vs son marché · 3 news en 48 h · résultats le 24/10/2026"
     assert ws.cell(row=r, column=10).hyperlink.target == "https://www.tradingview.com/news/1"
     assert ws.cell(row=r, column=11).value.date() == date(2026, 10, 24)
     assert ws.cell(row=r, column=13).hyperlink.target.endswith("MIL%3AENI")
@@ -151,7 +152,7 @@ def test_empty_results_still_write(tmp_path):
     assert wb["Candidats"].cell(row=xo.DATA_START_ROW, column=2).value is None
 
 
-def test_session_column_and_session_warnings():
+def test_session_column_and_session_labels():
     assert xo.session_text({"state": "open", "elapsed": 0.735}, "fr") == "en séance (74 %)"
     assert xo.session_text({"state": "closed", "elapsed": None}, "en") == "closed"
     assert xo.session_text({"state": "???"}, "it") == "sconosciuta"
@@ -160,10 +161,16 @@ def test_session_column_and_session_warnings():
         lab = xo.labels(lang)
         assert len(lab["headers"]) == len(xo.WIDTHS) == 13
         assert "awaiting_open" in lab["flags"] and "awaiting_open" in lab["reasons"]
-    text = xo.warning_text({"code": "volume_adjusted", "markets": ["italy", "uk"]}, "fr")
-    assert "(Italie, Royaume-Uni)" in text and "{markets}" not in text
-    text = xo.warning_text({"code": "session_uncertain", "markets": ["italy", "atlantis"]}, "it")
-    assert text.endswith("(Italia, atlantis)")         # identifiant inconnu : tel quel
+        # plus émis depuis que le volume « à l'heure » est rapporté à son
+        # marché : un libellé sans émetteur finirait par mentir
+        assert not {"volume_adjusted", "session_uncertain"} & set(lab["warnings"])
+
+
+def test_volume_reason_says_what_it_is_compared_to():
+    assert xo.reason_text({"code": "volume", "value": 2.4}, "fr") == "volume ×2,4 vs son marché"
+    assert xo.reason_text({"code": "volume", "value": 2.4}, "en") == "volume ×2.4 vs its market"
+    assert xo.reason_text({"code": "volume", "value": 2.4}, "it") == \
+        "volume ×2,4 rispetto al suo mercato"
 
 
 def test_without_a_language_the_workbook_is_italian(tmp_path):

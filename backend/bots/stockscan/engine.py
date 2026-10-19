@@ -12,6 +12,7 @@ et ``__main__`` sort en code 3 sans écrire de résultat.
 import json
 import os
 import time
+from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Optional, Set, Tuple
@@ -161,7 +162,8 @@ def row_from_chart(symbol: str, raw: Any) -> Optional[Dict[str, Any]]:
         "market": market_id, "exchange": meta.get("exchangeName") or "",
         "currency": "GBX" if currency == "GBp" else currency.upper(),
         "price": price, "change_pct": change, "gap_pct": None, "volume": volumes[-1] if volumes else None,
-        "rel_volume": rel_volume, "avg_value_meur": avg_value, "value_traded_meur": None,
+        "rel_volume": rel_volume, "rel_volume_time": None,
+        "avg_value_meur": avg_value, "value_traded_meur": None,
         "market_cap_meur": None, "sector": None, "industry": None, "country": None,
         "perf_w": perf_w, "perf_1m": None, "high_52w": None, "low_52w": None,
         "earnings_next": None, "dividend_yield": None, "pe": None,
@@ -227,8 +229,13 @@ def _session_summary(state: Optional[Dict[str, Any]]) -> Dict[str, Any]:
             "last_close": state.get("last_close")}
 
 
+def _fr_number(value: Optional[float]) -> str:
+    """« 1,06 » pour le journal (deux décimales, virgule) ; « — » si inconnu."""
+    return "—" if value is None else ("%.2f" % value).replace(".", ",")
+
+
 _ROW_KEYS = ("tv_symbol", "symbol", "ticker", "name", "market", "exchange", "currency",
-             "price", "change_pct", "gap_pct", "rel_volume", "rel_volume_raw",
+             "price", "change_pct", "gap_pct", "rel_volume", "rel_volume_raw", "rel_volume_time",
              "avg_value_meur", "market_cap_meur", "sector", "perf_w", "earnings_next")
 
 
@@ -293,14 +300,22 @@ def run_scan(cfg: Dict[str, Any], username: str, out_dir: Any, deps: Deps,
             warnings.append({"code": "fallback_failed"})
     counts["universe"] = len(universe)
 
-    # Séances : une bourse ouverte n'a qu'une PARTIE de sa journée de volume,
-    # une bourse fermée a ses cours figés à sa dernière clôture (sessions.py).
+    # Volume comparable d'une place à l'autre : le volume « à l'heure » de
+    # TradingView (le 10 j à défaut), rapporté à la médiane de son marché.
+    medians = ss.normalize_volume(universe)
+    for status in markets_status:
+        status["volume_median"] = medians.get(status["id"])
+    if medians:
+        # « (10 j) » : aucun titre du marché n'a de volume « à l'heure »
+        # (colonne morte, repli Yahoo) — le journal ne le fait pas passer pour un.
+        timed = {r.get("market") for r in universe if r.get("rel_volume_time") is not None}
+        log("Volume relatif médian à l'heure : %s" % " · ".join(
+            "%s %s%s" % (m, _fr_number(medians[m]), "" if m in timed else " (10 j)")
+            for m in cfg["markets"] if m in medians))
+
+    # Séances : une bourse fermée a ses cours figés à sa dernière clôture
+    # (sessions.py).
     states = ss.states_for(cfg["markets"], now)
-    vol_report = ss.adjust_rel_volume(universe, states)
-    if vol_report["adjusted"]:
-        warnings.append({"code": "volume_adjusted", "markets": vol_report["adjusted"]})
-    if vol_report["skipped"]:
-        warnings.append({"code": "session_uncertain", "markets": vol_report["skipped"]})
 
     # --- 2. signaux du coach (zéro réseau) ---------------------------------------
     check()
@@ -324,6 +339,13 @@ def run_scan(cfg: Dict[str, Any], username: str, out_dir: Any, deps: Deps,
     # marché dont la séance est la plus avancée (ou finie) prend toutes les places.
     shortlist = ss.shortlist_with_quota(ranked, int(cfg["shortlist"]), cfg["markets"])
     counts["shortlist"] = len(shortlist)
+    per_market = Counter(r.get("market") for r in shortlist)
+    for status in markets_status:
+        status["shortlisted"] = per_market.get(status["id"], 0)
+    detail = ", ".join("%s %d" % (m, n) for m, n in
+                       sorted(per_market.items(), key=lambda kv: (-kv[1], str(kv[0]))))
+    log("Présélection : %d %s%s" % (len(shortlist), "titre" if len(shortlist) <= 1 else "titres",
+                                     (" — " + detail) if detail else ""))
     progress.update("shortlist", 1, 1, shortlist=len(shortlist))
 
     # --- 4. news fraîches de la présélection --------------------------------------------

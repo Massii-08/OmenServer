@@ -72,7 +72,7 @@ LABELS: Dict[str, Dict[str, Any]] = {
         "reasons": {
             "news": "{v} news en {h} h", "sources": "{v} sources distinctes",
             "positive": "bonne nouvelle", "upcoming": "catalyseur annoncé",
-            "earnings": "résultats le {v}", "volume": "volume ×{v}",
+            "earnings": "résultats le {v}", "volume": "volume ×{v} vs son marché",
             "aligned": "le cours confirme ({v} %)", "coach_up": "hypothèse du coach : hausse",
             "crowd": "buzz Reddit ({v} mentions)", "filing": "dépôt SEC {v}",
             "awaiting_open": "news après la dernière clôture : pas encore dans le cours",
@@ -92,8 +92,6 @@ LABELS: Dict[str, Dict[str, Any]] = {
             "stopped_early": "Relevé arrêté avant la fin",
             "fallback_failed": "Repli abandonné : Yahoo ne répond pas non plus",
             "excel_failed": "Classeur Excel non produit",
-            "volume_adjusted": "Séance en cours : volume relatif ramené à une journée entière ({markets})",
-            "session_uncertain": "Séance incertaine (jour férié ?) : volume non ajusté ({markets})",
         },
         "session": {
             "open": "en séance ({p} %)", "closed": "fermée", "unknown": "inconnue",
@@ -137,7 +135,7 @@ LABELS: Dict[str, Dict[str, Any]] = {
         "reasons": {
             "news": "{v} news in {h} h", "sources": "{v} distinct sources",
             "positive": "good news", "upcoming": "announced catalyst",
-            "earnings": "earnings on {v}", "volume": "volume ×{v}",
+            "earnings": "earnings on {v}", "volume": "volume ×{v} vs its market",
             "aligned": "price confirms ({v} %)", "coach_up": "coach hypothesis: up",
             "crowd": "Reddit buzz ({v} mentions)", "filing": "SEC filing {v}",
             "awaiting_open": "news after the last close: not in the price yet",
@@ -157,8 +155,6 @@ LABELS: Dict[str, Dict[str, Any]] = {
             "stopped_early": "Scan stopped before the end",
             "fallback_failed": "Fallback abandoned: Yahoo is not answering either",
             "excel_failed": "Excel workbook not produced",
-            "volume_adjusted": "Session in progress: relative volume scaled to a full day ({markets})",
-            "session_uncertain": "Uncertain session (holiday?): volume not scaled ({markets})",
         },
         "session": {
             "open": "in session ({p}%)", "closed": "closed", "unknown": "unknown",
@@ -204,7 +200,7 @@ LABELS: Dict[str, Dict[str, Any]] = {
         "reasons": {
             "news": "{v} notizie in {h} h", "sources": "{v} fonti distinte",
             "positive": "buona notizia", "upcoming": "catalizzatore annunciato",
-            "earnings": "risultati il {v}", "volume": "volume ×{v}",
+            "earnings": "risultati il {v}", "volume": "volume ×{v} rispetto al suo mercato",
             "aligned": "il prezzo conferma ({v} %)", "coach_up": "ipotesi del coach: rialzo",
             "crowd": "buzz Reddit ({v} menzioni)", "filing": "deposito SEC {v}",
             "awaiting_open": "notizia dopo l'ultima chiusura: non ancora nel prezzo",
@@ -224,8 +220,6 @@ LABELS: Dict[str, Dict[str, Any]] = {
             "stopped_early": "Scansione interrotta prima della fine",
             "fallback_failed": "Riserva abbandonata: nemmeno Yahoo risponde",
             "excel_failed": "Cartella Excel non prodotta",
-            "volume_adjusted": "Seduta in corso: volume relativo riportato a una giornata intera ({markets})",
-            "session_uncertain": "Seduta incerta (festivo?): volume non riportato ({markets})",
         },
         "session": {
             "open": "in seduta ({p} %)", "closed": "chiusa", "unknown": "sconosciuta",

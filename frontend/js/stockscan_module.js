@@ -1168,9 +1168,12 @@ const StockScanModule = {
         const nums = [];
         if (this._isNum(row.gap_pct)) nums.push(this._tr('stocks.gap', { v: this._pct(row.gap_pct, 2, true) }));
         if (this._isNum(row.rel_volume)) {
-            // Séance en cours : le volume affiché est ramené à une journée
-            // entière ; le brut (partiel) reste visible pour pouvoir vérifier.
-            nums.push(this._isNum(row.rel_volume_raw)
+            // Le volume « à l'heure » rapporté à la médiane de son marché ; le
+            // brut (avant division) reste visible pour pouvoir vérifier, sauf
+            // quand la division n'a rien changé (moins de 8 titres : diviseur 1).
+            const compared = this._isNum(row.rel_volume_raw)
+                && Math.abs(Number(row.rel_volume_raw) - Number(row.rel_volume)) > 0.05;
+            nums.push(compared
                 ? this._tr('stocks.rel_volume_adj', { v: this._num(row.rel_volume, 1), raw: this._num(row.rel_volume_raw, 2) })
                 : this._tr('stocks.rel_volume', { v: this._num(row.rel_volume, 1) }));
         }

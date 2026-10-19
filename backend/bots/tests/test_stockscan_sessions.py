@@ -5,10 +5,18 @@ européenne comparait le volume PARTIEL du jour en Europe (médiane 0,22-0,30)
 au volume COMPLET de la veille aux États-Unis (médiane 1,17) — 21 lignes US
 sur 25 — et confirmait des news du lundi avec des cours du vendredi.
 """
+import json
+import os
 from collections import Counter
 from datetime import datetime, timezone
+from statistics import median
 
+from backend.bots.stockscan import markets as mk
+from backend.bots.stockscan import screener as sc
 from backend.bots.stockscan import sessions as ss
+
+FIXTURES = os.path.join(os.path.dirname(__file__), "fixtures", "stockscan")
+SNAPSHOT_MARKETS = ("switzerland", "italy", "germany", "france", "america")
 
 
 def utc(*args):
@@ -63,57 +71,87 @@ def test_unknown_market_is_unknown_never_guessed():
 
 
 # --------------------------------------------------------------------------- #
-# Volume relatif : rapporté à la part de séance écoulée
+# Volume relatif : « à l'heure », rapporté à la médiane de son marché
 # --------------------------------------------------------------------------- #
 
-def _rows(market, values):
-    return [{"symbol": "%s%d" % (market, i), "market": market, "rel_volume": v}
-            for i, v in enumerate(values)]
+def _snapshot_rows():
+    """Les lignes PARSÉES de la capture réelle du 19/10 à 13:30 UTC (5 marchés)."""
+    with open(os.path.join(FIXTURES, "screener_snapshot_2026-10-19T1330Z.json"),
+              encoding="utf-8") as f:
+        snap = json.load(f)
+    rows = []
+    for market_id in SNAPSHOT_MARKETS:
+        rows += sc.parse_response(snap["markets"][market_id], mk.by_id(market_id))[0]
+    return rows
 
 
-def test_rel_volume_of_an_open_market_is_divided_by_the_elapsed_fraction():
-    states = {"italy": {"state": "open", "elapsed": 0.5}}
-    rows = _rows("italy", [0.25, 0.3, 1.0])
-    report = ss.adjust_rel_volume(rows, states)
-    assert [r["rel_volume"] for r in rows] == [0.5, 0.6, 2.0]
-    assert [r["rel_volume_raw"] for r in rows] == [0.25, 0.3, 1.0]
-    assert report == {"adjusted": ["italy"], "skipped": []}
+def _vol_rows(market, at_time, ten_day=None):
+    ten_day = ten_day if ten_day is not None else [None] * len(at_time)
+    return [{"symbol": "%s%d" % (market, i), "market": market,
+             "rel_volume_time": t, "rel_volume": d}
+            for i, (t, d) in enumerate(zip(at_time, ten_day))]
 
 
-def test_closed_market_keeps_its_complete_session_volume():
-    states = {"america": {"state": "closed", "elapsed": None}}
-    rows = _rows("america", [1.2, 3.0])
-    report = ss.adjust_rel_volume(rows, states)
-    assert [r["rel_volume"] for r in rows] == [1.2, 3.0]
-    assert all("rel_volume_raw" not in r for r in rows)
-    assert report == {"adjusted": [], "skipped": []}
+def test_volume_constants_are_locked():
+    assert ss.VOLUME_MEDIAN_MIN_ROWS == 8
+    assert ss.VOLUME_MEDIAN_CLAMP == (0.5, 2.0)
 
 
-def test_the_very_start_of_a_session_is_floored():
-    # 5 min après l'ouverture : diviser par 0,01 ferait de n'importe quel
-    # ordre isolé une « anomalie » ×100. Le plancher borne l'amplification.
-    states = {"italy": {"state": "open", "elapsed": 0.01}}
-    rows = _rows("italy", [0.02, 0.03, 0.05])
-    ss.adjust_rel_volume(rows, states)
-    assert rows[0]["rel_volume"] == round(0.02 / ss.MIN_ELAPSED, 4)
+def test_real_snapshot_volume_is_brought_back_to_its_market():
+    # Lundi 19/10 à 13:30 UTC (Europe en séance, US en pré-ouverture) : le
+    # volume « à l'heure » a pour médiane CH 1,064 · IT 0,912 · DE 0,856 ·
+    # FR 0,987 · US 1,187 — là où le 10 j donnait 0,27 à 0,40 en Europe contre
+    # 1,22 aux US. Divisé par la médiane de son marché, chacun revient à 1,0.
+    rows = _snapshot_rows()
+    medians = ss.normalize_volume(rows)
+    assert medians == {"switzerland": 1.064, "italy": 0.912, "germany": 0.856,
+                       "france": 0.987, "america": 1.187}
+    for market_id in SNAPSHOT_MARKETS:
+        group = [r for r in rows if r["market"] == market_id]
+        assert all(r["rel_volume_raw"] == r["rel_volume_time"] for r in group)
+        divisor = median(r["rel_volume_raw"] for r in group)
+        assert [r["rel_volume"] for r in group] == \
+            [round(r["rel_volume_raw"] / divisor, 2) for r in group]
+        assert abs(median(r["rel_volume"] for r in group) - 1.0) <= 0.01
 
 
-def test_implausible_adjustment_is_skipped_and_reported():
-    # Un jour férié en semaine : la table croit la bourse ouverte, mais le
-    # screener rend la séance PRÉCÉDENTE, complète (médiane ~1). Diviser par
-    # une petite fraction gonflerait tout le marché : on n'ajuste pas.
-    states = {"italy": {"state": "open", "elapsed": 0.2}}
-    rows = _rows("italy", [0.9, 1.0, 1.1])
-    report = ss.adjust_rel_volume(rows, states)
-    assert [r["rel_volume"] for r in rows] == [0.9, 1.0, 1.1]
-    assert report == {"adjusted": [], "skipped": ["italy"]}
+def test_divisor_is_clamped_but_the_median_is_reported_as_measured():
+    # Un marché entier à 0,2 ou à 5 fois son volume habituel : la correction
+    # est bornée (÷ 0,5 au plus, ÷ 2 au plus), la médiane rendue reste la vraie.
+    low = _vol_rows("italy", [0.1, 0.2, 0.2, 0.2, 0.2, 0.3, 0.3, 0.3])
+    high = _vol_rows("america", [4.0, 5.0, 5.0, 5.0, 5.0, 6.0, 6.0, 6.0])
+    assert ss.normalize_volume(low + high) == {"italy": 0.2, "america": 5.0}
+    assert [r["rel_volume"] for r in low] == [0.2, 0.4, 0.4, 0.4, 0.4, 0.6, 0.6, 0.6]
+    assert [r["rel_volume"] for r in high] == [2.0, 2.5, 2.5, 2.5, 2.5, 3.0, 3.0, 3.0]
 
 
-def test_missing_rel_volume_stays_missing():
-    states = {"italy": {"state": "open", "elapsed": 0.5}}
-    rows = _rows("italy", [None, 0.4, 0.5])
-    ss.adjust_rel_volume(rows, states)
-    assert rows[0]["rel_volume"] is None
+def test_fewer_than_eight_values_leave_the_volume_as_is():
+    # 8 lignes mais 7 valeurs (une sans aucun volume) : pas de médiane fiable.
+    rows = _vol_rows("italy", [0.5, 0.8, 1.0, 1.2, 1.5, 2.0, 3.0, None])
+    assert ss.normalize_volume(rows) == {"italy": None}
+    assert [r["rel_volume"] for r in rows] == [0.5, 0.8, 1.0, 1.2, 1.5, 2.0, 3.0, None]
+    assert [r["rel_volume_raw"] for r in rows] == [0.5, 0.8, 1.0, 1.2, 1.5, 2.0, 3.0, None]
+
+
+def test_without_the_volume_at_time_the_ten_day_volume_takes_over():
+    # Colonne « à l'heure » morte (renommée chez TradingView) ou repli Yahoo :
+    # le 10 j sert de signal ; une valeur « à l'heure » connue l'emporte.
+    rows = _vol_rows("italy", [None] * 7 + [1.6],
+                     ten_day=[0.4, 0.6, 0.8, 0.8, 0.8, 0.8, 1.2, 9.9])
+    assert ss.normalize_volume(rows) == {"italy": 0.8}
+    assert [r["rel_volume_raw"] for r in rows] == [0.4, 0.6, 0.8, 0.8, 0.8, 0.8, 1.2, 1.6]
+    assert [r["rel_volume"] for r in rows] == [0.5, 0.75, 1.0, 1.0, 1.0, 1.0, 1.5, 2.0]
+
+
+def test_non_finite_volumes_are_ignored_and_never_reach_the_json():
+    nan, inf = float("nan"), float("inf")
+    rows = _vol_rows("italy", [inf, nan, -inf, None, True] + [1.0] * 6,
+                     ten_day=[2.0, inf, nan, True, 1.0] + [None] * 6)
+    # signaux : 2,0 (10 j) · rien · rien · rien · 1,0 (10 j) · six fois 1,0
+    assert ss.normalize_volume(rows) == {"italy": 1.0}
+    assert [r["rel_volume"] for r in rows] == [2.0, None, None, None] + [1.0] * 7
+    assert [r["rel_volume_time"] for r in rows] == [None] * 5 + [1.0] * 6
+    json.dumps(rows, allow_nan=False)        # jamais d'« Infinity » dans results.json
 
 
 # --------------------------------------------------------------------------- #

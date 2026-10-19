@@ -3,7 +3,8 @@
 Univers : la fixture SYNTHÉTIQUE du screener (Italie). Signaux du coach :
 chargeurs factices. News fraîches : fonction factice. Horloge épinglée au
 2026-10-17 07:00 UTC (ENI publie ses résultats le 24/10, dans la fenêtre de 7 j ;
-UniCredit le 29/10 et Ferrari le 04/11, hors fenêtre).
+UniCredit le 29/10 et Ferrari le 04/11, hors fenêtre). En fin de fichier, une
+régression sur la capture RÉELLE du 19/10 à 13:30 UTC (5 marchés).
 """
 import json
 import os
@@ -162,6 +163,11 @@ def test_full_scan_ranks_catalysts_and_writes_files(tmp_path):
     c = results["counts"]
     assert c["universe"] == 6 and c["shortlist"] == 6 and c["kept"] == 4
     assert c["excluded_no_catalyst"] == 2 and c["excluded_red"] == 0
+    # par marché : médiane du volume (6 titres < 8 : aucune) et présélectionnés
+    status = {m["id"]: m for m in results["markets"]}
+    assert status["italy"]["volume_median"] is None and status["italy"]["shortlisted"] == 6
+    assert status["uk"]["volume_median"] is None and status["uk"]["shortlisted"] == 0
+    assert "Présélection : 6 titres — italy 6" in logs
     assert c["news_from_cache"] == 1        # STLAM : cache du coach frais, pas de requête
     assert results["source"] == "screener"
     assert {"code": "market_failed", "market": "uk", "error": "HTTP 403"} in results["warnings"]
@@ -371,14 +377,115 @@ def test_probe_reports_screener_failure(tmp_path):
     assert cli.probe(str(tmp_path), "japan", None, screener=FakeScreener()) == 1
 
 
-def test_open_session_volume_is_scaled_and_reported(tmp_path):
-    # Mercredi 21/10 13:15 UTC = 15:15 à Milan : 6 h 15 sur 8 h 30 écoulées.
+def test_open_session_volume_is_no_longer_scaled_by_elapsed_time(tmp_path):
+    # Mercredi 21/10 13:15 UTC = 15:15 à Milan, séance ouverte. Le volume n'est
+    # plus divisé par la part de séance écoulée (courbe en U : 74 % du temps
+    # n'est pas 74 % du volume) : c'est le volume « à l'heure », rapporté à la
+    # médiane de son marché — ici 6 titres, trop peu (8) : diviseur 1.
     wednesday = datetime(2026, 10, 21, 13, 15, tzinfo=timezone.utc)
     deps = _deps()
     deps.now = lambda: wednesday
     results = engine.run_scan(_cfg(), "massii", tmp_path, deps, log=lambda m: None)
-    assert {"code": "volume_adjusted", "markets": ["italy"]} in results["warnings"]
-    row = results["rows"][0]
-    assert row["session"]["state"] == "open"
-    fraction = 6.25 / 8.5
-    assert abs(row["rel_volume"] - round(row["rel_volume_raw"] / fraction, 4)) < 1e-9
+    assert not {w["code"] for w in results["warnings"]} & {"volume_adjusted", "session_uncertain"}
+    assert results["markets"][0]["volume_median"] is None
+    assert results["rows"] and results["rows"][0]["session"]["state"] == "open"
+    for row in results["rows"]:
+        assert row["rel_volume_raw"] == row["rel_volume_time"]
+        assert row["rel_volume"] == round(row["rel_volume_raw"], 2)
+
+
+# --------------------------------------------------------------------------- #
+# Régression sur la capture RÉELLE du screener (lundi 19/10/2026 13:30 UTC)
+# --------------------------------------------------------------------------- #
+
+SNAPSHOT_NOW = datetime(2026, 10, 19, 13, 30, 37, tzinfo=timezone.utc)
+SNAPSHOT_MARKETS = ["switzerland", "italy", "germany", "france", "america"]
+
+
+class SnapshotScreener:
+    """Sert la capture réelle, marché par marché (Europe en séance, US en
+    pré-ouverture avec les chiffres du vendredi 16/10). ``width`` tronque
+    chaque ligne : 25 = les colonnes d'avant le 19/10, comme si TradingView
+    avait renommé les quatre nouvelles."""
+
+    def __init__(self, width=None):
+        with open(os.path.join(FIXTURES, "stockscan", "screener_snapshot_2026-10-19T1330Z.json"),
+                  encoding="utf-8") as f:
+            self.snapshot = json.load(f)
+        self.width = width
+
+    def scan(self, market, cfg):
+        block = self.snapshot["markets"].get(market.id)
+        if block is None:
+            raise sc.ScreenerError("HTTP 404", 404)
+        data = [{"s": r["s"], "d": r["d"][:self.width] if self.width else r["d"]}
+                for r in block["data"]]
+        return ({"totalCount": block["totalCount"], "data": data},
+                {"status": 200, "attempts": 1, "ignored_unknown": bool(self.width)})
+
+
+def _snapshot_deps(screener):
+    return engine.Deps(screener=screener, coach_loaders=FakeLoaders(), news_fetch=None,
+                       now=lambda: SNAPSHOT_NOW, sleep=lambda s: None, monotonic=lambda: 0.0)
+
+
+def test_real_snapshot_every_market_reaches_the_shortlist(tmp_path):
+    # Sans coach ni news, seuls volume, variation et résultats proches classent.
+    # Volume « à l'heure » ÷ médiane de son marché + quota de 50 % : chaque
+    # place est présélectionnée, pas seulement les États-Unis. Chaque ligne
+    # garde ses deux volumes — un champ oublié dans une couche serait une
+    # fonctionnalité morte sans aucune erreur (piège #61 du dépôt).
+    cfg = _cfg(markets=SNAPSHOT_MARKETS, shortlist=20, top_n=10)
+    results, logs = _run(tmp_path, cfg=cfg, deps=_snapshot_deps(SnapshotScreener()))
+
+    status = {m["id"]: m for m in results["markets"]}
+    assert [m["id"] for m in results["markets"]] == SNAPSHOT_MARKETS
+    assert {m: status[m]["volume_median"] for m in SNAPSHOT_MARKETS} == {
+        "switzerland": 1.064, "italy": 0.912, "germany": 0.856, "france": 0.987,
+        "america": 1.187}
+    shortlisted = {m: status[m]["shortlisted"] for m in SNAPSHOT_MARKETS}
+    assert all(n >= 2 for n in shortlisted.values())
+    assert sum(shortlisted.values()) == results["counts"]["shortlist"] == 20
+    assert shortlisted["america"] < 20
+    assert not {w["code"] for w in results["warnings"]} & {"volume_adjusted", "session_uncertain",
+                                                           "degraded_columns"}
+    # jamais de dict dans les compteurs : l'onglet Infos de l'Excel écrit
+    # chaque compteur dans UNE cellule
+    assert all(isinstance(v, int) for v in results["counts"].values())
+
+    assert results["rows"]                     # une liste vide prouverait tout
+    for row in results["rows"]:
+        assert isinstance(row["rel_volume_raw"], float), row["symbol"]
+        assert row["rel_volume_time"] == row["rel_volume_raw"], row["symbol"]
+    on_disk = json.loads((tmp_path / "results.json").read_text(encoding="utf-8"))
+    assert on_disk["rows"] == results["rows"]
+
+    assert ("Volume relatif médian à l'heure : switzerland 1,06 · italy 0,91 · "
+            "germany 0,86 · france 0,99 · america 1,19") in logs
+    expected = ", ".join("%s %d" % (m, n) for m, n in
+                         sorted(shortlisted.items(), key=lambda kv: (-kv[1], kv[0])))
+    assert "Présélection : 20 titres — " + expected in logs
+
+
+def test_dead_volume_at_time_column_falls_back_to_the_ten_day_volume(tmp_path):
+    # TradingView renomme les quatre nouvelles colonnes : le relevé rejoué les
+    # rend vides. Le scan va au bout, le dit (degraded_columns), et le volume
+    # retombe sur le 10 j — rapporté à sa médiane, bornée : en pleine séance
+    # européenne (0,27 à 0,40) le diviseur plafonne à 0,5. Le journal ne doit
+    # pas appeler « à l'heure » un volume qui ne l'est pas.
+    cfg = _cfg(markets=SNAPSHOT_MARKETS, shortlist=20, top_n=10)
+    results, logs = _run(tmp_path, cfg=cfg, deps=_snapshot_deps(SnapshotScreener(width=25)))
+
+    assert {"code": "degraded_columns",
+            "columns": ["current_session", "relative_volume_intraday|5", "time", "timezone"]} \
+        in results["warnings"]
+    assert {m["id"]: m["volume_median"] for m in results["markets"]} == {
+        "switzerland": 0.37, "italy": 0.403, "germany": 0.305, "france": 0.271,
+        "america": 1.223}
+    assert results["rows"]
+    for row in results["rows"]:
+        assert row["rel_volume_time"] is None
+        divisor = 1.223 if row["market"] == "america" else 0.5
+        assert abs(row["rel_volume"] - row["rel_volume_raw"] / divisor) <= 0.006, row["symbol"]
+    assert ("Volume relatif médian à l'heure : switzerland 0,37 (10 j) · italy 0,40 (10 j) · "
+            "germany 0,30 (10 j) · france 0,27 (10 j) · america 1,22 (10 j)") in logs
