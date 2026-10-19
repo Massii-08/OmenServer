@@ -3,6 +3,9 @@
 ⚠️ La fixture ``screener_italy_synthetic.json`` est SYNTHÉTIQUE (forme tirée du
 paquet ``tradingview-screener`` 3.2.2) : le conteneur de développement rendait
 403 sur ``scanner.tradingview.com``. À remplacer par une capture ``--probe``.
+
+``screener_snapshot_2026-10-19T1330Z.json`` est, elle, une capture RÉELLE (5
+marchés, 20 lignes chacun) : Europe en séance, États-Unis en pré-ouverture.
 """
 import json
 import os
@@ -70,6 +73,7 @@ def test_parse_maps_fields():
     assert eni["price"] == 15.48
     assert eni["change_pct"] == 2.31
     assert eni["rel_volume"] == 2.4
+    assert eni["rel_volume_time"] == 2.2
     assert eni["earnings_next"] == "2026-10-24"
     # 1,3e7 titres × 15,48 € ≈ 201,24 M€ échangés par jour
     assert eni["avg_value_meur"] == 201.24
@@ -231,6 +235,55 @@ def _values(**kw):
     base.update({"type": "stock", "currency": "EUR"})
     base.update(kw)
     return [base[c] for c in sc.COLUMNS]
+
+
+# --------------------------------------------------------------------------- #
+# Biais horaire : le volume relatif « à l'heure »
+# --------------------------------------------------------------------------- #
+#
+# ``relative_volume_10d_calc`` compare le volume DU JOUR à la moyenne 10 j : en
+# pleine séance européenne il est partiel (0,24 à 0,32 de médiane le 19/10 à
+# 13:30 UTC) quand celui des États-Unis, en pré-ouverture, est la séance
+# précédente COMPLÈTE (1,17). ``relative_volume_intraday|5`` rapporte le volume
+# cumulé au volume moyen cumulé À LA MÊME HEURE.
+
+SNAPSHOT = "screener_snapshot_2026-10-19T1330Z.json"
+SNAPSHOT_MARKETS = ("switzerland", "italy", "germany", "france", "america")
+HOUR_BIAS_COLUMNS = ("relative_volume_intraday|5", "current_session", "time", "timezone")
+
+
+def test_hour_bias_columns_are_appended_at_the_end():
+    """``parse_response`` lit ``d`` par POSITION : une colonne insérée au milieu
+    décalerait toutes les suivantes. Aucune n'est « optionnelle » : renommée par
+    TradingView, elle doit sortir dans l'avertissement ``degraded_columns``."""
+    assert sc.COLUMNS[-4:] == HOUR_BIAS_COLUMNS
+    # la capture réelle = colonnes d'origine + les 4 nouvelles, dans cet ordre
+    assert tuple(_load(SNAPSHOT)["columns"]) == sc.COLUMNS
+    assert not set(HOUR_BIAS_COLUMNS) & sc.OPTIONAL_COLUMNS
+
+
+def test_renamed_hour_bias_columns_are_reported_dead():
+    data = [{"s": "MIL:A%d" % i, "d": _values(name="A%d" % i, close=10.0 + i,
+                                              relative_volume_10d_calc=1.0)}
+            for i in range(6)]
+    _, info = sc.parse_response({"totalCount": 6, "data": data}, ITALY)
+    assert set(HOUR_BIAS_COLUMNS) <= set(info["null_columns"])
+
+
+@pytest.mark.parametrize("market_id", SNAPSHOT_MARKETS)
+def test_real_snapshot_parses_time_volume_without_dead_column(market_id):
+    rows, info = sc.parse_response(_load(SNAPSHOT)["markets"][market_id], mk.by_id(market_id))
+    assert len(rows) == 20
+    assert info["null_columns"] == []
+    assert all(isinstance(r["rel_volume_time"], float) for r in rows)
+    assert all(isinstance(r["rel_volume"], float) for r in rows)    # le 10 j reste là
+
+
+def test_synthetic_fixture_has_no_dead_column():
+    """La fixture synthétique couvre aussi les colonnes ajoutées : sinon chaque
+    scan de test porterait un ``degraded_columns`` qui ne dit rien de vrai."""
+    _, info = sc.parse_response(_load("screener_italy_synthetic.json"), ITALY)
+    assert info["null_columns"] == []
 
 
 # --------------------------------------------------------------------------- #

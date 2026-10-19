@@ -43,7 +43,16 @@ HEADERS = {
 }
 
 # Ordre = ordre des valeurs de ``d`` dans la réponse. Ne JAMAIS réordonner sans
-# régénérer les fixtures.
+# régénérer les fixtures ; une colonne nouvelle s'ajoute À LA FIN.
+#
+# Les quatre dernières corrigent le biais horaire (relevé du 19/10/2026) :
+# ``relative_volume_10d_calc`` rapporte le volume DU JOUR à la moyenne 10 j —
+# partiel pendant une séance (Europe à 13:30 UTC : 0,24 à 0,32 de médiane selon
+# la place), complet pour une place qui n'a pas encore ouvert (États-Unis : 1,17,
+# la séance précédente). ``relative_volume_intraday|5`` (« Relative Volume at Time ») rapporte
+# le volume cumulé au volume moyen cumulé À LA MÊME HEURE. ``current_session``,
+# ``time`` (ouverture de la barre journalière, UNIX UTC) et ``timezone`` (IANA)
+# disent quelle séance décrivent variation, gap et volume.
 COLUMNS: Tuple[str, ...] = (
     "name", "description", "type", "typespecs", "exchange", "currency",
     "close", "change", "gap", "volume", "relative_volume_10d_calc",
@@ -52,6 +61,7 @@ COLUMNS: Tuple[str, ...] = (
     "Perf.W", "Perf.1M", "price_52_week_high", "price_52_week_low",
     "earnings_release_next_trading_date_fq", "dividends_yield_current",
     "price_earnings_ttm",
+    "relative_volume_intraday|5", "current_session", "time", "timezone",
 )
 
 # Une colonne n'est déclarée « morte » que si l'échantillon est assez grand :
@@ -225,6 +235,9 @@ def parse_response(payload: Any, market: mk.Market,
             "gap_pct": _num(d.get("gap")),
             "volume": _num(d.get("volume")),
             "rel_volume": _num(d.get("relative_volume_10d_calc")),
+            # volume relatif « à l'heure » : comparable d'une place à l'autre
+            # quelle que soit l'heure du relevé (cf. ``COLUMNS``)
+            "rel_volume_time": _num(d.get("relative_volume_intraday|5")),
             "avg_value_meur": _meur(avg_value_local, currency, market),
             # Value.Traded est exprimé dans la devise COMPTABLE, pas dans la devise
             # de cotation. Mesure réelle du 19/10/2026 (8 marchés), rapport

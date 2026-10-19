@@ -1150,7 +1150,9 @@ const StockScanModule = {
             : (chgN > 0 ? 'var(--accent)' : 'var(--danger)');
         const nums = [];
         if (this._isNum(row.gap_pct)) nums.push(this._tr('stocks.gap', { v: this._pct(row.gap_pct, 2, true) }));
-        if (this._isNum(row.rel_volume)) nums.push(this._tr('stocks.rel_volume', { v: this._num(row.rel_volume, 1) }));
+        // volume relatif « à l'heure » (comparable d'une place à l'autre), sinon le 10 j
+        const relVol = this._isNum(row.rel_volume_time) ? row.rel_volume_time : row.rel_volume;
+        if (this._isNum(relVol)) nums.push(this._tr('stocks.rel_volume', { v: this._num(relVol, 1) }));
         if (this._isNum(row.perf_w)) nums.push(this._tr('stocks.week', { v: this._pct(row.perf_w, 1, true) }));
 
         // --- place, secteur, taille, résultats à venir ---

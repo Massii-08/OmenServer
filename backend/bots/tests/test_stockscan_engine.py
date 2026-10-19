@@ -239,6 +239,10 @@ def test_fallback_universe_when_screener_fails_everywhere(tmp_path):
     eni = results["rows"][0]
     assert eni["tv_symbol"] == "MIL:ENI"
     assert eni["rel_volume"] == 3.0
+    # pas de volume « à l'heure » chez Yahoo : le 10 j, comparé à son marché
+    # (une seule ligne : pas de médiane, diviseur 1)
+    assert eni["rel_volume_time"] is None
+    assert eni["rel_volume_adj"] == 3.0
     assert eni["change_pct"] == round((106 - 104) / 104 * 100, 2)
 
 
@@ -272,12 +276,116 @@ def test_row_from_chart_handles_pence_and_garbage():
                                   "low": [2400, 2420, 2450], "close": [2400, 2420, 2450],
                                   "volume": [1e7, 1e7, 1e7]}]}}]}}
     row = engine.row_from_chart("SHEL.L", raw)
+    assert "rel_volume_time" in row and row["rel_volume_time"] is None
     assert row["currency"] == "GBX"
     assert row["avg_value_meur"] == round(1e7 * 2450 * 0.0117 / 1e6, 2)
     assert row["tv_symbol"] == "LSE:SHEL"
     assert engine.row_from_chart("SHEL.L", {"chart": {"result": []}}) is None
     assert engine.row_from_chart("XX.ZZ", raw) is None          # place inconnue
     assert engine.row_from_chart("SHEL.L", None) is None
+
+
+# --------------------------------------------------------------------------- #
+# Biais horaire : volume comparable + quota par marché dans la présélection
+# --------------------------------------------------------------------------- #
+
+SNAPSHOT_NOW = datetime(2026, 10, 19, 13, 30, 37, tzinfo=timezone.utc)
+SNAPSHOT_MARKETS = ["switzerland", "italy", "germany", "france", "america"]
+
+
+class PayloadScreener:
+    """Sert des réponses brutes du screener, marché par marché (403 sinon)."""
+
+    def __init__(self, payloads):
+        self.payloads = payloads
+
+    def scan(self, market, cfg):
+        if market.id not in self.payloads:
+            raise sc.ScreenerError("HTTP 403", 403)
+        return self.payloads[market.id], {"status": 200, "attempts": 1, "ignored_unknown": False}
+
+
+def _snapshot_payloads():
+    """Capture RÉELLE du lundi 19/10/2026 13:30 UTC : Europe en séance, États-Unis
+    en pré-ouverture (leurs chiffres sont ceux du vendredi 16/10)."""
+    path = os.path.join(FIXTURES, "stockscan", "screener_snapshot_2026-10-19T1330Z.json")
+    with open(path, encoding="utf-8") as f:
+        return json.load(f)["markets"]
+
+
+def _payload(*rows):
+    """Réponse du screener construite colonne par colonne : ``(tv_symbol, {colonne: valeur})``."""
+    data = []
+    for tv_symbol, cols in rows:
+        assert set(cols) <= set(sc.COLUMNS)          # une faute de frappe ferait un test à vide
+        base = {c: None for c in sc.COLUMNS}
+        base.update({"type": "stock", "currency": "EUR", "fundamental_currency_code": "EUR"})
+        base.update(cols)
+        data.append({"s": tv_symbol, "d": [base[c] for c in sc.COLUMNS]})
+    return {"totalCount": len(data), "data": data}
+
+
+def test_hour_bias_regression_on_real_snapshot(tmp_path):
+    """Sans coach ni news fraîches, la présélection de 20 titres donnait 16
+    places aux États-Unis, 0 à la France et 1 à la Suisse : le volume relatif
+    10 j d'une séance européenne EN COURS (0,3) perdait face à la séance
+    précédente COMPLÈTE d'une place pas encore ouverte (1,2 : vendredi)."""
+    deps = engine.Deps(screener=PayloadScreener(_snapshot_payloads()), coach_loaders=FakeLoaders(),
+                       news_fetch=None, now=lambda: SNAPSHOT_NOW,
+                       sleep=lambda s: None, monotonic=lambda: 0.0)
+    cfg = cfgmod.validate({"markets": SNAPSHOT_MARKETS, "shortlist": 20, "top_n": 10})[0]
+    results, logs = _run(tmp_path, cfg=cfg, deps=deps)
+
+    by_market = {m["id"]: m for m in results["markets"]}
+    assert sorted(by_market) == sorted(SNAPSHOT_MARKETS)
+    for market_id, status in by_market.items():
+        assert status["shortlisted"] >= 2, market_id        # 20 × 0,5 / 5 marchés
+        assert status["volume_median"] is not None, market_id
+    assert sum(m["shortlisted"] for m in by_market.values()) == results["counts"]["shortlist"] == 20
+    assert by_market["america"]["shortlisted"] < 20          # plus 100 % américaine
+    assert by_market["france"]["volume_median"] == 0.987
+
+    # le champ traverse jusqu'au résultat (piège #61 : une couche qui l'oublie le tue)
+    assert results["rows"]
+    for row in results["rows"]:
+        assert isinstance(row["rel_volume_time"], float)
+        assert isinstance(row["rel_volume_adj"], float)
+    on_disk = json.loads((tmp_path / "results.json").read_text(encoding="utf-8"))
+    assert on_disk["rows"][0]["rel_volume_adj"] == results["rows"][0]["rel_volume_adj"]
+
+    # l'onglet Infos de l'Excel écrit chaque compteur dans une cellule : jamais de dict
+    assert results["excel"]
+    assert all(not isinstance(v, (dict, list)) for v in results["counts"].values())
+    assert ("Volume relatif médian à l'heure : switzerland 1,06 · italy 0,91 · germany 0,86"
+            " · france 0,99 · america 1,19") in logs
+    assert any(line.startswith("Présélection : 20 titres — ") for line in logs)
+
+
+def test_markets_status_carries_volume_median_and_shortlisted(tmp_path):
+    results, _ = _run(tmp_path)
+    by_market = {m["id"]: m for m in results["markets"]}
+    # Italie : 6 titres liquides, moins que VOLUME_MEDIAN_MIN_ROWS -> pas de médiane
+    assert by_market["italy"]["volume_median"] is None
+    assert by_market["italy"]["shortlisted"] == 6
+    assert by_market["uk"]["volume_median"] is None          # marché en échec
+    assert by_market["uk"]["shortlisted"] == 0
+
+
+def test_equal_scores_are_ordered_by_the_comparable_volume(tmp_path):
+    """À score égal, le départage suit le volume comparé à SON marché, pas le 10 j
+    brut — qui donnerait toujours l'avantage à la place pas encore ouverte."""
+    common = {"close": 10.0, "change": 0.0, "Perf.W": 0.0, "average_volume_10d_calc": 2e6,
+              "earnings_release_next_trading_date_fq": 1792800000}     # résultats le 24/10
+    payload = _payload(
+        ("MIL:AAA", dict(common, name="AAA", relative_volume_10d_calc=1.4,
+                         **{"relative_volume_intraday|5": 0.5})),
+        ("MIL:BBB", dict(common, name="BBB", average_volume_10d_calc=1e6,
+                         relative_volume_10d_calc=0.2, **{"relative_volume_intraday|5": 1.3})))
+    deps = _deps(screener=PayloadScreener({"italy": payload}), loaders=FakeLoaders(),
+                 news=_news_fetch({}))
+    results, _ = _run(tmp_path, cfg=_cfg(markets=["italy"]), deps=deps)
+    assert [r["score"] for r in results["rows"]] == [10, 10]     # résultats proches, rien d'autre
+    assert [r["ticker"] for r in results["rows"]] == ["BBB", "AAA"]
 
 
 def test_yahoo_market_helpers():

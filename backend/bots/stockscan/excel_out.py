@@ -62,7 +62,7 @@ LABELS: Dict[str, Dict[str, Any]] = {
         "reasons": {
             "news": "{v} news en {h} h", "sources": "{v} sources distinctes",
             "positive": "bonne nouvelle", "upcoming": "catalyseur annoncé",
-            "earnings": "résultats le {v}", "volume": "volume ×{v}",
+            "earnings": "résultats le {v}", "volume": "volume ×{v} vs son marché",
             "aligned": "le cours confirme ({v} %)", "coach_up": "hypothèse du coach : hausse",
             "crowd": "buzz Reddit ({v} mentions)", "filing": "dépôt SEC {v}",
         },
@@ -109,7 +109,7 @@ LABELS: Dict[str, Dict[str, Any]] = {
         "reasons": {
             "news": "{v} news in {h} h", "sources": "{v} distinct sources",
             "positive": "good news", "upcoming": "announced catalyst",
-            "earnings": "earnings on {v}", "volume": "volume ×{v}",
+            "earnings": "earnings on {v}", "volume": "volume ×{v} vs its market",
             "aligned": "price confirms ({v} %)", "coach_up": "coach hypothesis: up",
             "crowd": "Reddit buzz ({v} mentions)", "filing": "SEC filing {v}",
         },
@@ -158,7 +158,7 @@ LABELS: Dict[str, Dict[str, Any]] = {
         "reasons": {
             "news": "{v} notizie in {h} h", "sources": "{v} fonti distinte",
             "positive": "buona notizia", "upcoming": "catalizzatore annunciato",
-            "earnings": "risultati il {v}", "volume": "volume ×{v}",
+            "earnings": "risultati il {v}", "volume": "volume ×{v} rispetto al suo mercato",
             "aligned": "il prezzo conferma ({v} %)", "coach_up": "ipotesi del coach: rialzo",
             "crowd": "buzz Reddit ({v} menzioni)", "filing": "deposito SEC {v}",
         },
@@ -328,6 +328,10 @@ def _candidates_sheet(ws, results: Dict[str, Any], lang: str) -> None:
         news = [n for n in row.get("news") or [] if isinstance(n, dict)]
         top = news[0] if news else {}
         change = _num(row.get("change_pct"))
+        # volume relatif « à l'heure » (comparable d'une place à l'autre), sinon le 10 j
+        rel_volume = _num(row.get("rel_volume_time"))
+        if rel_volume is None:
+            rel_volume = _num(row.get("rel_volume"))
         market = mk.by_id(row.get("market"))
         market_label = market.labels.get(lang, market.labels["fr"]) if market else row.get("market")
         _put(ws, row_idx, 1, row.get("rank"), fmt=FMT_INT)
@@ -337,7 +341,7 @@ def _candidates_sheet(ws, results: Dict[str, Any], lang: str) -> None:
         _put(ws, row_idx, 5, _num(row.get("price")), fmt=FMT_NUM)
         _put(ws, row_idx, 6, row.get("currency"))
         _put(ws, row_idx, 7, change, font=_sign_font(change), fmt=FMT_PCT)
-        _put(ws, row_idx, 8, _num(row.get("rel_volume")), fmt=FMT_RATIO)
+        _put(ws, row_idx, 8, rel_volume, fmt=FMT_RATIO)
         _put(ws, row_idx, 9, _num(row.get("score")), fmt=FMT_INT)
         flags = [flag_text(f, lang) for f in row.get("flags") or []]
         _put(ws, row_idx, 10, ", ".join(flags) or None,

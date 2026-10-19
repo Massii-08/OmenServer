@@ -74,7 +74,8 @@ def test_candidate_rows(tmp_path):
     assert ws.cell(row=r, column=7).number_format == xo.FMT_PCT
     assert ws.cell(row=r, column=9).value == 72
     assert ws.cell(row=r, column=10).value == "résultats proches, nouveau"
-    assert ws.cell(row=r, column=11).value == "volume ×2,4 · 3 news en 48 h · résultats le 24/10/2026"
+    assert ws.cell(row=r, column=11).value == ("volume ×2,4 vs son marché · 3 news en 48 h"
+                                               " · résultats le 24/10/2026")
     assert ws.cell(row=r, column=12).hyperlink.target == "https://www.tradingview.com/news/1"
     assert ws.cell(row=r, column=14).value.date() == date(2026, 10, 24)
     assert ws.cell(row=r, column=17).hyperlink.target.endswith("MIL%3AENI")
@@ -114,6 +115,27 @@ def test_reason_and_flag_texts():
         assert set(xo.LABELS[lang]["flags"]) == set(xo.LABELS["fr"]["flags"])
         assert set(xo.LABELS[lang]["warnings"]) == set(xo.LABELS["fr"]["warnings"])
         assert len(xo.LABELS[lang]["headers"]) == len(xo.WIDTHS)
+
+
+def test_volume_reason_says_it_is_compared_to_its_market():
+    """La valeur de la raison est le volume rapporté à la normale de SA place à
+    cette heure (``rel_volume_adj``), pas le volume relatif brut."""
+    reason = {"code": "volume", "value": 2.4}
+    assert xo.reason_text(reason, "fr") == "volume ×2,4 vs son marché"
+    assert xo.reason_text(reason, "en") == "volume ×2.4 vs its market"
+    assert xo.reason_text(reason, "it") == "volume ×2,4 rispetto al suo mercato"
+
+
+def test_rel_volume_column_prefers_the_volume_at_time(tmp_path):
+    results = _results()
+    results["rows"][0]["rel_volume_time"] = 1.15          # ENI : 2,4 sur 10 j, 1,15 à l'heure
+    ws = load_workbook(str(xo.write_workbook(results, tmp_path)))["Candidats"]
+    assert ws.cell(row=xo.DATA_START_ROW, column=8).value == 1.15
+    assert ws.cell(row=xo.DATA_START_ROW, column=8).number_format == xo.FMT_RATIO
+    # volume à l'heure inconnu (univers de repli, colonne morte) : le 10 j, comme avant
+    results["rows"][0]["rel_volume_time"] = None
+    ws = load_workbook(str(xo.write_workbook(results, tmp_path)))["Candidats"]
+    assert ws.cell(row=xo.DATA_START_ROW, column=8).value == 2.4
 
 
 def test_empty_results_still_write(tmp_path):

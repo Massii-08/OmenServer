@@ -1,5 +1,5 @@
 {
- "_synthetic": "FIXTURE SYNTHETIQUE - forme tiree de tradingview-screener 3.2.2 (PyPI, 2026), valeurs inventees mais plausibles. A remplacer par une capture `python -m backend.bots.stockscan --probe` (conteneur cloud : 403).",
+ "_synthetic": "FIXTURE SYNTHETIQUE - forme tiree de tradingview-screener 3.2.2 (PyPI, 2026), valeurs inventees mais plausibles. A remplacer par une capture `python -m backend.bots.stockscan --probe` (conteneur cloud : 403). Colonnes du biais horaire (relative_volume_intraday|5, current_session, time, timezone) ajoutees le 19/10/2026 : seance italienne ouverte (lundi 19/10 07:00 UTC), volume a l'heure dans la MEME tranche de scoring.VOLUME_STEPS que le 10 j (les tests du moteur en dependent).",
  "totalCount": 212,
  "data": [
   {
@@ -31,7 +31,11 @@
     40.2,
     1793232000,
     4.8,
-    9.1
+    9.1,
+    1.05,
+    "market",
+    1792393200,
+    "Europe/Rome"
    ]
   },
   {
@@ -63,7 +67,11 @@
     12.1,
     1792800000,
     6.4,
-    11.2
+    11.2,
+    2.2,
+    "market",
+    1792393200,
+    "Europe/Rome"
    ]
   },
   {
@@ -95,7 +103,11 @@
     8.9,
     null,
     7.1,
-    5.0
+    5.0,
+    2.9,
+    "market",
+    1792393200,
+    "Europe/Rome"
    ]
   },
   {
@@ -127,7 +139,11 @@
     22.0,
     null,
     1.1,
-    24.0
+    24.0,
+    4.6,
+    "market",
+    1792393200,
+    "Europe/Rome"
    ]
   },
   {
@@ -159,7 +175,11 @@
     360.0,
     1793750400,
     0.7,
-    48.0
+    48.0,
+    0.85,
+    "market",
+    1792393200,
+    "Europe/Rome"
    ]
   },
   {
@@ -191,7 +211,11 @@
     6.4,
     null,
     5.9,
-    12.5
+    12.5,
+    0.95,
+    "market",
+    1792393200,
+    "Europe/Rome"
    ]
   },
   {
@@ -223,12 +247,20 @@
     null,
     null,
     null,
-    null
+    null,
+    5.5,
+    "market",
+    1792393200,
+    "Europe/Rome"
    ]
   },
   {
    "s": "",
    "d": [
+    null,
+    null,
+    null,
+    null,
     null,
     null,
     null,
@@ -285,7 +317,11 @@
     null,
     null,
     null,
-    null
+    null,
+    null,
+    "market",
+    1792393200,
+    "Europe/Rome"
    ]
   }
  ]

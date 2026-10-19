@@ -3,12 +3,20 @@
 Spec §6. Les poids sont des CONSTANTES verrouillées par test : on ne les
 « règle » pas en douce, on les change ici et on dit pourquoi dans l'historique.
 
-Philosophie, en trois phrases :
+Philosophie, en quatre phrases :
 
 - un catalyseur est OBLIGATOIRE (une news admise, des résultats sous 7 jours,
   une hypothèse du coach ou un dépôt SEC) : un volume anormal sans aucune
   raison connue n'est pas un catalyseur ;
-- le volume CONFIRME la news, il ne la remplace pas ;
+- le volume CONFIRME la news, il ne la remplace pas — et il se juge par
+  rapport à la normale de SON marché à CETTE heure (``normalize_volume``) : un
+  relevé de 13:30 UTC prend l'Europe en pleine séance (volume du jour partiel)
+  et les États-Unis avant l'ouverture (séance complète de la veille) ; comparés
+  tels quels, les seconds gagnaient toujours (0 titre européen à ×1,5 contre 83
+  américains le 19/10/2026) ;
+- la présélection décide qui a droit à ses news vérifiées : elle réserve la
+  moitié de ses places, à parts égales, aux marchés demandés, et donne le reste
+  au mérite (``select_shortlist``) ;
 - une news publique est souvent déjà dans le prix : un titre qui a déjà
   beaucoup bougé est marqué « en retard » et perd des points, une mauvaise
   nouvelle le marque en rouge (et l'exclut si l'utilisateur l'a demandé).
@@ -16,6 +24,7 @@ Philosophie, en trois phrases :
 Rien ici ne dit « achète » : la sortie est un classement de CANDIDATS À
 ÉTUDIER, avec la liste exacte des raisons.
 """
+import statistics
 from datetime import date, datetime, timedelta
 from typing import Any, Dict, Iterable, List, Optional, Set
 
@@ -45,6 +54,18 @@ LATE_WEEK_PCT = 20.0
 
 # Combien de news on garde par ligne dans le résultat (l'écran les déplie).
 NEWS_PER_ROW = 6
+
+# --- volume comparable et présélection (biais horaire, relevé du 19/10/2026) --
+# Sous 8 valeurs, la médiane d'un marché ne dit rien de sa normale : diviseur 1.
+VOLUME_MEDIAN_MIN_ROWS = 8
+# Diviseur borné : une médiane extrême (journée d'emballement, place endormie)
+# ne doit ni écraser ni gonfler tout un marché.
+VOLUME_MEDIAN_CLAMP = (0.5, 2.0)
+# Part de la présélection réservée à parts égales aux marchés présents : le
+# reste va au mérite, toutes places confondues. Relevé du 19/10/2026, 40 places,
+# 5 marchés, sans le coach : 40 places américaines avant correction, encore 33
+# avec le seul volume comparable ; le quota en garantit 4 à chaque marché.
+SHORTLIST_RESERVED_SHARE = 0.5
 
 
 def _num(value: Any) -> Optional[float]:
@@ -76,6 +97,54 @@ def volume_points(rel_volume: Any) -> int:
         if rv >= threshold:
             return points
     return 0
+
+
+def _finite(value: Any) -> Optional[float]:
+    out = _num(value)
+    return None if out is None or out in (float("inf"), float("-inf")) else out
+
+
+def _raw_volume(row: Dict[str, Any]) -> Optional[float]:
+    """Signal brut d'une ligne : le volume « à l'heure » s'il est connu, sinon le 10 j."""
+    timed = _finite(row.get("rel_volume_time"))
+    return timed if timed is not None else _finite(row.get("rel_volume"))
+
+
+def scored_volume(row: Dict[str, Any]) -> Optional[float]:
+    """Le volume que le SCORE utilise : ``rel_volume_adj`` (comparé à son marché)
+    quand ``normalize_volume`` l'a posé, sinon le 10 j brut."""
+    adj = _num(row.get("rel_volume_adj"))
+    return adj if adj is not None else _num(row.get("rel_volume"))
+
+
+def normalize_volume(rows: List[Dict[str, Any]]) -> Dict[str, Optional[float]]:
+    """Pose ``rel_volume_adj`` sur chaque ligne et rend la médiane de chaque marché.
+
+    ``rel_volume_adj`` = signal brut (``_raw_volume``) / médiane de ce signal dans
+    SON marché, bornée par ``VOLUME_MEDIAN_CLAMP`` : 1,0 = aussi actif que la
+    normale de sa place à cette heure. Sous ``VOLUME_MEDIAN_MIN_ROWS`` valeurs, la
+    médiane est ``None`` et le diviseur 1 ; sans aucun volume connu, la ligne
+    reçoit ``None``. Ne modifie rien d'autre.
+
+    Les médianes rendues (transparence du relevé) sont celles d'AVANT le
+    bornage, arrondies à 3 décimales.
+    """
+    values: Dict[str, List[float]] = {}
+    for row in rows:
+        bucket = values.setdefault(row.get("market"), [])
+        raw = _raw_volume(row)
+        if raw is not None:
+            bucket.append(raw)
+    medians = {market: (statistics.median(vals) if len(vals) >= VOLUME_MEDIAN_MIN_ROWS else None)
+               for market, vals in values.items()}
+    low, high = VOLUME_MEDIAN_CLAMP
+    for row in rows:
+        raw = _raw_volume(row)
+        median = medians.get(row.get("market"))
+        divisor = min(max(median, low), high) if median is not None else 1.0
+        row["rel_volume_adj"] = round(raw / divisor, 2) if raw is not None else None
+    return {market: (round(median, 3) if median is not None else None)
+            for market, median in medians.items()}
 
 
 def earnings_soon(earnings_next: Any, today: date) -> bool:
@@ -122,7 +191,7 @@ def pre_score(row: Dict[str, Any], slot: Optional[Dict[str, Any]], today: date) 
     Il favorise ce qui bouge (volume relatif, variation), ce qui est annoncé
     (résultats proches) et ce dont le coach parle déjà.
     """
-    score = float(volume_points(row.get("rel_volume")))
+    score = float(volume_points(scored_volume(row)))
     change = _num(row.get("change_pct"))
     if change is not None:
         score += min(10.0, abs(change))
@@ -135,6 +204,46 @@ def pre_score(row: Dict[str, Any], slot: Optional[Dict[str, Any]], today: date) 
         if crowd_buzz(slot.get("reddit")):
             score += CROWD
     return score
+
+
+def select_shortlist(rows: List[Dict[str, Any]], slots_by_symbol: Optional[Dict[str, Any]],
+                     today: date, size: int) -> List[Dict[str, Any]]:
+    """La présélection : les ``size`` lignes qui auront droit à leurs news fraîches.
+
+    Classement global = pré-score (signaux du coach compris) puis échanges
+    moyens, tri stable — la clé historique du moteur. ``SHORTLIST_RESERVED_SHARE``
+    des places est réservée à parts égales aux marchés présents (au moins une
+    chacun) : leurs meilleures lignes, dans l'ordre global ; un marché trop court
+    rend ses places au pot commun. Le reste va aux meilleurs pré-scores restants,
+    toutes places confondues. Rendu dans l'ordre du classement GLOBAL (si le flux
+    de news casse en route, les meilleures ont été vérifiées d'abord), jamais
+    plus de ``size`` lignes ; un seul marché donne exactement le tri simple.
+
+    Les lignes sont repérées par leur POSITION dans le classement, jamais par
+    ``symbol`` (il peut valoir ``None`` pour plusieurs d'entre elles).
+    """
+    slots = slots_by_symbol or {}
+    ranked = sorted(rows, key=lambda r: (-pre_score(r, slots.get(r.get("symbol")), today),
+                                         -(r.get("avg_value_meur") or 0.0)))
+    size = max(0, int(size))
+    if size >= len(ranked):
+        return ranked
+    markets = {r.get("market") for r in ranked}
+    per_market = max(1, int(size * SHORTLIST_RESERVED_SHARE) // len(markets))
+    chosen: Set[int] = set()
+    seats: Dict[Any, int] = {}
+    for pos, row in enumerate(ranked):           # places réservées
+        if len(chosen) >= size:
+            break
+        market = row.get("market")
+        if seats.get(market, 0) < per_market:
+            seats[market] = seats.get(market, 0) + 1
+            chosen.add(pos)
+    for pos in range(len(ranked)):               # le reste au mérite
+        if len(chosen) >= size:
+            break
+        chosen.add(pos)
+    return [ranked[pos] for pos in sorted(chosen)]
 
 
 def score_row(row: Dict[str, Any], news_items: Iterable[Dict[str, Any]],
@@ -193,10 +302,11 @@ def score_row(row: Dict[str, Any], news_items: Iterable[Dict[str, Any]],
         reasons.append({"code": "earnings", "value": str(row.get("earnings_next"))[:10]})
         flags.append("earnings_soon")
 
-    vol = volume_points(row.get("rel_volume"))
+    volume = scored_volume(row)
+    vol = volume_points(volume)
     if vol:
         components["volume"] = vol
-        reasons.append({"code": "volume", "value": round(_num(row.get("rel_volume")), 1)})
+        reasons.append({"code": "volume", "value": round(volume, 1)})
 
     change = _num(row.get("change_pct"))
     if change is not None and change > 0 and (has_pos or has_watch):

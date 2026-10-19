@@ -160,7 +160,9 @@ def row_from_chart(symbol: str, raw: Any) -> Optional[Dict[str, Any]]:
         "market": market_id, "exchange": meta.get("exchangeName") or "",
         "currency": "GBX" if currency == "GBp" else currency.upper(),
         "price": price, "change_pct": change, "gap_pct": None, "volume": volumes[-1] if volumes else None,
-        "rel_volume": rel_volume, "avg_value_meur": avg_value, "value_traded_meur": None,
+        # Yahoo n'a pas de volume « à l'heure » : normalize_volume retombe sur le 10 j
+        "rel_volume": rel_volume, "rel_volume_time": None,
+        "avg_value_meur": avg_value, "value_traded_meur": None,
         "market_cap_meur": None, "sector": None, "industry": None, "country": None,
         "perf_w": perf_w, "perf_1m": None, "high_52w": None, "low_52w": None,
         "earnings_next": None, "dividend_yield": None, "pe": None,
@@ -218,8 +220,13 @@ def _coach_summary(slot: Dict[str, Any]) -> Dict[str, Any]:
 
 
 _ROW_KEYS = ("tv_symbol", "symbol", "ticker", "name", "market", "exchange", "currency",
-             "price", "change_pct", "gap_pct", "rel_volume", "avg_value_meur",
-             "market_cap_meur", "sector", "perf_w", "earnings_next")
+             "price", "change_pct", "gap_pct", "rel_volume", "rel_volume_time", "rel_volume_adj",
+             "avg_value_meur", "market_cap_meur", "sector", "perf_w", "earnings_next")
+
+
+def _fr_ratio(value: Optional[float]) -> str:
+    """``1.064`` -> ``1,06`` (journal en français) ; ``None`` -> ``—``."""
+    return "—" if value is None else ("%.2f" % value).replace(".", ",")
 
 
 def run_scan(cfg: Dict[str, Any], username: str, out_dir: Any, deps: Deps,
@@ -283,6 +290,17 @@ def run_scan(cfg: Dict[str, Any], username: str, out_dir: Any, deps: Deps,
             warnings.append({"code": "fallback_failed"})
     counts["universe"] = len(universe)
 
+    # Volume comparable d'une place à l'autre : rapporté à la normale de SON
+    # marché à cette heure (``rel_volume_adj``), sinon l'heure du relevé décide
+    # du classement (Europe en séance contre États-Unis avant l'ouverture).
+    medians = sg.normalize_volume(universe)
+    for status in markets_status:
+        status["volume_median"] = medians.get(status["id"])
+    if universe:
+        log("Volume relatif médian à l'heure : %s" % " · ".join(
+            "%s %s" % (market_id, _fr_ratio(medians[market_id]))
+            for market_id in cfg["markets"] if market_id in medians))
+
     # --- 2. signaux du coach (zéro réseau) ---------------------------------------
     check()
     progress.update("coach", 0, 1, universe=len(universe))
@@ -298,11 +316,19 @@ def run_scan(cfg: Dict[str, Any], username: str, out_dir: Any, deps: Deps,
     by_symbol = view["by_symbol"]
 
     # --- 3. présélection -------------------------------------------------------------
+    # Elle décide qui a droit à ses news fraîches : la moitié des places est
+    # réservée à parts égales aux marchés, le reste va au mérite.
     check()
-    ranked = sorted(universe, key=lambda r: (-sg.pre_score(r, by_symbol.get(r.get("symbol")), today),
-                                             -(r.get("avg_value_meur") or 0.0)))
-    shortlist = ranked[:int(cfg["shortlist"])]
+    shortlist = sg.select_shortlist(universe, by_symbol, today, int(cfg["shortlist"]))
     counts["shortlist"] = len(shortlist)
+    seats: Dict[Any, int] = {}
+    for row in shortlist:
+        seats[row.get("market")] = seats.get(row.get("market"), 0) + 1
+    for status in markets_status:
+        status["shortlisted"] = seats.get(status["id"], 0)
+    detail = ", ".join("%s %d" % (market_id, n) for market_id, n in
+                       sorted(seats.items(), key=lambda kv: (-kv[1], str(kv[0]))))
+    log("Présélection : %d titres%s" % (len(shortlist), (" — " + detail) if detail else ""))
     progress.update("shortlist", 1, 1, shortlist=len(shortlist))
 
     # --- 4. news fraîches de la présélection --------------------------------------------
@@ -357,7 +383,9 @@ def run_scan(cfg: Dict[str, Any], username: str, out_dir: Any, deps: Deps,
                     "coach": _coach_summary(slot),
                     "links": {"chart": mk.chart_url(row.get("tv_symbol"))}})
         candidates.append(out)
-    candidates.sort(key=lambda r: (-r["score"], -(r.get("rel_volume") or 0.0),
+    # départage : le volume que le score utilise (comparé à son marché), pas le
+    # 10 j brut qui avantagerait la place pas encore ouverte
+    candidates.sort(key=lambda r: (-r["score"], -(sg.scored_volume(r) or 0.0),
                                    -(r.get("avg_value_meur") or 0.0)))
     counts["candidates"] = len(candidates)
     top = candidates[:int(cfg["top_n"])]
