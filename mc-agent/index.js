@@ -1829,7 +1829,7 @@ async function runGoalSkill(goal) {
     if (goal.args.name === 'stone') {
       const def = bot.registry.blocksByName.stone;
       if (def && !bot.findBlock({ matching: [def.id], maxDistance: 32 })) {
-        await mineDown(bot, { depth: 4 }, taskToken);
+        await mineDown(bot, { count: 4, land: true }, taskToken);   // `count` (pas `depth`, ignoré : 1 seul bloc creusé) + atterrissage entre deux coups
         if (taskToken.cancelled) return { ok: false, reason: 'cancelled' };
       }
     }
