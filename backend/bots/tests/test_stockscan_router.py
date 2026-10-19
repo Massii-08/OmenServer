@@ -178,7 +178,7 @@ def test_config_serves_defaults_catalogue_limits_windows_langs(tmp_path, monkeyp
     assert body["defaults"] == cfgmod.DEFAULTS         # aucun fichier : défauts d'usine
     assert [m["id"] for m in body["markets"]] == [m.id for m in mk.MARKETS]
     assert set(body["limits"]) == set(cfgmod.LIMITS)
-    assert body["limits"]["top_n"] == [5, 100]
+    assert body["limits"]["top_n"] == [5, 80]
     assert body["limits"]["min_cap_meur"] == [50, 500000]
     assert body["windows"] == [24, 48, 72]
     assert body["langs"] == ["fr", "en", "it"]

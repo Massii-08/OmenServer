@@ -5,6 +5,11 @@ bornes, une valeur illisible retombe sur le défaut, un marché inconnu est
 écarté — et CHAQUE correction laisse un avertissement. Une faute de frappe doit
 se voir, pas se perdre (même doctrine que ``pulse.prefs.validate``).
 
+Elle est aussi IDEMPOTENTE : revalider une config déjà propre la rend telle
+quelle, sans le moindre avertissement. Le moteur revalide le ``config.json``
+écrit par le routeur et journalise chaque avertissement dans le registre du scan
+que l'UI affiche — un second passage qui « corrige » encore serait un ping-pong.
+
 Les défauts vivent dans ``data/stock_scanner/defaults.json`` : le dernier
 réglage lancé devient le réglage proposé la fois suivante.
 """
@@ -34,12 +39,23 @@ DEFAULTS: Dict[str, Any] = {
     "lang": "fr",
 }
 
+# Plafond UNIQUE de la présélection ET de la liste rendue. Deux raisons :
+#  - budget : la présélection va chercher les news TradingView de CHAQUE titre,
+#    et ce budget de requêtes est partagé avec le coach du simulateur — ne pas
+#    relever sans l'arbitrer avec lui ;
+#  - cohérence : la liste rendue (top_n) est prélevée DANS la présélection, que
+#    ``validate`` remonte au besoin jusqu'à top_n. Avec deux plafonds distincts
+#    (top_n 100 / shortlist 80), cette règle poussait shortlist à 100 — hors de
+#    sa propre borne — et ``validate`` n'était plus idempotent (100 -> 80 -> 100).
+# Les deux entrées de LIMITS lisent cette constante : elles ne peuvent plus diverger.
+SHORTLIST_MAX = 80
+
 # (min, max) des champs numériques — l'UI les lit via GET /config.
 LIMITS: Dict[str, Tuple[float, float]] = {
     "min_cap_meur": (50, 500000),
     "min_value_meur": (0, 10000),
-    "top_n": (5, 100),
-    "shortlist": (10, 80),
+    "top_n": (5, SHORTLIST_MAX),
+    "shortlist": (10, SHORTLIST_MAX),
 }
 
 _INT_FIELDS = ("top_n", "shortlist")
@@ -64,6 +80,9 @@ def validate(raw: Any) -> Tuple[Dict[str, Any], List[Dict[str, Any]]]:
     ``{"code": "clamped", "field": …, "value": …, "used": …}``,
     ``{"code": "bad_value", "field": …, "value": …, "used": …}``,
     ``{"code": "default_markets"}``, ``{"code": "unknown_key", "field": …}``.
+
+    Idempotente : ``validate(clean)`` rend ``clean`` sans avertissement, et chaque
+    champ de ``LIMITS`` du résultat est dans ses bornes (cf. ``SHORTLIST_MAX``).
     """
     src = raw if isinstance(raw, dict) else {}
     clean: Dict[str, Any] = {}
@@ -143,7 +162,9 @@ def validate(raw: Any) -> Tuple[Dict[str, Any], List[Dict[str, Any]]]:
                          "value": src.get("lang"), "used": DEFAULTS["lang"]})
         clean["lang"] = DEFAULTS["lang"]
 
-    # La présélection ne peut pas être plus courte que la liste rendue.
+    # La présélection ne peut pas être plus courte que la liste rendue. Cette
+    # règle ne sort JAMAIS de LIMITS : top_n a été borné plus haut à
+    # SHORTLIST_MAX, la même constante que la borne haute de shortlist.
     if clean["shortlist"] < clean["top_n"]:
         warnings.append({"code": "clamped", "field": "shortlist",
                          "value": clean["shortlist"], "used": clean["top_n"]})

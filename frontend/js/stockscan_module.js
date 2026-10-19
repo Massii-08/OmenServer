@@ -529,7 +529,7 @@ const StockScanModule = {
             return (Array.isArray(v) && v.length === 2 && isFinite(Number(v[0])) && isFinite(Number(v[1])))
                 ? [Number(v[0]), Number(v[1])] : [lo, hi];
         };
-        const topR = span('top_n', 5, 100);
+        const topR = span('top_n', 5, 80);
         const shortR = span('shortlist', 10, 80);
         const capR = span('min_cap_meur', 50, 500000);
         const valR = span('min_value_meur', 0, 10000);
