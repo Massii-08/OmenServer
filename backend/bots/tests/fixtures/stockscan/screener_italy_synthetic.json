@@ -31,7 +31,11 @@
     40.2,
     1793232000,
     4.8,
-    9.1
+    9.1,
+    1.1,
+    "out_of_session",
+    1792134000,
+    "Europe/Rome"
    ]
   },
   {
@@ -63,7 +67,11 @@
     12.1,
     1792800000,
     6.4,
-    11.2
+    11.2,
+    2.4,
+    "out_of_session",
+    1792134000,
+    "Europe/Rome"
    ]
   },
   {
@@ -95,7 +103,11 @@
     8.9,
     null,
     7.1,
-    5.0
+    5.0,
+    3.1,
+    "out_of_session",
+    1792134000,
+    "Europe/Rome"
    ]
   },
   {
@@ -127,7 +139,11 @@
     22.0,
     null,
     1.1,
-    24.0
+    24.0,
+    4.2,
+    "out_of_session",
+    1792134000,
+    "Europe/Rome"
    ]
   },
   {
@@ -159,7 +175,11 @@
     360.0,
     1793750400,
     0.7,
-    48.0
+    48.0,
+    0.8,
+    "out_of_session",
+    1792134000,
+    "Europe/Rome"
    ]
   },
   {
@@ -191,7 +211,11 @@
     6.4,
     null,
     5.9,
-    12.5
+    12.5,
+    0.9,
+    "out_of_session",
+    1792134000,
+    "Europe/Rome"
    ]
   },
   {
@@ -223,12 +247,20 @@
     null,
     null,
     null,
-    null
+    null,
+    6.0,
+    "out_of_session",
+    1792134000,
+    "Europe/Rome"
    ]
   },
   {
    "s": "",
    "d": [
+    null,
+    null,
+    null,
+    null,
     null,
     null,
     null,
@@ -285,7 +317,11 @@
     null,
     null,
     null,
-    null
+    null,
+    null,
+    "out_of_session",
+    1792134000,
+    "Europe/Rome"
    ]
   }
  ]

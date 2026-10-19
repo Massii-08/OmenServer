@@ -12,7 +12,9 @@ de la réponse vient du code source du paquet open source ``tradingview-screener
 3.2.2 (PyPI, 2026) — ``{"totalCount": N, "data": [{"s": "MIL:ENI", "d": [...]}]}``,
 les valeurs de ``d`` dans l'ordre des ``columns`` demandées. La commande
 ``python -m backend.bots.stockscan --probe <dossier>`` enregistre la vraie
-réponse ; tant qu'elle n'a pas tourné, la fixture des tests est SYNTHÉTIQUE.
+réponse. Format confirmé le 19/10 par une capture RÉELLE depuis l'Omen
+(fixture ``screener_snapshot_2026-10-19T1330Z.json``, 5 marchés × 20 lignes) ;
+la fixture italienne des tests reste synthétique.
 
 Découpage habituel : ``build_query`` et ``parse_response`` sont PURS (testables
 hors ligne), ``ScreenerClient`` porte l'I/O (fonction ``post`` injectable).
@@ -29,6 +31,7 @@ from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from backend.bots.stockscan import markets as mk
+from backend.bots.stockscan import sessions as ss
 
 SCAN_URL = "https://scanner.tradingview.com/{market}/scan"
 
@@ -43,7 +46,15 @@ HEADERS = {
 }
 
 # Ordre = ordre des valeurs de ``d`` dans la réponse. Ne JAMAIS réordonner sans
-# régénérer les fixtures.
+# régénérer les fixtures ; une colonne nouvelle s'AJOUTE À LA FIN.
+#
+# Les quatre dernières (19/10) : ``relative_volume_intraday|5`` = le « Relative
+# Volume at Time » de TradingView (volume cumulé du jour rapporté à la moyenne
+# À LA MÊME HEURE), comparable d'une place ouverte à une place fermée là où le
+# 10 j compare un volume partiel à une journée complète ; ``current_session``
+# (market / pre_market / post_market / out_of_session), ``time`` (ouverture de
+# la barre journalière, UNIX UTC : la séance que décrivent les chiffres) et
+# ``timezone`` (IANA) disent l'état RÉEL de la place, fériés compris.
 COLUMNS: Tuple[str, ...] = (
     "name", "description", "type", "typespecs", "exchange", "currency",
     "close", "change", "gap", "volume", "relative_volume_10d_calc",
@@ -52,6 +63,7 @@ COLUMNS: Tuple[str, ...] = (
     "Perf.W", "Perf.1M", "price_52_week_high", "price_52_week_low",
     "earnings_release_next_trading_date_fq", "dividends_yield_current",
     "price_earnings_ttm",
+    "relative_volume_intraday|5", "current_session", "time", "timezone",
 )
 
 # Une colonne n'est déclarée « morte » que si l'échantillon est assez grand :
@@ -210,10 +222,18 @@ def parse_response(payload: Any, market: mk.Market,
         avg_volume = _num(d.get("average_volume_10d_calc"))
         avg_value_local = (avg_volume * price) if avg_volume is not None else None
         cap_currency = _text(d.get("fundamental_currency_code")) or currency
-        # ``Value.Traded`` est rendu dans l'unité PRINCIPALE de la devise
-        # (livres), même quand ``close``/``currency`` sont en pence : mesuré
-        # sur la sonde du 19/10 (LSE:RR. volume × cours = 100 × Value.Traded).
-        traded_currency = "GBP" if currency in ("GBX", "GBp") else currency
+        # ``Value.Traded`` est rendu dans la devise COMPTABLE
+        # (``fundamental_currency_code``), pas dans celle du cours. Mesuré sur
+        # le snapshot du 19/10 à 13:30 UTC, ratio Value.Traded / (volume ×
+        # cours) : 1,0 quand les deux devises coïncident ; 0,01 pour LSE:RR.
+        # (cours en pence, comptes en livres) ; le taux de change sinon —
+        # 0,7503 USD→GBP pour LSE:CPG, 0,8899 USD→EUR pour EURONEXT:TFG (cotés
+        # en dollars, comptes en livres / en euros). La devise du cours faussait
+        # donc ces lignes du taux de change (la PR #4 ne traitait que les pence).
+        # Jamais en pence : sans devise comptable connue, un titre coté en GBX
+        # garde la règle des livres.
+        traded_currency = "GBP" if cap_currency in ("GBX", "GBp") else cap_currency
+        session_tz = _text(d.get("timezone")) or None
 
         rows.append({
             "tv_symbol": tv_symbol,
@@ -228,6 +248,7 @@ def parse_response(payload: Any, market: mk.Market,
             "gap_pct": _num(d.get("gap")),
             "volume": _num(d.get("volume")),
             "rel_volume": _num(d.get("relative_volume_10d_calc")),
+            "rel_volume_time": _num(d.get("relative_volume_intraday|5")),
             "avg_value_meur": _meur(avg_value_local, currency, market),
             "value_traded_meur": _meur(_num(d.get("Value.Traded")), traded_currency, market),
             "market_cap_meur": _meur(_num(d.get("market_cap_basic")), cap_currency, market),
@@ -241,6 +262,11 @@ def parse_response(payload: Any, market: mk.Market,
             "earnings_next": _date_of(d.get("earnings_release_next_trading_date_fq")),
             "dividend_yield": _num(d.get("dividends_yield_current")),
             "pe": _num(d.get("price_earnings_ttm")),
+            # La séance que décrivent les chiffres (sessions.row_session) :
+            # état réel de la place et date LOCALE de la barre journalière.
+            "session_tz": session_tz,
+            "session_state": ss.tv_session_state(d.get("current_session")),
+            "session_date": ss.session_date(d.get("time"), session_tz),
         })
 
     info["returned"] = len(rows)

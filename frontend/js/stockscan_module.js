@@ -1047,16 +1047,31 @@ const StockScanModule = {
         return '<span class="' + cls + '">' + esc(label) + '</span>';
     },
 
-    // État de la bourse au moment du scan : une place fermée a des cours figés
-    // à sa dernière clôture, une place ouverte n'a qu'une partie de sa séance.
+    // La séance que décrivent les chiffres de la ligne (état RÉEL lu dans
+    // TradingView, fériés compris). Quand variation, gap et volume datent
+    // d'une séance antérieure (pré-ouverture du lundi, férié, titre sans
+    // échange aujourd'hui), le badge passe en alerte et dit de quand ils datent.
     _sessionHtml(session) {
-        const st = (session && typeof session === 'object') ? String(session.state || '') : '';
+        const s = (session && typeof session === 'object') ? session : {};
+        const st = String(s.state || '');
+        let label;
         if (st === 'open') {
-            const pct = this._isNum(session.elapsed) ? this._num(Number(session.elapsed) * 100, 0) : '?';
-            return '<span class="badge online">' + esc(this._tr('stocks.session.open', { p: pct })) + '</span>';
+            label = this._isNum(s.elapsed)
+                ? this._tr('stocks.session.open', { p: this._num(Number(s.elapsed) * 100, 0) })
+                : Lang.t('stocks.session.open_now');
+        } else if (st === 'pre_open') {
+            label = Lang.t('stocks.session.pre_open');
+        } else if (st === 'closed') {
+            label = Lang.t('stocks.session.closed');
+        } else {
+            return '';
         }
-        if (st === 'closed') return '<span class="badge muted">' + esc(Lang.t('stocks.session.closed')) + '</span>';
-        return '';
+        const day = (s.stale === true && s.date) ? this._date(s.date) : '—';
+        if (day !== '—') {
+            return '<span class="badge warn" title="' + esc(Lang.t('stocks.session_stale_hint')) + '">' +
+                esc(label + ' · ' + this._tr('stocks.session_data', { date: day })) + '</span>';
+        }
+        return '<span class="badge ' + (st === 'open' ? 'online' : 'muted') + '">' + esc(label) + '</span>';
     },
 
     _reasonText(r, res) {
@@ -1168,9 +1183,12 @@ const StockScanModule = {
         const nums = [];
         if (this._isNum(row.gap_pct)) nums.push(this._tr('stocks.gap', { v: this._pct(row.gap_pct, 2, true) }));
         if (this._isNum(row.rel_volume)) {
-            // Séance en cours : le volume affiché est ramené à une journée
-            // entière ; le brut (partiel) reste visible pour pouvoir vérifier.
-            nums.push(this._isNum(row.rel_volume_raw)
+            // Le volume « à l'heure » rapporté à la médiane de son marché ; le
+            // brut (avant division) reste visible pour pouvoir vérifier, sauf
+            // quand la division n'a rien changé (moins de 8 titres : diviseur 1).
+            const compared = this._isNum(row.rel_volume_raw)
+                && Math.abs(Number(row.rel_volume_raw) - Number(row.rel_volume)) > 0.05;
+            nums.push(compared
                 ? this._tr('stocks.rel_volume_adj', { v: this._num(row.rel_volume, 1), raw: this._num(row.rel_volume_raw, 2) })
                 : this._tr('stocks.rel_volume', { v: this._num(row.rel_volume, 1) }));
         }

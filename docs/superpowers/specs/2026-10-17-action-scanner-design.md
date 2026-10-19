@@ -106,7 +106,7 @@ son dossier est `data/stock_scanner/`.
 |---|---|---|
 | `universe` | 1 POST / marché | screener TradingView, filtres côté serveur (action ordinaire, cotation principale, capitalisation ≥ seuil), tri par volume échangé, ≤ 400 lignes (US) / 200 (autres) ; filtre local d'échanges moyens. Tous les marchés en échec → **repli** grandes valeurs (bougies Yahoo) |
 | `coach` | 0 | lecture seule : carnets news de tous les comptes (dédup par lien), cache TradingView, tendances Reddit, dépôts SEC, hypothèses ouvertes du radar, positions + watchlist du demandeur |
-| `shortlist` | 0 | pré-score (volume relatif, variation, résultats proches, signaux du coach) → les `shortlist` meilleurs |
+| `shortlist` | 0 | volume relatif « à l'heure » rapporté à la médiane de SON marché (`sessions.normalize_volume`) ; pré-score (ce volume comparable, variation, résultats proches, signaux du coach) → `shortlist` titres : la MOITIÉ des places réservée à parts égales aux marchés demandés (leurs meilleurs pré-scores), le reste au mérite toutes places confondues (révision du 19/10, cf. §6) |
 | `news` | ≤ shortlist × langues | news TradingView fraîches de la présélection (cache du coach réutilisé s'il a < 15 min), disjoncteur |
 | `scoring` | 0 | score 0-100, raisons, drapeaux ; exclusions `no_catalyst` (et `red` si demandé) |
 | `output` | 0 | `results.json` puis l'Excel |
@@ -124,14 +124,32 @@ Chaque composante produit une raison lisible. Poids v1 (verrouillés par test) :
 | Au moins une bonne nouvelle (`pos`) | +10 |
 | Au moins un catalyseur annoncé (`watch`) | +8 |
 | Résultats dans les 7 jours (screener) | +10 (+ drapeau `earnings_soon`) |
-| Volume relatif ≥ 1,5 / 2,5 / 4 | +8 / +15 / +20 |
-| Le cours confirme (variation > 0 avec une news pos/watch) | +5 |
+| Volume relatif COMPARABLE ≥ 1,5 / 2,5 / 4 : volume « à l'heure » (`relative_volume_intraday|5`, le 10 j à défaut) divisé par la médiane de SON marché, bornée [0,5 ; 2] — révision du 19/10 ; aucun point si les cours sont figés avant toutes les news (`awaiting_open`) | +8 / +15 / +20 |
+| Le cours confirme (variation > 0 avec une news pos/watch ; pas si les cours sont figés avant toutes les news) | +5 |
 | Hypothèse « hausse » ouverte du radar du coach | +10 |
 | Buzz Reddit (≥ 5 mentions et ≥ 2× la veille) | +5 (+ drapeau `crowd`) |
 | Dépôt SEC du titre dans la fenêtre | +5 |
 | News négative dans la fenêtre | **−25** + drapeau `red` (exclu si `exclude_red`) |
 | Hypothèse « baisse » ouverte du coach | −10 + drapeau `coach_down` |
 | Déjà parti (variation ≥ 8 % en valeur absolue ou semaine ≥ 20 %) | −10 + drapeau `late` |
+
+**Révision du 19/10 — biais horaire (tests réels, PR #4 puis PR de suivi).**
+Le volume relatif v1 (`relative_volume_10d_calc`) rapporte le volume DU JOUR à
+la moyenne 10 j : partiel pendant une séance, complet pour une place pas encore
+ouverte. Au premier scan réel (Europe en séance, États-Unis en pré-ouverture),
+0 titre européen n'atteignait ×1,5 contre 83 américains et la liste rendait
+21-22 lignes américaines sur 25 ; une heure plus tard, 5/25. Corrections : le
+volume « à l'heure » de TradingView divisé par la médiane de son marché (la
+division par le temps écoulé de la PR #4 laissait l'Europe à ~0,35 contre
+1,17 : la clôture concentre le volume) ; une moitié de la présélection
+réservée à parts égales (le partage intégral de la PR #4 rendait 23 lignes dont
+4 US et 17 sans catalyseur) ; l'état de séance lu dans TradingView, ligne par
+ligne (une table d'horaires ignore les fériés et le différé de 15 min) ; et,
+de la PR #4, `awaiting_open` : si TOUTES les news sont postérieures à la clôture
+des chiffres, ni volume, ni « cours aligné », ni « déjà parti ». Rejeu du même
+relevé : 24/25 US (v1) → 15/25 US et tous les marchés présents. Ce qui reste
+américain vient des catalyseurs (saison des résultats du T3 : 60 sociétés US
+publient sous 7 jours contre 1 à 4 par marché européen).
 
 Score borné 0-100. **Catalyseur obligatoire** : au moins une news admise, des
 résultats dans les 7 jours, une hypothèse du coach ou un dépôt SEC — sinon la
@@ -165,7 +183,9 @@ jetterait « X to sell its unit to Y » (une cession = un fait).
 ```
 
 Bornes : `min_cap_meur` 50-500000, `min_value_meur` 0-10000, `window_h` ∈ {24,
-48, 72}, `top_n` 5-100, `shortlist` 10-80, `lang` ∈ {fr, en, it}.
+48, 72}, `top_n` 5-80, `shortlist` 10-80 (même plafond : la liste rendue est prélevée dans la présélection, et la
+borne 100/80 de la v1 rendait `validate` non idempotente), `lang` ∈ {fr, en, it} (l'UI envoie toujours `it` : l'Excel
+sort en italien comme celui du Bond Scanner).
 `config.validate(raw) -> (clean, warnings)` ne lève jamais ; marché inconnu →
 avertissement ; liste vide ou que des inconnus → marchés par défaut.
 
@@ -198,7 +218,10 @@ puis `quotes.canonical` (`ROG.SW` → `RO.SW`).
   "generated_at": "2026-10-17T07:45:12+00:00",
   "config": {"…": "config propre"},
   "source": "screener | fallback",
-  "markets": [{"id": "italy", "ok": true, "rows": 200, "error": null}],
+  "markets": [{"id": "italy", "ok": true, "rows": 200, "error": null,
+               "volume_median": 0.912, "shortlisted": 4}],
+  "sessions": {"italy": {"state": "open", "date": "2026-10-19", "stale": false,
+                         "elapsed": 0.766, "source": "tradingview"}},
   "counts": {"universe": 1180, "shortlist": 40, "news_requests": 52,
              "news_failed": 0, "kept": 18, "excluded_no_catalyst": 19,
              "excluded_red": 3, "filtered_advice": 4, "dropped_irrelevant": 7,
@@ -209,7 +232,8 @@ puis `quotes.canonical` (`ROG.SW` → `RO.SW`).
     "tv_symbol": "MIL:ENI", "symbol": "ENI.MI", "ticker": "ENI",
     "name": "Eni S.p.A.", "market": "italy", "exchange": "MIL",
     "currency": "EUR", "price": 15.48, "change_pct": 2.31, "gap_pct": 1.1,
-    "rel_volume": 2.4, "avg_value_meur": 120.5, "market_cap_meur": 50210,
+    "rel_volume": 2.6, "rel_volume_raw": 2.4, "rel_volume_time": 2.4,
+    "avg_value_meur": 120.5, "market_cap_meur": 50210,
     "sector": "Energy Minerals", "perf_w": 4.1,
     "earnings_next": "2026-10-24",
     "score": 72,
@@ -220,19 +244,34 @@ puis `quotes.canonical` (`ROG.SW` → `RO.SW`).
               "source": "tradingview", "provider": "reuters", "sentiment": "pos"}],
     "coach": {"hypotheses": [{"direction": "up", "thesis": "…", "confidence": "moyenne"}],
               "reddit": {"count": 6, "prev": 2}, "filings": []},
+    "session": {"source": "tradingview", "state": "open", "date": "2026-10-19", "stale": false,
+                "elapsed": 0.766, "local_time": "15:30", "last_close": null},
     "links": {"chart": "https://www.tradingview.com/chart/?symbol=MIL%3AENI"}
   }]
 }
 ```
 
+Volume (révision du 19/10) : `rel_volume` = le volume COMPARABLE que le score
+utilise (« à l'heure » ÷ médiane bornée de son marché), `rel_volume_raw` = le
+signal avant division, `rel_volume_time` = le « Relative Volume at Time » de
+TradingView ; `volume_median` de chaque marché dans `markets`. Séance :
+`session.state` ∈ {`open`, `pre_open`, `closed`} lu dans `current_session`
+(`market`, `pre_market`, `post_market`/`out_of_session`), `session.date` = date
+LOCALE de la séance que décrivent variation, gap et volume, `session.stale` =
+cette date précède le jour local de la place (pré-ouverture, week-end, férié),
+`last_close` = clôture de cette séance quand les cours sont figés (heure de la
+table `HOURS`) ; `source` = `table` pour l'univers de repli Yahoo ou des colonnes
+de séance mortes.
+
 Raisons et drapeaux sont des CODES (langue neutre) : l'UI les traduit
 (`stocks.reason.*`, `stocks.flag.*`), l'Excel aussi (table fr/en/it du moteur).
 
 Codes de raison : `news`, `sources`, `positive`, `upcoming`, `earnings`,
-`volume`, `aligned`, `coach_up`, `crowd`, `filing`.
+`volume`, `aligned`, `coach_up`, `crowd`, `filing`, `awaiting_open`.
 Codes de drapeau : `red`, `late`, `earnings_soon`, `coach_down`, `crowd`,
 `followed` (dans les positions ou la watchlist du DEMANDEUR — jamais celles
-d'un autre compte), `new` (absent du run précédent), `news_unverified`.
+d'un autre compte), `new` (absent du run précédent), `news_unverified`,
+`awaiting_open` (cours figés avant toutes les news).
 Codes d'avertissement : `coach_empty`, `degraded_columns`, `market_failed`,
 `fallback_universe`, `news_breaker`, `stopped_early`.
 
@@ -255,7 +294,7 @@ Tout en `require_role("admin", "money")`.
 | Méthode | Chemin | Rôle |
 |---|---|---|
 | GET | `/config` | `{defaults, markets, limits}` |
-| POST | `/run` | config partielle → validée, enregistrée comme défauts, run lancé (refuse d'en empiler deux) → `{job_id, already_running, warnings}` |
+| POST | `/run` | config partielle → validée → run lancé (refuse d'en empiler deux) → enregistrée comme défauts SEULEMENT si le run a démarré → `{job_id, already_running, warnings, config}` ; un refus n'écrase pas les défauts (révision du 19/10) |
 | GET | `/status/{job_id}` | `{job_id, status, progress, logs (60 dernières lignes), meta, files}` |
 | GET | `/active` | run le plus récent `{found, job_id, status, progress, meta}` — le badge de l'onglet ne compte QUE `running` |
 | POST | `/stop/{job_id}` | `stop.flag` + `os.killpg` du pid (la session détachée a pgid = pid) |

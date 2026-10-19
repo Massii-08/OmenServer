@@ -72,7 +72,7 @@ LABELS: Dict[str, Dict[str, Any]] = {
         "reasons": {
             "news": "{v} news en {h} h", "sources": "{v} sources distinctes",
             "positive": "bonne nouvelle", "upcoming": "catalyseur annoncé",
-            "earnings": "résultats le {v}", "volume": "volume ×{v}",
+            "earnings": "résultats le {v}", "volume": "volume ×{v} vs son marché",
             "aligned": "le cours confirme ({v} %)", "coach_up": "hypothèse du coach : hausse",
             "crowd": "buzz Reddit ({v} mentions)", "filing": "dépôt SEC {v}",
             "awaiting_open": "news après la dernière clôture : pas encore dans le cours",
@@ -92,11 +92,10 @@ LABELS: Dict[str, Dict[str, Any]] = {
             "stopped_early": "Relevé arrêté avant la fin",
             "fallback_failed": "Repli abandonné : Yahoo ne répond pas non plus",
             "excel_failed": "Classeur Excel non produit",
-            "volume_adjusted": "Séance en cours : volume relatif ramené à une journée entière ({markets})",
-            "session_uncertain": "Séance incertaine (jour férié ?) : volume non ajusté ({markets})",
         },
         "session": {
-            "open": "en séance ({p} %)", "closed": "fermée", "unknown": "inconnue",
+            "open": "en séance ({p} %)", "open_now": "en séance", "pre_open": "pré-ouverture",
+            "closed": "fermée", "unknown": "inconnue", "stale": " — chiffres du {date}",
         },
         "info": {
             "criteria": "Critères", "counts": "Compteurs", "markets": "Marchés",
@@ -137,7 +136,7 @@ LABELS: Dict[str, Dict[str, Any]] = {
         "reasons": {
             "news": "{v} news in {h} h", "sources": "{v} distinct sources",
             "positive": "good news", "upcoming": "announced catalyst",
-            "earnings": "earnings on {v}", "volume": "volume ×{v}",
+            "earnings": "earnings on {v}", "volume": "volume ×{v} vs its market",
             "aligned": "price confirms ({v} %)", "coach_up": "coach hypothesis: up",
             "crowd": "Reddit buzz ({v} mentions)", "filing": "SEC filing {v}",
             "awaiting_open": "news after the last close: not in the price yet",
@@ -157,11 +156,10 @@ LABELS: Dict[str, Dict[str, Any]] = {
             "stopped_early": "Scan stopped before the end",
             "fallback_failed": "Fallback abandoned: Yahoo is not answering either",
             "excel_failed": "Excel workbook not produced",
-            "volume_adjusted": "Session in progress: relative volume scaled to a full day ({markets})",
-            "session_uncertain": "Uncertain session (holiday?): volume not scaled ({markets})",
         },
         "session": {
-            "open": "in session ({p}%)", "closed": "closed", "unknown": "unknown",
+            "open": "in session ({p}%)", "open_now": "in session", "pre_open": "pre-market",
+            "closed": "closed", "unknown": "unknown", "stale": " — figures from {date}",
         },
         "info": {
             "criteria": "Criteria", "counts": "Counts", "markets": "Markets",
@@ -204,7 +202,7 @@ LABELS: Dict[str, Dict[str, Any]] = {
         "reasons": {
             "news": "{v} notizie in {h} h", "sources": "{v} fonti distinte",
             "positive": "buona notizia", "upcoming": "catalizzatore annunciato",
-            "earnings": "risultati il {v}", "volume": "volume ×{v}",
+            "earnings": "risultati il {v}", "volume": "volume ×{v} rispetto al suo mercato",
             "aligned": "il prezzo conferma ({v} %)", "coach_up": "ipotesi del coach: rialzo",
             "crowd": "buzz Reddit ({v} menzioni)", "filing": "deposito SEC {v}",
             "awaiting_open": "notizia dopo l'ultima chiusura: non ancora nel prezzo",
@@ -224,11 +222,10 @@ LABELS: Dict[str, Dict[str, Any]] = {
             "stopped_early": "Scansione interrotta prima della fine",
             "fallback_failed": "Riserva abbandonata: nemmeno Yahoo risponde",
             "excel_failed": "Cartella Excel non prodotta",
-            "volume_adjusted": "Seduta in corso: volume relativo riportato a una giornata intera ({markets})",
-            "session_uncertain": "Seduta incerta (festivo?): volume non riportato ({markets})",
         },
         "session": {
-            "open": "in seduta ({p} %)", "closed": "chiusa", "unknown": "sconosciuta",
+            "open": "in seduta ({p} %)", "open_now": "in seduta", "pre_open": "pre-apertura",
+            "closed": "chiusa", "unknown": "sconosciuta", "stale": " — dati del {date}",
         },
         "info": {
             "criteria": "Criteri", "counts": "Contatori", "markets": "Mercati",
@@ -323,15 +320,27 @@ def reason_text(reason: Dict[str, Any], lang: str) -> str:
               .replace("{h}", str(reason.get("hours") or ""))
 
 
+SESSION_STATES = ("open", "pre_open", "closed", "unknown")
+
+
 def session_text(session: Any, lang: str) -> Optional[str]:
-    """État de la bourse au moment du scan : « en séance (74 %) » / « fermée »."""
+    """La séance que décrivent les chiffres : « en séance (74 %) », « fermée »,
+    « pré-ouverture — chiffres du 16/10/2026 » quand variation, gap et volume
+    datent d'une séance antérieure (``stale``)."""
     if not isinstance(session, dict):
         return None
     lab = labels(lang)["session"]
-    state = session.get("state") if session.get("state") in lab else "unknown"
+    state = session.get("state") if session.get("state") in SESSION_STATES else "unknown"
     elapsed = _num(session.get("elapsed"))
-    pct = str(int(round(elapsed * 100))) if elapsed is not None else "?"
-    return lab[state].replace("{p}", pct)
+    if state == "open":
+        text = lab["open"].replace("{p}", str(int(round(elapsed * 100)))) \
+            if elapsed is not None else lab["open_now"]
+    else:
+        text = lab[state]
+    day = _date(session.get("date")) if session.get("stale") is True else None
+    if day is not None:
+        text += lab["stale"].replace("{date}", day.strftime("%d/%m/%Y"))
+    return text
 
 
 def flag_text(flag: str, lang: str) -> str:
