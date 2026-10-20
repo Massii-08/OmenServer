@@ -26,6 +26,7 @@ const vm = require('node:vm');
 
 const SRC = fs.readFileSync(path.join(__dirname, 'index.js'), 'utf8');
 const C = require('./caution');
+const FG = require('./foodGate');
 const SH = require('./skills/shelter');
 const R = require('./regroup');
 const TW = require('./teamwork');
@@ -555,6 +556,8 @@ function foodSandbox(opts = {}) {
     withTimeout: (p) => p, FOOD_RUN_TIMEOUT_MS: 70000, FOOD_TRIP_MS: 75000, stopMotion() {},
     ensureFood: async () => { log.ensure++; },
     foodPoints: () => 0, buildCtxInv: () => ({}),
+    loadBaseState: () => ({}), saveBaseState: () => true, returnToWork: async () => false,
+    undergroundFoodTripDue: FG.undergroundFoodTripDue, foodGateLoad: FG.foodGateLoad, _foodSurfaceTripAt: 0,
     log,
   }, opts));
   sb.bot.food = 10;

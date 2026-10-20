@@ -103,6 +103,12 @@ const { createDeathSpots } = require('./deathspots');
 // death-camp mobs ne voyait pas). Les deux coexistent.
 const deathSpots = createDeathSpots();
 const { recordWorkStuck } = require('./workStuck'); // chantier menant à une impasse SÈCHE (drop_ahead/max_depth) → abandon+relocate (live 27/07 world_mn9)
+// Run 20/10 : regard d'enderman, faim sous terre, drop_ahead en boucle (cf. les trois modules purs).
+const { lookIsUnsafe, wrapLook, creepyIndex, isAngryEnderman, endermanResponse } = require('./enderman');
+const { descentFoodGate, undergroundFoodTripDue, foodGateLoad } = require('./foodGate');
+const { noteDropAhead, turnYaw, shiftTarget } = require('./dropAhead');
+const { canDealWith, attackDamage, boldFightAdvised } = require('./survival');
+const { fleeTarget } = require('./skills/fleeFrom');
 // SYSTÈME À 3 HOMES (Massii 27/07) : safe = LA BASE, work = le chantier courant, death = la dette
 // de mort. Le serveur n'autorise que 3 homes et le code en posait 4 → un /sethome échouait EN
 // SILENCE sur chaque bot (bug prouvé world_mn5). Voir homes.js.
@@ -1726,6 +1732,10 @@ async function runGoalSkill(goal) {
       if (_y >= 45 && foodPoints(buildCtxInv(bot)) < STOCK_POINTS) {
         try { await withTimeout(huntCookGoal(4), HUNT_COOK_TIMEOUT_MS + FOOD_TRIP_MS, () => { try { stopMotion(); } catch (e) {} }); } catch (e) {}
       }
+      // PORTE NOURRITURE (run 20/10 : 4 « starved to death », toujours `hunt_cook_done before:0`) :
+      // la chasse ci-dessus a eu sa chance ; sans DESCENT_MIN_POINTS en poche on ne descend pas
+      // encore — au plus 2 refus / 10 min (persistés), ensuite on descend quand même (cf. foodGate.js).
+      if (!descentFoodGateCheck()) return { ok: false, reason: 'food_gate' };
       // ⭐ Steering STRATÉGIQUE vers le SEC (mur de l'eau, run water-wall) : descendre « où on
       // est » en zone aquifère = fuite permanente = 0 minage (vécu homedeath : smelt:0 après des
       // heures à Y16 — l'évitement TACTIQUE de l'eau ne suffit pas). La carte du groupe (mappers)
@@ -1894,10 +1904,17 @@ async function runGoalSkill(goal) {
       if (isInWater(bot)) { _workSet = false; try { await escapeWater(bot, { emit }); } catch (e) {} }
       else if (_py <= 20) return { ok: true, viaHome: true };  // arrivé profond & sec → pas de re-creusage
     }
+    // Cap imposé par un `drop_ahead` répété (descendDiagonal prend son cap dans le yaw) : appliqué ICI,
+    // juste avant l'appel — les pré-hooks (armure, chasse, steering) ont pu tourner la tête entre-temps.
+    await applyDescendHeading();
     const r = await descendDiagonal(bot, goal.args || {}, taskToken);
+    // `drop_ahead` (vide devant, pont impossible) : relancer du même point avec le même regard = même
+    // échec garanti (vécu ×4 en 5 ms). Au 2e au même endroit on tourne, au 4e on se décale (dropAhead.js).
+    if (r && r.ok === false && r.reason === 'drop_ahead') await onDropAhead();
     // suivi des échecs EAU → le pré-hook ci-dessus décale le prochain essai (anti re-perçage d'aquifère)
     if (r && r.ok === false && /water|flood|drown/i.test(String(r.reason || ''))) _descendWaterFails++;
     else if (r && r.ok) {
+      _descendHeading = null;
       _descendWaterFails = 0;
       _workStuckTimes = [];
       // chantier profond atteint & SEC → mémoriser (les re-descentes suivantes = /home work, pas de creusage)
@@ -4457,6 +4474,7 @@ function foodStock() {
 // v7 — une seule remontée à la fois (deux appels concurrents d'ensureFood ne doivent pas déclencher
 // deux warps). Niveau MODULE, comme `_baseBusy`/`_armorBusy` (piège #56).
 let _surfaceTripBusy = false;
+let _foodSurfaceTripAt = 0;   // dernière remontée nourriture (lue par foodRunTick pour le retour /home work)
 
 // ensureFood — ravitaillement BORNÉ À 60 s AU TOTAL (Massii 19/10 : « l'important c'est la VITESSE »).
 // Avant : balayage de butin 20 s + remontée 90 s + 3 vagues de 120 s + cuisson + pêche jusqu'à 300 s
@@ -4480,6 +4498,9 @@ async function ensureFood() {
         _surfaceTripBusy = true;
         try {
           emit({ type: 'food_surface_trip', y: Math.round(y), food });
+          // Signet du chantier AVANT de remonter : foodRunTick y renvoie le bot une fois nourri (/home work).
+          markWorkBeforeTrip('food');
+          _foodSurfaceTripAt = Date.now();
           await withTimeout(safeWarpHome(HOME_SAFE), ms, () => { try { stopMotion(); } catch (e) {} });
         } finally { _surfaceTripBusy = false; }
       },
@@ -7546,7 +7567,15 @@ async function foodRunTick() {
   try {
     if (!bot.inventory || !bot.entity) return;
     const stock = foodStock();
-    if (!foodRunNeeded({
+    // SOUS TERRE, affamé et à sec (run 20/10, NethBot3 : `food_run_done gained:0 next_min:15` puis
+    // famine) : la sourdine de 15 min juge une ZONE vidée de gibier — la remontée /home safe emmène le
+    // mineur AILLEURS. Elle part donc malgré la sourdine, avec son propre cooldown persisté (foodGate.js).
+    const _fgSt = loadBaseState() || {};
+    const _py = bot.entity.position ? bot.entity.position.y : NaN;
+    const underDue = undergroundFoodTripDue({
+      y: _py, food: bot.food, foodItems: stock, now: Date.now(), lastTripAt: foodGateLoad(_fgSt).lastUnderTripAt,
+    });
+    if (!underDue && !foodRunNeeded({
       food: bot.food, foodItems: stock, now: Date.now(), lastRunAt: _lastFoodRunAt,
       cooldownMs: _foodRunCooldownMs,
     })) return;
@@ -7554,6 +7583,9 @@ async function foodRunTick() {
     _foodRunBusy = true;
     _lastFoodRunAt = Date.now();
     const runStartedAt = Date.now();
+    if (underDue) {
+      saveBaseState(Object.assign({}, _fgSt, { foodGate: Object.assign({}, _fgSt.foodGate || {}, { lastUnderTripAt: runStartedAt }) }));
+    }
     emit({
       type: 'food_run', food: bot.food,
       y: bot.entity.position ? Math.round(bot.entity.position.y) : null,
@@ -7574,10 +7606,191 @@ async function foodRunTick() {
       points: foodPoints(buildCtxInv(bot)), took_ms: Date.now() - runStartedAt,
       next_min: Math.round(_foodRunCooldownMs / 60000),
     });
+    // Remonté manger : une fois quelque chose en poche, retour au chantier (/home work, posé par la
+    // remontée). Rien trouvé là-haut → on reste en surface : la porte de descente décidera (pas de yo-yo).
+    if (_foodSurfaceTripAt >= runStartedAt && foodPoints(buildCtxInv(bot)) > 0) await returnToWork('food');
   } catch (e) { /* watchdog : ne crash jamais */ }
   finally { _foodRunBusy = false; }
 }
 setInterval(() => { foodRunTick().catch(() => {}); }, 30000);
+
+// ── RUN 20/10 : ENDERMAN, PORTE NOURRITURE, DROP_AHEAD ───────────────────────────────────────────
+// Logique PURE dans enderman.js / foodGate.js / dropAhead.js ; ici la glue. ⚠️ TOUT l'état est de
+// NIVEAU MODULE (piège #56 : ces fonctions sont appelées par des timers et par runGoalSkill).
+const ENDER_EVENT_EVERY_MS = 10000;   // enderman_look_avoided / enderman_flee / enderman_fight : ≤ 1 / 10 s par type
+const ENDER_SCAN_RADIUS = 16;         // au-delà, un enderman en colère n'est pas une urgence
+const ENDER_ACT_MS = 4000;            // une réaction posée : pas de nouvelle décision pendant 4 s
+const DESCEND_HEADING_TTL_MS = 10 * 60 * 1000;
+let _enderBusy = false;
+let _enderBusyUntil = 0;
+let _enderEvAt = {};
+let _enderCreepyIdx = null;           // index de la métadonnée « creepy » (lu une fois dans minecraft-data)
+let _enderHurtAt = 0;                 // dernier coup reçu avec un enderman collé (repli sans métadonnée)
+let _enderHurtId = null;
+let _dropSites = [];                  // derniers drop_ahead {x,z,t} (dropAhead.noteDropAhead)
+let _dropShiftSeed = 0;               // fait tourner le cap du décalage 30-50 blocs
+let _descendHeading = null;           // { yaw, at } : cap imposé à la prochaine descente
+let _foodGateEvAt = 0;                // throttle de food_gate quand la porte est « dépensée »
+
+/** emit throttlé (≤ 1 / ENDER_EVENT_EVERY_MS par type). */
+function _enderEmit(type, payload) {
+  const t = Date.now();
+  if (_enderEvAt[type] && t - _enderEvAt[type] < ENDER_EVENT_EVERY_MS) return;
+  _enderEvAt[type] = t;
+  emit(Object.assign({ type }, payload || {}));
+}
+
+/** Position des yeux du bot (copie : entity.position est muté en place). */
+function enderEye() {
+  const e = bot.entity;
+  if (!e || !e.position) return null;
+  return { x: e.position.x, y: e.position.y + (e.eyeHeight || 1.62), z: e.position.z };
+}
+
+/**
+ * Enveloppe bot.look : AUCUNE visée (pathfinder pitch 0, bruit idle humanize, lookAt de combat ou de
+ * dig) ne se pose sur la tête d'un enderman — même yaw, yeux vers le sol. Seule exception : on combat
+ * l'enderman exprès (bot.pvp.target), il est déjà en colère. Idempotent (inject_allowed + spawn).
+ */
+function installEndermanGuard() {
+  wrapLook(bot, {
+    entities: () => bot.entities,
+    eye: () => enderEye(),
+    allow: () => !!(bot.pvp && bot.pvp.target && bot.pvp.target.name === 'enderman'),
+    onAvoid: (s) => {
+      const me = enderEye();
+      const p = s.enderman && s.enderman.position;
+      _enderEmit('enderman_look_avoided', { dist: (me && p) ? Math.round(Math.hypot(p.x - me.x, p.y - me.y, p.z - me.z)) : null });
+    },
+  });
+}
+
+/** Le bot vient d'encaisser un coup : un enderman collé (≤ 4 blocs) est le coupable probable. */
+function noteEndermanHurt() {
+  const me = bot.entity && bot.entity.position;
+  if (!me) return;
+  for (const e of Object.values(bot.entities || {})) {
+    if (!e || e.name !== 'enderman' || !e.position) continue;
+    if (Math.hypot(e.position.x - me.x, e.position.y - me.y, e.position.z - me.z) <= 4) {
+      _enderHurtAt = Date.now(); _enderHurtId = e.id; return;
+    }
+  }
+}
+
+/**
+ * Tick 500 ms : (a) regard immobile posé sur une tête → corrigé (aucun bot.look n'arrive quand le bot
+ * est figé) ; (b) enderman EN COLÈRE à ≤ 16 blocs → eau proche, combat si canDealWith le permet
+ * (l'enderman compte double), sinon fuite. Les autres chemins l'ignorent (NEUTRAL_NO_PROVOKE) : sans
+ * ce tick, un enderman qui frappe ne déclenchait RIEN.
+ */
+async function endermanTick() {
+  if (_enderBusy) return;
+  _enderBusy = true;
+  try {
+    const ent = bot.entity;
+    if (!ent || !ent.position) return;
+    const fighting = !!(bot.pvp && bot.pvp.target && bot.pvp.target.name === 'enderman');
+    if (!fighting && lookIsUnsafe(ent.yaw, ent.pitch, enderEye(), bot.entities)) {
+      try { await bot.look(ent.yaw, ent.pitch, true); } catch (e) { /* la garde corrige le pitch */ }
+    }
+    if (Date.now() < _enderBusyUntil || fighting) return;
+    const self = { x: ent.position.x, y: ent.position.y, z: ent.position.z };
+    if (_enderCreepyIdx == null) _enderCreepyIdx = creepyIndex(bot.registry);
+    const hurt = Date.now() - _enderHurtAt < 5000;
+    let target = null;
+    let best = Infinity;
+    for (const e of Object.values(bot.entities || {})) {
+      if (!e || e.name !== 'enderman' || !e.position) continue;
+      const d = Math.hypot(e.position.x - self.x, e.position.y - self.y, e.position.z - self.z);
+      if (d > ENDER_SCAN_RADIUS) continue;
+      if (!isAngryEnderman(e, { creepyIdx: _enderCreepyIdx, selfPos: self, hurtBy: hurt && e.id === _enderHurtId })) continue;
+      if (d < best) { best = d; target = e; }
+    }
+    if (!target) return;
+    let water = null;
+    try {
+      const ids = ['water'].map((n) => bot.registry.blocksByName[n]).filter(Boolean).map((b) => b.id);
+      water = ids.length ? bot.findBlock({ matching: ids, maxDistance: 6 }) : null;
+    } catch (e) { water = null; }
+    const wd = (water && water.position) ? Math.hypot(water.position.x - self.x, water.position.y - self.y, water.position.z - self.z) : null;
+    const act = endermanResponse({
+      waterDist: wd, health: bot.health, food: bot.food,
+      canDealWith: canDealWith(armorPoints(bot), attackDamage(bot)), boldFightAdvised,
+    });
+    _enderBusyUntil = Date.now() + ENDER_ACT_MS;
+    const dist = Math.round(best * 10) / 10;
+    if (act === 'water') {
+      const w = water.position;
+      bot.pathfinder.setGoal(new pfGoals.GoalNear(w.x, w.y, w.z, 0));
+      _enderEmit('enderman_flee', { to: 'water', dist });
+    } else if (act === 'fight') {
+      const w = bestWeapon(bot);
+      if (w) { try { await bot.equip(w, 'hand'); } catch (e) {} }
+      try { bot.pvp.attack(target); } catch (e) {}
+      _enderEmit('enderman_fight', { dist, health: bot.health });
+    } else {
+      const dest = fleeTarget(self, target.position);
+      if (dest) bot.pathfinder.setGoal(new pfGoals.GoalNearXZ(dest.x, dest.z, 3), false);
+      _enderEmit('enderman_flee', { to: 'away', dist });
+    }
+  } catch (e) { /* watchdog : ne crash jamais */ }
+  finally { _enderBusy = false; }
+}
+bot.once('inject_allowed', () => { try { installEndermanGuard(); } catch (e) {} });
+bot.on('spawn', () => { try { installEndermanGuard(); } catch (e) {} });
+bot.on('entityHurt', (e) => { try { if (e && bot.entity && e === bot.entity) noteEndermanHurt(); } catch (err) {} });
+setInterval(() => { endermanTick().catch(() => {}); }, 500);
+
+/**
+ * PORTE NOURRITURE avant une descente (foodGate.descentFoodGate). Rend true pour descendre.
+ * Refus PERSISTÉS dans le mémo de base (le self-healing relance souvent : un compteur de process
+ * repartirait à zéro et la porte ne se « dépenserait » jamais en zone sans gibier).
+ */
+function descentFoodGateCheck() {
+  const st = loadBaseState() || {};
+  const p = bot.entity && bot.entity.position;
+  const points = foodPoints(buildCtxInv(bot));
+  const r = descentFoodGate({ points, y: p ? p.y : NaN, refusals: foodGateLoad(st).refusals, now: Date.now() });
+  if (!r.allow) {
+    saveBaseState(Object.assign({}, st, { foodGate: Object.assign({}, st.foodGate || {}, { refusals: r.refusals }) }));
+    emit({ type: 'food_gate', need: r.need, points, allow: false, refusals: r.refusals.length });
+  } else if (r.reason === 'gate_spent' && Date.now() - _foodGateEvAt >= 60000) {
+    _foodGateEvAt = Date.now();
+    emit({ type: 'food_gate', need: r.need, points, allow: true, reason: 'gate_spent' });
+  }
+  return r.allow;
+}
+
+/** Un `drop_ahead` vient d'arriver : 2e au même endroit → +90°, 4e → décalage 30-50 blocs à pied. */
+async function onDropAhead() {
+  const p = bot.entity && bot.entity.position;
+  if (!p) return;
+  const here = { x: p.x, z: p.z };
+  const n = noteDropAhead(_dropSites, here, Date.now());
+  _dropSites = n.sites;
+  if (n.action === 'none') return;
+  if (n.action === 'turn') {
+    const from = (_descendHeading && Date.now() - _descendHeading.at < DESCEND_HEADING_TTL_MS)
+      ? _descendHeading.yaw : (bot.entity.yaw || 0);
+    const yaw = turnYaw(from);
+    _descendHeading = { yaw, at: Date.now() };
+    emit({ type: 'drop_ahead_turn', mode: 'turn', count: n.count, x: Math.round(here.x), z: Math.round(here.z), yaw: Math.round(yaw * 100) / 100 });
+    return;
+  }
+  _dropShiftSeed += 1;
+  const t = shiftTarget(here, _dropShiftSeed);
+  emit({ type: 'drop_ahead_turn', mode: 'shift', count: n.count, x: Math.round(here.x), z: Math.round(here.z), toX: t.x, toZ: t.z });
+  try {
+    await withTimeout(bot.pathfinder.goto(new pfGoals.GoalNearXZ(t.x, t.z, 3)), 30000, () => { try { stopMotion(); } catch (e) {} });
+  } catch (e) { /* best-effort : on redescend d'où l'on est */ }
+  _descendHeading = { yaw: t.yaw, at: Date.now() };
+}
+
+/** Avant une descente : regarder dans le cap imposé par un drop_ahead récent (descendDiagonal lit le yaw). */
+async function applyDescendHeading() {
+  if (!_descendHeading || Date.now() - _descendHeading.at >= DESCEND_HEADING_TTL_MS) return;
+  try { await bot.look(_descendHeading.yaw, 0, true); } catch (e) { /* best-effort */ }
+}
 
 // ── FRAPPE PASSIVE + CREEPER (AltoClef MobDefenseChain, 20/10) ───────────────────────────────────
 // 63 % des morts arrivent pendant le but `logs`, 43 % dans les 2 min après un respawn. Deux gestes

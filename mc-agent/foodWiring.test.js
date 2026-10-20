@@ -396,9 +396,10 @@ function ensureGlue(over = {}) {
     huntCookGoal: async (t, o) => { w.hunts.push([t, o]); return { ok: true }; },
     ENSURE_SKIP_POINTS: F.ENSURE_SKIP_POINTS,
     NO_GIVE: w.NO_GIVE,
+    markWorkBeforeTrip: (why) => { w.marks = (w.marks || []).concat([why]); return true; },
   };
   const names = Object.keys(env);
-  const factory = new Function(...names, `let _surfaceTripBusy = false;\n${src}\nreturn ensureFood;`);
+  const factory = new Function(...names, `let _surfaceTripBusy = false;\nlet _foodSurfaceTripAt = 0;\n${src}\nreturn ensureFood;`);
   w.ensureFood = factory(...names.map((n) => env[n]));
   return w;
 }
@@ -435,7 +436,7 @@ test('ensureFood (câblage) : sans-give → canGive faux', async () => {
   let captured = null;
   const f = new Function('runEnsureFood', 'buildCtxInv', 'bot', 'foodStock', 'lootNearby', 'emit', 'withTimeout', 'safeWarpHome',
     'HOME_SAFE', 'stopMotion', 'huntCookGoal', 'ENSURE_SKIP_POINTS', 'NO_GIVE',
-    `let _surfaceTripBusy = false;\n${src}\nreturn ensureFood;`)(
+    `let _surfaceTripBusy = false;\nlet _foodSurfaceTripAt = 0;\n${src}\nreturn ensureFood;`)(
     async (d) => { captured = d; }, () => ({}), w.bot, () => 0, async () => 0, () => {}, async (p) => p, async () => {},
     'safe', () => {}, async () => {}, 20, true);
   await f();
@@ -449,6 +450,7 @@ test('ensureFood (câblage) : la remontée passe par safeWarpHome(home safe) sou
   assert.deepStrictEqual(w.warps, ['safe']);
   assert.deepStrictEqual(w.timeouts, [30000]);
   assert.ok(w.events.some((e) => e.type === 'food_surface_trip' && e.y === 12 && e.food === 4));
+  assert.deepStrictEqual(w.marks, ['food'], 'signet du chantier posé AVANT la remontée (retour /home work)');
 });
 
 test('ensureFood (câblage) : UNE seule remontée à la fois (appel concurrent = no-op), puis le verrou est relâché', async () => {
@@ -468,11 +470,11 @@ test('ensureFood (câblage) : le verrou de remontée est relâché même si le w
   let captured = null;
   let warps = 0;
   const f = new Function('runEnsureFood', 'buildCtxInv', 'bot', 'foodStock', 'lootNearby', 'emit', 'withTimeout', 'safeWarpHome',
-    'HOME_SAFE', 'stopMotion', 'huntCookGoal', 'ENSURE_SKIP_POINTS', 'NO_GIVE',
-    `let _surfaceTripBusy = false;\n${src}\nreturn ensureFood;`)(
+    'HOME_SAFE', 'stopMotion', 'huntCookGoal', 'ENSURE_SKIP_POINTS', 'NO_GIVE', 'markWorkBeforeTrip',
+    `let _surfaceTripBusy = false;\nlet _foodSurfaceTripAt = 0;\n${src}\nreturn ensureFood;`)(
     async (d) => { captured = d; }, () => ({}), w.bot, () => 0, async () => 0, () => {},
     async (p) => p, async () => { warps++; throw new Error('warp KO'); },
-    'safe', () => {}, async () => {}, 20, false);
+    'safe', () => {}, async () => {}, 20, false, () => true);
   await f();
   await assert.rejects(captured.surfaceTrip({ ms: 1000, y: 10, food: 3 }), /warp KO/);
   await assert.rejects(captured.surfaceTrip({ ms: 1000, y: 10, food: 3 }), /warp KO/);
@@ -484,7 +486,7 @@ test('ensureFood (câblage) : une exception de runEnsureFood ne remonte jamais (
   const src = slice('async function ensureFood() {', '// Kit de départ DÉTERMINISTE');
   const f = new Function('runEnsureFood', 'buildCtxInv', 'bot', 'foodStock', 'lootNearby', 'emit', 'withTimeout', 'safeWarpHome',
     'HOME_SAFE', 'stopMotion', 'huntCookGoal', 'ENSURE_SKIP_POINTS', 'NO_GIVE',
-    `let _surfaceTripBusy = false;\n${src}\nreturn ensureFood;`)(
+    `let _surfaceTripBusy = false;\nlet _foodSurfaceTripAt = 0;\n${src}\nreturn ensureFood;`)(
     async () => { throw new Error('boom'); }, () => ({}), w.bot, () => 0, async () => 0, () => {},
     async (p) => p, async () => {}, 'safe', () => {}, async () => {}, 20, false);
   await f();                                                               // ne doit pas jeter
