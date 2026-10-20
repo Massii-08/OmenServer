@@ -981,3 +981,13 @@ test('LA BOUCLE MESUREE : 3 cycles a vide mapper_armor ne rebouclent plus jamais
     memo = d.emptyDoneAt;
   }
 });
+
+test('LUMBERJACK_CHAIN : livrer d\'abord, puis remplir le stock, puis attendre (jamais « done »)', () => {
+  const { LUMBERJACK_CHAIN } = require('./goals');
+  assert.strictEqual(chainFor('lumberjack'), LUMBERJACK_CHAIN);
+  const g = (ctx) => firstUnmet(LUMBERJACK_CHAIN, ctx).name;
+  assert.strictEqual(g({ inv: { oak_log: 20 }, woodRequest: { to: 'B', amount: 12 } }), 'lj_deliver');
+  assert.strictEqual(g({ inv: { oak_log: 20 }, woodRequest: null }), 'lj_stock');
+  assert.strictEqual(g({ inv: { oak_log: 30, birch_log: 18 }, woodRequest: null }), 'lj_wait');
+  assert.strictEqual(firstUnmet(LUMBERJACK_CHAIN, { inv: { oak_log: 64 } }).skill, 'lumberjackIdle');
+});

@@ -103,6 +103,16 @@ function createClaims(file, opts) {
         return true;
       });
     },
+    /** Lecture seule : la claim FRAÎCHE de `key` ({by, at}) ou null. Sert à l'élection du bûcheron
+     *  (savoir QUI tient `lumberjack`). Pas de verrou ni d'écriture : une lecture un peu en retard
+     *  est sans gravité, la décision se re-joue au tick suivant et `tryClaim` reste l'arbitre. */
+    peek(key) {
+      try {
+        const m = pruneExpired(_read(file), clock(), ttl);
+        const c = m.claims[key];
+        return c ? { by: c.by, at: c.at } : null;
+      } catch (e) { return null; }
+    },
     /** Relâche NOTRE claim (ore minée/abandonnée). */
     release(key) {
       return safe((m) => {

@@ -266,3 +266,11 @@ test('squad : y inconnu des deux cotes => comportement horizontal d origine (ret
   });
   assert.ok(r, 'a 300 blocs a plat, le TP part comme avant');
 });
+
+test('bûcheron (20/10) : jamais chef de squad ni cible de regroupement — il vit en surface', () => {
+  const T2 = NOW;
+  const mates = [mate('AAA', 300, 0, { role: 'lumberjack', at: T2 }), mate('NethBot3', 300, 0, { at: T2 })];
+  assert.strictEqual(squadLeader({ selfName: 'NethBot9', mates, now: T2 }), 'NethBot3');
+  const r = pickRegroupTarget({ ...BASE, mates: [mate('AAA', 300, 0, { role: 'lumberjack' })] });
+  assert.strictEqual(r, null);
+});

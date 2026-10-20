@@ -42,6 +42,7 @@ function pickRegroupTarget({ self, selfName, mates, armorComplete, now, lastAt, 
   const cands = (mates || []).filter((m) => m
     && m.name && m.name !== selfName
     && m.role !== 'mapper'                                  // les mappeurs sont AILLEURS par métier
+    && m.role !== 'lumberjack'                              // le bûcheron est en SURFACE par métier (20/10)
     && typeof m.x === 'number' && typeof m.z === 'number'
     && (t - (m.at || 0)) <= freshMs);
   if (!cands.length) return null;
@@ -103,6 +104,9 @@ function squadLeader({ selfName, mates, now, self, freshMs = FRESH_MS } = {}) {
   if (selfName) all.push(Object.assign({}, self || {}, { name: String(selfName) }));
   for (const m of mates || []) {
     if (!m || !m.name || m.role === 'mapper') continue;      // les mappeurs sont ailleurs par métier
+    // Le bûcheron (20/10) vit en surface par métier : chef, il ferait remonter toute la squad —
+    // l'inverse exact du rôle (un seul exposé dehors, les autres au fond).
+    if (m.role === 'lumberjack') continue;
     if ((t - (m.at || 0)) > freshMs) continue;                // mort ou déconnecté
     all.push(m);
   }

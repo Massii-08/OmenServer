@@ -313,3 +313,14 @@ test('allMappersArmored: gate de la phase diamant', () => {
   // un mappeur PERIME (mort/deco) ne bloque pas
   assert.strictEqual(allMappersArmored([mapper('M1', 0, MNOW - 999_999)], { now: MNOW }), true);
 });
+
+test('teamStatus : demande de bois publiée en woodWant/woodAt, need reste les LINGOTS', () => {
+  const s = teamStatus({}, [], { want: 16, at: 123 });
+  assert.strictEqual(s.woodWant, 16);
+  assert.strictEqual(s.woodAt, 123);
+  assert.strictEqual(typeof s.need, 'number');
+  assert.strictEqual(s.need, 24);
+  // sans demande : forme historique exacte
+  assert.deepStrictEqual(Object.keys(teamStatus({}, [])).sort(), ['armor', 'ingots', 'need']);
+  assert.deepStrictEqual(Object.keys(teamStatus({}, [], null)).sort(), ['armor', 'ingots', 'need']);
+});

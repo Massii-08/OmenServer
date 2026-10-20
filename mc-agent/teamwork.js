@@ -16,9 +16,12 @@ const INGOTS_PER_PIECE = { helmet: 5, chestplate: 8, leggings: 7, boots: 4 };
  * PUR — mon état d'équipe, publié dans le heartbeat de présence pour que les autres décident.
  * @param {Object} inv  {nom: nombre} (poche)
  * @param {Array<string>} worn  noms des pièces portées (slots 5-8)
- * @returns {{armor:number, ingots:number, need:number}} armor = pièces fer acquises (0-4)
+ * @param {{want:number, at:number}|null} [wood]  demande de bois en cours (bûcheron d'équipe, 20/10) :
+ *        publiée en `woodWant`/`woodAt` — jamais dans `need`, qui reste le nombre de LINGOTS manquants
+ *        (lu par iron_help / pickDonation). Absente → l'entrée garde exactement l'ancienne forme.
+ * @returns {{armor:number, ingots:number, need:number, woodWant?:number, woodAt?:number}} armor = pièces fer acquises (0-4)
  */
-function teamStatus(inv, worn) {
+function teamStatus(inv, worn, wood) {
   const i = inv || {};
   const w = new Set(worn || []);
   let armor = 0;
@@ -33,7 +36,9 @@ function teamStatus(inv, worn) {
     const name = `iron_${p}`;
     if (!w.has(name) && !(i[name] || 0)) need += INGOTS_PER_PIECE[p];
   }
-  return { armor, ingots, need };
+  const st = { armor, ingots, need };
+  if (wood && wood.want > 0 && Number.isFinite(wood.at)) { st.woodWant = wood.want; st.woodAt = wood.at; }
+  return st;
 }
 
 const MIN_GIFT = 3;        // en dessous, le déplacement ne vaut pas le don

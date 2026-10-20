@@ -153,3 +153,17 @@ test('presence : beat SANS statut garde l\'ancienne forme (rétro-compat)', () =
   assert.strictEqual(seen.x, 1);
   try { fs.unlinkSync(file); } catch (e) {}
 });
+
+test('peek : lit la claim fraîche sans la prendre, null une fois expirée', () => {
+  const file = tmpFile();
+  let t = 1000;
+  const clock = () => t;
+  const a = createClaims(file, { username: 'BotA', now: clock, ttl: 500 });
+  const b = createClaims(file, { username: 'BotB', now: clock, ttl: 500 });
+  assert.strictEqual(b.peek('lumberjack'), null);
+  a.tryClaim('lumberjack');
+  assert.deepStrictEqual(b.peek('lumberjack'), { by: 'BotA', at: 1000 });
+  assert.strictEqual(b.tryClaim('lumberjack'), false, 'peek ne réserve rien');
+  t = 1600;
+  assert.strictEqual(b.peek('lumberjack'), null);
+});

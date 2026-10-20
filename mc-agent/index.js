@@ -61,7 +61,7 @@ const { huntPassive } = require('./skills/hunt');
 const { fishCatch } = require('./skills/fish');   // pêche : la nourriture qui ne s'épuise pas
 const { nearestPassive, survivalTick, nearbyHostiles, lavaNearby, armorPoints, weaponDamage } = require('./survival');
 const { loadWorld, saveWorld, setObjective, clearObjective } = require('./worldModel');
-const { _nearestTable, tableKey, tablePlan, TABLE_REACH, TABLE_SEEK } = require('./skills/craft'); // craftItem déjà importé plus haut
+const { _nearestTable, tableKey, tablePlan, TABLE_REACH, TABLE_SEEK, pickJunkToToss } = require('./skills/craft'); // craftItem déjà importé plus haut
 const { placeBlockNear } = require('./skills/placeBlockNear');
 const { smelt, logsToConvert, fuelUnits } = require('./skills/smelt');
 const { descendDiagonal } = require('./skills/descendDiagonal');
@@ -135,6 +135,10 @@ const { pickRegroupTarget, squadTarget } = require('./regroup');
 // ENTRAIDE D'ÉQUIPE (Massii 25/07 : « qu'ils s'aident entre eux, et quand ils ont l'armure
 // fer ils se séparent »). Décisions PURES ; l'exécution (marche + toss) est ci-dessous.
 const { teamStatus, pickDonation, allArmored, pickMobAssist, pickMapperToEquip, giftSetPlan } = require('./teamwork');
+const {
+  isWoodGoal, woodWantFor, logCount, activeLumberjack, woodWaitDecision, preferredLumberjack,
+  lumberjackVerdict, pickWoodRequest, tossPlan, WOOD_REQUEST_TTL_MS, WOOD_MIN_GIFT, LUMBERJACK_STOCK,
+} = require('./lumberjack');
 const { tierRank } = require('./tools');
 const { createTeleportWatcher, wireTeleportDetection } = require('./teleport');
 const { isNight, shelterUntilDawn, shouldShelter, DAWN_WAIT_MAX_MS } = require('./skills/shelter');
@@ -660,6 +664,7 @@ async function regroupNightGuard() {
 let _lastRegroupAt = 0;
 async function tryRegroup() {
   if (!REGROUP) return { ok: false, reason: 'disabled' };
+  if (isLumberjackObjective()) return { ok: false, reason: 'lumberjack' };   // il vit en surface par métier
   if (!presence) return { ok: false, reason: 'no_presence' };
   const p = bot.entity && bot.entity.position;
   if (!p) return { ok: false, reason: 'no_pos' };
@@ -691,6 +696,7 @@ async function tryRegroup() {
 let _lastSquadAt = 0;
 async function trySquad() {
   if (!REGROUP || !presence) return { ok: false, reason: 'disabled' };
+  if (isLumberjackObjective()) return { ok: false, reason: 'lumberjack' };   // jamais tiré au fond de la mine
   const p = bot.entity && bot.entity.position;
   if (!p) return { ok: false, reason: 'no_pos' };
   if (await regroupNightGuard()) return { ok: false, reason: 'night_shelter' };
@@ -932,6 +938,8 @@ function ctxExtra() {
   return {
     hasTable: !!_nearestTable(bot), y: pos ? pos.y : undefined, worn: [..._wornArmor()], offhand,
     mapperTarget: gift.target, giftReady: gift.ready, noWood, passiveNear,
+    // Bûcheron : la demande réservée à servir (LUMBERJACK_CHAIN.lj_deliver). Null hors rôle.
+    woodRequest: isLumberjackObjective() ? _ljContext() : null,
   };
 }
 
@@ -1017,6 +1025,326 @@ function releaseGiftTarget(name) {
   try { if (_teamClaims) _teamClaims.release('marmor:' + name); } catch (e) { /* best-effort */ }
   if (_giftTarget === name) _giftTarget = null;
   _giftAt = 0;
+}
+
+// ─── BÛCHERON D'ÉQUIPE (Massii 20/10) ────────────────────────────────────────────────────────────
+// « Un seul bot monte en surface faire le bois, puis il se /tpa vers les autres pour leur donner. »
+// Le bois de surface était LE goulot : 63 % des morts arrivent en cherchant du bois (NethBot3, armure
+// fer complète, 6 min bloqué sur gift_planks ; NethBot2 en boucle sur logs). Décisions PURES dans
+// lumberjack.js ; ici la glue : demande publiée dans la présence, attente au chantier, élection par
+// claim `lumberjack`, livraison par /tpa + toss, retour au spot de coupe (home `work`).
+// Tout l'état est de NIVEAU MODULE (piège #56 : lu par les timers d'élection et par le planner).
+// La demande EN COURS est persistée dans le mémo base (`woodRequest`, `woodTimedOutAt`) : le
+// self-healing relance le process à chaque mort, l'horloge des 4 min doit y survivre (cf. #66a).
+const LJ_CLAIM = 'lumberjack';
+const LJ_TICK_MS = 30000;            // élection : la claim (TTL 120 s) est rafraîchie bien avant d'expirer
+const LJ_CACHE_MS = 10000;           // ctxExtra tourne à chaque pas du planner : on ne martèle pas les verrous
+const LJ_IDLE_MAX_MS = 300000;       // une tranche d'attente du bûcheron sans demande
+const WOOD_DONE_TTL_MS = 120000;     // le heartbeat du servi le publie encore « demandeur » jusqu'à 60 s
+const WOOD_FAIL_TTL_MS = 120000;     // /tpa raté : on laisse la demande à un autre essai plus tard
+const WOOD_WAIT_POLL_MS = 1000;
+const WOOD_WAIT_LJ_CHECK_MS = 20000; // « attendre 20 s par tranche » : bûcheron toujours là ?
+let _woodReq = null;                 // { want, at } — MA demande en cours (persistée)
+let _woodTimedOutAt = 0;             // dernier timeout (persisté) → 10 min d'autonomie bois
+let _woodReqLoaded = false;
+let _beatNow = null;                 // heartbeat immédiat (posé par onSpawn) — une demande se voit tout de suite
+let _ljTarget = null;                // { to, amount, want } — demande RÉSERVÉE (claim `wood:<to>`)
+let _ljAt = 0;
+let _ljSwitching = false;
+const _woodDone = new Map();         // nom → instant de livraison
+const _woodFailed = new Map();       // nom → instant du /tpa raté
+const _ljEvAt = {};                  // throttle des events d'observation
+
+function _ljEmit(type, data, minMs) {
+  const now = Date.now();
+  if (minMs && _ljEvAt[type] && now - _ljEvAt[type] < minMs) return;
+  _ljEvAt[type] = now;
+  emit(Object.assign({ type }, data || {}));
+}
+
+function isLumberjackObjective() {
+  return !!(world && world.objective && world.objective.type === 'lumberjack');
+}
+
+function loadWoodRequest() {
+  if (_woodReqLoaded) return;
+  _woodReqLoaded = true;
+  try {
+    const st = loadBaseState() || {};
+    const r = st.woodRequest;
+    if (r && r.want > 0 && Number.isFinite(r.at)) _woodReq = { want: r.want, at: r.at };
+    if (Number.isFinite(st.woodTimedOutAt)) _woodTimedOutAt = st.woodTimedOutAt;
+  } catch (e) { /* mémo illisible : pas de demande héritée */ }
+}
+
+/** Pose (ou retire avec null) MA demande, la persiste (FUSION du mémo base) et la publie tout de suite. */
+function setWoodRequest(req) {
+  _woodReq = req ? { want: req.want, at: req.at } : null;
+  try {
+    const next = Object.assign({}, loadBaseState() || {});
+    if (_woodReq) next.woodRequest = _woodReq; else delete next.woodRequest;
+    if (_woodTimedOutAt) next.woodTimedOutAt = _woodTimedOutAt;
+    saveBaseState(next);
+  } catch (e) { /* best-effort */ }
+  try { if (_beatNow) _beatNow(); } catch (e) { /* best-effort */ }
+}
+
+/**
+ * Avant un but BOIS (skill gatherLog) d'un ouvrier : demander au bûcheron et ATTENDRE au chantier au
+ * lieu de remonter. Retourne null → lancer le skill normalement (pas de bûcheron, timeout, je suis le
+ * bûcheron…) ; sinon le résultat à rendre au planner ({ok:true} bois reçu, {ok:false,'cancelled'}).
+ */
+async function woodWaitStep(g) {
+  if (!isWoodGoal(g) || !presence) return null;
+  loadWoodRequest();
+  const now = Date.now();
+  let lj = null;
+  try { lj = activeLumberjack({ mates: presence.list(), selfName: bot.username, now }); } catch (e) { lj = null; }
+  const d = woodWaitDecision({
+    isLumberjack: isLumberjackObjective(), isMapper: IS_MAPPER, lumberjack: lj,
+    request: _woodReq, timedOutAt: _woodTimedOutAt, now,
+  });
+  if (d.action === 'self') { if (d.clear) setWoodRequest(null); return null; }
+  if (d.action === 'timeout') {
+    const waited = _woodReq ? Math.round((now - _woodReq.at) / 1000) : null;
+    _woodTimedOutAt = now;
+    emit({ type: 'wood_request_timeout', goal: g.name, lumberjack: lj, waited_s: waited });
+    setWoodRequest(null);
+    return null;                                   // repli : il va chercher lui-même (comportement historique)
+  }
+  if (d.action === 'request') {
+    const want = woodWantFor(g);
+    setWoodRequest({ want, at: now });
+    emit({ type: 'wood_request', want, goal: g.name, lumberjack: lj });
+  }
+  const req = _woodReq;
+  if (!req) return null;
+  const deadline = req.at + WOOD_REQUEST_TTL_MS;
+  const before = logCount(buildCtxInv(bot));
+  const enough = Math.min(WOOD_MIN_GIFT, req.want);
+  _ljEmit('wood_wait', { goal: g.name, lumberjack: lj, remaining_s: Math.round((deadline - Date.now()) / 1000) }, 60000);
+  try { stopMotion(); } catch (e) { /* on reste au chantier */ }
+  // Inventaire PLEIN → les bûches jetées par le bûcheron resteraient au sol : on libère UNE case de
+  // déchet (liste blanche terre > gravier > roche > cobble au-delà de 32, cf. skills/craft.js).
+  try {
+    if (bot.inventory && typeof bot.inventory.emptySlotCount === 'function' && bot.inventory.emptySlotCount() === 0) {
+      const junk = pickJunkToToss(bot.inventory.items(), { exclude: [] });
+      if (junk) { await bot.toss(junk.type, null, junk.count); emit({ type: 'wood_wait_room', tossed: junk.name }); }
+    }
+  } catch (e) { /* best-effort : au pire il ramasse ce qui tient */ }
+  let lastCheck = Date.now();
+  while (Date.now() < deadline) {
+    if (taskToken.cancelled || migrationOwnsBot()) return { ok: false, reason: 'cancelled' };
+    await sleep(WOOD_WAIT_POLL_MS);
+    const have = logCount(buildCtxInv(bot));
+    if (have - before >= enough) {
+      emit({ type: 'wood_received', count: have - before, goal: g.name, from: lj });
+      setWoodRequest(null);
+      return { ok: true };
+    }
+    if (Date.now() - lastCheck >= WOOD_WAIT_LJ_CHECK_MS) {
+      lastCheck = Date.now();
+      let still = null;
+      try { still = activeLumberjack({ mates: presence.list(), selfName: bot.username, now: Date.now() }); } catch (e) { still = null; }
+      if (!still) {
+        emit({ type: 'wood_wait_end', reason: 'no_lumberjack', goal: g.name });
+        setWoodRequest(null);
+        return null;                               // bûcheron disparu : on y va soi-même
+      }
+      lj = still;
+    }
+  }
+  return woodWaitStep(g);                          // échéance → la décision rend 'timeout' → repli
+}
+
+/** Bûcheron : demande à servir (réservée par claim `wood:<to>`), cache 10 s. Null si rien à faire. */
+function _ljContext() {
+  try {
+    const now = Date.now();
+    if (now - _ljAt < LJ_CACHE_MS) return _ljTarget;
+    _ljAt = now;
+    for (const [n, at] of _woodDone) { if (now - at > WOOD_DONE_TTL_MS) _woodDone.delete(n); }
+    for (const [n, at] of _woodFailed) { if (now - at > WOOD_FAIL_TTL_MS) _woodFailed.delete(n); }
+    const releaseCur = () => {
+      if (_ljTarget) { try { if (_teamClaims) _teamClaims.release('wood:' + _ljTarget.to); } catch (e) {} }
+      _ljTarget = null;
+    };
+    if (!presence || !isAllowed('/tpa x', whitelist)) { releaseCur(); return null; }
+    const stock = logCount(buildCtxInv(bot));
+    const mates = presence.list();
+    const skip = new Set([..._woodDone.keys(), ..._woodFailed.keys()]);
+    for (let i = 0; i < 6; i++) {
+      const pick = pickWoodRequest({ mates, selfName: bot.username, now, stock, skip });
+      if (!pick) break;
+      if (!_teamClaims || _teamClaims.tryClaim('wood:' + pick.to)) {
+        if (_ljTarget && _ljTarget.to !== pick.to) releaseCur();
+        _ljTarget = pick;
+        return pick;
+      }
+      skip.add(pick.to);
+    }
+    releaseCur();
+    return null;
+  } catch (e) { return null; }
+}
+
+/** Pose `work` au SPOT DE COUPE (le bûcheron y revient après chaque livraison). Jamais dans l'eau. */
+function bookmarkCuttingSpot(why) {
+  try {
+    const p = bot.entity && bot.entity.position;
+    if (!p || isInWater(bot)) return false;
+    // Sous terre ce n'est pas un spot de coupe : on garde le chantier existant (comportement historique).
+    if (p.y < SAFE_HOME_MIN_Y) return markWorkBeforeTrip(why);
+    if (!homewarp.bookmark(bot, HOME_WORK)) return false;
+    _workSet = true; _workPos = _botXZ();
+    emit({ type: 'work_bookmarked', why });
+    return true;
+  } catch (e) { return false; }
+}
+
+/** Jette `amount` bûches vers `to` (on est sur lui : /tpa). Rend le nombre réellement jeté. */
+async function tossLogsTo(to, amount) {
+  try {
+    const ent = bot.players[to] && bot.players[to].entity;
+    if (ent && ent.position && bot.lookAt) await bot.lookAt(ent.position.offset(0, 1, 0));
+  } catch (e) { /* on jette quand même : le /tpa nous a posés sur lui */ }
+  let given = 0;
+  const items = (bot.inventory && bot.inventory.items()) || [];
+  for (const st of tossPlan(items, amount)) {
+    try { await bot.toss(st.type, null, st.count); given += st.count; } catch (e) { /* pile suivante */ }
+  }
+  return given;
+}
+
+/** Skill `deliverWood` : /tpa vers le demandeur, toss, retour au spot de coupe. */
+async function deliverWoodSkill() {
+  const t = _ljTarget;
+  if (!t) return { ok: true };                       // plus rien à servir
+  const to = t.to;
+  const release = () => {
+    try { if (_teamClaims) _teamClaims.release('wood:' + to); } catch (e) {}
+    if (_ljTarget && _ljTarget.to === to) _ljTarget = null;
+    _ljAt = 0;
+  };
+  if (!isAllowed('/tpa ' + to, whitelist)) {
+    release();
+    emit({ type: 'lumberjack_tpa_failed', to, reason: 'not_whitelisted' });
+    return { ok: false, reason: 'tpa_not_whitelisted' };
+  }
+  try { stopMotion(); } catch (e) {}
+  bookmarkCuttingSpot('wood_tpa');
+  emit({ type: 'wood_tpa', to, amount: t.amount });
+  try { bot.chat('/tpa ' + to); } catch (e) { release(); return { ok: false, reason: 'chat_failed' }; }
+  const w = await awaitWarp({ maxMs: 20000 });
+  if (!w.warped) {
+    _woodFailed.set(to, Date.now());
+    release();
+    emit({ type: 'lumberjack_tpa_failed', to, reason: w.cancelled ? 'cancelled' : 'no_warp' });
+    return { ok: false, reason: 'tpa_failed' };
+  }
+  const given = await tossLogsTo(to, t.amount);
+  emit({ type: 'wood_delivered', to, count: given, want: t.want });
+  if (given > 0) _woodDone.set(to, Date.now()); else _woodFailed.set(to, Date.now());
+  release();
+  // Retour TOUT DE SUITE : les bûches jetées ont 2 s de délai de ramassage, rester sur place nous
+  // ferait les reprendre. `work` = spot de coupe ; à défaut (posé dans l'eau/refusé), la base.
+  const back = await returnToWork('wood_delivered');
+  if (!back) { try { await safeWarpHome(HOME_SAFE, { ctx: 'lumberjack_return' }); } catch (e) { /* best-effort */ } }
+  return given > 0 ? { ok: true } : { ok: false, reason: 'wood_toss_failed' };
+}
+
+/** Skill `lumberjackIdle` : stock plein, personne n'attend → patienter (≤ 5 min par tranche). */
+async function lumberjackIdleSkill() {
+  const t0 = Date.now();
+  _ljEmit('lumberjack_idle', { stock: logCount(buildCtxInv(bot)) }, 300000);
+  while (Date.now() - t0 < LJ_IDLE_MAX_MS) {
+    if (taskToken.cancelled || migrationOwnsBot()) return { ok: false, reason: 'cancelled' };
+    await sleep(2000);
+    if (logCount(buildCtxInv(bot)) < LUMBERJACK_STOCK) return { ok: true };   // stock entamé → refaire
+    if (Date.now() - _ljAt >= LJ_CACHE_MS && _ljContext()) return { ok: true }; // une demande arrive
+    let worn = 0;
+    try { worn = _wornArmor().size; } catch (e) { worn = 0; }
+    if (worn < 2 && isNight(bot)) return { held: 'night' };                  // rendre la main à la discipline de nuit
+  }
+  return { held: 'idle' };
+}
+
+/**
+ * Bascule d'objectif (devenir bûcheron / rendre le rôle). Préempte le planner comme migrateZone :
+ * jeton CAPTURÉ, attente que le skill en vol rende la main, puis relance de startAutonomous.
+ * Jamais par-dessus un ordre joueur, une migration ou un bot sans planner autonome.
+ */
+async function switchLumberjack(toLumberjack, why) {
+  if (_ljSwitching || _migrating || taskCtl.active !== 'autonomous') return false;
+  if (!(world.objective && world.objective.status === 'in_progress')) return false;
+  _ljSwitching = true;
+  try {
+    const from = world.objective.type;
+    const tok = taskCtl.begin('lumberjack_switch', stopMotion);
+    const w0 = Date.now();
+    while ((_skillInFlight > 0 || _autoRunners > 0) && !tok.cancelled && Date.now() - w0 < MIGRATION_PREEMPT_WAIT_MS) {
+      await sleep(250);
+    }
+    if (tok.cancelled) return false;
+    taskToken = tok;
+    const st = Object.assign({}, loadBaseState() || {});
+    let to;
+    if (toLumberjack) {
+      to = 'lumberjack';
+      if (from !== 'lumberjack') st.lumberjackPrev = from;   // l'objectif à reprendre si on rend le rôle
+      saveBaseState(st);
+      if (_woodReq) setWoodRequest(null);                    // le bûcheron ne se demande rien à lui-même
+    } else {
+      to = st.lumberjackPrev || 'iron_armor';
+      delete st.lumberjackPrev;
+      saveBaseState(st);
+      _workSet = false;                                      // `work` pointe le spot de coupe, pas une mine
+      if (_ljTarget) { try { if (_teamClaims) _teamClaims.release('wood:' + _ljTarget.to); } catch (e) {} _ljTarget = null; }
+    }
+    setObjective(world, { type: to, status: 'in_progress' });
+    saveWorld(worldFile, world);
+    emit({ type: toLumberjack ? 'lumberjack_elected' : 'lumberjack_resigned', from, to, why });
+    // Le bûcheron travaille en SURFACE : s'il était au fond, il rentre à la base (même voie que la
+    // remontée de migration : `/home safe`, pas la pioche).
+    if (toLumberjack) {
+      const p = bot.entity && bot.entity.position;
+      if (p && p.y < SAFE_HOME_MIN_Y) { try { await safeWarpHome(HOME_SAFE, { ctx: 'lumberjack_surface' }); } catch (e) {} }
+    }
+    try { if (_beatNow) _beatNow(); } catch (e) {}
+    if (tok.cancelled) return false;
+    startAutonomous(null).catch((e) => emit({ type: 'error', message: String((e && e.message) || e) }));
+    return true;
+  } finally { _ljSwitching = false; }
+}
+
+/** Tick d'élection (30 s). Rend le verdict (pour les tests / l'observation). */
+async function lumberjackTick() {
+  if (IS_MAPPER || !presence || !_teamClaims || _ljSwitching) return null;
+  if (!isAllowed('/tpa x', whitelist)) return null;           // sans /tpa, aucune livraison possible
+  if (!(world.objective && world.objective.status === 'in_progress')) return null;
+  const amLj = isLumberjackObjective();
+  // Un bot en mode quota (`resource`) n'a pas de planner à chaînes : il ne devient pas bûcheron.
+  if (!amLj && world.objective.type === 'resource') return null;
+  const now = Date.now();
+  let selfArmor = 0;
+  try { selfArmor = teamStatus(buildCtxInv(bot), [..._wornArmor()]).armor; } catch (e) { selfArmor = 0; }
+  let mates = [];
+  try { mates = presence.list(); } catch (e) { mates = []; }
+  const preferred = preferredLumberjack({ selfName: bot.username, selfArmor, mates, now });
+  const holder = _teamClaims.peek(LJ_CLAIM);
+  const v = lumberjackVerdict({ selfName: bot.username, holder, preferred, amLumberjack: amLj });
+  if (v === 'keep' || v === 'claim') {
+    const ok = (v === 'keep' && _teamClaims.refresh(LJ_CLAIM)) || _teamClaims.tryClaim(LJ_CLAIM);
+    if (ok && !amLj) await switchLumberjack(true, v === 'keep' ? 'claim_held' : 'elected');
+    return v;
+  }
+  if (v === 'release') {
+    try { _teamClaims.release(LJ_CLAIM); } catch (e) {}
+    if (amLj) await switchLumberjack(false, 'alone');
+    return v;
+  }
+  if (amLj) await switchLumberjack(false, 'claim_lost');
+  return v;
 }
 
 // Table de craft PORTABLE : le bot garde 1 crafting_table en poche et la pose/reprend à la demande
@@ -1295,7 +1623,7 @@ const SKILL_TIMEOUT_MS = Number(args.skillTimeout || 90000);
 // (vécu V3Res1/4 : 480s × 4 tentatives = 32 min d'anneaux stériles avant le stall).
 // huntCook + FOOD_TRIP_MS (75 s) : l'EXPÉDITION vers le gibier (marche vers la cellule à animaux la plus
 // proche connue) a son propre plafond, hors du budget de 60 s — un garde-fou de 90 s la couperait en route.
-const SKILL_TIMEOUTS = { descendDiagonal: 900000, branchMine: 900000, caveHunt: 900000, huntCook: 90000 + FOOD_TRIP_MS, smeltCharcoal: 300000, gather: 480000, gatherLog: 180000, ensurePick: 480000, fish: 300000 };
+const SKILL_TIMEOUTS = { descendDiagonal: 900000, branchMine: 900000, caveHunt: 900000, huntCook: 90000 + FOOD_TRIP_MS, smeltCharcoal: 300000, gather: 480000, gatherLog: 180000, ensurePick: 480000, fish: 300000, deliverWood: 120000, lumberjackIdle: 330000 };
 function timeoutFor(skill) { return SKILL_TIMEOUTS[skill] || SKILL_TIMEOUT_MS; }
 function withTimeout(promise, ms, onTimeout) {
   return new Promise((resolve) => {
@@ -2036,6 +2364,8 @@ async function runGoalSkill(goal) {
   }
   // Livraison : /tpa VERS le cartographe (jamais l'inverse — il ne doit pas s'arrêter), puis
   // remise en main propre. Il s'équipe seul : `armorUp(0)` tourne dans son onPeriodic.
+  if (goal.skill === 'deliverWood') return deliverWoodSkill();
+  if (goal.skill === 'lumberjackIdle') return lumberjackIdleSkill();
   if (goal.skill === 'deliverMapperArmor') {
     const to = _giftTarget;
     if (!to) return { ok: true };                       // plus personne à servir
@@ -3098,6 +3428,11 @@ async function runSkillWithTelemetry(g) {
   // nocturnes en boucle ; un trou couvert coûte 2 blocs et sauve le kit).
   if (await maybeNightShelter() && taskToken.cancelled) return { ok: false, reason: 'cancelled' };
   if (migrationOwnsBot()) return { ok: false, reason: 'cancelled' };   // l'abri peut durer : re-vérifier
+  // BÛCHERON D'ÉQUIPE : un but bois → demander au bûcheron et attendre AU CHANTIER (≤ 4 min) au lieu
+  // de remonter explorer une zone rasée. null = comportement historique (le skill tourne ci-dessous).
+  const _wood = await woodWaitStep(g);
+  if (_wood) return _wood;
+  if (taskToken.cancelled || migrationOwnsBot()) return { ok: false, reason: 'cancelled' };
   const _t0 = Date.now();
   // `_skillInFlight` encadre l'exécution RÉELLE du skill, à l'intérieur du withTimeout : un skill
   // expiré continue de tourner en fond (withTimeout ne l'annule pas), et migrateZone doit attendre
@@ -5905,7 +6240,8 @@ async function onSpawn() {
       try {
         const pB = bot.entity && bot.entity.position;
         if (!pB || !presence) return;
-        const role = ((world.objective && world.objective.type) === 'mapper') ? 'mapper' : 'worker';
+        const _objT = world.objective && world.objective.type;
+        const role = _objT === 'mapper' ? 'mapper' : (_objT === 'lumberjack' ? 'lumberjack' : 'worker');
         // On publie AUSSI son état d'équipement : c'est ce qui permet aux coéquipiers de voir qui
         // a besoin d'aide (et de savoir quand tout le monde est équipé → séparation).
         // Les CARTOGRAPHES publient leur état eux aussi (26/07) : c'est la seule façon pour un
@@ -5914,7 +6250,17 @@ async function onSpawn() {
         // absent des entrées mappeur et un mappeur équipé restait indistinguable d'un mappeur nu.
         // Aucun risque de régression : pickDonation et allArmored écartent déjà `role === 'mapper'`.
         let st = null;
-        try { st = teamStatus(buildCtxInv(bot), [..._wornArmor()]); } catch (e) {}
+        // Demande de bois (bûcheron d'équipe) : publiée tant qu'elle court ; retirée ici dès que les
+        // bûches sont en poche (le bûcheron lit ce heartbeat pour savoir qui servir).
+        try {
+          loadWoodRequest();
+          const invB = buildCtxInv(bot);
+          if (_woodReq && logCount(invB) >= _woodReq.want) {
+            _woodReq = null;
+            const nb = Object.assign({}, loadBaseState() || {}); delete nb.woodRequest; saveBaseState(nb);
+          }
+          st = teamStatus(invB, [..._wornArmor()], _woodReq);
+        } catch (e) {}
         // `y` + `ironZone` : c'est ce qui permet de distinguer un MINEUR AU TRAVAIL d'un bot qui
         // traîne en surface. Sans eux, `squadLeader` ne pouvait trancher qu'à l'alphabet — et si
         // le premier dans l'alphabet flânait, toute la squad remontait le rejoindre au lieu de
@@ -5924,8 +6270,11 @@ async function onSpawn() {
           Object.assign({}, st || {}, { y: Math.round(pB.y), ironZone: _zoneIronMined }));
       } catch (e) { /* best-effort */ }
     };
+    _beatNow = _beat;
     _beat();
     setInterval(_beat, 60000);
+    // BÛCHERON D'ÉQUIPE : élection / maintien de la claim `lumberjack` (cf. lumberjackTick).
+    if (!IS_MAPPER && _teamClaims) setInterval(() => { lumberjackTick().catch(() => {}); }, LJ_TICK_MS);
 
     // ── ÉCLAIRAGE (capture réelle 26/07) : les humains posent 3-5 torches/min sous terre, le bot
     // n'éclairait que son tunnel de branch-mine. Or block-light 0 est la condition EXACTE

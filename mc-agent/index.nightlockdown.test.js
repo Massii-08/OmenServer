@@ -139,6 +139,7 @@ function squadSandbox(opts = {}) {
     _stillBusy: false, _imminentBusy: false, _smeltOppBusy: false, _armorBusy: false,
     _migrating: false, _escaping: false, _foodTripBusy: false, _zoneIronMined: 0,
     _lastSquadAt: 0, _lastRegroupAt: 0,
+    isLumberjackObjective: () => false,   // bûcheron d'équipe (20/10) : hors sujet ici
     squadTarget: R.squadTarget, pickRegroupTarget: R.pickRegroupTarget,
     isAllowed: () => true, whitelist: null,
     stopMotion() {}, awaitWarp: async () => ({ warped: true }),
@@ -255,6 +256,7 @@ function plannerSandbox({ shelterStub, onSleep, ...opts } = {}) {
     runGoalSkill: async (g) => { log.skills.push(g.name); return { ok: true, ran: g.name }; },
     withTimeout: (p) => p, timeoutFor: () => 60000, stopMotion() {},
     MINING_GOALS: new Set(), _zoneMiningMs: 0, noteZoneFailure() {}, _skillInFlight: 0,
+    woodWaitStep: async () => null,        // bûcheron d'équipe (20/10) : aucun bûcheron → comportement historique
     isInWater: () => false,
     lastShelterT: 0, _shelterInFlight: null, _nightHold: 0,
     NIGHT_HOLD_POLL_MS: 2000, NIGHT_HOLD_MAX_MS: 15 * 60 * 1000,

@@ -572,6 +572,23 @@ const MAPPER_ARMOR_CHAIN = [
     skill: 'deliverMapperArmor' },
 ];
 
+// ─── BÛCHERON D'ÉQUIPE (Massii 20/10) ─────────────────────────────────────────────────────────────
+// « Un seul bot monte en surface faire le bois, puis il se /tpa vers les autres pour leur donner. »
+// Pendant qu'il tient la claim `lumberjack`, c'est SA chaîne (cf. lumberjack.js pour l'élection et
+// le protocole). Gouvernée par `c.woodRequest` (la demande réservée, calculée par ctxExtra) :
+//   1. livrer si une demande attend ET que le stock permet un don utile (pickWoodRequest ⇒ sinon null) ;
+//   2. sinon remplir le stock (48 bûches en poche) ;
+//   3. sinon attendre une demande (`lj_wait` n'est JAMAIS satisfait : la chaîne ne « finit » pas, le
+//      bûcheron reste bûcheron — même nature que la boucle continue du cartographe).
+// La livraison passe AVANT le stock : un demandeur attend au fond d'un puits, le stock se refait après.
+const { LUMBERJACK_STOCK } = require('./lumberjack');
+const LUMBERJACK_CHAIN = [
+  { name: 'lj_deliver', met: (c) => !c.woodRequest, skill: 'deliverWood' },
+  { name: 'lj_stock',   met: (c) => anyLog(c.inv) >= LUMBERJACK_STOCK,
+    skill: 'gatherLog',  args: { count: 16 } },
+  { name: 'lj_wait',    met: () => false, skill: 'lumberjackIdle' },
+];
+
 /**
  * Objectif à enchaîner quand `objective` vient d'être atteint. (pur)
  * Ne renvoie JAMAIS l'inertie tant qu'il reste quelque chose d'utile à faire.
@@ -712,6 +729,7 @@ function chainFor(objective) {
   if (objective === 'iron_armor') return IRON_ARMOR_CHAIN;
   if (objective === 'diamond_armor') return DIAMOND_ARMOR_CHAIN;
   if (objective === 'mapper') return MAPPER_KIT;
+  if (objective === 'lumberjack') return LUMBERJACK_CHAIN;
   return MVP_CHAIN;
 }
 
@@ -723,4 +741,4 @@ function firstUnmet(chain, ctx) {
 
 module.exports = {
   nextObjectiveAfter, chainAfterDone, CHAIN_EMPTY_WINDOW_MS, CHAIN_BASE_DELAY_MS, CHAIN_BACKOFF_MS, CHAIN_FALLBACK,
-  IRON_HELP_CHAIN, HELP_STOCK, MAPPER_ARMOR_CHAIN, GIFT_SET_INGOTS, DIAMOND_TARGET, hasShield, posableCount, hasSword, hasAxe, buildCtxInv, invCount, anyLog, anyPlanks, MVP_CHAIN, IRON_CHAIN, DIAMOND_CHAIN, IRON_ARMOR_CHAIN, DIAMOND_ARMOR_CHAIN, MAPPER_KIT, chainFor, firstUnmet, armorNeed, armorWornOk, wantsOpportunisticArmor, ARMOR_FORGE_OBJECTIVES };
+  IRON_HELP_CHAIN, HELP_STOCK, MAPPER_ARMOR_CHAIN, LUMBERJACK_CHAIN, GIFT_SET_INGOTS, DIAMOND_TARGET, hasShield, posableCount, hasSword, hasAxe, buildCtxInv, invCount, anyLog, anyPlanks, MVP_CHAIN, IRON_CHAIN, DIAMOND_CHAIN, IRON_ARMOR_CHAIN, DIAMOND_ARMOR_CHAIN, MAPPER_KIT, chainFor, firstUnmet, armorNeed, armorWornOk, wantsOpportunisticArmor, ARMOR_FORGE_OBJECTIVES };
