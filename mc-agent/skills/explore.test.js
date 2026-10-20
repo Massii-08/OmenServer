@@ -403,6 +403,8 @@ test('explore : arrivé sur la cible dirigée sans rien trouver → marquée ép
   assert.ok(bot._mcaExhausted.has('100,0'), 'cible dirigée épuisée marquée dans bot._mcaExhausted');
   assert.ok(emits.some((e) => e.type === 'directed_exhausted' && e.x === 100 && e.z === 0 && e.world === 'w'),
     'event directed_exhausted émis AVEC world (routage backend → carte partagée)');
+  // fix run10 : la nature voyage avec l'event (la zone ne compte pas le bois comme du minerai).
+  assert.ok(emits.some((e) => e.type === 'directed_exhausted' && e.kind === 'wood'), 'kind:wood sur une recherche de troncs');
 });
 
 test('explore : au 2e appel, le find épuisé n\'est PLUS ciblé (fin de la boucle stérile)', async () => {

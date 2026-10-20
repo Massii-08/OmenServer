@@ -183,7 +183,20 @@ function directedTarget(memory, world, material, from, opts = {}) {
   return null;
 }
 
+/**
+ * Nature d'une cellule épuisée d'après les matériaux que l'exploration cherchait. (PUR)
+ * 'wood' si TOUS sont des troncs (le cas mesuré : 25/29 `directed_exhausted` du run10 sur `logs`),
+ * sinon 'ore' (mélange = prudent : on garde le poids d'un épuisement minéral), null si rien.
+ * La zone (zone.depletedForZone) ne compte pas le bois comme un épuisement de minerai.
+ */
+function depletedKindFor(names) {
+  const list = (Array.isArray(names) ? names : (names ? [names] : [])).map(String).filter(Boolean);
+  if (!list.length) return null;
+  return list.every((n) => /(_log|_stem|_wood|_hyphae)$/.test(n)) ? 'wood' : 'ore';
+}
+
 module.exports = {
+  depletedKindFor,
   vanillaHint, isOre, parseMemory, loadMemory, worldKey, readBiome, resolveBiome,
   biomeSeenEvent, caveFoundEvent, materialFoundEvent, directedTarget, targetKey, DEPLETED_RADIUS,
 };

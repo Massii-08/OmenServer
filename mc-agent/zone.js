@@ -140,6 +140,86 @@ function migrationArrivalOk({ reason, gone, minDist, distToTarget, arrival, depl
   return near ? { ok: false, why: 'still_depleted' } : { ok: true, why: 'fresh_ground' };
 }
 
+// ─── CELLULES ÉPUISÉES VUES PAR LA ZONE (fix run10, 20/10) ──────────────────────────────────────
+// Mesuré sur 10 h 30 / 5 bots / même monde : 126 départs de migration → 12 arrivées ; 55 échecs
+// `arrival:still_depleted`. La carte ne portait que 31 cellules `depleted`… mais (a) 25 des 29
+// `directed_exhausted` du run venaient du but `logs` (forêts/plaines pelées) — c'est l'épuisement
+// du BOIS, alors que le verdict `depleted` et le plancher de 600 blocs sont pensés pour le MINERAI
+// (cf. pickMigrationTarget) ; (b) elles dataient de 82 à 888 min, sans aucun âge maximum. 31 disques
+// de 160 blocs sur une emprise de ~900×900 : toute la région était « épuisée », le critère d'arrivée
+// devenait INSATISFIABLE et le verdict re-déclenchait `depleted` partout.
+// La carte partagée garde ces cellules (directedTarget s'en sert pour ne plus re-viser une forêt
+// pelée) ; c'est la LECTURE côté zone qui filtre : ni le bois, ni le périmé.
+const DEPLETED_ZONE_MAX_AGE_MS = 60 * 60 * 1000;   // au-delà, la carte ne prouve plus rien
+const DEPLETED_CLOCK_SKEW_MS = 2 * 60 * 1000;      // backend et bot n'ont pas exactement la même horloge
+
+/** Date d'une cellule en epoch ms : ISO (backend), epoch ms, ou epoch s ; NaN si illisible. (PUR) */
+function _depletedAtMs(at) {
+  if (typeof at === 'number' && Number.isFinite(at)) return at < 1e11 ? at * 1000 : at;
+  if (typeof at === 'string' && at) { const t = Date.parse(at); return Number.isFinite(t) ? t : NaN; }
+  return NaN;
+}
+
+/**
+ * Les cellules épuisées qui COMPTENT pour juger une zone (verdict, cible, arrivée). (PUR)
+ * Écarte : le bois (`kind:'wood'`), les entrées sans date / illisibles / datées du futur, et celles
+ * de plus de `maxAgeMs`. Les entrées anciennes SANS `kind` (avant ce fix) comptent si elles sont
+ * jeunes : rétro-compatible, et l'âge maximum les fait de toute façon sortir en une heure.
+ */
+function depletedForZone(list, now, { maxAgeMs = DEPLETED_ZONE_MAX_AGE_MS } = {}) {
+  const t = Number.isFinite(now) ? now : Date.now();
+  const out = [];
+  for (const d of Array.isArray(list) ? list : []) {
+    if (!d || typeof d !== 'object' || !Number.isFinite(d.x) || !Number.isFinite(d.z)) continue;
+    if (d.kind === 'wood') continue;
+    const at = _depletedAtMs(d.at);
+    if (!Number.isFinite(at)) continue;
+    if (at > t + DEPLETED_CLOCK_SKEW_MS || (t - at) > maxAgeMs) continue;
+    out.push(d);
+  }
+  return out;
+}
+
+// ─── CONTINUER À MARCHER PLUTÔT QU'ABANDONNER (fix run10) ───────────────────────────────────────
+// Les 55 `still_depleted` avaient parcouru 72-448 blocs : jamais les 3/4 du plancher. Les jambes
+// s'étaient épuisées (24 jambes, beaucoup de NoPath), et le bot abandonnait SUR PLACE — sans
+// ancrage, donc rappelé à l'ancienne base par le confine (18 des 74 échecs non préemptés : un
+// `confine_enforce` dans les 5 min). Une marche ratée à mi-chemin se termine… en marchant encore.
+const MIGRATION_EXTRA_LEGS = 12;   // jambes supplémentaires au plus (≈ 768 blocs ; la moitié de MAX_LEGS)
+
+/**
+ * Faut-il ajouter une jambe avant de juger l'arrivée ? (PUR)
+ * Seulement pour une migration LOINTAINE (depleted/exhausted), dans le budget de jambes, et :
+ *   • arrivée jugée ratée (`still_depleted`/`too_short`) alors que le plancher n'est pas atteint ;
+ *   • OU arrivée réussie mais les pieds dans l'eau (on ne pose pas de base mouillée : quelques pas
+ *     de plus valent mieux qu'un échec).
+ * @param {{reason, gone, minDist?, arrivalOk:boolean, arrivalWhy?:string, wet?:boolean, extraLegs:number, maxExtra?:number}} o
+ */
+function migrationKeepWalking({ reason, gone, minDist, arrivalOk, arrivalWhy, wet = false, extraLegs = 0,
+  maxExtra = MIGRATION_EXTRA_LEGS } = {}) {
+  if (!_FAR_REASONS.has(reason)) return false;
+  if (!Number.isFinite(gone)) return false;
+  if (!Number.isFinite(extraLegs) || extraLegs >= maxExtra) return false;
+  if (arrivalOk) return !!wet;
+  const floor = Number.isFinite(minDist) && minDist > 0 ? minDist : MIGRATE_FAR_MIN_DIST;
+  if (gone >= floor) return false;
+  return arrivalWhy === 'still_depleted' || arrivalWhy === 'too_short';
+}
+
+// ─── PAS DE RAPPEL APRÈS UN LONG TREK RATÉ (fix run10) ──────────────────────────────────────────
+// Un trek lointain qui a fait l'essentiel du chemin (≥ 3/4 du plancher) mais n'a pas pu poser sa
+// base (arrivée noyée / souterraine) laissait le bot à des centaines de blocs de son ancre : le
+// confine le téléportait aussitôt dans la zone morte qu'il venait de quitter. On suspend le rappel.
+const MIGRATION_CONFINE_GRACE_MS = 10 * 60 * 1000;
+
+/** Durée (ms) pendant laquelle le confine ne doit PAS rappeler le bot après la migration. (PUR) */
+function migrationConfineGraceMs({ reason, gone, minDist, anchored } = {}) {
+  if (anchored) return 0;
+  if (!_FAR_REASONS.has(reason) || !Number.isFinite(gone)) return 0;
+  const floor = Number.isFinite(minDist) && minDist > 0 ? minDist : MIGRATE_FAR_MIN_DIST;
+  return gone >= FAR_EARLY_EXIT_FRACTION * floor ? MIGRATION_CONFINE_GRACE_MS : 0;
+}
+
 // ─── CIBLES RATÉES (fix 18/08) ──────────────────────────────────────────────────────────────────
 // `pickMigrationTarget` est DÉTERMINISTE (c'est ce qui groupe l'escouade) : après un échec, le
 // re-essai visait donc exactement la même cellule — re-échec garanti au même endroit. On écarte
@@ -667,6 +747,8 @@ module.exports = {
   zoneStateInit, zoneStateLoad, zoneStateAfterMigration, zoneStateAfterFailedMigration,
   migrationEarlyExitOk, pruneFailedTargets, FAR_EARLY_EXIT_FRACTION, MIGRATE_ARRIVED_RADIUS,
   migrationArrivalOk, ARRIVAL_DEPLETED_RADIUS,
+  depletedForZone, DEPLETED_ZONE_MAX_AGE_MS, migrationKeepWalking, MIGRATION_EXTRA_LEGS,
+  migrationConfineGraceMs, MIGRATION_CONFINE_GRACE_MS,
   FAILED_TARGET_TTL_MS, FAILED_TARGET_RADIUS, FAILED_TARGETS_CAP,
   windowAdd, windowSum, windowPrune, windowLoad, ZONE_WINDOW_MS, ZONE_BUCKET_MS,
   MIN_MINUTES_IN_ZONE, MIGRATION_COOLDOWN_MS, WATER_FAILS_MAX, LOGS_NOT_FOUND_MAX,

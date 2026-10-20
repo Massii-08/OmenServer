@@ -90,6 +90,7 @@ const {
   zoneFailureKind, zoneStateInit, zoneStateLoad, zoneStateAfterMigration, MAX_LEGS, MIGRATE_MIN_PROGRESS, LOADED_RADIUS,
   LOGS_NOT_FOUND_MAX, windowAdd, windowSum, windowPrune, ZONE_WINDOW_MS,
   zoneStateAfterFailedMigration, migrationEarlyExitOk, pruneFailedTargets, migrationArrivalOk,
+  depletedForZone, migrationKeepWalking, migrationConfineGraceMs,
 } = require('./zone');
 const { recordWorkDrown, noteDrownedSite, isDrownedNear, offsetFromDrowned } = require('./workDrown'); // chantier adjacent à un aquifère → abandon + BANNISSEMENT du lieu (3a)
 const { createDeathSpots } = require('./deathspots');
@@ -550,8 +551,11 @@ setInterval(() => {
     // `_nightHold` idem (discipline de nuit, 19/10 soir) : un /home de rappel arracherait le bot nu à
     // l'abri qu'il est en train de reprendre — la nuit, c'est la discipline qui possède le bot.
     const busy = !!bot.targetDigBlock || _stillBusy || _imminentBusy || _smeltOppBusy || _armorBusy || _nightHold || _migrating || _escaping || _foodTripBusy;
+    // `_confineGraceUntil` (fix run10) : un trek lointain arrivé noyé/sous terre n'a pas posé sa base ;
+    // le rappeler à l'ancre le renverrait dans la zone morte qu'il vient de quitter (18 cas mesurés).
+    const graceHold = Date.now() < _confineGraceUntil;
     const dist = Math.hypot(p.x - conf.x, p.z - conf.z);
-    if (shouldEnforceConfine({ dist, radius: conf.radius, busy, now: Date.now(), lastAt: _lastConfineEnforceAt })) {
+    if (shouldEnforceConfine({ dist, radius: conf.radius, busy: busy || graceHold, now: Date.now(), lastAt: _lastConfineEnforceAt })) {
       _lastConfineEnforceAt = Date.now();
       emit({ type: 'confine_enforce', dist: Math.round(dist), x: conf.x, z: conf.z });
       safeWarpHome(CONFINE_HOME, { ctx: 'confine_enforce' }).catch(() => {});
@@ -2290,6 +2294,9 @@ let _lastMigrationAt = 0;     // cooldown anti-nomadisme
 let _lastMigrationFailed = false; // dernière migration ratée → cooldown 5 min au lieu de 20
 let _failedTargets = [];          // cibles ratées [{x,z,at}] : écartées 45 min (la cible est déterministe)
 let _lastZoneVerdictReason = null; // dedup télémétrie : dernière raison de verdict tracée
+// Délai de grâce du confine après un long trek qui n'a pas pu ancrer (zone.migrationConfineGraceMs).
+// ⚠️ NIVEAU MODULE : lu par le timer d'enforcement (piège #56).
+let _confineGraceUntil = 0;
 let _migrating = false;       // marche de migration en cours → l'enforcement confine est SUSPENDU
 let _migrationLegs = 0;       // jambes déjà parcourues (marche à l'aveugle)
 // Migrations (leur jeton `tok`) qui ont déjà émis `zone_migration_leg_dig` : l'event dit « cette
@@ -2659,6 +2666,46 @@ async function migrateZone(reason) {
       }
     }
 
+    // JAMBES SUPPLÉMENTAIRES (fix run10) : les 55 `still_depleted` avaient abandonné à 72-448 blocs,
+    // jambes épuisées, alors que le plancher en demande 600. Avant de juger, on continue dans la
+    // MÊME direction tant que l'arrivée serait ratée (ou les pieds dans l'eau), borné à
+    // MIGRATION_EXTRA_LEGS jambes et jamais de nuit ni préemptés. Décision : zone.migrationKeepWalking.
+    {
+      let extraLegs = 0;
+      let stuckX = 0;
+      while (!tok.cancelled && !nightStopped) {
+        const pc = bot.entity && bot.entity.position;
+        if (!pc) break;
+        const cur = { x: pc.x, z: pc.z };   // copie : bot.entity.position est muté en place
+        const goneC = Math.hypot(cur.x - travelFrom.x, cur.z - travelFrom.z);
+        const wetC = (function () { try { return isInWater(bot); } catch (e) { return false; } })();
+        const verdictC = migrationArrivalOk({
+          reason, minDist, gone: goneC,
+          distToTarget: target ? Math.hypot(cur.x - target.x, cur.z - target.z) : Infinity,
+          arrival: cur, depleted: depletedForZone(loadWorldCells().depleted, Date.now()),
+        });
+        if (!migrationKeepWalking({
+          reason, gone: goneC, minDist, arrivalOk: verdictC.ok, arrivalWhy: verdictC.why, wet: wetC, extraLegs,
+        })) break;
+        if (nightStop()) break;
+        // Cap : la direction effectivement suivie depuis le départ (on prolonge la marche) ; si on n'a
+        // presque pas bougé, vers la cible, sinon le cap assigné au bot (même que la marche à l'aveugle).
+        let baseHeading;
+        if (goneC >= LEG_STUCK_MIN) baseHeading = Math.atan2(cur.z - travelFrom.z, cur.x - travelFrom.x);
+        else if (target) baseHeading = Math.atan2(target.z - cur.z, target.x - cur.x);
+        else baseHeading = basecamp.headingForName(bot.username, 3);
+        const leg = migrationLeg({ from: cur, heading: legHeading(baseHeading, stuckX), legs: 0 });
+        if (!leg) break;
+        if (extraLegs === 0) emit({ type: 'zone_migration_extend', reason, gone: Math.round(goneC), why: verdictC.why, wet: wetC });
+        await migrationLegTo(leg, yRef, tok);
+        extraLegs += 1;
+        _migrationLegs += 1;
+        const pn = bot.entity && bot.entity.position;
+        const legMoved = pn ? Math.hypot(pn.x - cur.x, pn.z - cur.z) : 0;
+        stuckX = legMoved < LEG_STUCK_MIN ? stuckX + 1 : 0;
+      }
+    }
+
     // ARRIVÉE : la nouvelle zone devient LA base. `safe` bouge, le confine se ré-ancre, et le memo
     // persisté fait que tout respawn (self-healing compris) repartira d'ICI — c'est la pièce qui
     // manquait aux deux tentatives précédentes (split-brain confine).
@@ -2704,7 +2751,7 @@ async function migrateZone(reason) {
       gone: p2 ? Math.hypot(p2.x - travelFrom.x, p2.z - travelFrom.z) : NaN,
       distToTarget: (p2 && target) ? Math.hypot(p2.x - target.x, p2.z - target.z) : Infinity,
       arrival: p2 ? { x: p2.x, z: p2.z } : null,
-      depleted: arrivalCells.depleted,
+      depleted: depletedForZone(arrivalCells.depleted, Date.now()),
     });
     const reallyMoved = arrival.ok;
     // ⚠️ SURFACE OBLIGATOIRE (bugfix world_mn10, 27/07) : `safe`/base/spawnpoint ne s'ancrent QUE
@@ -2753,6 +2800,12 @@ async function migrateZone(reason) {
       // Exception : un arrêt de NUIT ne prouve rien contre la cible (on s'est arrêté, on n'a pas
       // échoué à l'atteindre) → cooldown court, mais pas de mise à l'écart de 45 min.
       noteMigrationFailed(nightStopped ? null : target);
+      const goneFail = p2 ? Math.hypot(p2.x - travelFrom.x, p2.z - travelFrom.z) : NaN;
+      const graceMs = migrationConfineGraceMs({ reason, gone: goneFail, minDist, anchored: false });
+      if (graceMs > 0) {
+        _confineGraceUntil = Date.now() + graceMs;
+        emit({ type: 'zone_migration_confine_grace', reason, gone: Math.round(goneFail), grace_s: Math.round(graceMs / 1000) });
+      }
       emit({
         type: 'zone_migration_failed', reason, wet: p2wet,
         underground: !!(p2 && !p2wet && p2.y < SAFE_HOME_MIN_Y),
@@ -2900,7 +2953,10 @@ function checkZoneVerdict() {
       base: from, range: 224, cellSize: 128, minOres: 12,
     }));
   } catch (e) { dryCellKnown = false; }
-  const depletedNear = (cells.depleted || []).filter((d) => d && Number.isFinite(d.x) && from
+  // ⚠️ MINERAI ET RÉCENT SEULEMENT (fix run10) : les 31 cellules de la carte venaient de recherches
+  // de BOIS et dataient de 82-888 min → `migrate depleted` (plancher 600) en boucle sur une zone dont
+  // le seul vrai manque était le bois (que le verdict `wood` traite, lui, avec la forêt la plus proche).
+  const depletedNear = depletedForZone(cells.depleted, now).filter((d) => from
     && Math.hypot(d.x - from.x, d.z - from.z) <= 160).length;
   // ⚠️ FENÊTRE, PAS CUMUL (fix world_mn14) : les compteurs d'ÉVÉNEMENTS entrent dans le verdict par
   // leur somme sur les 20 dernières minutes. Avec les cumuls, un bot au passé productif ne migrait

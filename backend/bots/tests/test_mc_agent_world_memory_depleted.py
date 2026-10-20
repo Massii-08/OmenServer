@@ -59,3 +59,48 @@ def test_entrees_bancales_ignorees_sans_crash():
     wm.apply_event(m, {"type": "directed_exhausted", "world": "overworld"}, at=1)
     wm.apply_event(m, {"type": "directed_exhausted", "x": 1, "z": 2}, at=1)
     assert m["worlds"].get("overworld", {}).get("depleted", []) == []
+
+
+# ─── run10 (20/10) : nature + âge maximum ─────────────────────────────────────────────────────
+# Mesure : les 31 cellules de la carte venaient TOUTES de recherches de BOIS (25/29 sur `logs`)
+# et dataient de 82 à 888 min — la zone les lisait comme un épuisement de MINERAI à vie.
+
+def test_event_directed_exhausted_conserve_la_nature():
+    m = wm.empty_memory("g1")
+    wm.apply_event(m, {"type": "directed_exhausted", "world": "overworld", "x": 1, "z": 2, "kind": "wood"},
+                   at="2026-10-20T09:00:00+00:00")
+    assert m["worlds"]["overworld"]["depleted"][0]["kind"] == "wood"
+
+
+def test_nature_inconnue_ou_absente_reste_retro_compatible():
+    m = wm.empty_memory("g1")
+    wm.add_depleted(m, "overworld", 1, 2, at=1000)
+    wm.add_depleted(m, "overworld", 3, 4, at=1000, kind="n'importe quoi")
+    for e in m["worlds"]["overworld"]["depleted"]:
+        assert "kind" not in e
+
+
+def test_rafraichir_une_cellule_met_a_jour_sa_nature():
+    m = wm.empty_memory("g1")
+    wm.add_depleted(m, "overworld", 1, 2, at=1000, kind="wood")
+    wm.add_depleted(m, "overworld", 1, 2, at=1001, kind="ore")
+    dep = m["worlds"]["overworld"]["depleted"]
+    assert len(dep) == 1 and dep[0]["kind"] == "ore" and dep[0]["at"] == 1001
+
+
+def test_les_cellules_trop_vieilles_sont_elaguees_a_l_ecriture():
+    m = wm.empty_memory("g1")
+    wm.add_depleted(m, "overworld", 1, 1, at="2026-10-19T08:00:00+00:00")   # 25 h avant
+    wm.add_depleted(m, "overworld", 2, 2, at="2026-10-20T00:00:00+00:00")   # 9 h avant
+    wm.add_depleted(m, "overworld", 3, 3, at="2026-10-20T09:00:00+00:00")
+    xs = [e["x"] for e in m["worlds"]["overworld"]["depleted"]]
+    assert xs == [2, 3]
+    assert wm.DEPLETED_MAX_AGE_S == 12 * 3600
+
+
+def test_dates_illisibles_jamais_elaguees():
+    """Rétro-compat : une entrée sans date exploitable n'est pas jetée par l'élagage."""
+    m = wm.empty_memory("g1")
+    m["worlds"]["overworld"] = {"depleted": [{"x": 9, "z": 9, "at": None}, {"x": 8, "z": 8, "at": "??"}]}
+    wm.add_depleted(m, "overworld", 3, 3, at="2026-10-20T09:00:00+00:00")
+    assert [e["x"] for e in m["worlds"]["overworld"]["depleted"]] == [9, 8, 3]

@@ -10,7 +10,7 @@
 // goals.GoalNear / GoalNearXZ : déplacement vers un point à `range` près. Chargé optionnellement (tests legacy).
 let goals;
 try { goals = require('mineflayer-pathfinder').goals; } catch (e) { goals = null; }
-const { directedTarget, targetKey } = require('../worldMemory');
+const { directedTarget, targetKey, depletedKindFor } = require('../worldMemory');
 
 // Anti-emballement : un goto rejeté INSTANTANÉMENT sans que le bot ait bougé n'est pas « une route
 // difficile », c'est un bot enfermé/coincé. STUCK_AFTER échecs de ce type d'affilée → on abandonne la spirale.
@@ -206,7 +206,10 @@ async function exploreRun(bot, opts, origin, stats) {
     const k = targetKey(t.x, t.z);
     if (exhausted.has(k)) return;                    // idempotent : pas de double event
     exhausted.add(k);
-    if (emit) { try { emit({ type: 'directed_exhausted', world: wkey || null, x: Math.round(t.x), z: Math.round(t.z) }); } catch (e) {} }
+    // `kind` (fix run10) : 25/29 cellules du run venaient d'une recherche de BOIS ; la zone ne doit pas
+    // les lire comme un épuisement de MINERAI (zone.depletedForZone). Absent = inconnu (rétro-compat).
+    const kind = depletedKindFor(opts.name);
+    if (emit) { try { emit(Object.assign({ type: 'directed_exhausted', world: wkey || null, x: Math.round(t.x), z: Math.round(t.z) }, kind ? { kind } : {})); } catch (e) {} }
   };
   let dTarget = null; // hoisté : réutilisé par le RAPPEL dirigé pendant les anneaux
   if (memory && wkey) {

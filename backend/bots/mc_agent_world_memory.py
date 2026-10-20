@@ -19,6 +19,7 @@ par un cartographe ; dédup par position exacte (x,y,z) ; remove_ore les retire 
 """
 import json
 import re
+from datetime import datetime
 from pathlib import Path
 
 # backend/bots/mc_agent_world_memory.py → racine projet = parents[2]
@@ -37,6 +38,11 @@ ORE_CAP = 50000  # phase 2 anti-xray : liste SPARSE (exposés only) — on ne tr
                  # nécessaire. Le cap reste par type (héritage phase 1) mais ne mord plus en pratique.
 DEPLETED_CAP = 400  # cellules ÉPUISÉES : plafond généreux (une entrée ~40 o) — au-delà on jette
                     # les plus VIEILLES, car une zone pelée il y a longtemps a pu repousser.
+DEPLETED_MAX_AGE_S = 12 * 3600  # élagage à l'écriture (run10, 20/10) : 31 cellules de 82 à 888 min
+                    # couvraient toute la région. Le BOT ne les honore que 60 min pour juger une zone
+                    # (zone.depletedForZone) ; on les garde plus longtemps ici car directedTarget
+                    # s'en sert pour ne pas re-viser une forêt pelée (les arbres ne repoussent pas).
+DEPLETED_KINDS = {"wood", "ore"}  # nature de l'épuisement ; absente = entrée d'avant ce fix
 STRUCT_GRID = 64  # dédup structures : 1 entrée par (kind, cellule 64²) — un village couvre ~3 cellules
 
 
@@ -188,7 +194,21 @@ def add_structure(memory, world, kind, x, y, z, at=None, cap=STRUCT_CAP):
     return memory
 
 
-def add_depleted(memory, world, x, z, at=None, cap=DEPLETED_CAP):
+def _at_seconds(at):
+    """Date d'une entrée en secondes epoch : nombre (s, ou ms si énorme) ou ISO ; None si illisible."""
+    if isinstance(at, bool):
+        return None
+    if isinstance(at, (int, float)):
+        return float(at) / 1000.0 if at > 1e11 else float(at)
+    if isinstance(at, str) and at:
+        try:
+            return datetime.fromisoformat(at.replace("Z", "+00:00")).timestamp()
+        except ValueError:
+            return None
+    return None
+
+
+def add_depleted(memory, world, x, z, at=None, cap=DEPLETED_CAP, kind=None):
     """Marque une cellule comme ÉPUISÉE (le bot y est arrivé et n'a rien trouvé) — PERSISTANT et
     PARTAGÉ entre bots et sessions.
 
@@ -204,13 +224,27 @@ def add_depleted(memory, world, x, z, at=None, cap=DEPLETED_CAP):
         xi, zi = int(round(float(x))), int(round(float(z)))
     except (TypeError, ValueError):
         return memory
+    kind = kind if kind in DEPLETED_KINDS else None
     w = _world(memory, world)
     dep = w.setdefault("depleted", [])
+    # Élagage par âge, relatif à la date de l'entrée qu'on écrit (pas d'horloge murale : testable, et
+    # cohérent avec les dates du fichier). Les dates illisibles ne sont jamais jetées (rétro-compat).
+    now_s = _at_seconds(at)
+    if now_s is not None:
+        def _fresh(e):
+            t = _at_seconds(e.get("at"))
+            return t is None or (now_s - t) <= DEPLETED_MAX_AGE_S
+        dep[:] = [e for e in dep if _fresh(e)]
     for e in dep:
         if e.get("x") == xi and e.get("z") == zi:
             e["at"] = at            # rafraîchit la date, ne duplique pas
+            if kind:
+                e["kind"] = kind
             return memory
-    dep.append({"x": xi, "z": zi, "at": at})
+    entry = {"x": xi, "z": zi, "at": at}
+    if kind:
+        entry["kind"] = kind
+    dep.append(entry)
     if len(dep) > cap:
         del dep[0:len(dep) - cap]   # on garde les plus récentes
     return memory
@@ -244,7 +278,7 @@ def apply_event(memory, event, at=None):
             # Deux effets : on retire le find pelé (sémantique historique) ET on mémorise la
             # cellule comme épuisée pour TOUS les tiers de directedTarget (finds, biomes, grottes).
             remove_find(memory, world, event["x"], event["z"])
-            return add_depleted(memory, world, event["x"], event["z"], at=at)
+            return add_depleted(memory, world, event["x"], event["z"], at=at, kind=event.get("kind"))
         if t == "material_found":
             return add_find(memory, world, event["material"], event["biome"], event["x"], event["z"], at=at)
         if t == "exposed_ore_found":
