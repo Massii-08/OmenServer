@@ -991,3 +991,25 @@ test('LUMBERJACK_CHAIN : livrer d\'abord, puis remplir le stock, puis attendre (
   assert.strictEqual(g({ inv: { oak_log: 30, birch_log: 18 }, woodRequest: null }), 'lj_wait');
   assert.strictEqual(firstUnmet(LUMBERJACK_CHAIN, { inv: { oak_log: 64 } }).skill, 'lumberjackIdle');
 });
+
+test('LUMBERJACK_CHAIN : bois en attente > SES pièces > armure cartographe > forêt > stock', () => {
+  const { LUMBERJACK_CHAIN, MAPPER_ARMOR_CHAIN } = require('./goals');
+  const g = (ctx) => firstUnmet(LUMBERJACK_CHAIN, Object.assign({ inv: { oak_log: 5 } }, ctx)).name;
+  const own = { act: 'forge', piece: 'iron_leggings', ingots: 7 };
+  const all = { woodRequest: { to: 'B', amount: 12 }, ljOwnArmor: own, mapperTarget: 'MapBot2', giftReady: false, ljForestTrip: true };
+  assert.strictEqual(g(all), 'lj_deliver');
+  assert.strictEqual(g(Object.assign({}, all, { woodRequest: null })), 'lj_own_armor');
+  assert.strictEqual(g(Object.assign({}, all, { woodRequest: null, ljOwnArmor: null })), 'gift_craft');
+  assert.strictEqual(g(Object.assign({}, all, { woodRequest: null, ljOwnArmor: null, giftReady: true })), 'gift_deliver');
+  assert.strictEqual(g({ ljForestTrip: true }), 'lj_forest');
+  assert.strictEqual(g({}), 'lj_stock');
+  // les buts gift_* sont RÉUTILISÉS (mêmes objets que MAPPER_ARMOR_CHAIN), pas dupliqués
+  for (const n of ['gift_craft', 'gift_deliver']) {
+    assert.strictEqual(LUMBERJACK_CHAIN.find((x) => x.name === n), MAPPER_ARMOR_CHAIN.find((x) => x.name === n), n);
+  }
+  const ownGoal = LUMBERJACK_CHAIN.find((x) => x.name === 'lj_own_armor');
+  assert.strictEqual(ownGoal.skill, 'lumberjackArmor');
+  assert.strictEqual(LUMBERJACK_CHAIN.find((x) => x.name === 'lj_forest').skill, 'lumberjackForestTrip');
+  // un collect qui gèle ne doit plus manger tout le budget du skill (2 × 90 s = les 180 s de gatherLog)
+  assert.ok(LUMBERJACK_CHAIN.find((x) => x.name === 'lj_stock').args.collectTimeoutMs <= 30000);
+});

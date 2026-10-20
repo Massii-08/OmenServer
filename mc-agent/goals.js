@@ -581,11 +581,26 @@ const MAPPER_ARMOR_CHAIN = [
 //   3. sinon attendre une demande (`lj_wait` n'est JAMAIS satisfait : la chaîne ne « finit » pas, le
 //      bûcheron reste bûcheron — même nature que la boucle continue du cartographe).
 // La livraison passe AVANT le stock : un demandeur attend au fond d'un puits, le stock se refait après.
+//
+// ARMURE (20/10 soir — cartographes nus = 20 morts sur 36, bûcheron passé de 4 à 2 pièces) : entre la
+// livraison et le stock, 1) SES pièces (une pièce saine en poche à enfiler, ou la moins chère qu'il peut
+// forger — un bûcheron nu meurt et ne livre plus rien), 2) l'armure d'un cartographe avec les lingots qui
+// restent. Les buts gift_craft / gift_deliver sont CEUX de MAPPER_ARMOR_CHAIN (mêmes objets) : ctxExtra
+// leur donne `mapperTarget` / `giftReady` du plan bûcheron (pièces partielles, cf. lumberjack.js).
+// `ljOwnArmor` / `ljForestTrip` sont calculés par ctxExtra (index.js) ; null/false hors rôle.
+// FORÊT : au 2e échec `lj_stock` en 10 min, expédition vers la forêt connue la plus proche (lj_forest).
 const { LUMBERJACK_STOCK } = require('./lumberjack');
+const _giftGoal = (n) => MAPPER_ARMOR_CHAIN.find((g) => g.name === n);
 const LUMBERJACK_CHAIN = [
   { name: 'lj_deliver', met: (c) => !c.woodRequest, skill: 'deliverWood' },
+  { name: 'lj_own_armor', met: (c) => !c.ljOwnArmor, skill: 'lumberjackArmor' },
+  _giftGoal('gift_craft'),
+  _giftGoal('gift_deliver'),
+  { name: 'lj_forest',  met: (c) => !c.ljForestTrip, skill: 'lumberjackForestTrip' },
+  // collectTimeoutMs : mesure 20/10, le collect d'une bûche hors d'atteinte (haut d'un bouleau géant)
+  // gelait 90 s, re-tenté 90 s = les 180 s du skill → `lj_stock` timeout ×6. Une bûche se coupe en < 5 s.
   { name: 'lj_stock',   met: (c) => anyLog(c.inv) >= LUMBERJACK_STOCK,
-    skill: 'gatherLog',  args: { count: 16 } },
+    skill: 'gatherLog',  args: { count: 16, collectTimeoutMs: 20000 } },
   { name: 'lj_wait',    met: () => false, skill: 'lumberjackIdle' },
 ];
 

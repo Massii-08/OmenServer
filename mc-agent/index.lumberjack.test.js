@@ -84,6 +84,7 @@ function sandbox(o = {}) {
     _wornArmor: () => new Set(o.worn || []),
     isNight: () => false,
     buildCtxInv, teamStatus,
+    _ljReleaseGift: () => sb.calls.push('ljReleaseGift'),   // armure du bûcheron (testée dans index.ljarmor.test.js)
     isWoodGoal: L.isWoodGoal, woodWantFor: L.woodWantFor, logCount: L.logCount, activeLumberjack: L.activeLumberjack,
     woodWaitDecision: L.woodWaitDecision, preferredLumberjack: L.preferredLumberjack, lumberjackVerdict: L.lumberjackVerdict,
     pickWoodRequest: L.pickWoodRequest, tossPlan: L.tossPlan,

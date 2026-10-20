@@ -138,6 +138,8 @@ const { teamStatus, pickDonation, allArmored, pickMobAssist, pickMapperToEquip, 
 const {
   isWoodGoal, woodWantFor, logCount, activeLumberjack, woodWaitDecision, preferredLumberjack,
   lumberjackVerdict, pickWoodRequest, tossPlan, WOOD_REQUEST_TTL_MS, WOOD_MIN_GIFT, LUMBERJACK_STOCK,
+  missingIronPieces, ownArmorAction, pickMapperForLumberjack, ljGiftReady,
+  stockFailsPrune, stockFailsAdd, needsForestTrip, forestTriedAdd, pickForestCell, LJ_FOREST_TRIP_MS,
 } = require('./lumberjack');
 const { tierRank } = require('./tools');
 const { createTeleportWatcher, wireTeleportDetection } = require('./teleport');
@@ -916,8 +918,13 @@ function ctxExtra() {
   // lit mapperTarget/giftReady. Une réservation restée d'un mapper_armor interrompu (préemption,
   // respawn) est rendue ici, pour qu'un coéquipier puisse prendre le relais sans attendre le TTL.
   const onGiftChain = !!(world.objective && world.objective.type === 'mapper_armor');
-  if (!onGiftChain && _giftTarget) releaseGiftTarget(_giftTarget);
-  const gift = onGiftChain ? _giftContext() : { target: null, ready: false };
+  // BÛCHERON (20/10 soir) : SES pièces d'abord, puis l'armure d'un cartographe avec ce qui reste de
+  // lingots — il RÉUTILISE gift_craft/gift_deliver, donc `mapperTarget`/`giftReady` viennent de son plan.
+  const ljArmor = isLumberjackObjective() ? _ljArmorContext() : null;
+  const ljGiftNow = ljArmor && ljArmor.gift;
+  if (!onGiftChain && !ljGiftNow && _giftTarget) releaseGiftTarget(_giftTarget);
+  const gift = onGiftChain ? _giftContext()
+    : (ljGiftNow ? { target: ljGiftNow.to, ready: ljGiftNow.ready } : { target: null, ready: false });
   // noWood : le bois est PROUVÉ rare dans cette zone (même seuil que le verdict « zone rasée »).
   // Rend `plank_buffer` non bloquant → un ouvrier remonté en surface d'un wood-desert peut enfin
   // redescendre miner son fer au lieu de boucler gatherLog→not_found (deadlock world_mn12, 28/07).
@@ -940,6 +947,8 @@ function ctxExtra() {
     mapperTarget: gift.target, giftReady: gift.ready, noWood, passiveNear,
     // Bûcheron : la demande réservée à servir (LUMBERJACK_CHAIN.lj_deliver). Null hors rôle.
     woodRequest: isLumberjackObjective() ? _ljContext() : null,
+    ljOwnArmor: ljArmor ? ljArmor.own : null,
+    ljForestTrip: isLumberjackObjective() ? _ljForestNeeded() : false,
   };
 }
 
@@ -1300,6 +1309,7 @@ async function switchLumberjack(toLumberjack, why) {
       saveBaseState(st);
       _workSet = false;                                      // `work` pointe le spot de coupe, pas une mine
       if (_ljTarget) { try { if (_teamClaims) _teamClaims.release('wood:' + _ljTarget.to); } catch (e) {} _ljTarget = null; }
+      _ljReleaseGift();                                      // le cartographe réservé redevient libre pour les ouvriers
     }
     setObjective(world, { type: to, status: 'in_progress' });
     saveWorld(worldFile, world);
@@ -1345,6 +1355,198 @@ async function lumberjackTick() {
   }
   if (amLj) await switchLumberjack(false, 'claim_lost');
   return v;
+}
+
+// ── ARMURE DU BÛCHERON (20/10 soir) ─────────────────────────────────────────────────────────────
+// Mesure 1 h : cartographes nus = 20 morts sur 36 — le bûcheron élu (le mieux armé, celui qui forgeait
+// leurs armures en mapper_armor) avait abandonné cette chaîne ; et l'usure l'avait fait passer de 4 à
+// 2 pièces sans qu'il les refasse (`lumberjack` n'est pas dans le timer d'armure). Décisions pures dans
+// lumberjack.js ; ici : contexte (SES pièces > un cartographe), réservation `marmor:` (la même que les
+// ouvriers en mapper_armor : on ne forge jamais deux fois pour le même cartographe), skills.
+const LJ_FORGE_HOLD_MS = 600000;     // forge/équipement raté → 10 min sans réessayer (pas de boucle)
+const LJ_GIFT_FAIL_TTL_MS = 300000;  // /tpa raté vers un cartographe (destination dangereuse…) → 5 min
+const _LJ_ARMOR_RE = /_(helmet|chestplate|leggings|boots)$/;
+let _ljGift = null;                  // { to, armor, pieces, ingots } — cartographe RÉSERVÉ (`marmor:<to>`)
+let _ljGiftAt = 0;
+let _ljForgeHoldUntil = 0;
+const _ljGiftFailed = new Map();     // nom → instant du /tpa raté
+let _ljStockFails = [];              // instants des échecs `lj_stock` (persistés : survivent aux morts)
+let _ljStockFailsLoaded = false;
+
+/** Poche : pièces d'armure SAINES / USÉES (noms), lingots, tous les noms. */
+function _ljPocketArmor() {
+  const good = [], broken = [], names = [];
+  let ingots = 0;
+  for (const it of (bot.inventory && bot.inventory.items()) || []) {
+    if (!it || !it.name) continue;
+    names.push(it.name);
+    if (it.name === 'iron_ingot') ingots += it.count || 0;
+    if (_LJ_ARMOR_RE.test(it.name)) (isNearlyBroken(it) ? broken : good).push(it.name);
+  }
+  return { good, broken, names, ingots };
+}
+
+function _ljReleaseGift() {
+  if (_ljGift) { try { releaseGiftTarget(_ljGift.to); } catch (e) { /* best-effort */ } }
+  _ljGift = null;
+}
+
+/**
+ * Contexte armure du bûcheron : { own, gift }. `own` = ownArmorAction (prime sur tout : un bûcheron nu
+ * meurt et ne livre plus rien) ; `gift` = { to, pieces, ready } pour gift_craft/gift_deliver.
+ * Le choix du cartographe est mis en cache 15 s (presence.list() prend un verrou) ; `ready` est relu.
+ */
+function _ljArmorContext() {
+  const none = { own: null, gift: null };
+  try {
+    const now = Date.now();
+    if (now < _ljForgeHoldUntil) { _ljReleaseGift(); return none; }
+    const pk = _ljPocketArmor();
+    const own = ownArmorAction({ worn: [..._wornArmor()], pocket: pk.good, ingots: pk.ingots });
+    if (own) { _ljReleaseGift(); return { own, gift: null }; }
+    if (!presence || !isAllowed('/tpa x', whitelist)) { _ljReleaseGift(); return none; }
+    if (now - _ljGiftAt >= GIFT_CACHE_MS) {
+      _ljGiftAt = now;
+      for (const [n, at] of _giftDone) { if (now - at > GIFT_DONE_TTL_MS) _giftDone.delete(n); }
+      for (const [n, at] of _ljGiftFailed) { if (now - at > LJ_GIFT_FAIL_TTL_MS) _ljGiftFailed.delete(n); }
+      const mates = presence.list();
+      const skip = new Set([..._giftDone.keys(), ..._ljGiftFailed.keys()]);
+      let pick = null;
+      for (let i = 0; i < 6; i++) {                  // descend la liste des cartographes déjà réservés
+        const p = pickMapperForLumberjack({ mates, selfName: bot.username, now, ingots: pk.ingots,
+          pocket: pk.good, brokenPocket: pk.broken, skip });
+        if (!p) break;
+        if (!_teamClaims || _teamClaims.tryClaim('marmor:' + p.to)) { pick = p; break; }
+        skip.add(p.to);
+      }
+      if (!pick) _ljReleaseGift();
+      else {
+        if (_ljGift && _ljGift.to !== pick.to) _ljReleaseGift();
+        _ljGift = pick;
+      }
+    }
+    if (!_ljGift) return none;
+    _giftTarget = _ljGift.to;                        // deliverMapperArmor (réutilisé) lit _giftTarget
+    return { own: null, gift: { to: _ljGift.to, pieces: _ljGift.pieces.slice(), ready: ljGiftReady(_ljGift.pieces, pk.good) } };
+  } catch (e) { return none; }
+}
+
+/** Pièces à remettre à `to` : le plan partiel du bûcheron, sinon null (le set complet historique). */
+function ljGiftPiecesFor(to) {
+  return (isLumberjackObjective() && _ljGift && _ljGift.to === to) ? _ljGift.pieces.slice() : null;
+}
+
+/** Après une livraison (ou un /tpa raté) vers `to` : on oublie le plan ; un échec écarte `to` 5 min. */
+function ljAfterGift(to, given) {
+  if (!isLumberjackObjective()) return;
+  if (!(given > 0)) _ljGiftFailed.set(to, Date.now());
+  if (_ljGift && _ljGift.to === to) _ljGift = null;
+  _ljGiftAt = 0;
+}
+
+/** Jette les pièces d'armure USÉES de la poche (sorties de leur slot au remplacement) : elles fausseraient
+ *  le plan de forge (armorPlan les voit « en poche ») et partiraient avec un don (giveItem jette tout le nom). */
+async function _ljTossWornArmor() {
+  for (const it of ((bot.inventory && bot.inventory.items()) || []).slice()) {
+    if (!it || !it.name || !_LJ_ARMOR_RE.test(it.name) || !isNearlyBroken(it)) continue;
+    try { await bot.tossStack(it); emit({ type: 'armor_worn_tossed', item: it.name }); } catch (e) { /* suivant */ }
+  }
+}
+
+/** Skill `lumberjackArmor` : enfiler / forger SA pièce manquante (ensureArmor, jugé sur le progrès). */
+async function lumberjackArmorSkill() {
+  const ctx = _ljArmorContext();
+  if (!ctx.own) return { ok: true };
+  await _ljTossWornArmor();
+  const r = await runGoalSkill({ name: 'lj_own_armor', skill: 'ensureArmor', args: {} });
+  const ok = !!(r && r.ok);
+  emit({ type: 'lumberjack_armor', act: ctx.own.act, piece: ctx.own.piece, ok });
+  if (!ok) _ljForgeHoldUntil = Date.now() + LJ_FORGE_HOLD_MS;
+  return r || { ok: false, reason: 'error' };
+}
+
+/** craftGiftSet du bûcheron : forge les pièces PRÉVUES qui ne sont pas encore en poche. */
+async function ljCraftGiftSkill() {
+  const g = _ljGift;
+  if (!g) return { ok: true };
+  await _ljTossWornArmor();
+  const have = new Set(_ljPocketArmor().good);
+  let progressed = false;
+  for (const piece of g.pieces) {
+    if (have.has(piece)) continue;
+    const r = await craftSmart({ name: piece, count: 1 });
+    if (r && r.ok) { progressed = true; emit({ type: 'gift_craft', item: piece, to: g.to, by: 'lumberjack' }); }
+  }
+  if (!progressed && !ljGiftReady(g.pieces, _ljPocketArmor().good)) {
+    _ljForgeHoldUntil = Date.now() + LJ_FORGE_HOLD_MS;
+    _ljReleaseGift();
+    return { ok: false, reason: 'gift_craft_failed' };
+  }
+  return { ok: true };
+}
+
+// ── EXPÉDITION FORESTIÈRE DU BÛCHERON (20/10 soir) ──────────────────────────────────────────────
+// Mesure : `lj_stock` timeout ×6, `logs not_found` ×10, 19 `unstuck` sur une session — il s'acharnait
+// sur le même coin (bouleaux géants dont le haut est hors d'atteinte). Au 2e échec en 10 min il marche
+// vers la forêt CONNUE la plus proche (même marche par jambes que l'expédition vers le gibier, et même
+// verrou `_foodTripBusy` : le confine et le squad ne le rappellent pas en route) et y pose `work`.
+function _ljLoadStockFails() {
+  if (_ljStockFailsLoaded) return;
+  _ljStockFailsLoaded = true;
+  try { _ljStockFails = stockFailsPrune((loadBaseState() || {}).ljStockFails, Date.now()); } catch (e) { _ljStockFails = []; }
+}
+function _ljSaveStockFails() {
+  try { saveBaseState(Object.assign({}, loadBaseState() || {}, { ljStockFails: _ljStockFails })); } catch (e) { /* best-effort */ }
+}
+
+/** Appelé par le planner après chaque but raté : compte les échecs `lj_stock` (timeout / not_found). */
+function noteLumberjackStockFail(goalName, reason) {
+  if (goalName !== 'lj_stock' || (reason !== 'timeout' && reason !== 'not_found')) return;
+  _ljLoadStockFails();
+  _ljStockFails = stockFailsAdd(_ljStockFails, Date.now());
+  _ljSaveStockFails();
+  emit({ type: 'lumberjack_stock_fail', reason, fails: _ljStockFails.length });
+}
+
+/** ctx `ljForestTrip` : 2 échecs en 10 min et le stock n'est pas fait. */
+function _ljForestNeeded() {
+  try {
+    _ljLoadStockFails();
+    if (!needsForestTrip(_ljStockFails, Date.now())) return false;
+    // Pas de marche de 120 s de nuit : la discipline de nuit possède la surface (les échecs restent comptés).
+    if (bot.time && bot.time.timeOfDay != null && isNight(bot)) return false;
+    return logCount(buildCtxInv(bot)) < LUMBERJACK_STOCK;
+  } catch (e) { return false; }
+}
+
+/** Skill `lumberjackForestTrip` : marche bornée (120 s) vers la forêt connue la plus proche, puis `work`. */
+async function lumberjackForestTripSkill() {
+  const tok = taskToken;                             // CAPTURÉ (cf. huntCookGoal) : une migration ne nous le vole pas
+  _ljStockFails = [];                                // consommés : réussie ou non, on ne repart pas en boucle
+  _ljStockFailsLoaded = true;
+  _ljSaveStockFails();
+  const p = bot.entity && bot.entity.position;
+  if (!p) return { ok: true };
+  const from = { x: p.x, z: p.z };                   // COPIE : entity.position est muté sur place
+  const now = Date.now();
+  const cells = loadWorldCells();
+  const cell = pickForestCell({ from, anchor: currentAnchor(), biomes: cells.biomes, depleted: cells.depleted,
+    avoid: (loadBaseState() || {}).ljForestTried, now });
+  if (!cell) { emit({ type: 'lumberjack_forest_trip', to: null, dist: null, ok: false, reason: 'no_forest' }); return { ok: true }; }
+  if (!foodTripLock()) { emit({ type: 'lumberjack_forest_trip', to: { x: cell.x, z: cell.z }, dist: cell.dist, ok: false, reason: 'busy' }); return { ok: true }; }
+  let r = null;
+  try { r = await foodTripWalk({ cell, ms: LJ_FOREST_TRIP_MS, token: tok }); } catch (e) { r = null; } finally { foodTripUnlock(); }
+  const ok = !!(r && r.arrived);
+  if (ok) bookmarkCuttingSpot('lumberjack_forest');  // le nouveau coin de coupe : on y revient après chaque livraison
+  else {
+    try {
+      const st = loadBaseState() || {};
+      saveBaseState(Object.assign({}, st, { ljForestTried: forestTriedAdd(st.ljForestTried, cell, Date.now()) }));
+    } catch (e) { /* best-effort */ }
+  }
+  emit({ type: 'lumberjack_forest_trip', to: { x: cell.x, z: cell.z }, biome: cell.biome, dist: cell.dist, ok,
+    moved: r ? r.moved : 0, legs: r ? r.legs : 0 });
+  return { ok: true };
 }
 
 // Table de craft PORTABLE : le bot garde 1 crafting_table en poche et la pose/reprend à la demande
@@ -1623,7 +1825,7 @@ const SKILL_TIMEOUT_MS = Number(args.skillTimeout || 90000);
 // (vécu V3Res1/4 : 480s × 4 tentatives = 32 min d'anneaux stériles avant le stall).
 // huntCook + FOOD_TRIP_MS (75 s) : l'EXPÉDITION vers le gibier (marche vers la cellule à animaux la plus
 // proche connue) a son propre plafond, hors du budget de 60 s — un garde-fou de 90 s la couperait en route.
-const SKILL_TIMEOUTS = { descendDiagonal: 900000, branchMine: 900000, caveHunt: 900000, huntCook: 90000 + FOOD_TRIP_MS, smeltCharcoal: 300000, gather: 480000, gatherLog: 180000, ensurePick: 480000, fish: 300000, deliverWood: 120000, lumberjackIdle: 330000 };
+const SKILL_TIMEOUTS = { descendDiagonal: 900000, branchMine: 900000, caveHunt: 900000, huntCook: 90000 + FOOD_TRIP_MS, smeltCharcoal: 300000, gather: 480000, gatherLog: 180000, ensurePick: 480000, fish: 300000, deliverWood: 120000, lumberjackIdle: 330000, lumberjackArmor: 160000, lumberjackForestTrip: LJ_FOREST_TRIP_MS + 20000 };
 function timeoutFor(skill) { return SKILL_TIMEOUTS[skill] || SKILL_TIMEOUT_MS; }
 function withTimeout(promise, ms, onTimeout) {
   return new Promise((resolve) => {
@@ -2175,7 +2377,9 @@ async function runGoalSkill(goal) {
     const _count = woodExpeditionCount(goal.args.count, _localWood);
     if (_count !== goal.args.count) emit({ type: 'wood_expedition', batch: _count });
     // Bois SANS MOURIR (run 10) : repli à l'abri si un hostile menace un bot nu, exploration courte.
-    return gatherWoodSafely({ name: logNames.length ? logNames : 'oak_log', count: _count, explore: true });
+    // collectTimeoutMs (bûcheron, 20/10) : une bûche hors d'atteinte gelait le collect 90 s ×2 = tout le budget.
+    const _ct = Number(goal.args && goal.args.collectTimeoutMs) > 0 ? { collectTimeoutMs: Number(goal.args.collectTimeoutMs) } : {};
+    return gatherWoodSafely(Object.assign({ name: logNames.length ? logNames : 'oak_log', count: _count, explore: true }, _ct));
   }
   // explore:true sur les gather de la chaîne autonome (bois/pierre/minerai) → le bot va chercher
   // la ressource si elle n'est pas dans le voisinage. (Les gather opportunistes internes — branchMine
@@ -2352,6 +2556,7 @@ async function runGoalSkill(goal) {
   // porte les siennes dans les slots 5-8, absents de inventory.items() : une pièce en poche est
   // donc bien du surplus livrable, jamais celle qu'il a sur le dos.
   if (goal.skill === 'craftGiftSet') {
+    if (isLumberjackObjective()) return ljCraftGiftSkill();   // plan PARTIEL (lingots du bûcheron)
     const itemsOf = () => (bot.inventory && bot.inventory.items()) || [];
     const plan = giftSetPlan(itemsOf());
     if (plan.ready) return { ok: true };
@@ -2366,15 +2571,20 @@ async function runGoalSkill(goal) {
   // remise en main propre. Il s'équipe seul : `armorUp(0)` tourne dans son onPeriodic.
   if (goal.skill === 'deliverWood') return deliverWoodSkill();
   if (goal.skill === 'lumberjackIdle') return lumberjackIdleSkill();
+  if (goal.skill === 'lumberjackArmor') return lumberjackArmorSkill();
+  if (goal.skill === 'lumberjackForestTrip') return lumberjackForestTripSkill();
   if (goal.skill === 'deliverMapperArmor') {
     const to = _giftTarget;
-    if (!to) return { ok: true };                       // plus personne à servir
+    if (!to) { if (isLumberjackObjective()) _ljGift = null; return { ok: true }; }   // plus personne à servir
+    // Bûcheron : seulement les pièces de SON plan (il porte les siennes ; le reste de sa poche n'est pas un don).
+    const _pieces = ljGiftPiecesFor(to) || GIFT_PIECES;
     if (!isAllowed('/tpa ' + to, whitelist)) {
       // /tpa pas coché dans le profil serveur. Défense en profondeur (la cible est déjà gatée à la
       // source dans _giftContext) : on nettoie COMME l'échec de TP ci-dessous — sinon une whitelist
       // qui change en cours de session laisserait la réservation `marmor:` et `_giftTarget` posés.
       try { if (_teamClaims) _teamClaims.release('marmor:' + to); } catch (e) {}
       _giftTarget = null; _giftAt = 0;
+      ljAfterGift(to, 0);
       emit({ type: 'gift_blocked', to });
       return { ok: false, reason: 'tpa_not_whitelisted' };
     }
@@ -2383,24 +2593,26 @@ async function runGoalSkill(goal) {
     // Poser le chantier AVANT de partir : sans ça le worker livrait son armure et reprenait sa
     // chaîne à l'endroit du cartographe, à l'autre bout de la carte (son puits de mine abandonné).
     markWorkBeforeTrip('gift_tpa');
-    try { bot.chat('/tpa ' + to); } catch (e) { return { ok: false, reason: 'chat_failed' }; }
+    try { bot.chat('/tpa ' + to); } catch (e) { ljAfterGift(to, 0); return { ok: false, reason: 'chat_failed' }; }
     const w = await awaitWarp({ maxMs: 20000 });
     if (!w.warped) {
       // Échec de TP : on RELÂCHE la réservation pour qu'un autre worker (peut-être plus proche
       // ou moins malchanceux) puisse servir ce cartographe. Le set reste en poche, rien n'est perdu.
       try { if (_teamClaims) _teamClaims.release('marmor:' + to); } catch (e) {}
       _giftTarget = null; _giftAt = 0;
+      ljAfterGift(to, 0);
       emit({ type: 'gift_tpa_failed', to });
       return { ok: false, reason: 'tpa_failed' };
     }
     let given = 0;
-    for (const piece of GIFT_PIECES) {
+    for (const piece of _pieces) {
       try { const r = await giveItem(bot, { name: piece }, to); if (r && r.ok) given += 1; } catch (e) {}
     }
     emit({ type: 'gift_delivered', to, pieces: given });
     _giftDone.set(to, Date.now());                      // le heartbeat le publiera « nu » encore 60 s
     try { if (_teamClaims) _teamClaims.release('marmor:' + to); } catch (e) {}
     _giftTarget = null; _giftAt = 0;
+    ljAfterGift(to, given);
     await returnToWork('gift_done');                    // ← LE retour qui manquait
     return given > 0 ? { ok: true } : { ok: false, reason: 'gift_toss_failed' };
   }
@@ -3447,6 +3659,7 @@ async function runSkillWithTelemetry(g) {
   if (!r || r.ok === false) {
     emit({ type: 'goal_failed', name: g.name, reason: (r && r.reason) || 'unknown' });
     noteZoneFailure(g.name, r && r.reason);
+    noteLumberjackStockFail(g.name, r && r.reason);      // bûcheron : 2 échecs en 10 min → forêt connue
   }
   return r;
 }
@@ -6260,6 +6473,9 @@ async function onSpawn() {
             const nb = Object.assign({}, loadBaseState() || {}); delete nb.woodRequest; saveBaseState(nb);
           }
           st = teamStatus(invB, [..._wornArmor()], _woodReq);
+          // QUELLES pièces manquent (pas seulement combien) : le bûcheron forge des pièces à l'unité
+          // pour un cartographe (20/10 soir) — sans ce champ il lui forgerait un 2e casque.
+          if (st) st.missing = missingIronPieces(invB, [..._wornArmor()]);
         } catch (e) {}
         // `y` + `ironZone` : c'est ce qui permet de distinguer un MINEUR AU TRAVAIL d'un bot qui
         // traîne en surface. Sans eux, `squadLeader` ne pouvait trancher qu'à l'alphabet — et si

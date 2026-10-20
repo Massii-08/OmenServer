@@ -351,7 +351,8 @@ test('woodThreatNow : rayon 16 (pas 12), nu seulement, et un mur coupe la ligne 
 });
 
 test('index.js : la branche gatherLog passe par gatherWoodSafely (plus d appel nu à gather pour le bois)', () => {
-  assert.match(SRC, /return gatherWoodSafely\(\{ name: logNames\.length \? logNames : 'oak_log', count: _count, explore: true \}\);/);
+  // (20/10 soir) l'objet d'appel peut recevoir le `collectTimeoutMs` du but (bûcheron) par Object.assign.
+  assert.match(SRC, /return gatherWoodSafely\(Object\.assign\(\{ name: logNames\.length \? logNames : 'oak_log', count: _count, explore: true \}, _ct\)\);/);
   assert.ok(!/return gather\(bot, \{ name: logNames\.length/.test(SRC));
 });
 

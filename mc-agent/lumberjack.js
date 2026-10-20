@@ -148,9 +148,195 @@ function tossPlan(items, amount) {
   return out;
 }
 
+// ─── ARMURE DU BÛCHERON (20/10 soir) ───────────────────────────────────────────────────────────────
+// Mesure 1 h après la mise en service : cartographes nus = 20 morts sur 36. Avant le bûcheron, c'était
+// l'ouvrier le mieux armé qui forgeait leur armure (chaîne mapper_armor) — et c'est précisément lui
+// qu'on élit bûcheron : il ABANDONNAIT cette chaîne (NethBot3, 10 lingots en poche, en surface).
+// Et l'usure : NethBot3 est passé de 4 à 2 pièces portées sans jamais les refaire (l'objectif
+// `lumberjack` n'est pas dans le timer d'armure, et sa chaîne n'avait aucun but d'armure).
+// Priorités dans LUMBERJACK_CHAIN : livraison de bois > SES pièces > armure cartographe > stock bois.
+//
+// Le bûcheron NE MINE PAS : il ne gagne jamais de fer. Garder ses lingots « pour plus tard » ne sert
+// donc à rien — ce qu'il ne peut pas se forger à lui-même, il le forge pour un cartographe.
+const ARMOR_ORDER = [                      // la moins chère d'abord (même ordre que gear.ARMOR_PIECES)
+  { slot: 'boots', name: 'iron_boots', ingots: 4 },
+  { slot: 'helmet', name: 'iron_helmet', ingots: 5 },
+  { slot: 'leggings', name: 'iron_leggings', ingots: 7 },
+  { slot: 'chestplate', name: 'iron_chestplate', ingots: 8 },
+];
+const _RANK = { leather: 1, golden: 2, chainmail: 2, iron: 3, diamond: 4, netherite: 5 };
+const _covers = (names, slot) => (names || []).some((n) => typeof n === 'string'
+  && n.endsWith('_' + slot) && (_RANK[n.split('_')[0]] || 0) >= 3);
+const MIN_PIECE_INGOTS = 4;
+
+/** PUR — pièces fer-ou-mieux manquantes (inv = {nom: n}, worn = noms portés), la moins chère d'abord. */
+function missingIronPieces(inv, worn) {
+  const have = Object.keys(inv || {}).filter((n) => (inv[n] || 0) > 0).concat(Array.from(worn || []));
+  return ARMOR_ORDER.filter((p) => !_covers(have, p.slot)).map((p) => p.name);
+}
+
+/**
+ * PUR — que faire pour MA propre armure ? `worn` = pièces PORTÉES saines, `pocket` = pièces d'armure
+ * SAINES en poche (une pièce usée, sortie de son slot quand on l'a remplacée, n'en est pas une),
+ * `ingots` = lingots en poche. {act:'equip', piece} (gratuit) > {act:'forge', piece, ingots} > null.
+ */
+function ownArmorAction({ worn, pocket, ingots } = {}) {
+  const missing = ARMOR_ORDER.filter((p) => !_covers(Array.from(worn || []), p.slot));
+  for (const p of missing) {
+    const it = (pocket || []).find((n) => _covers([n], p.slot));
+    if (it) return { act: 'equip', piece: it };
+  }
+  const budget = Number(ingots) || 0;
+  for (const p of missing) if (budget >= p.ingots) return { act: 'forge', piece: p.name, ingots: p.ingots };
+  return null;
+}
+
+/**
+ * PUR — quel cartographe armer, avec quelles pièces ? Le plus NU d'abord (nom ASC en départage), présence
+ * fraîche, pas déjà servi (`skip`). Ses pièces manquantes viennent de `missing` (publié dans sa présence) ;
+ * sans ce champ on ne sait quoi forger que s'il est à 0 pièce. Plan glouton la moins chère d'abord : une
+ * pièce saine déjà en poche (`pocket`) est gratuite, sinon elle coûte des lingots. Une pièce dont un
+ * exemplaire USÉ traîne en poche (`brokenPocket`) n'est pas planifiée : le don jette tout ce qui porte ce nom.
+ * @returns {{to, armor, pieces: string[], ingots: number}|null}
+ */
+function pickMapperForLumberjack({ mates, selfName, now, ingots, pocket, brokenPocket, skip,
+  freshMs = LUMBERJACK_FRESH_MS } = {}) {
+  const t = now || Date.now();
+  const inPocket = new Set(pocket || []);
+  const broken = new Set(brokenPocket || []);
+  const cands = (mates || []).filter((m) => m && m.name && m.name !== selfName && m.role === 'mapper'
+    && _fresh(m, t, freshMs) && (m.armor || 0) < 4 && !(skip && skip.has(m.name)))
+    .sort((a, b) => ((a.armor || 0) - (b.armor || 0)) || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+  for (const m of cands) {
+    let need;
+    if (Array.isArray(m.missing)) need = new Set(m.missing);
+    else if (!(m.armor > 0)) need = new Set(ARMOR_ORDER.map((p) => p.name));
+    else continue;                                   // statut d'avant le champ `missing` : on ne devine pas
+    let budget = Math.max(0, Number(ingots) || 0);
+    let spent = 0;
+    const pieces = [];
+    for (const p of ARMOR_ORDER) {
+      if (!need.has(p.name) || broken.has(p.name)) continue;
+      if (inPocket.has(p.name)) { pieces.push(p.name); continue; }
+      if (budget >= p.ingots) { pieces.push(p.name); budget -= p.ingots; spent += p.ingots; }
+    }
+    if (pieces.length) return { to: String(m.name), armor: m.armor || 0, pieces, ingots: spent };
+  }
+  return null;
+}
+
+/** PUR — toutes les pièces prévues sont-elles en poche ? (noms de la poche) */
+function ljGiftReady(pieces, pocketNames) {
+  if (!pieces || !pieces.length) return false;
+  const have = new Set(pocketNames || []);
+  return pieces.every((p) => have.has(p));
+}
+
+// ─── EXPÉDITION FORESTIÈRE (20/10 soir) ────────────────────────────────────────────────────────────
+// Mesure : `lj_stock` timeout ×6 et `logs not_found` ×10 sur une session, 19 `unstuck`. Le bûcheron
+// s'acharne sur le même coin. Au 2e échec en 10 min, il part vers la forêt CONNUE la plus proche de la
+// carte du groupe (jambes GoalNearXZ, même marche que l'expédition vers le gibier) et y pose `work`.
+const LJ_STOCK_FAIL_WINDOW_MS = 10 * 60 * 1000;
+const LJ_STOCK_FAILS_FOR_TRIP = 2;
+const LJ_STOCK_FAILS_CAP = 6;
+const LJ_FOREST_TRIP_MS = 120000;     // plafond de la marche
+const LJ_FOREST_MIN_DIST = 48;        // plus près, c'est le coin où l'on échoue déjà
+const LJ_FOREST_MAX_DIST = 256;       // ≈ ce que 120 s de jambes couvrent en terrain réel
+// Le confine rappelle le bot au-delà de 140 × 1,25 = 175 blocs de la base : une forêt plus loin que ça
+// serait quittée au premier `confine_enforce`. On reste dans la poche, avec une marge.
+const LJ_FOREST_ANCHOR_MAX = 150;
+const LJ_FOREST_DEPLETED_RADIUS = 64; // == worldMemory.DEPLETED_RADIUS (même rayon que directedTarget)
+const LJ_FOREST_AVOID_MS = 30 * 60 * 1000;
+const LJ_FOREST_AVOID_CAP = 8;
+const LJ_FOREST_CELL = 128;
+const LJ_FOREST_INSET = 32;           // on entre dans la cellule (son biome vient d'un seul échantillon)
+const _FOREST_RE = /forest|taiga|jungle|grove|wooded|mangrove|swamp/;
+const _WET_RE = /ocean|river|beach/;
+
+const _finite = (v) => typeof v === 'number' && Number.isFinite(v);
+
+/** PUR — échecs `lj_stock` récents (instants ms), ni futurs ni hors fenêtre, bornés. */
+function stockFailsPrune(list, now) {
+  const t = _finite(now) ? now : Date.now();
+  const out = (Array.isArray(list) ? list : []).filter((x) => _finite(x) && x <= t && (t - x) < LJ_STOCK_FAIL_WINDOW_MS);
+  out.sort((a, b) => a - b);
+  return out.slice(-LJ_STOCK_FAILS_CAP);
+}
+function stockFailsAdd(list, now) {
+  const t = _finite(now) ? now : Date.now();
+  return stockFailsPrune((Array.isArray(list) ? list : []).concat([t]), t);
+}
+function needsForestTrip(list, now) { return stockFailsPrune(list, now).length >= LJ_STOCK_FAILS_FOR_TRIP; }
+
+/** PUR — un biome où l'on coupe du bois (jamais l'eau). */
+function isForestBiome(name) {
+  if (typeof name !== 'string' || !name) return false;
+  const n = name.startsWith('minecraft:') ? name.slice(10) : name;
+  return _FOREST_RE.test(n) && !_WET_RE.test(n);
+}
+
+/** PUR — forêts ratées récemment `[{x,z,at}]` (30 min, bornées). */
+function forestTriedPrune(list, now) {
+  const t = _finite(now) ? now : Date.now();
+  const out = (Array.isArray(list) ? list : []).filter((e) => e && _finite(e.x) && _finite(e.z) && _finite(e.at)
+    && e.at <= t && (t - e.at) < LJ_FOREST_AVOID_MS).map((e) => ({ x: e.x, z: e.z, at: e.at }));
+  out.sort((a, b) => a.at - b.at);
+  return out.slice(-LJ_FOREST_AVOID_CAP);
+}
+function forestTriedAdd(list, cell, now) {
+  const t = _finite(now) ? now : Date.now();
+  const kept = forestTriedPrune(list, t);
+  if (!cell || !_finite(cell.x) || !_finite(cell.z)) return kept;
+  return forestTriedPrune(kept.concat([{ x: Math.round(cell.x), z: Math.round(cell.z), at: t }]), t);
+}
+
+/**
+ * PUR, DÉTERMINISTE — la forêt connue la plus proche. `biomes` = cellules de la mémoire de monde
+ * ({name, x, z}, coin SO de 128²) ; point visé = le plus proche du bot DANS la cellule, rentré de 32.
+ * Exclut : l'eau, les points à < 48 ou > 256 blocs du bot, à > 150 de la base (`anchor`, si connue),
+ * à ≤ 64 d'une cellule RASÉE (`depleted` de kind `wood`, ou sans kind — un épuisement de MINERAI ne
+ * coupe pas les arbres, leçon world_mn12), à ≤ 64 d'une forêt ratée il y a < 30 min (`avoid`).
+ * Les `old_growth_*` passent après (troncs de 15 blocs dont le haut est hors d'atteinte), puis distance, x, z.
+ * @returns {{x, z, biome, dist}|null}
+ */
+function pickForestCell({ from, anchor, biomes, depleted, avoid, now } = {}) {
+  if (!from || !_finite(from.x) || !_finite(from.z)) return null;
+  const t = _finite(now) ? now : Date.now();
+  const dep = (Array.isArray(depleted) ? depleted : []).filter((d) => d && _finite(d.x) && _finite(d.z)
+    && (d.kind === undefined || d.kind === null || d.kind === 'wood'));
+  const av = forestTriedPrune(avoid, t);
+  const near = (list, x, z) => list.some((d) => Math.hypot(d.x - x, d.z - z) <= LJ_FOREST_DEPLETED_RADIUS);
+  const clamp = (v, lo, hi) => (v < lo ? lo : (v > hi ? hi : v));
+  let best = null;
+  let bestKey = null;
+  for (const b of Array.isArray(biomes) ? biomes : []) {
+    if (!b || !isForestBiome(b.name) || !_finite(b.x) || !_finite(b.z)) continue;
+    const cx = Math.floor(b.x / LJ_FOREST_CELL) * LJ_FOREST_CELL;
+    const cz = Math.floor(b.z / LJ_FOREST_CELL) * LJ_FOREST_CELL;
+    const x = Math.round(clamp(from.x, cx + LJ_FOREST_INSET, cx + LJ_FOREST_CELL - 1 - LJ_FOREST_INSET));
+    const z = Math.round(clamp(from.z, cz + LJ_FOREST_INSET, cz + LJ_FOREST_CELL - 1 - LJ_FOREST_INSET));
+    const d = Math.hypot(x - from.x, z - from.z);
+    if (d < LJ_FOREST_MIN_DIST || d > LJ_FOREST_MAX_DIST) continue;
+    if (anchor && _finite(anchor.x) && _finite(anchor.z) && Math.hypot(x - anchor.x, z - anchor.z) > LJ_FOREST_ANCHOR_MAX) continue;
+    if (near(dep, x, z) || near(av, x, z)) continue;
+    const key = [String(b.name).includes('old_growth') ? 1 : 0, d, x, z];
+    let better = !bestKey;
+    for (let i = 0; !better && i < key.length; i++) {
+      if (key[i] < bestKey[i]) better = true;
+      else if (key[i] > bestKey[i]) break;
+    }
+    if (better) { best = { x, z, biome: String(b.name), dist: Math.round(d) }; bestKey = key; }
+  }
+  return best;
+}
+
 module.exports = {
   WOOD_REQUEST_TTL_MS, WOOD_REQUEST_COOLDOWN_MS, LUMBERJACK_FRESH_MS, WOOD_WANT_MIN, WOOD_WANT_MAX,
   LUMBERJACK_STOCK, LUMBERJACK_RESERVE, WOOD_MIN_GIFT,
   isWoodGoal, woodWantFor, logCount, activeLumberjack, woodWaitDecision, preferredLumberjack,
   lumberjackVerdict, pickWoodRequest, tossPlan,
+  ARMOR_ORDER, MIN_PIECE_INGOTS, missingIronPieces, ownArmorAction, pickMapperForLumberjack, ljGiftReady,
+  LJ_STOCK_FAIL_WINDOW_MS, LJ_STOCK_FAILS_FOR_TRIP, LJ_FOREST_TRIP_MS, LJ_FOREST_MIN_DIST, LJ_FOREST_MAX_DIST,
+  LJ_FOREST_ANCHOR_MAX, LJ_FOREST_AVOID_MS,
+  stockFailsPrune, stockFailsAdd, needsForestTrip, isForestBiome, forestTriedPrune, forestTriedAdd, pickForestCell,
 };
