@@ -23,11 +23,58 @@ function isInWater(bot) {
   } catch (e) { return false; }
 }
 
+// --- TÊTE SOUS L'EAU, CORPS « AU SEC » (run 12, 20/10) -------------------------------------------
+// Vécu NethBot2 (but `furnace`, abri de nuit au bord d'une mare, y≈59-62) : boucle `reflex surface` ×N +
+// `water_rescue` + `unstuck cause:water ok:true` (MÊME milliseconde) puis de nouveau `surface`… 10 min.
+// L'oxygène baissait (le SERVEUR voyait les yeux dans l'eau) mais `bot.entity.isInWater` restait faux :
+// prismarine-physics teste une boîte CONTRACTÉE de 0.401 en haut ET en bas (pieds+0.401 → pieds+1.399),
+// alors que les yeux sont à pieds+1.62 — l'eau qui ne touche que le bloc des yeux (bot posé sur un bloc
+// non plein, cellule à demi-noyée, eau qui suinte par la tête) n'existe pas pour elle. escapeWater
+// testait `isInWater` en entrée de boucle → sortie immédiate « ok » → rien n'était fait, en boucle.
+// Désormais « mouillé » = corps dans l'eau OU yeux dans l'eau OU oxygène bas (le serveur fait foi).
+const EYE_HEIGHT = 1.62;
+const O2_LOW = 5;              // = reflexes.OXYGEN_THRESHOLD (sur 20)
+
+function _isWaterBlock(b) {
+  if (!b) return false;
+  if (WATER.has(b.name)) return true;
+  try { const pr = b.getProperties && b.getProperties(); if (pr && pr.waterlogged === true) return true; } catch (e) {}
+  return b.isWaterlogged === true;
+}
+
+/** Les YEUX du bot sont-ils dans un bloc d'eau ? (jamais de throw) */
+function eyeInWater(bot) {
+  try {
+    const p = bot.entity.position;
+    const q = { x: Math.floor(p.x), y: Math.floor(p.y + EYE_HEIGHT), z: Math.floor(p.z) };
+    const b = bot.blockAt(p.offset ? p.offset(0, EYE_HEIGHT, 0).floored() : q);
+    return _isWaterBlock(b);
+  } catch (e) { return false; }
+}
+
+/**
+ * PUR — que faire dans l'eau ? 'swim' (corps dans l'eau : nager vers la rive), 'head' (seule la tête est
+ * dans l'eau, ou l'oxygène baisse sans eau visible : SORTIR la tête — rive à ≥ 2 blocs, sinon monter en
+ * pilier en cassant le plafond), 'dry' (rien à faire).
+ */
+function waterEscapeMode({ inWater, eyeWet, o2, o2Low = O2_LOW } = {}) {
+  if (inWater) return 'swim';
+  if (eyeWet) return 'head';
+  if (typeof o2 === 'number' && Number.isFinite(o2) && o2 <= o2Low) return 'head';
+  return 'dry';
+}
+
+/** Le bot est-il « mouillé » au sens de waterEscapeMode ? */
+function _wetMode(bot) {
+  return waterEscapeMode({ inWater: isInWater(bot), eyeWet: eyeInWater(bot), o2: bot && bot.oxygenLevel });
+}
+
 /**
  * Bloc de TERRE FERME le plus proche : solide, non-eau, 2 cases d'air au-dessus (le bot peut s'y
  * tenir), pas le fond de l'océan (y pas trop sous le bot). null si rien en vue (chunks chargés only).
  */
-function findLandTarget(bot, maxDistance = 48) {
+function findLandTarget(bot, maxDistance = 48, opts = {}) {
+  const minDist = Number.isFinite(opts.minDist) ? opts.minDist : 0;
   if (!bot || typeof bot.findBlocks !== 'function') return null;
   let posns = [];
   try {
@@ -45,6 +92,8 @@ function findLandTarget(bot, maxDistance = 48) {
     if (!open(bot.blockAt(p.offset(0, 1, 0)))) continue;  // case du corps
     if (!open(bot.blockAt(p.offset(0, 2, 0)))) continue;  // case de la tête
     const d = p.distanceTo(self);
+    // Mode « tête » : la colonne du bot lui-même n'est pas une sortie (c'est elle qui noie).
+    if (minDist > 0 && Math.hypot(p.x + 0.5 - self.x, p.z + 0.5 - self.z) < minDist) continue;
     if (d < bestD) { bestD = d; best = p; }
   }
   return best;
@@ -69,46 +118,65 @@ async function escapeWater(bot, opts = {}) {
   const sleep = opts.sleep || ((ms) => new Promise((r) => setTimeout(r, ms)));
   const timeoutMs = opts.timeoutMs || 60000;  // 60s : traverser un plan d'eau prend du temps (Surv7)
   const t0 = Date.now();
-  emit({ type: 'unstuck', cause: 'water' });
+  const mode0 = _wetMode(bot);
+  emit({ type: 'unstuck', cause: 'water', mode: mode0 });
   const doGoto = opts.goto || (async (p) => {
     if (!pfGoals || !bot.pathfinder || !bot.pathfinder.goto) return;
     await bot.pathfinder.goto(new pfGoals.GoalNear(p.x, p.y + 1, p.z, 1));
   });
+  const pillar = opts.pillarUp || _pillarUp;
+  const here = () => { const p = bot.entity && bot.entity.position; return p ? { x: p.x, y: p.y, z: p.z } : null; };
   try { bot.setControlState('jump', true); } catch (e) {}   // nage vers la surface
   // cap de nage FIXE quand aucune terre n'est en vue (vécu Surv7 : fond d'un trou inondé, 25 échecs
   // en re-scannant sur place) — on nage AVEC PERSISTANCE dans une direction en re-scannant la terre.
   let swimYaw = null;
   let noLand = 0;
-  while (isInWater(bot) && Date.now() - t0 < timeoutMs) {
-    const land = findLandTarget(bot, opts.maxDistance || 48);
-    if (land) {
+  let stalls = 0;              // gotos vers la rive qui n'ont PAS fait bouger le bot (bord trop haut)
+  let mode = mode0;
+  while (mode !== 'dry' && Date.now() - t0 < timeoutMs) {
+    const head = mode === 'head';
+    const land = findLandTarget(bot, opts.maxDistance || 48, head ? { minDist: 1.5 } : {});
+    // Tête sous l'eau sans rive, ou rive inatteignable 2× (bord trop haut, trou 1×1) : MONTER en
+    // pilier (pillarUp casse d'abord le plafond, pose sous les pieds) — la sortie la plus courte.
+    const climb = pillar && ((head && !land) || stalls >= 2 || (noLand >= 2));
+    if (climb) {
+      try { bot.setControlState('jump', false); } catch (e) {}
+      let pr = null;
+      try { pr = await pillar(bot, { height: opts.pillarHeight || (head ? 2 : 6) }, null, { sleep }); } catch (e) { pr = null; }
+      emit({ type: 'water_climb', mode, ok: !!(pr && pr.ok), placed: (pr && pr.placed) || 0, reason: (pr && pr.reason) || null });
+      try { if (isInWater(bot)) bot.setControlState('jump', true); } catch (e) {}
+      noLand = 0; stalls = 0;
+      // Pilier impossible (pas de bloc / pas d'appui) : nager quand même au cap (ci-dessous).
+      if (!(pr && pr.ok)) { await _swimHeading(); }
+    } else if (land) {
       noLand = 0;
-      await _withTimeout(doGoto(land), opts.gotoTimeoutMs || 15000, () => {
+      const before = here();
+      await _withTimeout(doGoto(land), opts.gotoTimeoutMs || (head ? 6000 : 15000), () => {
         try { bot.pathfinder && bot.pathfinder.setGoal(null); } catch (e) {}
       });
+      const after = here();
+      const moved = before && after ? Math.hypot(after.x - before.x, after.y - before.y, after.z - before.z) : 99;
+      if (moved < 1 && _wetMode(bot) !== 'dry') stalls++; else stalls = 0;
     } else {
-      // pas de terre en vue : nage persistante au cap fixe (jump maintenu = surface), 3s par segment
-      if (swimYaw == null) swimYaw = (bot.entity && bot.entity.yaw) || 0;
-      try { if (bot.look) await bot.look(swimYaw, 0, true); } catch (e) {}
-      try { bot.setControlState('forward', true); } catch (e) {}
-      await sleep(3000);
-      try { bot.setControlState('forward', false); } catch (e) {}
+      await _swimHeading();
       noLand++;
-      // H6 : 2 segments sans terre, toujours noyé → PILLAR UP pour ÉMERGER (grotte/ravin inondé). Le
-      // bot sur le sol pose des blocs sous lui pour remonter à l'air. No-op si flottant (no_support).
-      if (_pillarUp && noLand >= 2 && isInWater(bot)) {
-        try { bot.setControlState('jump', false); } catch (e) {}
-        try { await _pillarUp(bot, { height: opts.pillarHeight || 6 }, null, { sleep }); } catch (e) {}
-        try { if (isInWater(bot)) bot.setControlState('jump', true); } catch (e) {}
-        noLand = 0;
-      }
     }
     await sleep(300);
+    mode = _wetMode(bot);
   }
   try { bot.setControlState('jump', false); bot.setControlState('forward', false); } catch (e) {}
-  const ok = !isInWater(bot);
-  emit({ type: 'unstuck_done', cause: 'water', ok });
+  const ok = _wetMode(bot) === 'dry';
+  emit({ type: 'unstuck_done', cause: 'water', ok, mode: mode0, took_ms: Date.now() - t0 });
   return { ok };
+
+  // pas de terre en vue : nage persistante au cap fixe (jump maintenu = surface), 3s par segment
+  async function _swimHeading() {
+    if (swimYaw == null) swimYaw = (bot.entity && bot.entity.yaw) || 0;
+    try { if (bot.look) await bot.look(swimYaw, 0, true); } catch (e) {}
+    try { bot.setControlState('forward', true); } catch (e) {}
+    await sleep(3000);
+    try { bot.setControlState('forward', false); } catch (e) {}
+  }
 }
 
 // --- #9 retours live : LIANES & pièges traversables (le pathfinder s'y accroche) -----------------
@@ -512,7 +580,7 @@ function deathLoopTripped(times, opts) {
 }
 
 module.exports = {
-  isInWater, findLandTarget, escapeWater, WATER, SNARES, clearSnares, isFloatingStuck, recoverFloating, isFrozenDesync,
+  isInWater, eyeInWater, waterEscapeMode, findLandTarget, escapeWater, WATER, SNARES, clearSnares, isFloatingStuck, recoverFloating, isFrozenDesync,
   escapePlan, escapeReached, canReanchorSpawn,
   ESCAPE_MIN_DIST, ESCAPE_MAX_DIST, ESCAPE_SAFE_RADIUS, ESCAPE_REACHED_DIST,
   spawnDanger, SPAWN_DANGER_RADIUS, SPAWN_DANGER_MIN_WORN, scanHostiles, hostilesWithin,

@@ -237,29 +237,40 @@ test('escapeDeathCamp : un danger qui surgit pendant la course → stopMotion, d
   assert.strictEqual(sb._escaping, false, 'la garde de fuite est relâchée');
 });
 
-// ═════════════════════════════ 4. gatherWoodSafely : le bois sans mourir ═══════════════════════════
-function woodSandbox({ worn = 0, dangerSeq = [], gatherSeq = [], night = false, hideMs = 0 } = {}) {
+// ═════════════════════════════ 4. gatherWoodSafely : le bois sans mourir (ni se terrer en boucle) ═══
+const TG = require('./threatgate');
+const thr = (id, dist, x = dist) => ({ id, mob: 'skeleton', dist, x, y: 70, z: 0 });
+function woodSandbox({ worn = 0, dangerSeq = [], gatherSeq = [], night = false, hideMs = 0, state = null } = {}) {
   const sb = clockSb();
   let di = 0, gi = 0;
   Object.assign(sb, {
     bot: { time: { timeOfDay: night ? NIGHT : DAY } }, taskToken: { cancelled: false },
     isNight: (b) => !!(b && b.time && b.time.timeOfDay >= 12800 && b.time.timeOfDay <= 23200),
     woodExploreShape: G.woodExploreShape,
+    woodHidePlan: TG.woodHidePlan, woodHideStateAt: TG.woodHideStateAt,
+    _woodHide: state,
     _wornArmor: () => new Set(['a', 'b', 'c', 'd'].slice(0, worn)),
-    woodDangerNow: () => { const v = dangerSeq[Math.min(di, dangerSeq.length - 1)]; di++; return v || null; },
+    // La menace « réelle » : la séquence, MOINS les entrées ignorées (même règle que realThreat).
+    woodThreatNow: (ignore) => {
+      const v = dangerSeq[Math.min(di, dangerSeq.length - 1)]; di++;
+      if (!v) return null;
+      const ign = (ignore || []).some((i) => i.id === v.id && v.dist >= i.dist - 2);
+      return ign ? null : v;
+    },
     hideFromThreat: async (why, d, o) => { sb.clock.t += hideMs; sb.calls.push(`hide:${why}:${o && o.maxWaitMs}`); return { ok: true }; },
     gather: async (b, args, tok) => { sb.calls.push({ args, tok }); const r = gatherSeq[Math.min(gi, gatherSeq.length - 1)]; gi++; return r; },
   });
   vm.createContext(sb);
   run(sb, constSrc('WOOD_HIDE_MAX_MS'));
-  run(sb, constSrc('WOOD_HIDE_ROUNDS'));
   run(sb, constSrc('WOOD_HIDE_WINDOW_MS'));
   run(sb, fnSrc('gatherWoodSafely'));
   return sb;
 }
+const hides = (sb) => sb.calls.filter((c) => typeof c === 'string' && c.startsWith('hide:')).length;
+const gathers = (sb) => sb.calls.filter((c) => typeof c === 'object').length;
 
-test('gatherWoodSafely : nu + hostile à portée → se terre (60 s) AVANT de récolter, puis récolte avec la forme courte', async () => {
-  const sb = woodSandbox({ dangerSeq: [{ mob: 'zombie', dist: 10 }, null], gatherSeq: [{ ok: true, got: 3 }] });
+test('gatherWoodSafely : nu + menace réelle → se terre (60 s) AVANT de récolter, puis récolte avec la forme courte', async () => {
+  const sb = woodSandbox({ dangerSeq: [thr(1, 10), null], gatherSeq: [{ ok: true, got: 3 }] });
   const r = await sb.gatherWoodSafely({ name: ['oak_log'], count: 3, explore: true });
   assert.deepStrictEqual(r, { ok: true, got: 3 });
   assert.strictEqual(sb.calls[0], 'hide:wood:60000');
@@ -270,19 +281,43 @@ test('gatherWoodSafely : nu + hostile à portée → se terre (60 s) AVANT de r�
   assert.strictEqual(g.tok, sb.taskToken);
 });
 
-test('gatherWoodSafely : danger PENDANT la récolte → abri puis reprise ; borné à 3 replis', async () => {
+test('gatherWoodSafely : run 12 — même squelette immobile à 10.5 après la cachette → PAS de 2e cachette, on récolte', async () => {
+  const sb = woodSandbox({ dangerSeq: [thr(7, 10.5)], gatherSeq: [{ ok: true, got: 3 }] });
+  const r = await sb.gatherWoodSafely({ name: ['oak_log'], count: 3, explore: true });
+  assert.deepStrictEqual(r, { ok: true, got: 3 });
+  assert.strictEqual(hides(sb), 1, 'une seule cachette pour une menace statique');
+  const sk = sb.events.find((e) => e.type === 'threat_hide_skipped');
+  assert.ok(sk && sk.why === 'static' && sk.mob === 'skeleton' && sk.dist === 10.5);
+  assert.strictEqual(gathers(sb), 1);
+});
+
+test('gatherWoodSafely : la borne de 2 cachettes TIENT à travers les rappels du planner (niveau module)', async () => {
+  // Trois menaces DIFFÉRENTES, une par tentative de `logs` : 2 cachettes max sur la séquence.
+  const sb = woodSandbox({ dangerSeq: [thr(1, 10), thr(2, 9, -9), thr(3, 8, 20)], gatherSeq: [{ ok: false, got: 0, reason: 'not_found' }] });
+  await sb.gatherWoodSafely({ name: ['oak_log'], count: 3, explore: true });
+  await sb.gatherWoodSafely({ name: ['oak_log'], count: 3, explore: true });
+  assert.strictEqual(hides(sb), 2);
+  assert.ok(sb.events.some((e) => e.type === 'threat_hide_skipped' && e.why === 'max_hides'));
+});
+
+test('gatherWoodSafely : une récolte réussie remet la séquence à zéro', async () => {
+  const sb = woodSandbox({ dangerSeq: [null], gatherSeq: [{ ok: true, got: 4 }], state: { hides: 2, since: T0, last: null, ignore: [] } });
+  await sb.gatherWoodSafely({ name: ['oak_log'], count: 3, explore: true });
+  assert.strictEqual(sb._woodHide, null);
+});
+
+test('gatherWoodSafely : danger PENDANT la récolte → borné (pas de boucle infinie)', async () => {
   const sb = woodSandbox({ dangerSeq: [null], gatherSeq: [{ ok: false, got: 0, reason: 'danger' }] });
   const r = await sb.gatherWoodSafely({ name: ['oak_log'], count: 3, explore: true });
   assert.strictEqual(r.reason, 'danger');
-  const gathers = sb.calls.filter((c) => typeof c === 'object').length;
-  assert.strictEqual(gathers, 4, '1 essai + 3 reprises, pas de boucle infinie');
+  assert.ok(gathers(sb) <= 12);
 });
 
 test('gatherWoodSafely : lot partiel déjà en poche quand le danger tombe → rendu ok (le planner re-dérive)', async () => {
   const sb = woodSandbox({ dangerSeq: [null], gatherSeq: [{ ok: true, got: 2, reason: 'danger' }] });
   const r = await sb.gatherWoodSafely({ name: ['oak_log'], count: 12, explore: true });
   assert.strictEqual(r.ok, true);
-  assert.strictEqual(sb.calls.filter((c) => typeof c === 'object').length, 1);
+  assert.strictEqual(gathers(sb), 1);
 });
 
 test('gatherWoodSafely : armuré → forme d exploration d origine (pas d exploreShape)', async () => {
@@ -291,22 +326,28 @@ test('gatherWoodSafely : armuré → forme d exploration d origine (pas d explor
   assert.strictEqual(sb.calls[0].args.exploreShape, undefined);
 });
 
-test('woodDangerNow : rayon 16 (pas 12), nu seulement', () => {
-  const mk = (worn, d) => {
+test('woodThreatNow : rayon 16 (pas 12), nu seulement, et un mur coupe la ligne de vue', () => {
+  const mk = (worn, d, wallX = null) => {
     const sb = clockSb({
-      bot: { entity: { position: { x: 0, y: 70, z: 0 } }, entities: { 1: mob(d, 0, 'zombie') } },
-      spawnDanger: U.spawnDanger, isFleeHostile, NEUTRAL_NO_PROVOKE,
+      bot: {
+        entity: { position: { x: 0, y: 70, z: 0 } }, entities: { 1: mob(d, 0, 'zombie') },
+        blockAt: (p) => ({ boundingBox: (wallX != null && p.x === wallX) ? 'block' : 'empty' }),
+      },
+      vec3Lib: (x, y, z) => ({ x, y, z }),
+      realThreat: TG.realThreat, SPAWN_DANGER_MIN_WORN: U.SPAWN_DANGER_MIN_WORN, isFleeHostile, NEUTRAL_NO_PROVOKE,
       _wornArmor: () => new Set(['a', 'b', 'c', 'd'].slice(0, worn)),
     });
     vm.createContext(sb);
     run(sb, constSrc('WOOD_DANGER_RADIUS'));
     run(sb, fnSrc('isThreatHostile'));
-    run(sb, fnSrc('woodDangerNow'));
-    return sb.woodDangerNow();
+    run(sb, fnSrc('woodThreatNow'));
+    return sb.woodThreatNow([]);
   };
-  assert.ok(mk(0, 15), '15 blocs, nu → danger (le spawn, lui, s arrête à 12)');
+  assert.ok(mk(0, 15), '15 blocs, nu, champ libre → menace');
   assert.strictEqual(mk(0, 17), null);
   assert.strictEqual(mk(2, 5), null, 'armuré : pas de repli');
+  assert.strictEqual(mk(0, 12, 6), null, 'mur entre les deux, > 6 blocs → pas une menace');
+  assert.ok(mk(0, 5, 3), '≤ 6 blocs : compte même derrière un mur');
 });
 
 test('index.js : la branche gatherLog passe par gatherWoodSafely (plus d appel nu à gather pour le bois)', () => {
@@ -366,11 +407,11 @@ test('handler death : relève l inventaire AU MOMENT de la mort (avant que le se
   assert.match(SRC, /^let _invAtDeath = -1;/m, '_invAtDeath au niveau MODULE (lu par recoverDeathDebt, timer compris)');
 });
 
-test('gatherWoodSafely : plus aucun repli commencé après 90 s (le skill est borné à 180 s)', async () => {
-  const sb = woodSandbox({ dangerSeq: [null], gatherSeq: [{ ok: false, got: 0, reason: 'danger' }], hideMs: 70000 });
+test('gatherWoodSafely : plus aucune cachette commencée après 90 s (le skill est borné à 180 s)', async () => {
+  const sb = woodSandbox({ dangerSeq: [thr(1, 10), thr(2, 9, -9), null], gatherSeq: [{ ok: true, got: 3 }], hideMs: 95000 });
   await sb.gatherWoodSafely({ name: ['oak_log'], count: 3, explore: true });
-  const hides = sb.calls.filter((c) => typeof c === 'string');
-  assert.strictEqual(hides.length, 2, `2 replis (0 s, 70 s) puis rien après 140 s : ${JSON.stringify(hides)}`);
+  assert.strictEqual(hides(sb), 1, 'la 2e menace arrive après 95 s : on récolte au lieu de se recacher');
+  assert.ok(sb.events.some((e) => e.type === 'threat_hide_skipped' && e.why === 'window'));
 });
 
 test('gatherWoodSafely : de NUIT, rend la main sur danger sans creuser (la discipline de nuit possède le trou)', async () => {
@@ -498,4 +539,12 @@ test('index.js : onSpawn reprend le kit APRÈS guardSpawn ; le planner passe par
   assert.ok(body.indexOf('loadDeathDebt()') > r && body.indexOf('startAutonomous(null)') > r);
   assert.match(SRC, /runSkill: async \(g\) => \{ try \{ await stashKitIfReady\(\); \} catch \(e\) \{ \/\* best-effort \*\/ \} return runSkillWithTelemetry\(g\); \},/);
   assert.match(SRC, /^let _lastRespawnPos = null;/m);
+});
+
+test('index.js : noyade — un 2e warp /home safe en < 60 s est remplacé par la nage (warp futile), garde au NIVEAU MODULE', () => {
+  assert.match(SRC, /^let _lastDrownWarpAt = 0;/m);
+  const i = SRC.indexOf("ctx: 'warp_futile'");
+  const j = SRC.indexOf("emit({ type: 'water_rescue_home_safe' });");
+  assert.ok(i > 0 && j > i, 'le test de futilité précède le warp');
+  assert.match(SRC, /_lastDrownWarpAt = Date\.now\(\);\n\s+emit\(\{ type: 'water_rescue_home_safe' \}\);/);
 });

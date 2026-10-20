@@ -33,6 +33,7 @@ const { installBridgeGuard } = require('./bridges');   // pas de pont au-dessus 
 const { copySafetySettings, createMovesKeeper } = require('./pluginMoves');   // fuite de Movements des plugins collect/pvp (19/10)
 const { createGoalTrace, installGoalTrace } = require('./goalTrace');   // DIAG GoalChanged : qui pose un but pendant un goto ? (aucun effet sur le bot)
 const vec3Lib = require('vec3'); // watchdog anti-jam (blocs barrants)
+const { realThreat, woodHidePlan, woodHideStateAt } = require('./threatgate');
 const { gather, woodExpeditionCount, woodExploreShape } = require('./skills/gather');
 const { gotoWithTimeout } = require('./skills/explore');   // trajet borné ET interruptible (abortIf)
 // Kit de secours en coffre (run 10, 20/10) — décisions PURES, glue « KIT DE SECOURS EN COFFRE ».
@@ -74,7 +75,7 @@ const { runMapper, createExpiringSet } = require('./mapper');   // createExpirin
 const { isInWater, escapeWater, findLandTarget, isFloatingStuck, recoverFloating, isFrozenDesync,
   escapePlan, escapeReached, canReanchorSpawn, ESCAPE_SAFE_RADIUS,
   // Fuite dès le spawn + historique de morts persisté (live 19/10, MapBot1) — décisions PURES, cf. unstuck.js.
-  spawnDanger, hostilesWithin, deathTimesPrune, deathTimesLoad, deathMemoWith, escapeArmed, deathLoopTripped,
+  spawnDanger, SPAWN_DANGER_MIN_WORN, hostilesWithin, deathTimesPrune, deathTimesLoad, deathMemoWith, escapeArmed, deathLoopTripped,
   // Premières secondes après un respawn : se terrer plutôt que courir (run 10, 20/10).
   spawnGuardPlan } = require('./unstuck');
 // Neutres tant qu'on ne les provoque pas (enderman) : jamais une raison de fuir au spawn (même liste que nearbyHostiles).
@@ -5106,7 +5107,6 @@ const SPAWN_SENSE_MS = 4000;          // fenêtre d'observation après le spawn 
 const SPAWN_SENSE_STEP_MS = 400;
 const THREAT_HIDE_MAX_MS = 90000;     // borne de l'attente « zone vide » (règle de vitesse du propriétaire)
 const WOOD_HIDE_MAX_MS = 60000;       // bois : on attend moins, la récolte reprend vite
-const WOOD_HIDE_ROUNDS = 3;           // bois : au plus 3 replis par tentative de `logs`…
 const WOOD_HIDE_WINDOW_MS = 90000;    // …et plus AUCUN repli commencé après 90 s : un abri dure ≤ ~80 s, on finit
                                       // donc avant le garde-fou du skill (SKILL_TIMEOUTS.gatherLog = 180 s) — sinon
                                       // le planner enchaînerait une autre tâche pendant que le bot est au fond du trou.
@@ -5224,59 +5224,85 @@ function anchorSpawnpoint(reason) {
 }
 
 /**
- * Bois sans mourir : un bot NU a-t-il un hostile à ≤ 16 blocs MAINTENANT ? (spawnDanger, rayon 16 —
- * le même prédicat « hostile à craindre » que le spawn). null sinon. Jamais de throw.
+ * Bois sans mourir : un bot NU a-t-il une menace RÉELLE à ≤ 16 blocs MAINTENANT ? (même prédicat
+ * « hostile à craindre » que le spawn, + ligne de vue ou ≤ 6 blocs — threatgate). Jamais de throw.
  */
+// Noyade : le dernier warp /home safe pour noyade (NIVEAU MODULE, piège #56 — lu par le réflexe).
+const DROWN_WARP_RETRY_MS = 60000;
+let _lastDrownWarpAt = 0;
 const WOOD_DANGER_RADIUS = 16;
-function woodDangerNow() {
+// Séquence de buts `logs` (run 12) : cachettes faites + menaces statiques ignorées. NIVEAU MODULE (piège
+// #56) : le planner rappelle gatherWoodSafely à chaque tentative — un compteur local repartait de zéro
+// et NethBot1 s'est caché 6 fois de suite du même squelette immobile. Oubliée après 10 min (threatgate).
+let _woodHide = null;
+/** La menace RÉELLE la plus proche (bot NU, ≤ 16 blocs, ligne de vue OU ≤ 6 blocs), hors `ignore`. */
+function woodThreatNow(ignore) {
   try {
     const pos = bot.entity && bot.entity.position;
     if (!pos) return null;
-    const d = spawnDanger({
-      worn: _wornArmor().size, pos, radius: WOOD_DANGER_RADIUS,
-      entities: Object.values(bot.entities || {}), isHostile: isThreatHostile,
+    if (_wornArmor().size >= SPAWN_DANGER_MIN_WORN) return null;
+    const p = { x: pos.x, y: pos.y, z: pos.z };   // COPIE (Vec3 muté en place)
+    return realThreat({
+      pos: p, radius: WOOD_DANGER_RADIUS, entities: Object.values(bot.entities || {}),
+      isHostile: isThreatHostile, ignore: ignore || [],
+      blockAt: (q) => bot.blockAt(vec3Lib(q.x, q.y, q.z)),
     });
-    return d.flee ? d : null;
   } catch (e) { return null; }
+}
+/** Compat : `{dist, mob}` d'une menace réelle (stash, dépôt) — null sinon. Jamais de throw. */
+function woodDangerNow() {
+  const t = woodThreatNow(_woodHide ? _woodHide.ignore : []);
+  return t ? Object.assign({ flee: true, reason: 'naked_hostile_near' }, t) : null;
 }
 
 /**
- * Récolte de bois SANS MOURIR (run 10 : 63 % des morts pendant `logs`, 223/231 en surface). Nu :
- *   - hostile à ≤ 16 blocs AVANT de partir → on se terre d'abord (≤ 60 s), puis on récolte ;
- *   - hostile qui surgit PENDANT la récolte/l'exploration → gather rend la main (reason 'danger',
- *     trajet coupé net), on se terre, on reprend — au plus WOOD_HIDE_ROUNDS fois ;
- *   - exploration courte (woodExploreShape : anneaux ≤ 144 au lieu de 256).
- * Armuré : un seul passage, forme d'exploration d'origine. Le skill reste borné par SKILL_TIMEOUTS.gatherLog.
+ * Récolte de bois SANS MOURIR — et sans se terrer en boucle (run 12). Nu :
+ *   - menace RÉELLE (threatgate.realThreat : ligne de vue ou ≤ 6 blocs) avant/pendant la récolte →
+ *     on se terre (≤ 60 s) puis on reprend ;
+ *   - la MÊME menace, toujours là sans s'être approchée après une cachette (squelette derrière un mur,
+ *     sous la canopée) → on ne se recache PAS : elle est ignorée et on récolte (`threat_hide_skipped`) ;
+ *   - au plus 2 cachettes par séquence `logs` (module, 10 min), puis on récolte malgré tout.
+ * Armuré : aucune menace (woodThreatNow → null), un seul passage. Borné par SKILL_TIMEOUTS.gatherLog.
  */
 async function gatherWoodSafely(gargs) {
   const t0 = Date.now();
   const worn = (() => { try { return _wornArmor().size; } catch (e) { return 0; } })();
   const shape = woodExploreShape({ worn });
-  // De NUIT la discipline de nuit possède le trou (attente jusqu'à l'aube, ≫ le budget du skill) : ici on
-  // rend seulement la main sur danger, elle fait le reste.
-  const canHide = () => Date.now() - t0 < WOOD_HIDE_WINDOW_MS
-    && !(bot.time && bot.time.timeOfDay != null && isNight(bot));
-  let hides = 0;
-  const hide = async (d) => { hides++; await hideFromThreat('wood', d, { maxWaitMs: WOOD_HIDE_MAX_MS }); };
-  const mayHide = () => hides < WOOD_HIDE_ROUNDS && canHide();
-  let r = null;
-  for (;;) {
-    if (taskToken.cancelled) return { ok: false, reason: 'cancelled' };
-    // Menace AVANT de partir : on se terre d'abord (ou on rend la main si on ne peut plus).
-    const d = woodDangerNow();
-    if (d) {
-      if (!mayHide()) return r || { ok: false, got: 0, reason: 'danger' };
-      await hide(d);
-      continue;          // re-lire : la zone peut ne pas s'être vidée (borne d'attente atteinte)
+  _woodHide = woodHideStateAt(_woodHide, Date.now());
+  const st = _woodHide;
+  // De NUIT la discipline de nuit possède le trou : ici on rend seulement la main.
+  const night = () => !!(bot.time && bot.time.timeOfDay != null && isNight(bot));
+  const canHide = () => Date.now() - t0 < WOOD_HIDE_WINDOW_MS;
+  const threat = () => woodThreatNow(st.ignore);
+  // Décide face à une menace : true = s'est caché, false = on continue (menace ignorée désormais).
+  const react = async (t) => {
+    const plan = woodHidePlan({ threat: t, hides: st.hides, last: st.last });
+    if (plan.act !== 'hide' || !canHide()) {
+      const why = plan.act === 'hide' ? 'window' : plan.why;
+      emit({ type: 'threat_hide_skipped', why, mob: t.mob, dist: Math.round(t.dist * 10) / 10, hides: st.hides });
+      st.ignore.push({ id: t.id, x: t.x, y: t.y, z: t.z, dist: t.dist });
+      if (st.ignore.length > 8) st.ignore.shift();
+      return false;
     }
+    st.hides++;
+    await hideFromThreat('wood', t, { maxWaitMs: WOOD_HIDE_MAX_MS });
+    st.last = { id: t.id, x: t.x, y: t.y, z: t.z, dist: t.dist };
+    return true;
+  };
+  let r = null;
+  for (let guard = 0; guard < 12; guard++) {
+    if (taskToken.cancelled) return { ok: false, reason: 'cancelled' };
+    const d = threat();
+    if (d && night()) return r || { ok: false, got: 0, reason: 'danger' };
+    if (d) { await react(d); continue; }   // caché OU ignorée : re-lire (la suivante est peut-être réelle)
     r = await gather(bot, Object.assign({}, gargs, shape ? { exploreShape: shape } : {},
-      { danger: () => !!woodDangerNow() }), taskToken);
+      { danger: () => !!threat() }), taskToken);
+    if (r && r.ok && r.got > 0) _woodHide = null;   // séquence réussie : compteur remis à zéro
     if (!(r && r.reason === 'danger')) return r;
     if (r.ok) return r;                    // lot partiel déjà en poche : le planner re-dérive
-    // Menace PENDANT la récolte (gather a rendu la main, trajet coupé) : se terrer, puis reprendre.
-    if (!mayHide()) return r;              // plus de repli permis (3 faits, 90 s passées, ou la nuit)
-    await hide(woodDangerNow());
+    if (night()) return r;
   }
+  return r || { ok: false, got: 0, reason: 'danger' };
 }
 
 // ─── KIT DE SECOURS EN COFFRE (run 10, 20/10) ─────────────────────────────────────────────────────
@@ -6469,6 +6495,15 @@ async function onSpawn() {
                 try { await escapeWater(bot, { emit }); } catch (e) {}
                 return;
               }
+              // WARP FUTILE (run 12, NethBot2 : water_rescue_warp:drowning toutes les 3-10 s, /home safe le
+              // ramenait dans la MÊME eau) : un warp de noyade il y a < 60 s n'a pas sorti le bot → NAGER
+              // (escapeWater : rive, sinon pilier) au lieu de re-warper au même endroit.
+              if (Date.now() - _lastDrownWarpAt < DROWN_WARP_RETRY_MS) {
+                emit({ type: 'water_rescue_no_warp', ctx: 'warp_futile' });
+                try { await escapeWater(bot, { emit, timeoutMs: 20000 }); } catch (e) {}
+                return;
+              }
+              _lastDrownWarpAt = Date.now();
               emit({ type: 'water_rescue_home_safe' });
               abandonWorkIfDrowned();                     // chantier noyé ? → l'oublier (sinon /home work y ramène)
               await safeWarpHome('safe', { ctx: 'drowning' });   // float+immobile pendant l'éventuel warmup

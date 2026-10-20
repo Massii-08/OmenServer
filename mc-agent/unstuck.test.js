@@ -50,7 +50,7 @@ test('escapeWater : nage (jump) + goto vers la terre → ok quand sorti de l\'ea
   const r = await escapeWater(bot, {
     emit: (e) => events.push(e),
     sleep: async () => {},
-    goto: async (p) => { gotos.push(p); bot.entity.isInWater = false; }, // atteindre la terre = sorti
+    goto: async (p) => { gotos.push(p); bot.entity.isInWater = false; bot.entity.position = vec3(p.x + 0.5, p.y + 1, p.z + 0.5); }, // atteindre la terre = sorti
   });
   assert.ok(r.ok);
   assert.strictEqual(gotos.length, 1);
@@ -675,4 +675,78 @@ test('SCÉNARIO MapBot1 : la rafale du process A survit au death_loop et arme la
   assert.deepStrictEqual(onDisk.base, { x: 10, y: 70, z: -4 });
   assert.deepStrictEqual(onDisk.deathDebt, { x: 1, y: 2, z: 3, at: T0 });
   assert.deepStrictEqual(onDisk.zone, { anchoredAt: T0 - 1000 });
+});
+
+// --- Run 12 : tête sous l'eau, corps « au sec » (NethBot2, `unstuck ok:true` en 0 ms en boucle) ---
+const { waterEscapeMode, eyeInWater } = require('./unstuck');
+
+test('waterEscapeMode : corps → swim ; yeux seuls ou O2 bas → head ; sinon dry', () => {
+  assert.strictEqual(waterEscapeMode({ inWater: true, eyeWet: false, o2: 20 }), 'swim');
+  assert.strictEqual(waterEscapeMode({ inWater: false, eyeWet: true, o2: 20 }), 'head');
+  assert.strictEqual(waterEscapeMode({ inWater: false, eyeWet: false, o2: 3 }), 'head');
+  assert.strictEqual(waterEscapeMode({ inWater: false, eyeWet: false, o2: 18 }), 'dry');
+  assert.strictEqual(waterEscapeMode({ inWater: false, eyeWet: false }), 'dry');
+});
+
+// Cellule où SEUL le bloc des yeux est de l'eau (isInWater mineflayer = false). Rive à (3,63,0).
+function headBot({ landAt = { x: 3, y: 63, z: 0 }, o2 = 4 } = {}) {
+  const bot = {
+    entity: { position: vec3(0.5, 64, 0.5), isInWater: false, yaw: 0 },
+    oxygenLevel: o2,
+    controls: {},
+    setControlState(c, v) { this.controls[c] = v; },
+    pathfinder: { setGoal: () => {} },
+    findBlocks() { return landAt ? [vec3(0, 63, 0), vec3(landAt.x, landAt.y, landAt.z)] : [vec3(0, 63, 0)]; },
+    blockAt(p) {
+      const k = Math.floor(p.x) + ',' + Math.floor(p.y) + ',' + Math.floor(p.z);
+      if (k === '0,65,0') return { name: 'water', boundingBox: 'empty' };       // les YEUX
+      if (k === '0,63,0') return { name: 'dirt', boundingBox: 'block' };
+      if (landAt && k === `${landAt.x},${landAt.y},${landAt.z}`) return { name: 'grass_block', boundingBox: 'block' };
+      return { name: 'air', boundingBox: 'empty' };
+    },
+  };
+  return bot;
+}
+
+test('eyeInWater : vrai quand le bloc des yeux est de l eau, même si isInWater est faux', () => {
+  assert.strictEqual(eyeInWater(headBot()), true);
+  const b = headBot(); b.entity.position = vec3(3.5, 64, 0.5);
+  assert.strictEqual(eyeInWater(b), false);
+});
+
+test('escapeWater : tête sous l eau → NE rend PAS ok tout de suite, va à la rive à ≥ 2 blocs (pas sa propre colonne)', async () => {
+  const bot = headBot();
+  const gotos = [];
+  const events = [];
+  const r = await escapeWater(bot, {
+    emit: (e) => events.push(e), sleep: async () => {},
+    goto: async (p) => { gotos.push(p); bot.entity.position = vec3(p.x + 0.5, p.y + 1, p.z + 0.5); bot.oxygenLevel = 20; },
+  });
+  assert.ok(r.ok);
+  assert.strictEqual(gotos.length, 1);
+  assert.strictEqual(gotos[0].x, 3, 'la colonne du bot (0,63,0) est exclue');
+  assert.ok(events.some((e) => e.type === 'unstuck' && e.mode === 'head'));
+});
+
+test('escapeWater : tête sous l eau sans rive → monte en pilier (casse le plafond), sort en un tour', async () => {
+  const bot = headBot({ landAt: null });
+  const climbs = [];
+  const r = await escapeWater(bot, {
+    sleep: async () => {}, goto: async () => {},
+    pillarUp: async (b, { height }) => { climbs.push(height); b.entity.position = vec3(0.5, 66, 0.5); b.oxygenLevel = 20; return { ok: true, placed: 2 }; },
+  });
+  assert.ok(r.ok);
+  assert.deepStrictEqual(climbs, [2]);
+});
+
+test('escapeWater : rive inatteignable (goto ne fait pas bouger, bord trop haut) → pilier après 2 essais', async () => {
+  const bot = waterBot({ landAt: { x: 1, y: 63, z: 0 } });
+  let gotos = 0; const climbs = [];
+  const r = await escapeWater(bot, {
+    sleep: async () => {}, goto: async () => { gotos++; },
+    pillarUp: async (b) => { climbs.push(1); b.entity.isInWater = false; b.entity.position = vec3(1.5, 64, 0.5); return { ok: true, placed: 3 }; },
+  });
+  assert.ok(r.ok);
+  assert.strictEqual(gotos, 2);
+  assert.strictEqual(climbs.length, 1);
 });
