@@ -20,6 +20,7 @@ const { goto } = require('./skills/goto');
 const { mineBlock, collectWood } = require('./skills/mineBlock');
 const { attackNearest } = require('./skills/attackNearest');
 const { fleeFrom, isFleeHostile } = require('./skills/fleeFrom');
+const { installOxygenGuard } = require('./oxygen');
 const { installReflexes, RANGED, DEFENSIVE_HEALTH, isFleeOnlyMob, FOODS, EMERGENCY_FOODS } = require('./reflexes');
 const { decideReaction } = require('./triggers');
 const { loadCommands, isAllowed, buildCommandDocs } = require('./commands');
@@ -6953,6 +6954,15 @@ if (authMode === 'microsoft') {
   });
 }
 const bot = mineflayer.createBot(botOpts);
+// Garde d'oxygène : mineflayer écrit bot.oxygenLevel pour toute entité (zombie noyé…) → fausses noyades.
+let _oxyForeignAt = 0; // niveau module : lu par le callback ci-dessous
+installOxygenGuard(bot, { onForeign: () => {
+  const t = Date.now();
+  if (t - _oxyForeignAt < 60000) return;
+  _oxyForeignAt = t;
+  emit({ type: 'oxygen_foreign_ignored' });
+} });
+bot.once('spawn', () => emit({ type: 'oxygen_guard_on' }));
 // SANS-GIVE : filtre dur sur TOUTE commande sortante (défense en profondeur — même un chemin
 // oublié qui tenterait /give //tp //effect est coupé ici, avec un event pour l'observabilité).
 // ⚠️ bot.chat n'existe PAS synchroniquement après createBot (injecté par les plugins mineflayer,
