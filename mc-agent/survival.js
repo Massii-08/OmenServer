@@ -182,11 +182,17 @@ function canDealWith(armorPts, attackDmg) {
  * PUR — combattre plutôt que fuir ? canDealWith > fightCount ≥ 1 ET PV > 8. Jamais en faim critique
  * (≤ CRITICAL_HUNGER : pas de régén, chaque coup encaissé est définitif — on garde la prudence).
  */
+const BOLD_MAX_WEAK = 2;
+const BOLD_STRONG_CDW = 7;
+
 function boldFightAdvised({ health, fightCount, canDealWith: cdw, food } = {}) {
   if (cdw == null || !Number.isFinite(cdw)) return false;
   if (!fightCount || fightCount < 1) return false;
   if (health == null || !(health > BOLD_MIN_HEALTH)) return false;
   if (food != null && food <= CRITICAL_HUNGER) return false;
+  // Hard : la formule AltoClef est calibrée pour une difficulté normale. Sans armure (capacité < 7,
+  // soit l'épée seule), on n'affronte jamais plus de 2 mobs à la fois.
+  if (fightCount > BOLD_MAX_WEAK && cdw < BOLD_STRONG_CDW) return false;
   return cdw > fightCount;
 }
 

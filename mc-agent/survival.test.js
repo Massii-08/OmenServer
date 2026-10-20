@@ -456,3 +456,9 @@ test('survivalTick : mappeur (preferFlee) nu + épée, 1 zombie à 6 blocs → t
   const { bot } = fakeBot({ items: [['iron_sword', 1]], entities: [fakeEntity('zombie', 'Hostile mobs', { x: 6, y: 64, z: 0 })] });
   assert.strictEqual(await survivalTick(bot, { fleeFrom: () => true, preferFlee: true }), 'flee');
 });
+
+test('boldFightAdvised : Hard — sans armure (capacité < 7) jamais plus de 2 mobs', () => {
+  assert.strictEqual(boldFightAdvised({ health: 20, fightCount: 2, canDealWith: 5 }), true);
+  assert.strictEqual(boldFightAdvised({ health: 20, fightCount: 3, canDealWith: 5 }), false, 'nu + épée bois face à 3 → non');
+  assert.strictEqual(boldFightAdvised({ health: 20, fightCount: 3, canDealWith: 7 }), true, 'armuré → oui');
+});
