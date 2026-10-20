@@ -143,7 +143,7 @@ test('guardSpawn : armuré → aucun repli, l évasion d avant seulement si arm�
 });
 
 // ═════════════════════════════ 2. hideFromThreat : UN abri, borné, jeton propre ═════════════════════
-function hideSandbox({ inFlight = null, night = false, shelter = null } = {}) {
+function hideSandbox({ inFlight = null, night = false, shelter = null, fled = false } = {}) {
   const sb = clockSb();
   const captured = { calls: [] };
   Object.assign(sb, {
@@ -154,6 +154,9 @@ function hideSandbox({ inFlight = null, night = false, shelter = null } = {}) {
     hostilesNearNow: () => 0, _wornArmor: () => new Set(), nightLockdownNow: () => false,
     dawnExitThreatsNow: () => ({ hostiles: 0, creepers: 0 }), exitAwayFromThreats: () => {},
     stopMotion: () => sb.calls.push('stop'),
+    // fuite d'avant-abri (fix 20/10) : testée dans index.craftplan.test.js ; ici on fixe l'ordre.
+    fleeBeforeHide: async (why) => { sb.calls.push('flee:' + why); return fled; },
+    spawnDangerNow: () => null,
     shelterUntilDawn: shelter || (async (b, tok, deps) => { captured.calls.push({ tok, deps, busy: sb._stillBusy }); return { ok: true }; }),
   });
   vm.createContext(sb);
@@ -180,6 +183,17 @@ test('hideFromThreat : creuse avec un jeton PROPRE non annulé, la borne 90 s, l
   const a = sb.events.find((e) => e.type === 'threat_hide');
   assert.deepStrictEqual({ why: a.why, mob: a.mob, dist: a.dist, night: a.night }, { why: 'spawn', mob: 'skeleton', dist: 6, night: false });
   assert.ok(sb.events.some((e) => e.type === 'threat_hide_done' && e.ok === true));
+});
+
+test('hideFromThreat : fuit AVANT de creuser (fleeBeforeHide), puis creuse ; noFlee la saute', async () => {
+  const sb = hideSandbox({ fled: true });
+  const r = await sb.hideFromThreat('spawn', { mob: 'zombie', dist: 2 });
+  assert.deepStrictEqual(r, { ok: true });
+  assert.deepStrictEqual(sb.calls, ['flee:spawn']);
+  assert.strictEqual(sb.captured.calls.length, 1, 'creuse après la fuite');
+  const sb2 = hideSandbox();
+  await sb2.hideFromThreat('spawn', null, { noFlee: true });
+  assert.deepStrictEqual(sb2.calls, []);
 });
 
 test('hideFromThreat : un abri déjà en cours est REJOINT (jamais deux trous)', async () => {

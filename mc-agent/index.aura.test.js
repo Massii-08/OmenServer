@@ -59,7 +59,7 @@ function sandbox({ entities = [], held = null, items = [], digging = false, usin
   };
   vm.createContext(sb);
   for (const c of ['AURA_EVENT_EVERY_MS', 'CREEPER_SCAN_RADIUS', 'CREEPER_FLEE_MAX_MS', 'CREEPER_REPLAN_MS', '_creeperHold']) run(sb, constSrc(c));
-  for (const l of ['_auraLastHitAt', '_auraBusy', '_auraEvAt', '_creeperFlee', '_craftDepth']) run(sb, letSrc(l));
+  for (const l of ['_auraLastHitAt', '_auraBusy', '_auraEvAt', '_creeperFlee', '_craftDepth', '_respawnFlee']) run(sb, letSrc(l));
   // Le VRAI verrou, comme posé dans onSpawn (horloge du bac à sable).
   run(sb, 'this.__hold = _creeperHold;');
   GH.installGoalHold(sb.bot.pathfinder, sb.__hold, () => clock.t);

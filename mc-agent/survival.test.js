@@ -462,3 +462,26 @@ test('boldFightAdvised : Hard — sans armure (capacité < 7) jamais plus de 2 m
   assert.strictEqual(boldFightAdvised({ health: 20, fightCount: 3, canDealWith: 5 }), false, 'nu + épée bois face à 3 → non');
   assert.strictEqual(boldFightAdvised({ health: 20, fightCount: 3, canDealWith: 7 }), true, 'armuré → oui');
 });
+
+// NUIT (fix 20/10) : 24/37 morts récentes par zombie ; NethBot1 18:27 UTC `fight_chosen` (1 zombie, 20 PV)
+// puis combat poursuivi pendant que d'autres arrivaient → mort. La nuit, au-delà d'1 zombie et PV < 14,
+// la règle audacieuse ne s'applique plus (les seuils prudents reprennent la main).
+test('boldFightAdvised : nuit + > 1 mob + PV < 14 → non ; 1 mob ou PV ≥ 14 → règle habituelle', () => {
+  assert.strictEqual(boldFightAdvised({ health: 13, fightCount: 2, canDealWith: 5, night: true }), false);
+  assert.strictEqual(boldFightAdvised({ health: 13, fightCount: 2, canDealWith: 5 }), true, 'de jour : inchangé');
+  assert.strictEqual(boldFightAdvised({ health: 13, fightCount: 1, canDealWith: 5, night: true }), true, '1 seul zombie');
+  assert.strictEqual(boldFightAdvised({ health: 14, fightCount: 2, canDealWith: 5, night: true }), true, 'PV 14');
+});
+
+test('survivalTick : la nuit vient de bot.time (2 zombies, 13 PV, épée pierre → plus de fight_chosen)', async () => {
+  const run = async (tod) => {
+    const { bot } = fakeBot({ health: 13, items: [['stone_sword', 1]], entities: [
+      fakeEntity('zombie', 'Hostile mobs', { x: 2, y: 64, z: 0 }), fakeEntity('zombie', 'Hostile mobs', { x: -2, y: 64, z: 0 })] });
+    bot.time = { timeOfDay: tod };
+    const out = [];
+    await survivalTick(bot, { fleeFrom: () => true, emit: (e) => out.push(e), lavaNear: () => false });
+    return out;
+  };
+  assert.ok((await run(6000)).some((e) => e.type === 'fight_chosen'), 'jour : combat audacieux choisi');
+  assert.ok(!(await run(18000)).some((e) => e.type === 'fight_chosen'), 'nuit : plus de combat audacieux');
+});

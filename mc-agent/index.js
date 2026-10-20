@@ -46,6 +46,8 @@ const { mineDown } = require('./skills/mineDown');
 const { guard } = require('./skills/guard');
 const { giveItem, giveAll } = require('./skills/give');
 const { craftItem } = require('./skills/craft');
+const { planIntermediates, craftSignature, createCraftBackoff } = require('./craftPlan');
+const { respawnFleePlan, fleeStuck, RESPAWN_FLEE_LEGS, RESPAWN_FLEE_LEG_MS, RESPAWN_STUCK_MS } = require('./respawnFlee');
 const { deposit } = require('./skills/deposit');
 const { equipItem, eat } = require('./skills/equip');
 const { loiter } = require('./skills/loiter');
@@ -1803,6 +1805,11 @@ async function withCraftingTable(fn) {
       if (log) { try { await craftItem(bot, { name: log.name.replace('_log', '_planks'), count: 1 }); } catch (e) { /* best-effort */ } }
     }
     try { await craftItem(bot, { name: 'crafting_table', count: 1 }); } catch (e) { /* best-effort */ }
+    // Toujours pas de table en poche : placeBlockNear rendrait `unknown_item` (« objet absent de la
+    // poche »), lu pendant des semaines comme « objet inconnu ». On dit la vraie cause.
+    if (!((bot.inventory && bot.inventory.items()) || []).some((i) => i.name === 'crafting_table')) {
+      return { ok: false, reason: 'no_table:no_wood_for_table' };
+    }
   }
   let place = await placeBlockNear(bot, 'crafting_table');
   if (!place.ok) {
@@ -1823,9 +1830,18 @@ async function withCraftingTable(fn) {
       return { ok: false, reason: 'no_table:' + (place.reason || '?') }; // sous-raison (diagnostic live)
     }
   }
-  await waitForBlock(place.pos, 'crafting_table'); // #3 : ne pas ouvrir la table avant qu'elle existe
+  const tableSeen = await waitForBlock(place.pos, 'crafting_table'); // #3 : ne pas ouvrir la table avant qu'elle existe
   await sleep(300);                                // settle pose→ouverture (serveur + humanisation)
-  const r = await fn();
+  let r = await fn();
+  // `no_recipe` brut juste après une pose « réussie » (×6 le 20/10, MapBot1, alors que pierre + bâtons +
+  // table étaient en poche) : la table n'est jamais apparue côté client, ou le bot a été emporté hors de
+  // portée pendant le craft (le cartographe bouge en parallèle). On le dit au lieu de « pas de recette ».
+  if (r && !r.ok && r.reason === 'no_recipe') {
+    let far = null;
+    try { far = place.pos ? Math.round(bot.entity.position.distanceTo(place.pos) * 10) / 10 : null; } catch (e) { far = null; }
+    if (!tableSeen) r = Object.assign({}, r, { reason: 'no_recipe:table_unconfirmed' });
+    else if (far != null && far > TABLE_REACH - 1) r = Object.assign({}, r, { reason: 'no_recipe:table_out_of_reach' });
+  }
   await sleep(250);                                // craft 100% terminé AVANT de casser la table
   await reclaimBlock(place.pos);                   // garder la table PORTABLE (1 seule)
   // reclaimBlock retourne en SILENCE quand il ne retrouve pas le bloc (il suppose « déjà repris »).
@@ -1841,7 +1857,37 @@ async function withCraftingTable(fn) {
 
 // Craft "intelligent" : tente direct (2×2, ou table déjà à portée) ; si pas de recette / craft échoué
 // faute de table (craft 3×3), pose une table portable, re-tente, puis reprend la table.
+// ── INTERMÉDIAIRES D'ABORD (fix 20/10, craftPlan.js) ─────────────────────────────────────────────
+// Avant un craft CONNU : bûches → planches (même essence) → bâtons → table, puis la recette demandée.
+// S'il manque une matière première, on le dit tout de suite (`no_wood:table`, `no_coal`…) au lieu de
+// marcher vers une table puis d'échouer `no_table:unknown_item` (= « pas de table en poche ET pas assez
+// de bois pour en faire une », 107× en 2 h). Re-planifié après CHAQUE étape sur l'inventaire réel :
+// mineflayer choisit lui-même l'essence d'une recette de bâtons, le plan s'y adapte. Borné à 8 étapes.
+// Rend null = rien à faire / objet inconnu → chemin historique ; {ok:false, reason} = arrêt.
+const CRAFT_PLAN_MAX_STEPS = 8;
+async function _craftPrereqs(args) {
+  const name = args && args.name;
+  if (!name || args._noPlan) return null;
+  let announced = false;
+  for (let i = 0; i < CRAFT_PLAN_MAX_STEPS; i++) {
+    const items = (bot.inventory && typeof bot.inventory.items === 'function') ? bot.inventory.items() : [];
+    const tableAvailable = items.some((it) => it && it.name === 'crafting_table')
+      || !!_nearestTable(bot, TABLE_SEEK, { exclude: _badTables });
+    const plan = planIntermediates(name, items, { count: args.count || 1, tableAvailable });
+    if (!plan.known) return null;
+    if (!plan.ok) return { ok: false, reason: plan.reason };
+    if (!plan.steps.length) return null;
+    if (!announced) { announced = true; emit({ type: 'craft_plan', item: name, steps: plan.steps }); }
+    const st = plan.steps[0];
+    const r = await craftItem(bot, { name: st.name, count: st.count });
+    if (!r || !r.ok) return { ok: false, reason: 'intermediate:' + st.name + ':' + ((r && r.reason) || 'failed') };
+  }
+  return null;
+}
+
 async function _craftSmartRaw(args) {
+  const pre = await _craftPrereqs(args);
+  if (pre) return pre;
   const r = await craftItem(bot, args);
   if (r.ok) return r;
   if (r.reason === 'no_recipe' || r.reason === 'craft_failed') return withCraftingTable(() => craftItem(bot, args));
@@ -6078,6 +6124,68 @@ const WOOD_HIDE_WINDOW_MS = 90000;    // …et plus AUCUN repli commencé après
                                       // donc avant le garde-fou du skill (SKILL_TIMEOUTS.gatherLog = 180 s) — sinon
                                       // le planner enchaînerait une autre tâche pendant que le bot est au fond du trou.
 
+// ─── FUIR D'ABORD, CREUSER ENSUITE (fix 20/10, respawnFlee.js) ───────────────────────────────────
+// 14 morts < 30 s après un respawn en 2 h 30, 11 de NethBot3 en boucle : spawn_guard hide avec un zombie
+// à 0,3-6 blocs → `shelter dig_in` → immobile 3-10 s → mort avant la fin du puits (no_fall/void_below).
+// hideFromThreat sprinte donc d'abord (but XZ verrouillé par goalHold, jamais 3D — piège #72b) tant qu'un
+// hostile est à ≤ 8 blocs, au plus 2 jambes de 8 s, puis creuse. Pendant la fuite l'aura ne frappe que si
+// le bot est COINCÉ (un coup casse le sprint). ⚠️ NIVEAU MODULE (piège #56) : lu par auraTick.
+let _respawnFlee = null;   // { stuck } pendant une fuite d'avant-abri
+
+/** Positions (COPIES) des hostiles à craindre. Jamais de throw. */
+function respawnThreatsNow() {
+  const out = [];
+  try {
+    for (const e of Object.values(bot.entities || {})) {
+      if (!e || !e.position || !isThreatHostile(e)) continue;
+      out.push({ x: e.position.x, y: e.position.y, z: e.position.z });
+    }
+  } catch (e) { /* lecture ratée → rien */ }
+  return out;
+}
+
+/** Sprinte loin des menaces proches avant de se terrer. Rend true si une fuite a eu lieu. Jamais de throw. */
+async function fleeBeforeHide(why) {
+  let fled = false;
+  try {
+    for (let leg = 0; leg < RESPAWN_FLEE_LEGS; leg++) {
+      const p = bot.entity && bot.entity.position;
+      if (!p) break;
+      const plan = respawnFleePlan({ self: { x: p.x, y: p.y, z: p.z }, threats: respawnThreatsNow() });
+      if (!plan) break;
+      fled = true;
+      emit({ type: 'respawn_flee', why, hostiles: plan.hostiles, dist: plan.dist, leg: leg + 1, to: plan.dest });
+      _respawnFlee = { stuck: false };
+      try { if (bot.pvp && typeof bot.pvp.stop === 'function') bot.pvp.stop(); } catch (e) {}
+      const t0 = Date.now();
+      holdGoal(_creeperHold, t0 + RESPAWN_FLEE_LEG_MS, 'respawn_flee');
+      holdSetGoal(bot.pathfinder, _creeperHold, new pfGoals.GoalNearXZ(plan.dest.x, plan.dest.z, 2), false);
+      try { if (typeof bot.setControlState === 'function') bot.setControlState('sprint', true); } catch (e) {}
+      let sample = { x: p.x, z: p.z, t: t0 };
+      while (Date.now() - t0 < RESPAWN_FLEE_LEG_MS) {
+        await sleep(300);
+        const q = bot.entity && bot.entity.position;
+        if (!q || bot.health == null || bot.health <= 0) break;
+        if (Math.hypot(q.x - plan.dest.x, q.z - plan.dest.z) <= 3) break;
+        if (!respawnFleePlan({ self: { x: q.x, y: q.y, z: q.z }, threats: respawnThreatsNow() })) break;
+        const now = Date.now();
+        _respawnFlee.stuck = fleeStuck(sample, q, now);
+        if (now - sample.t >= RESPAWN_STUCK_MS) sample = { x: q.x, z: q.z, t: now };
+      }
+      if (_creeperHold.owner === 'respawn_flee') releaseGoalHold(_creeperHold);
+    }
+  } catch (e) { /* best-effort : on se terre de toute façon */ }
+  finally {
+    _respawnFlee = null;
+    if (_creeperHold.owner === 'respawn_flee') releaseGoalHold(_creeperHold);
+  }
+  if (fled) {
+    const left = (() => { try { const q = bot.entity.position; return respawnFleePlan({ self: { x: q.x, y: q.y, z: q.z }, threats: respawnThreatsNow() }); } catch (e) { return null; } })();
+    emit({ type: 'respawn_flee_done', why, clear: !left, dist: left ? left.dist : null });
+  }
+  return fled;
+}
+
 /** Observe le danger pendant SPAWN_SENSE_MS (sort dès qu'il est vu). null si rien. Jamais de throw. */
 async function senseSpawnDanger() {
   const t0 = Date.now();
@@ -6104,6 +6212,14 @@ async function hideFromThreat(why, danger, opts = {}) {
     return { ok: true, joined: true };
   }
   const maxWaitMs = Number.isFinite(opts.maxWaitMs) ? opts.maxWaitMs : THREAT_HIDE_MAX_MS;
+  // Un hostile à ≤ 8 blocs : creuser sur place = mourir pendant le creusage. On sprinte d'abord.
+  if (!opts.noFlee && await fleeBeforeHide(why)) {
+    if (_shelterInFlight) {             // un abri a démarré pendant la fuite → on le rejoint
+      try { await _shelterInFlight; } catch (e) {}
+      return { ok: true, joined: true };
+    }
+    danger = spawnDangerNow() || danger;
+  }
   const night = !!(bot.time && bot.time.timeOfDay != null && isNight(bot));
   const t0 = Date.now();
   const tok = { cancelled: false };
@@ -8818,6 +8934,7 @@ function canSeeEntityNow(e) {
 function auraTick() {
   if (_auraBusy) return;
   if (_craftDepth > 0) return;   // fenêtre de craft ouverte : un equip/coup la désynchronise (craftSmart)
+  if (_respawnFlee && !_respawnFlee.stuck) return;   // fuite d'avant-abri : un coup casse le sprint (sauf coincé)
   try {
     const p = bot.entity && bot.entity.position;
     if (!p || bot.health == null || bot.health <= 0) return;
@@ -8918,6 +9035,24 @@ setInterval(() => { auraTick(); creeperTick(); }, AURA_TICK_MS);
 let _pickFixBusy = false;
 let _lastPickMissingAt = 0;
 const PICK_MISSING_EMIT_MS = 60000;
+// BACKOFF (fix 20/10) : MapBot2, session 318 — stone_pickaxe puis wooden_pickaxe relancés toutes les
+// 20 s pendant 30 min (89 `no_table:unknown_item`) avec EXACTEMENT la même poche (930 cobble, 3 planches,
+// 8 bâtons). Un craft raté n'est retenté qu'après 40 s, 80 s, 160 s… (≤ 10 min) tant que la matière de
+// craft (craftSignature) et la raison restent les mêmes ; la moindre bûche ramassée lève l'attente.
+const _pickBackoff = createCraftBackoff();
+async function pickFixPass(plan, hasPick) {
+  for (const name of plan) {
+    const sig = craftSignature(bot.inventory.items());
+    if (_pickBackoff.blocked(name, sig, Date.now())) continue;
+    let r = null;
+    try { r = await withTimeout(craftSmart({ name, count: 1 }), 60000, () => {}); } catch (e) { r = null; }
+    if (hasPick()) { _pickBackoff.ok(name); emit({ type: 'pickaxe_recrafted', name }); return true; }
+    const reason = (r && r.reason) || 'failed';
+    const wait = _pickBackoff.fail(name, reason, sig, Date.now());
+    emit({ type: 'craft_backoff', item: name, reason, wait_s: Math.round(wait / 1000) });
+  }
+  return false;
+}
 setInterval(async () => {
   if (_pickFixBusy) return;
   const hasPick = () => ((bot.inventory && bot.inventory.items()) || [])
@@ -8937,10 +9072,7 @@ setInterval(async () => {
     }
     if (!plan.length) return;
     _pickFixBusy = true;
-    for (const name of plan) {
-      try { await withTimeout(craftSmart({ name, count: 1 }), 60000, () => {}); } catch (e) {}
-      if (hasPick()) { emit({ type: 'pickaxe_recrafted', name }); break; }
-    }
+    await pickFixPass(plan, hasPick);
   } catch (e) { /* watchdog : ne crash jamais */ }
   finally { _pickFixBusy = false; }
 }, 20000);

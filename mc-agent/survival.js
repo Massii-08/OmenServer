@@ -55,7 +55,7 @@ const PASSIVE_FOOD_MOBS = new Set(['cow', 'pig', 'chicken', 'sheep', 'rabbit', '
  * `food` (optionnel, 0-20) : hard = pas de régén sous 18 (REGEN_FOOD) ni de sprint sous 7
  * (CRITICAL_HUNGER). Absent/undefined → comportement STRICTEMENT inchangé (rétro-compat).
  */
-function combatDecision({ health, hostileCount, armored, hasCreeper, lavaNear, preferFlee, nearestDist, fleeOnly, capability, food, canDealWith, fightCount }) {
+function combatDecision({ health, hostileCount, armored, hasCreeper, lavaNear, preferFlee, nearestDist, fleeOnly, capability, food, canDealWith, fightCount, night }) {
   if (!hostileCount) return null;
   // CREEPER : JAMAIS de mêlée (il explose au contact → mort instantanée même en armure diamant, vécu
   // live R3 22/06 : fight creeper ×2 → dead en deep mining). On FUIT pour casser la ligne d'explosion ;
@@ -75,7 +75,7 @@ function combatDecision({ health, hostileCount, armored, hasCreeper, lavaNear, p
   // ET PV > 8 → on se bat au lieu de fuir — y compris NU (une fuite à pied ratée tuait 93 % du temps,
   // run 10). Passe devant les seuils prudents ci-dessous, jamais devant creeper/lave/fleeOnly/mappeur.
   // `canDealWith` absent → rien ne change (rétro-compat).
-  if (boldFightAdvised({ health, fightCount: fightCount != null ? fightCount : hostileCount, canDealWith, food })) return 'fight';
+  if (boldFightAdvised({ health, fightCount: fightCount != null ? fightCount : hostileCount, canDealWith, food, night })) return 'fight';
   // FAIM (hard, cf. CRITICAL_HUNGER ci-dessus) : ≤6 → sprint coupé, on ne peut plus fuir vite →
   // `armored` forcé à false (seuils prudents) MÊME en armure complète. ≤REGEN_FOOD (régén coupée,
   // reflexes.js) → chaque PV perdu est définitif tant qu'on n'a pas mangé → seuil de fuite basse-
@@ -184,8 +184,19 @@ function canDealWith(armorPts, attackDmg) {
  */
 const BOLD_MAX_WEAK = 2;
 const BOLD_STRONG_CDW = 7;
+// NUIT (fix 20/10) : 24/37 morts récentes par zombie. Un combat « gérable » à 20 PV contre 1 zombie se
+// poursuivait pendant que d'autres arrivaient (NethBot1, 18:27 UTC). La nuit, au-delà d'1 mob et sous
+// 14 PV, plus de témérité : les seuils prudents de combatDecision reprennent la main.
+const BOLD_NIGHT_MIN_HEALTH = 14;
 
-function boldFightAdvised({ health, fightCount, canDealWith: cdw, food } = {}) {
+/** PUR — nuit d'après bot.time.timeOfDay (même fenêtre que skills/shelter.isNightTime). */
+function _isNightTod(tod) {
+  if (tod == null || !Number.isFinite(tod)) return false;
+  const t = ((tod % 24000) + 24000) % 24000;
+  return t >= 12800 && t <= 23200;
+}
+
+function boldFightAdvised({ health, fightCount, canDealWith: cdw, food, night } = {}) {
   if (cdw == null || !Number.isFinite(cdw)) return false;
   if (!fightCount || fightCount < 1) return false;
   if (health == null || !(health > BOLD_MIN_HEALTH)) return false;
@@ -193,6 +204,7 @@ function boldFightAdvised({ health, fightCount, canDealWith: cdw, food } = {}) {
   // Hard : la formule AltoClef est calibrée pour une difficulté normale. Sans armure (capacité < 7,
   // soit l'épée seule), on n'affronte jamais plus de 2 mobs à la fois.
   if (fightCount > BOLD_MAX_WEAK && cdw < BOLD_STRONG_CDW) return false;
+  if (night === true && fightCount > 1 && health < BOLD_NIGHT_MIN_HEALTH) return false;
   return cdw > fightCount;
 }
 
@@ -282,7 +294,8 @@ async function survivalTick(bot, deps = {}) {
   const fighters = hostiles.filter((h) => h.name !== 'creeper' && self && _d3(h.position, self) <= FIGHT_COUNT_RADIUS &&
     (!canSee || (() => { try { return !!canSee(h); } catch (e) { return false; } })()));
   const cdw = canDealWith(armorPoints(bot), attackDamage(bot));
-  const decision = combatDecision({ health: bot.health, hostileCount: hostiles.length, armored: isArmored(bot), hasCreeper, lavaNear, preferFlee: !!deps.preferFlee, nearestDist, fleeOnly, capability, food: bot.food, canDealWith: cdw, fightCount: fighters.length });
+  const night = _isNightTod(bot.time && bot.time.timeOfDay);
+  const decision = combatDecision({ health: bot.health, hostileCount: hostiles.length, armored: isArmored(bot), hasCreeper, lavaNear, preferFlee: !!deps.preferFlee, nearestDist, fleeOnly, capability, food: bot.food, canDealWith: cdw, fightCount: fighters.length, night });
   if (decision === 'flee') {
     try { deps.fleeFrom && deps.fleeFrom(bot); } catch (e) {}
     const ev = { type: 'survival', action: 'flee', hostiles: hostiles.length };
@@ -295,7 +308,7 @@ async function survivalTick(bot, deps = {}) {
     // Jamais le creeper (il n'arrive ici que si `hasCreeper` est faux, mais on ne frappe pas un creeper).
     const target = fighters[0] || hostiles.find((h) => h.name !== 'creeper');
     if (!target) return null;
-    if (!deps.preferFlee && boldFightAdvised({ health: bot.health, fightCount: fighters.length, canDealWith: cdw, food: bot.food })) {
+    if (!deps.preferFlee && boldFightAdvised({ health: bot.health, fightCount: fighters.length, canDealWith: cdw, food: bot.food, night })) {
       const t = now();
       if (t < _lastFightChosenAt || t - _lastFightChosenAt >= FIGHT_CHOSEN_EVERY_MS) {   // horloge reculée → prêt
         _lastFightChosenAt = t;
@@ -325,7 +338,7 @@ async function survivalTick(bot, deps = {}) {
 module.exports = {
   combatDecision, isArmored, nearbyHostiles, hasFood, needHunt, nearestPassive, eatAny, survivalTick, lavaNearby,
   hasFleeOnly, armorPoints, weaponDamage, combatCapability,
-  canDealWith, attackDamage, boldFightAdvised, BOLD_MIN_HEALTH, FIGHT_COUNT_RADIUS, ATTACK_DAMAGE,
+  canDealWith, attackDamage, boldFightAdvised, BOLD_MIN_HEALTH, BOLD_NIGHT_MIN_HEALTH, FIGHT_COUNT_RADIUS, ATTACK_DAMAGE,
   SWARM_COUNT, LOW_HEALTH, SWARM_UNARMORED, LOW_HEALTH_UNARMORED, HUNT_HUNGER, EAT_HUNGER, CRITICAL_HUNGER,
   RAW_FOODS, PASSIVE_FOOD_MOBS, NEUTRAL_NO_PROVOKE,
   FLEE_ONLY_ALWAYS, FLEE_ONLY_LOWHP, FLEE_ONLY_LOWHP_THRESHOLD, REGEN_FOOD, NO_REGEN_HP_MARGIN,
