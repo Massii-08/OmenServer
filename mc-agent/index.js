@@ -71,6 +71,8 @@ const { descendDiagonal } = require('./skills/descendDiagonal');
 const { pickWornOutToReport } = require('./wornOut');
 const { branchMine, floodFillVein } = require('./skills/branchMine');
 const { caveHunt } = require('./skills/caveHunt');   // cave-first diamant (Massii 26/07)
+const { caveIron: caveIronSkill } = require('./skills/caveIron');   // fer en grotte (Massii 20/10)
+const caveIronPick = require('./caveIron');
 const { classifyAuthPrompt, genPassword, resolveAuthChat } = require('./auth');
 const { loadMemory, worldKey, resolveBiome } = require('./worldMemory');
 const { driestCell, oreBase } = require('./ores');         // warp near-spawn DRY-AWARE + normalisation type (fix #8)
@@ -990,6 +992,8 @@ function ctxExtra() {
     ...bedCtx,
     hasTable: !!_nearestTable(bot), y: pos ? pos.y : undefined, worn: [..._wornArmor()], offhand,
     mapperTarget: gift.target, giftReady: gift.ready, giftBatch: !!gift.batch, noWood, passiveNear,
+    // Fer en grotte : la grappe EXPOSÉE la plus rentable (null → but `iron_cave` sauté). Caché 30 s.
+    ironCave: ironCaveCtx(),
     // Bûcheron : la demande réservée à servir (LUMBERJACK_CHAIN.lj_deliver). Null hors rôle.
     woodRequest: isLumberjackObjective() ? _ljContext() : null,
     ljOwnArmor: ljArmor ? ljArmor.own : null,
@@ -2065,7 +2069,7 @@ const SKILL_TIMEOUT_MS = Number(args.skillTimeout || 90000);
 // (vécu V3Res1/4 : 480s × 4 tentatives = 32 min d'anneaux stériles avant le stall).
 // huntCook + FOOD_TRIP_MS (75 s) : l'EXPÉDITION vers le gibier (marche vers la cellule à animaux la plus
 // proche connue) a son propre plafond, hors du budget de 60 s — un garde-fou de 90 s la couperait en route.
-const SKILL_TIMEOUTS = { descendDiagonal: 900000, branchMine: 900000, caveHunt: 900000, huntCook: 90000 + FOOD_TRIP_MS, ensureBed: 240000, smeltCharcoal: 300000, gather: 480000, gatherLog: 180000, ensurePick: 480000, fish: 300000, deliverWood: 120000, lumberjackIdle: 330000, lumberjackArmor: 160000, lumberjackForestTrip: LJ_FOREST_TRIP_MS + 20000 };
+const SKILL_TIMEOUTS = { descendDiagonal: 900000, branchMine: 900000, caveHunt: 900000, caveIron: 600000, huntCook: 90000 + FOOD_TRIP_MS, ensureBed: 240000, smeltCharcoal: 300000, gather: 480000, gatherLog: 180000, ensurePick: 480000, fish: 300000, deliverWood: 120000, lumberjackIdle: 330000, lumberjackArmor: 160000, lumberjackForestTrip: LJ_FOREST_TRIP_MS + 20000 };
 function timeoutFor(skill) { return SKILL_TIMEOUTS[skill] || SKILL_TIMEOUT_MS; }
 function withTimeout(promise, ms, onTimeout) {
   return new Promise((resolve) => {
@@ -2489,7 +2493,7 @@ async function runGoalSkill(goal) {
   }
   // ARMURE-AVANT-PROFONDEUR pour le chemin planner (chaîne diamant + kit mappeur, hole A §1.3) :
   // avant une descente/branche, tente armure+bouclier (best-effort, borné, idempotent si déjà armé).
-  if (goal.skill === 'descendDiagonal' || goal.skill === 'branchMine') {
+  if (goal.skill === 'descendDiagonal' || goal.skill === 'branchMine' || goal.skill === 'caveIron') {
     try { await withTimeout(armorUp(), 120000, () => { try { stopMotion(); } catch (e) {} }); } catch (e) {}
     // Sans-give : chasse best-effort AVANT la descente (bornée à 70 s, jamais bloquante — cf. goals.js,
     // le but food_stock bloquant stallait à vie sur no_prey). Surface seulement. Compté en POINTS
@@ -2707,6 +2711,8 @@ async function runGoalSkill(goal) {
   // minerais mappés, EXPOSÉS et SECS (`caveHunt` impose exposedOnly + excludeWet). Le creusement
   // n'est plus la stratégie mais le TRAJET : quand plus aucune cible n'est visible, on enchaîne un
   // tunnel COURT (16 blocs, 4 galeries) vers la zone suivante — pas le strip de 48 × 16 d'avant.
+  // FER EN GROTTE (Massii 20/10) : cf. runCaveIron (niveau module) et caveIron.js.
+  if (goal.skill === 'caveIron') return await runCaveIron();
   if (goal.skill === 'caveHunt') {
     const memCH = (args['wm-live'] && args['world-memory']) ? loadMemory(args['world-memory']) : bot._worldMemory;
     const _count = (name) => ((bot.inventory && bot.inventory.items()) || [])
@@ -4595,6 +4601,187 @@ async function returnToWork(why) {
     emit({ type: 'work_return', why, warped: !!(r && r.warped) });
     return !!(r && r.warped);
   } catch (e) { return false; }
+}
+
+// ─── FER EN GROTTE (Massii 20/10) ─────────────────────────────────────────────────────────────
+// « Aller plus vite vers l'armure de fer sans tricher, comme un humain » : on va chercher le fer
+// VISIBLE sur les parois des grottes (minerais `exposed` notés par les cartographes — avec
+// l'anti-xray ce sont les seuls que le client reçoit) au lieu du strip-mine aveugle à Y16.
+// Choix de la grappe : caveIron.js (PUR). Exécution : skills/caveIron.js. Ici, la glue.
+// ⚠️ NIVEAU MODULE (piège #56) : lus par ctxExtra à chaque pas du planner.
+// Les essais (ratés ou terminés) sont PERSISTÉS dans le mémo base (`caveFails`, 30 min) : le
+// self-healing relance le bot après chaque mort, un Set de process re-ciblerait la même grotte morte.
+const IRON_CAVE_CACHE_MS = 30000;    // ctxExtra tourne à chaque pas : on ne relit pas 8 Mo de carte à chaque fois
+let _ironCaveCache = { at: 0, cave: null };
+let _caveTorchAt = 0;
+let _caveTorchPos = null;
+const IRON_CAVE_OBJECTIVES = new Set(['iron_armor', 'diamond_armor']);
+
+function _caveInvTier() {
+  const t = { stone_pickaxe: 2, iron_pickaxe: 3, diamond_pickaxe: 4, netherite_pickaxe: 5 };
+  let best = 0;
+  for (const it of ((bot && bot.inventory && bot.inventory.items()) || [])) {
+    if (t[it.name] && t[it.name] > best) best = t[it.name];
+  }
+  return best;
+}
+
+/** Ores de la mémoire partagée pour le monde courant (même résolution de clé que le dry-steer). */
+function _caveWorldOres() {
+  const mem = args['world-memory'] ? loadMemory(String(args['world-memory'])) : bot._worldMemory;
+  const wk = String(bot._worldKey || 'overworld');
+  const w = mem && mem.worlds && (mem.worlds[wk] || mem.worlds[wk.replace(/^minecraft:/, '')]);
+  return (w && Array.isArray(w.ores)) ? w.ores : [];
+}
+
+function loadCaveFails(now) {
+  const st = loadBaseState() || {};
+  return caveIronPick.caveFailsPrune(st.caveFails, now);
+}
+
+/** Mémorise un essai de grappe (fusionne dans le mémo base, cf. saveBaseState). */
+function noteCaveTried(cave, why) {
+  try {
+    const st = loadBaseState() || {};
+    saveBaseState(Object.assign({}, st, { caveFails: caveIronPick.caveFailsAdd(st.caveFails, cave, why, Date.now()) }));
+  } catch (e) { /* best-effort */ }
+  _ironCaveCache = { at: 0, cave: null };
+}
+
+/** La grappe de fer exposé à viser, ou null. Seulement pour les chaînes armure, pioche pierre+ en poche. */
+function ironCaveCtx() {
+  const objT = world && world.objective && world.objective.type;
+  if (!IRON_CAVE_OBJECTIVES.has(objT)) return null;
+  const now = Date.now();
+  if (now - _ironCaveCache.at < IRON_CAVE_CACHE_MS) return _ironCaveCache.cave;
+  let cave = null;
+  try {
+    const p = bot && bot.entity && bot.entity.position;
+    if (p && _caveInvTier() >= 2) {
+      cave = caveIronPick.pickIronCave(_caveWorldOres(), { x: p.x, y: p.y, z: p.z }, {
+        now,
+        fails: loadCaveFails(now),
+        isClaimed: (k) => { const c = _teamClaims && _teamClaims.peek(k); return !!(c && c.by !== bot.username); },
+        confine: CONFINE || _confineDyn,
+      });
+    }
+  } catch (e) { cave = null; }
+  _ironCaveCache = { at: now, cave };
+  return cave;
+}
+
+async function _caveTorch() {
+  try {
+    const pT = bot.entity && bot.entity.position;
+    if (!pT) return;
+    const items = (bot.inventory && bot.inventory.items()) || [];
+    const torch = items.find((i) => i.name === 'torch');
+    if (!torch) return;
+    let light = null;
+    try { const b = bot.blockAt(pT.floored()); if (b && typeof b.light === 'number') light = b.light; } catch (e) {}
+    if (!shouldPlaceTorch({
+      y: pT.y, lightLevel: light, torches: torch.count, now: Date.now(),
+      lastAt: _caveTorchAt, pos: { x: pT.x, z: pT.z }, lastPos: _caveTorchPos,
+    })) return;
+    const ref = bot.blockAt(pT.floored().offset(0, -1, 0));
+    if (!ref || ref.boundingBox !== 'block') return;
+    await bot.equip(torch, 'hand');
+    await bot.placeBlock(ref, vec3Lib(0, 1, 0));
+    _caveTorchAt = Date.now();
+    _caveTorchPos = { x: pT.x, z: pT.z };
+    emit({ type: 'torch_placed', from: 'caveIron', y: Math.round(pT.y), light });
+  } catch (e) { /* best-effort */ }
+}
+
+/**
+ * Déplacement vers un minerai de grotte : par l'OUVERTURE d'abord (canDig:false, le chemin d'un
+ * joueur), en creusant ensuite (canDig:true) si la grotte n'est pas reliée. y RÉEL connu → 3D.
+ */
+async function _caveGotoOre(t, tok) {
+  const near = () => {
+    const p = bot.entity && bot.entity.position;
+    return !!(p && Math.hypot(p.x - (t.x + 0.5), p.y - t.y, p.z - (t.z + 0.5)) <= 4.5);
+  };
+  if (near()) return true;
+  const air = openNeighborOf(t);
+  const goal = air ? new pfGoals.GoalNear(air.x, air.y, air.z, 1) : new pfGoals.GoalNear(t.x, t.y, t.z, 2);
+  const stop = () => { try { stopMotion(); } catch (e) {} };
+  await withTempMovements(bot, Movements, { canDig: false }, async () => {
+    try { await withTimeout(bot.pathfinder.goto(goal), 60000, stop); } catch (e) { /* NoPath → phase 2 */ }
+  });
+  if (near() || tok.cancelled) return near();
+  await withTempMovements(bot, Movements, { canDig: true }, async () => {
+    try { await withTimeout(bot.pathfinder.goto(goal), 60000, stop); } catch (e) { /* inatteignable */ }
+  });
+  return near();
+}
+
+async function runCaveIron() {
+  _ironCaveCache = { at: 0, cave: null };          // relire la carte : un coéquipier a pu passer
+  const cave = ironCaveCtx();
+  _ironCaveCache = { at: 0, cave: null };
+  if (!cave) return { ok: false, reason: 'no_cave_target' };
+  if (_teamClaims && !_teamClaims.tryClaim(cave.key)) {
+    emit({ type: 'cave_failed', why: 'claimed', x: cave.x, y: cave.y, z: cave.z });
+    return { ok: false, reason: 'claimed' };
+  }
+  const tok = taskToken;                            // CAPTURÉ : une préemption ne nous le vole pas
+  const wkey = String(bot._worldKey || 'overworld');
+  const stop = () => { try { stopMotion(); } catch (e) {} };
+  const rawIron = () => ((bot.inventory && bot.inventory.items()) || [])
+    .reduce((s, i) => s + (i.name === 'raw_iron' ? i.count : 0), 0);
+  let r = null;
+  try {
+    r = await caveIronSkill({
+      cave, world: wkey, emit,
+      // y du minerai deviné-par-carte mais réel : approche XZ d'abord (sans creuser), puis 3D.
+      travel: async (c) => {
+        const e = c.ores[0];
+        const p = bot.entity && bot.entity.position;
+        if (p && Math.hypot(p.x - e.x, p.z - e.z) > 24) {
+          await withTempMovements(bot, Movements, { canDig: false }, async () => {
+            try { await withTimeout(bot.pathfinder.goto(new pfGoals.GoalNearXZ(e.x, e.z, 8)), 150000, stop); } catch (err) {}
+          });
+          if (tok.cancelled) return false;
+        }
+        return await _caveGotoOre(e, tok);
+      },
+      oreState: (o) => {
+        const b = bot.blockAt(vec3Lib(o.x, o.y, o.z));
+        if (!b) return 'unknown';
+        return caveIronPick.isIronOre(b.name) ? 'ore' : 'gone';
+      },
+      approach: (o) => _caveGotoOre(o, tok),
+      // Même garde que le ramassage opportuniste : jamais à travers la paroi (anti « x-ray »).
+      canSee: (o) => {
+        const b = bot.blockAt(vec3Lib(o.x, o.y, o.z));
+        if (!b) return false;
+        return typeof bot.canSeeBlock === 'function' ? !!bot.canSeeBlock(b) : true;
+      },
+      mineVein: async (o) => {
+        if (isInWater(bot)) { try { await escapeWater(bot, { emit }); } catch (e) {} if (isInWater(bot)) return 0; }
+        const before = rawIron();
+        await withTimeout(floodFillVein(bot, o, tok), 120000, stop);
+        return Math.max(0, rawIron() - before);
+      },
+      survivalTick: () => branchSurvivalTick(),
+      placeTorch: () => _caveTorch(),
+      // Le chantier EST la grotte : après une mort, `/home work` ramène ici (dette de mort à part).
+      markWork: () => {
+        if (isInWater(bot)) return false;
+        if (!homewarp.bookmark(bot, HOME_WORK)) return false;
+        _workSet = true; _workPos = _botXZ();
+        emit({ type: 'work_bookmarked', why: 'iron_cave' });
+        return true;
+      },
+      refreshClaim: () => { if (_teamClaims) _teamClaims.refresh(cave.key); },
+    }, tok);
+  } finally {
+    try { if (_teamClaims) _teamClaims.release(cave.key); } catch (e) {}
+  }
+  // Une préemption (migration, combat, nuit) n'est pas un verdict sur la grotte.
+  if (r && r.reason !== 'cancelled') noteCaveTried(cave, r.ok ? 'done' : r.reason);
+  return r;
 }
 
 /** Lit la dette persistée (ou null). */

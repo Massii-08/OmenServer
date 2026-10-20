@@ -305,6 +305,14 @@ const IRON_ARMOR_CHAIN = [
   // quand la fonte a brûlé les planches.
   { name: 'block_buffer', met: (c) => posableCount(c.inv) >= 8 || IA(c),
     skill: 'gather',      args: { name: ['cobblestone', 'stone', 'dirt', 'grass_block', 'gravel'], count: 8 } },
+  // FER EN GROTTE (Massii 20/10 : « plus vite vers l'armure de fer, sans tricher, comme un humain »).
+  // Un joueur ne strip-mine pas pour son premier fer : il va dans les grottes/ravins où il se VOIT
+  // sur les parois. `c.ironCave` = la grappe de fer EXPOSÉ et SEC la plus rentable de la mémoire
+  // partagée (caveIron.pickIronCave, calculée par ctxExtra). SATISFIABLE-OU-SAUTABLE : sans grappe
+  // valable (aucune, trop loin, claimée, ratée < 30 min, noyée) le but est atteint d'office et la
+  // chaîne retombe sur le branch-mine à Y16 juste en dessous — jamais de blocage.
+  { name: 'iron_cave',    met: (c) => ironOK(c) || IA(c) || !c.ironCave,
+    skill: 'caveIron',    args: {} },
   { name: 'descend_y16',  met: (c) => (c.y !== undefined && c.y <= 18) || ironOK(c) || IA(c),
     skill: 'descendDiagonal', args: { targetY: 16 } },
   // serpentine:true (fix n°2 water-wall) : le mode serpentin TOURNE au contact de l'eau (+ scelle
