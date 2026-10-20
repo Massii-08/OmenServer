@@ -101,3 +101,34 @@ test('escalades au même spot mais HORS fenêtre giveUp → compteur d\'escalade
 test('défaut : giveUp après 3 escalades', () => {
   assert.equal(DEFAULT_GIVEUP_ESCALATIONS, 3);
 });
+
+// ─── 3e tier : jam_loop répété d'une session à l'autre (20/10, NethBot1) ─────────────────────────
+const { jamLoopMemoWith, jamLoopAtStart, jamLoopCleared, JAM_LOOP_TTL_MS } = require('./jamEscalate');
+
+test('jamLoopMemoWith : fusionne le mémo, cumule au même endroit, repart à 1 ailleurs', () => {
+  const T = 1_800_000_000_000;
+  const m1 = jamLoopMemoWith({ base: { x: 1 }, woodRequest: { want: 16 } }, { x: -43, y: 40, z: -340 }, T);
+  assert.deepStrictEqual(m1.base, { x: 1 });
+  assert.deepStrictEqual(m1.woodRequest, { want: 16 });
+  assert.strictEqual(m1.jamLoop.count, 1);
+  const m2 = jamLoopMemoWith(m1, { x: -42, y: 40, z: -339 }, T + 60000);
+  assert.strictEqual(m2.jamLoop.count, 2);
+  const m3 = jamLoopMemoWith(m2, { x: 100, y: 40, z: -339 }, T + 120000);
+  assert.strictEqual(m3.jamLoop.count, 1);
+  const m4 = jamLoopMemoWith(m2, { x: -42, y: 40, z: -339 }, T + 60000 + JAM_LOOP_TTL_MS);
+  assert.strictEqual(m4.jamLoop.count, 1, 'trop vieux : pas le même piège');
+});
+
+test('jamLoopAtStart : vrai seulement au 2e jam_loop récent, à ≤ 4 blocs', () => {
+  const T = 1_800_000_000_000;
+  const p = { x: -43, y: 40, z: -340 };
+  const one = jamLoopMemoWith(null, p, T);
+  assert.strictEqual(jamLoopAtStart(one, p, T + 1000), false);
+  const two = jamLoopMemoWith(one, p, T + 60000);
+  assert.strictEqual(jamLoopAtStart(two, { x: -41, y: 40, z: -338 }, T + 70000), true);
+  assert.strictEqual(jamLoopAtStart(two, { x: -20, y: 40, z: -338 }, T + 70000), false, 'ailleurs');
+  assert.strictEqual(jamLoopAtStart(two, p, T + 60000 + JAM_LOOP_TTL_MS), false, 'périmé');
+  assert.strictEqual(jamLoopAtStart(null, p, T), false);
+  assert.strictEqual(jamLoopAtStart(jamLoopCleared(two), p, T + 70000), false);
+  assert.deepStrictEqual(jamLoopCleared({ a: 1, jamLoop: {} }), { a: 1 });
+});

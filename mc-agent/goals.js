@@ -512,11 +512,15 @@ const IRON_HELP_CHAIN = [
 // On livre des PIÈCES FORGÉES, pas des lingots : un mappeur n'a ni four ni table de craft.
 const GIFT_SET_INGOTS = 24;   // 5 (casque) + 8 (plastron) + 7 (jambières) + 4 (bottes)
 
+// LIVRAISON PAR LOTS (20/10, NethBot2 : 11 lingots, deux cartographes nus, redescendait miner pour un set
+// complet de 24). `c.giftBatch` = un lot ABORDABLE avec la poche actuelle (pièces manquantes du cartographe
+// réservé, la moins chère d'abord — lumberjack.giftBatchFor) : tous les buts de mine/fonte sont alors
+// sautés, gift_craft forge le lot et gift_deliver le livre ; la chaîne repart ensuite pour la suite.
 const MAPPER_ARMOR_CHAIN = [
   // Même garde pioche que IRON_HELP_CHAIN (piège world_mn8 27/07) : sans lui, un worker chargé
   // d'armer un cartographe bouclait iron_deep → no_pickaxe. Sautable si pas de cible, si une pioche
   // fer-capable est là, ou si le fer en poche suffit déjà pour le set (plus rien à miner).
-  { name: 'gift_pick',    met: (c) => !c.mapperTarget || canMineIron(c)
+  { name: 'gift_pick',    met: (c) => !c.mapperTarget || !!c.giftBatch || canMineIron(c)
       || (invCount(c.inv, 'raw_iron') + invCount(c.inv, 'iron_ingot')) >= GIFT_SET_INGOTS,
     skill: 'ensurePick' },
   // BUFFER PLANCHES pré-descente (mirror EXACT de IRON_ARMOR_CHAIN.plank_buffer — le frein n°1
@@ -531,36 +535,36 @@ const MAPPER_ARMOR_CHAIN = [
   // et le worker n'armait JAMAIS son cartographe (mesuré : NethBot1 sur mapper_armor, 18× gift_planks
   // not_found, 0 livraison). Bois prouvé rare → on saute le buffer et on descend miner le fer du set
   // (table portable en poche + four = cobble → aucun bois requis en aval). Vraiment aligné sur plank_buffer.
-  { name: 'gift_planks',  met: (c) => !c.mapperTarget
+  { name: 'gift_planks',  met: (c) => !c.mapperTarget || !!c.giftBatch
       || (c.y !== undefined && c.y <= 30)
       || (anyPlanks(c.inv) + anyLog(c.inv) * 4 >= 24)
       || invCount(c.inv, 'iron_ingot') >= GIFT_SET_INGOTS
       || !!c.noWood,
     skill: 'gatherLog',    args: { count: 6 } },
-  { name: 'gift_descend', met: (c) => !c.mapperTarget
+  { name: 'gift_descend', met: (c) => !c.mapperTarget || !!c.giftBatch
       || (c.y !== undefined && c.y <= 18) || invCount(c.inv, 'iron_ingot') >= GIFT_SET_INGOTS,
     skill: 'descendDiagonal', args: { targetY: 16 } },
-  { name: 'gift_iron',    met: (c) => !c.mapperTarget
+  { name: 'gift_iron',    met: (c) => !c.mapperTarget || !!c.giftBatch
       || invCount(c.inv, 'raw_iron') + invCount(c.inv, 'iron_ingot') >= GIFT_SET_INGOTS,
     skill: 'branchMine',   args: { targetY: 16, mainLength: 48, branchSpacing: 3, branchLength: 8, serpentine: true, allowDeeper: true } },
   // COMBUSTIBLE avant la fonte (fix veille 27/07, meme cause que iron_surplus) : sans but
   // combustible, gift_smelt bouclait no_fuel sous terre. On mine le charbon de la strate fer.
-  { name: 'gift_coal',    met: (c) => !c.mapperTarget || fuelUnits(c) >= GIFT_SET_INGOTS
+  { name: 'gift_coal',    met: (c) => !c.mapperTarget || !!c.giftBatch || fuelUnits(c) >= GIFT_SET_INGOTS
                                        || invCount(c.inv, 'iron_ingot') >= GIFT_SET_INGOTS
                                        || (c.y === undefined || c.y > 40),
     skill: 'gather',       args: { name: ['coal_ore', 'deepslate_coal_ore'], count: 4 } },
-  { name: 'gift_fuel',    met: (c) => !c.mapperTarget || fuelUnits(c) >= GIFT_SET_INGOTS
+  { name: 'gift_fuel',    met: (c) => !c.mapperTarget || !!c.giftBatch || fuelUnits(c) >= GIFT_SET_INGOTS
                                        || invCount(c.inv, 'iron_ingot') >= GIFT_SET_INGOTS,
     skill: 'gatherLog',    args: { count: 4 } },
   // FOUR avant la fonte (fix world_mn9 27/07, meme cause que gift_pick/gift_coal) : sans but four,
   // gift_smelt bouclait no_furnace des qu'un worker avait laisse son four derriere. Mirror exact de
   // IRON_ARMOR_CHAIN. Sautable si pas de cible, four deja en poche, ou fer deja fondu suffisant.
-  { name: 'gift_cobble',  met: (c) => !c.mapperTarget || invCount(c.inv, 'cobblestone') >= 8 || F(c)
+  { name: 'gift_cobble',  met: (c) => !c.mapperTarget || !!c.giftBatch || invCount(c.inv, 'cobblestone') >= 8 || F(c)
                                        || invCount(c.inv, 'iron_ingot') >= GIFT_SET_INGOTS,
     skill: 'gather',       args: { name: 'stone', count: 8 } },
-  { name: 'gift_furnace', met: (c) => !c.mapperTarget || F(c) || invCount(c.inv, 'iron_ingot') >= GIFT_SET_INGOTS,
+  { name: 'gift_furnace', met: (c) => !c.mapperTarget || !!c.giftBatch || F(c) || invCount(c.inv, 'iron_ingot') >= GIFT_SET_INGOTS,
     skill: 'craft',        args: { name: 'furnace', count: 1 } },
-  { name: 'gift_smelt',   met: (c) => !c.mapperTarget || invCount(c.inv, 'iron_ingot') >= GIFT_SET_INGOTS,
+  { name: 'gift_smelt',   met: (c) => !c.mapperTarget || !!c.giftBatch || invCount(c.inv, 'iron_ingot') >= GIFT_SET_INGOTS,
     skill: 'smeltIron',    args: { count: GIFT_SET_INGOTS } },
   // Forge les 4 pièces EN POCHE (le worker porte déjà les siennes : les slots d'armure ne sont
   // pas dans inventory.items(), une pièce en poche est donc bien du surplus livrable).

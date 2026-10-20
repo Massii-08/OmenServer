@@ -134,6 +134,28 @@ function effectiveVerdict(verdict, refusedSafeAt, now, windowMs = REFUSAL_DEGRAD
   return 'escape';
 }
 
+// ─── Home INEXISTANT côté serveur (20/10, NethBot1 sessions 309-313) ─────────────────────────────
+// Le mémo de base disait « base installée » (base_adopted → _safeHomeSet = true) alors que le serveur
+// n'avait AUCUN home : chaque `/home safe` répondait « Player has not set a home. » et le bot restait
+// emmuré à y 40, session après session. Le message ne cite pas toujours le nom du home : on l'attribue
+// au dernier /home envoyé (même fenêtre que refusedHome). Variantes Essentials EN/FR/IT.
+const _NO_HOME_RE = /has not set a home|home \S+ (does not|doesn't) exist|no home (is )?set|n'a (pas|aucun) (encore )?(défini |de )?(de )?home|home \S+ n'existe pas|non ha (ancora )?impostato|non esiste/i;
+
+/** Le message chat dit-il que le home demandé n'existe pas ? (pur) */
+function isNoHomeSet(msg) {
+  return typeof msg === 'string' && _NO_HOME_RE.test(msg);
+}
+
+/** Attribue un « home inexistant » au dernier /home envoyé (fenêtre courte). Nom, ou null.
+ *  CONSOMME le tracking (anti double-comptage), comme refusedHome. */
+function missingHome(bot, msg, windowMs = REFUSAL_WINDOW_MS) {
+  if (!isNoHomeSet(msg)) return null;
+  const last = bot && bot._mcaLastHome;
+  if (!last || (Date.now() - last.at) > windowMs) return null;
+  bot._mcaLastHome = null;
+  return last.name;
+}
+
 // ─── Secure-then-warp (Massii 15/07) ────────────────────────────────────────────────────────────
 // Certains serveurs ont un teleport-delay Essentials (warmup ~5 s) : le /home est ANNULÉ si le
 // joueur bouge ou prend un coup pendant l'attente. Or nos /home de secours partent PRÉCISÉMENT
@@ -227,5 +249,6 @@ module.exports = {
   bookmark, goHome, goSpawn, goSafe: goSpawn, goWork, delhome,
   sanitizeName, RESERVED, classifyImminent, dropsWithin,
   IMMINENT_HP, isTpRefusal, refusedHome, effectiveVerdict, REFUSAL_DEGRADE_MS,
+  isNoHomeSet, missingHome,
   isTpWarmup, isTpCancelled, isTpAlreadyPending, secureTactic,
 };

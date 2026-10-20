@@ -1013,3 +1013,13 @@ test('LUMBERJACK_CHAIN : bois en attente > SES pièces > armure cartographe > fo
   // un collect qui gèle ne doit plus manger tout le budget du skill (2 × 90 s = les 180 s de gatherLog)
   assert.ok(LUMBERJACK_CHAIN.find((x) => x.name === 'lj_stock').args.collectTimeoutMs <= 30000);
 });
+
+test('MAPPER_ARMOR_CHAIN: lot abordable (NethBot2 20/10, 11 lingots, SANS pioche, y 13) → forger tout de suite, pas de mine', () => {
+  const MAC = require('./goals').MAPPER_ARMOR_CHAIN;
+  const ctx = { inv: { iron_ingot: 11 }, y: 13, mapperTarget: 'MapBot2', giftBatch: true, giftReady: false };
+  assert.strictEqual(firstUnmet(MAC, ctx).name, 'gift_craft');
+  // lot forgé en poche → livrer
+  assert.strictEqual(firstUnmet(MAC, Object.assign({}, ctx, { giftReady: true })).name, 'gift_deliver');
+  // sans lot (rien d'abordable) : chemin historique, on refait la pioche puis on mine
+  assert.strictEqual(firstUnmet(MAC, Object.assign({}, ctx, { giftBatch: false })).name, 'gift_pick');
+});

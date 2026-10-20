@@ -330,6 +330,49 @@ function pickForestCell({ from, anchor, biomes, depleted, avoid, now } = {}) {
   return best;
 }
 
+// ─── BOIS MANQUANT POUR UN CRAFT (20/10, NethBot2 session 312) ────────────────────────────────────
+// `gift_pick` échouait 16× `pick_recovery:no_sticks` (+ `craft stick no_table:unknown_item`) avec
+// 1 planche d'acacia et 0 bûche, à y 13 — et ne demandait JAMAIS de bois au bûcheron : la demande ne
+// partait que pour les buts dont le skill est `gatherLog`. Tout manque de bois pour un craft (bâtons,
+// planches, table) doit passer par la même demande que les buts bois.
+const WOOD_SHORT_RE = /no_sticks|no_wood|no_planks|no_table|no_recipe|unknown_item/;
+const PLANKS_FOR_TABLE = 4;
+const PLANKS_FOR_STICKS = 2;               // 2 planches → 4 bâtons
+
+/** PUR — planches disponibles (bûches comptées 4 planches) < planches requises (table si absente, bâtons si < need) ? */
+function craftWoodShortage({ logs = 0, planks = 0, sticks = 0, table = false, needSticks = 2, needTable = true } = {}) {
+  const required = (needTable && !table ? PLANKS_FOR_TABLE : 0) + (sticks < needSticks ? PLANKS_FOR_STICKS : 0);
+  return required > 0 && (planks + logs * 4) < required;
+}
+
+/**
+ * PUR — cet échec de but vient-il d'un MANQUE DE BOIS ? reason = raison du skill, goalName = but,
+ * inv = {nom: n}, hasTable = table de craft à portée. Les bâtons ne comptent que pour un craft qui en
+ * consomme (pioche, épée, torche, bâton lui-même) ; une pièce d'armure ne demande qu'une table.
+ */
+function woodShortForFailure({ reason, goalName, inv, hasTable } = {}) {
+  const r = String(reason || '');
+  if (!WOOD_SHORT_RE.test(r)) return false;
+  const wantSticks = /stick|pick|sword|torch|shovel|axe/.test(r + ' ' + String(goalName || ''));
+  let planks = 0;
+  for (const [k, v] of Object.entries(inv || {})) if (k.endsWith('_planks')) planks += v || 0;
+  return craftWoodShortage({
+    logs: logCount(inv), planks, sticks: (inv && inv.stick) || 0,
+    table: !!hasTable || ((inv && inv.crafting_table) || 0) > 0,
+    needSticks: wantSticks ? 2 : 0,
+  });
+}
+
+// ─── ARMURE DES CARTOGRAPHES PAR LOTS (20/10, NethBot2) ───────────────────────────────────────────
+// La chaîne mapper_armor visait un set COMPLET (24 lingots) : NethBot2, 11 lingots en poche et deux
+// cartographes nus, redescendait miner au lieu de forger casque + bottes (9) et de les livrer tout de
+// suite. Lot = les pièces MANQUANTES du cartographe réservé qui tiennent dans les lingots en poche, la
+// moins chère d'abord (même plan que celui du bûcheron, pickMapperForLumberjack). null = rien d'abordable.
+function giftBatchFor({ target, ingots, pocket, brokenPocket, now } = {}) {
+  if (!target || !target.name) return null;
+  return pickMapperForLumberjack({ mates: [target], selfName: null, now, ingots, pocket, brokenPocket });
+}
+
 module.exports = {
   WOOD_REQUEST_TTL_MS, WOOD_REQUEST_COOLDOWN_MS, LUMBERJACK_FRESH_MS, WOOD_WANT_MIN, WOOD_WANT_MAX,
   LUMBERJACK_STOCK, LUMBERJACK_RESERVE, WOOD_MIN_GIFT,
@@ -338,5 +381,6 @@ module.exports = {
   ARMOR_ORDER, MIN_PIECE_INGOTS, missingIronPieces, ownArmorAction, pickMapperForLumberjack, ljGiftReady,
   LJ_STOCK_FAIL_WINDOW_MS, LJ_STOCK_FAILS_FOR_TRIP, LJ_FOREST_TRIP_MS, LJ_FOREST_MIN_DIST, LJ_FOREST_MAX_DIST,
   LJ_FOREST_ANCHOR_MAX, LJ_FOREST_AVOID_MS,
+  craftWoodShortage, woodShortForFailure, giftBatchFor,
   stockFailsPrune, stockFailsAdd, needsForestTrip, isForestBiome, forestTriedPrune, forestTriedAdd, pickForestCell,
 };

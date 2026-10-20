@@ -238,3 +238,46 @@ test('forestTriedAdd/Prune : mémoire des forêts ratées, 30 min, bornée', () 
   for (let i = 0; i < 20; i++) l = L.forestTriedAdd(l, { x: i * 200, z: 0 }, NOW + i);
   assert.ok(l.length <= 8);
 });
+
+// ─── 20/10 : bois manquant pour un craft + armure cartographe par lots ─────────────────────────
+const { craftWoodShortage, woodShortForFailure, giftBatchFor } = require('./lumberjack');
+
+test('craftWoodShortage : 1 planche sans table ni bâtons → manque ; 1 bûche suffit pour les bâtons', () => {
+  assert.strictEqual(craftWoodShortage({ planks: 1 }), true);
+  assert.strictEqual(craftWoodShortage({ planks: 6 }), false);
+  assert.strictEqual(craftWoodShortage({ logs: 1, table: true }), false);
+  assert.strictEqual(craftWoodShortage({ planks: 0, sticks: 4, table: true }), false, 'rien à crafter en bois');
+});
+
+test('woodShortForFailure : cas réel NethBot2 session 312 (1 acacia_planks, 0 bûche, pas de table)', () => {
+  const inv = { acacia_planks: 1, iron_ingot: 11, cobbled_deepslate: 18, cobblestone: 39 };
+  assert.strictEqual(woodShortForFailure({ reason: 'pick_recovery:no_sticks', goalName: 'gift_pick', inv }), true);
+  assert.strictEqual(woodShortForFailure({ reason: 'no_table:unknown_item', goalName: 'gift_craft', inv }), true);
+  // une table à portée + pièce d'armure : il ne manque PAS de bois
+  assert.strictEqual(woodShortForFailure({ reason: 'no_table:unknown_item', goalName: 'gift_craft', inv, hasTable: true }), false);
+  // raison sans rapport avec le bois
+  assert.strictEqual(woodShortForFailure({ reason: 'tpa_failed', goalName: 'gift_deliver', inv }), false);
+  // assez de bois en poche : l'échec vient d'ailleurs
+  assert.strictEqual(woodShortForFailure({ reason: 'pick_recovery:no_sticks', goalName: 'gift_pick', inv: { oak_log: 3 } }), false);
+});
+
+test('giftBatchFor : 11 lingots, MapBot2 nu → bottes + casque (9), plus cher reporté', () => {
+  const now = 1_800_000_000_000;
+  const target = { name: 'MapBot2', role: 'mapper', at: now, armor: 0,
+    missing: ['iron_boots', 'iron_helmet', 'iron_leggings', 'iron_chestplate'] };
+  const b = giftBatchFor({ target, ingots: 11, pocket: [], now });
+  assert.deepStrictEqual(b.pieces, ['iron_boots', 'iron_helmet']);
+  assert.strictEqual(b.ingots, 9);
+  assert.strictEqual(b.to, 'MapBot2');
+});
+
+test('giftBatchFor : rien d’abordable → null ; pièce déjà en poche = gratuite', () => {
+  const now = 1_800_000_000_000;
+  const target = { name: 'MapBot1', role: 'mapper', at: now, armor: 1,
+    missing: ['iron_helmet', 'iron_leggings', 'iron_chestplate'] };
+  assert.strictEqual(giftBatchFor({ target, ingots: 2, pocket: [], now }), null);
+  const b = giftBatchFor({ target, ingots: 2, pocket: ['iron_chestplate'], now });
+  assert.deepStrictEqual(b.pieces, ['iron_chestplate']);
+  assert.strictEqual(b.ingots, 0);
+  assert.strictEqual(giftBatchFor({ target: null, ingots: 20, now }), null);
+});

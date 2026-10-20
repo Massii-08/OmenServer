@@ -120,7 +120,8 @@ const {
   homeCamped, spawnpointVeto, rescueWarpVeto, safeHomeMove, spawnSafeHomeAction, deathPosPrune, deathPosLoad, deathPosMemoWith,
   safeHomeLoad, safeHomeMemoWith, nearestHostile, hostileNearHome, CAMPED_EVENT_EVERY_MS,
 } = require('./homeSafety');
-const { recordJam } = require('./jamEscalate'); // JAM persistant au MÊME endroit → relocate forcé (live 22/06 SOIR ResBot2)
+const { recordJam, jamLoopMemoWith, jamLoopAtStart, jamLoopCleared } = require('./jamEscalate'); // JAM persistant au MÊME endroit → relocate forcé (live 22/06 SOIR ResBot2) ; jam_loop répété → escalier (20/10)
+const { digOut: digOutSkill, isOutside: digOutIsOutside, DIG_OUT_MAX_MS } = require('./skills/digOut'); // escalier vers la surface quand aucun home ne sort le bot (20/10)
 const { runResource } = require('./skills/resource');
 const { planSmeltRaw } = require('./bank');   // fonte périodique du brut or/fer → lingots bankables
 const { tunnelTo } = require('./skills/tunnelTo');
@@ -140,6 +141,7 @@ const {
   isWoodGoal, woodWantFor, logCount, activeLumberjack, woodWaitDecision, preferredLumberjack,
   lumberjackVerdict, pickWoodRequest, tossPlan, WOOD_REQUEST_TTL_MS, WOOD_MIN_GIFT, LUMBERJACK_STOCK,
   missingIronPieces, ownArmorAction, pickMapperForLumberjack, ljGiftReady,
+  woodShortForFailure, giftBatchFor,
   stockFailsPrune, stockFailsAdd, needsForestTrip, forestTriedAdd, pickForestCell, LJ_FOREST_TRIP_MS,
 } = require('./lumberjack');
 const { tierRank } = require('./tools');
@@ -412,6 +414,35 @@ let _imminentBusy = false;    // anti-rafale : un seul warp de sauvetage PV à l
 let _homeRefusedAt = {};      // RC3 : refus TP Essentials par home {safe|chantier|death → ts} — un /home
                               // refusé (« destination unsafe », monde noyé) ne téléporte PAS : sans ça
                               // le filet de secours était un no-op silencieux (zombie 1.8 PV, vécu NethBot2)
+// HOME INEXISTANT côté serveur (20/10, NethBot1 sessions 309-313) : le mémo de base disait « base
+// installée » (base_adopted → _safeHomeSet = true) alors que le serveur répondait « Player has not set a
+// home. » à chaque /home safe. Le bot croyait avoir un filet de secours qui n'existait pas, restait emmuré
+// et bouclait jam_loop → exit → respawn au même endroit. On le NOTE (process + mémo de base, relu à
+// l'adoption de la base) ; le watchdog NO_GIVE re-pose `safe` à la première surface sèche (même voie que
+// le safe refusé) et l'escalier (digOutAndResume) sort le bot quand aucun home ne le peut.
+let _homeMissingAt = {};      // { nom → ts } du dernier « has not set a home » attribué
+let _homeMissingEvAt = {};    // throttle de l'event home_missing (1/min/nom)
+const HOME_MISSING_EVENT_EVERY_MS = 60000;
+const SAFE_MISSING_MEMO_KEY = 'safeHomeMissingAt';
+function noteHomeMissing(name) {
+  const now = Date.now();
+  _homeMissingAt[name] = now;
+  if (name === HOME_SAFE) {
+    _safeHomeSet = false;           // le re-pose du watchdog (surface sèche) se déclenche sur !_safeHomeSet
+    _safeHomeSurface = false;
+    _homeRefusedAt.safe = now;      // les secours cessent de compter dessus (safeWarpDown)
+    try { saveBaseState(Object.assign({}, loadBaseState() || {}, { [SAFE_MISSING_MEMO_KEY]: now })); } catch (e) { /* best-effort */ }
+  }
+  if (name === HOME_WORK) _workSet = false;
+  if (now - (_homeMissingEvAt[name] || 0) >= HOME_MISSING_EVENT_EVERY_MS) {
+    _homeMissingEvAt[name] = now;
+    emit({ type: 'home_missing', name });
+  }
+}
+/** Le serveur a-t-il dit que `safe` n'existe pas (et il n'a pas été re-posé depuis) ? */
+function safeHomeKnownMissing() {
+  return !!_homeMissingAt[HOME_SAFE];
+}
 // Le /home safe est-il inutilisable en ce moment (refus récent, pas encore re-posé) ?
 function safeWarpDown() {
   return !!(_homeRefusedAt.safe && (Date.now() - _homeRefusedAt.safe) <= homewarp.REFUSAL_DEGRADE_MS);
@@ -929,6 +960,7 @@ function ctxExtra() {
   if (!onGiftChain && !ljGiftNow && _giftTarget) releaseGiftTarget(_giftTarget);
   const gift = onGiftChain ? _giftContext()
     : (ljGiftNow ? { target: ljGiftNow.to, ready: ljGiftNow.ready } : { target: null, ready: false });
+  if (!onGiftChain) _giftBatch = null;   // un lot n'a de sens que dans la chaîne mapper_armor
   // noWood : le bois est PROUVÉ rare dans cette zone (même seuil que le verdict « zone rasée »).
   // Rend `plank_buffer` non bloquant → un ouvrier remonté en surface d'un wood-desert peut enfin
   // redescendre miner son fer au lieu de boucler gatherLog→not_found (deadlock world_mn12, 28/07).
@@ -948,7 +980,7 @@ function ctxExtra() {
   try { passiveNear = !!nearestPassive(bot, HUNT_SIGHT_RADIUS); } catch (e) { passiveNear = false; }
   return {
     hasTable: !!_nearestTable(bot), y: pos ? pos.y : undefined, worn: [..._wornArmor()], offhand,
-    mapperTarget: gift.target, giftReady: gift.ready, noWood, passiveNear,
+    mapperTarget: gift.target, giftReady: gift.ready, giftBatch: !!gift.batch, noWood, passiveNear,
     // Bûcheron : la demande réservée à servir (LUMBERJACK_CHAIN.lj_deliver). Null hors rôle.
     woodRequest: isLumberjackObjective() ? _ljContext() : null,
     ljOwnArmor: ljArmor ? ljArmor.own : null,
@@ -978,19 +1010,55 @@ let _giftTarget = null;          // cartographe réservé (nom) ou null
 let _giftAt = 0;                 // instant du dernier calcul (cache)
 const _giftDone = new Map();     // nom -> instant de livraison (anti double-service)
 
+// LOT abordable pour le cartographe réservé (20/10, NethBot2 : 11 lingots, MapBot2 nu → bottes + casque
+// tout de suite au lieu de redescendre miner 24 lingots). { to, pieces, ingots } ou null. Niveau module :
+// lu par craftGiftSet / deliverMapperArmor (skills) et recalculé par _giftContext.
+let _giftBatch = null;
+const GIFT_BATCH_REDO_MS = 90000;   // après un lot livré : le cartographe redevient servable dès que son
+                                    // heartbeat (60 s) a publié ses nouvelles pièces manquantes
+
+/** Poche : pièces fer SAINES (noms) + usées + lingots — mêmes règles que le plan du bûcheron. */
+function _giftPocket() {
+  const good = [], broken = [];
+  let ingots = 0;
+  for (const it of (bot.inventory && bot.inventory.items()) || []) {
+    if (!it || !it.name) continue;
+    if (it.name === 'iron_ingot') ingots += it.count || 0;
+    if (GIFT_PIECES.includes(it.name)) (isNearlyBroken(it) ? broken : good).push(it.name);
+  }
+  return { good, broken, ingots };
+}
+
+/** Recalcule le lot pour `mate` (entrée de présence du cartographe réservé) ; null si rien d'abordable. */
+function _refreshGiftBatch(mate, now) {
+  const pk = _giftPocket();
+  const b = mate ? giftBatchFor({ target: mate, ingots: pk.ingots, pocket: pk.good, brokenPocket: pk.broken, now }) : null;
+  if (b && (!_giftBatch || _giftBatch.to !== b.to || _giftBatch.pieces.join() !== b.pieces.join())) {
+    emit({ type: 'gift_batch', to: b.to, pieces: b.pieces.slice(), ingots: b.ingots, phase: 'planned' });
+  }
+  _giftBatch = b;
+  return b;
+}
+
 function _giftContext() {
   const empty = { target: null, ready: false };
   try {
     const items = (bot && bot.inventory && bot.inventory.items()) || [];
-    const ready = giftSetPlan(items).ready;
+    const fullReady = giftSetPlan(items).ready;
+    // Lot en cours : prêt = toutes SES pièces en poche (sinon : le set complet historique).
+    const readyNow = () => ((_giftBatch && _giftBatch.to === _giftTarget)
+      ? ljGiftReady(_giftBatch.pieces, _giftPocket().good) : fullReady);
+    let ready = fullReady;
     // Serveur SANS plugin de téléportation (whitelist sans /tpa) : la livraison est IMPOSSIBLE par
     // construction — `deliverMapperArmor` est gated par le même isAllowed. Sans cette sortie on
     // réserverait une cible que PERSONNE ne peut servir, et comme les cartographes y restent nus en
     // permanence, la chaîne mapper_armor bouclerait à vie sur gift_blocked sans jamais atteindre le
     // diamant. Pas de cible ⇒ tous les buts de la chaîne sont satisfaits d'office → le bot enchaîne.
-    if (!isAllowed('/tpa x', whitelist)) { _giftTarget = null; return { target: null, ready }; }
+    if (!isAllowed('/tpa x', whitelist)) { _giftTarget = null; _giftBatch = null; return { target: null, ready }; }
     const now = Date.now();
-    if (now - _giftAt < GIFT_CACHE_MS) return { target: _giftTarget, ready };
+    if (now - _giftAt < GIFT_CACHE_MS) {
+      return { target: _giftTarget, ready: readyNow(), batch: !!(_giftBatch && _giftBatch.to === _giftTarget && _giftTarget) };
+    }
     _giftAt = now;
     for (const [name, at] of _giftDone) { if (now - at > GIFT_DONE_TTL_MS) _giftDone.delete(name); }
     if (!presence) { _giftTarget = null; return { target: null, ready }; }
@@ -1013,11 +1081,15 @@ function _giftContext() {
       // sets livrés qu'aucun — un mappeur sur-équipé garde simplement des pièces en poche.
       if (!_teamClaims || _teamClaims.tryClaim('marmor:' + pick.to)) {
         _giftTarget = pick.to;
-        return { target: pick.to, ready };
+        const mate = (mates || []).find((m) => m && m.name === pick.to) || null;
+        const batch = _refreshGiftBatch(mate, now);
+        ready = readyNow();
+        return { target: pick.to, ready, batch: !!batch };
       }
       skip.add(pick.to);
     }
     _giftTarget = null;
+    _giftBatch = null;
     return { target: null, ready };
   } catch (e) { return empty; }
 }
@@ -1037,6 +1109,7 @@ function releaseGiftTarget(name) {
   if (!name) return;
   try { if (_teamClaims) _teamClaims.release('marmor:' + name); } catch (e) { /* best-effort */ }
   if (_giftTarget === name) _giftTarget = null;
+  if (_giftBatch && _giftBatch.to === name) _giftBatch = null;
   _giftAt = 0;
 }
 
@@ -1107,7 +1180,7 @@ function setWoodRequest(req) {
  * lieu de remonter. Retourne null → lancer le skill normalement (pas de bûcheron, timeout, je suis le
  * bûcheron…) ; sinon le résultat à rendre au planner ({ok:true} bois reçu, {ok:false,'cancelled'}).
  */
-async function woodWaitStep(g) {
+async function woodWaitStep(g, why) {
   if (!isWoodGoal(g) || !presence) return null;
   loadWoodRequest();
   const now = Date.now();
@@ -1128,7 +1201,7 @@ async function woodWaitStep(g) {
   if (d.action === 'request') {
     const want = woodWantFor(g);
     setWoodRequest({ want, at: now });
-    emit({ type: 'wood_request', want, goal: g.name, lumberjack: lj });
+    emit({ type: 'wood_request', want, goal: g.name, lumberjack: lj, why: why || 'wood_goal' });
   }
   const req = _woodReq;
   if (!req) return null;
@@ -1167,7 +1240,23 @@ async function woodWaitStep(g) {
       lj = still;
     }
   }
-  return woodWaitStep(g);                          // échéance → la décision rend 'timeout' → repli
+  return woodWaitStep(g, why);                     // échéance → la décision rend 'timeout' → repli
+}
+
+/**
+ * BOIS MANQUANT POUR UN CRAFT (20/10, NethBot2 session 312 : `gift_pick` 16× `pick_recovery:no_sticks`,
+ * 1 planche, 0 bûche, à y 13 — jamais de demande au bûcheron, qui ne servait que les buts gatherLog).
+ * Après l'échec d'un but NON bois dont la raison et la poche disent « pas assez de bois » (bâtons,
+ * planches, table), on publie la même demande que pour un but bois et on attend au chantier (4 min max,
+ * puis repli historique). null = rien à faire (pas de manque, pas de bûcheron, timeout…), sinon le
+ * résultat à rendre au planner ({ok:true} = bois reçu, le planner re-tente le but avec le bois en poche).
+ */
+async function woodRequestOnShortage(g, reason, why) {
+  try {
+    if (!g || isWoodGoal(g) || IS_MAPPER || isLumberjackObjective()) return null;
+    if (!woodShortForFailure({ reason, goalName: g.name, inv: buildCtxInv(bot), hasTable: !!_nearestTable(bot) })) return null;
+    return await woodWaitStep({ name: g.name, skill: 'gatherLog', args: { count: 16 } }, why || String(reason || 'craft'));
+  } catch (e) { return null; }
 }
 
 /** Bûcheron : demande à servir (réservée par claim `wood:<to>`), cache 10 s. Null si rien à faire. */
@@ -1487,6 +1576,24 @@ async function ljCraftGiftSkill() {
     return { ok: false, reason: 'gift_craft_failed' };
   }
   return { ok: true };
+}
+
+/** craftGiftSet d'un LOT (20/10) : forge les pièces du lot pas encore en poche. Rend la raison du craft
+ *  (ex. `no_table:unknown_item`) : c'est elle qui déclenche la demande de bois si la table manque. */
+async function giftBatchCraftSkill() {
+  const b = _giftBatch;
+  if (!b) return { ok: true };
+  const have = new Set(_giftPocket().good);
+  let progressed = false;
+  let lastReason = null;
+  for (const piece of b.pieces) {
+    if (have.has(piece)) continue;
+    const r = await craftSmart({ name: piece, count: 1 });
+    if (r && r.ok) { progressed = true; emit({ type: 'gift_craft', item: piece, to: b.to, batch: true }); }
+    else lastReason = (r && r.reason) || lastReason;
+  }
+  if (progressed || ljGiftReady(b.pieces, _giftPocket().good)) return { ok: true };
+  return { ok: false, reason: 'gift_batch_craft:' + (lastReason || 'failed') };
 }
 
 // ── EXPÉDITION FORESTIÈRE DU BÛCHERON (20/10 soir) ──────────────────────────────────────────────
@@ -2637,6 +2744,7 @@ async function runGoalSkill(goal) {
   // donc bien du surplus livrable, jamais celle qu'il a sur le dos.
   if (goal.skill === 'craftGiftSet') {
     if (isLumberjackObjective()) return ljCraftGiftSkill();   // plan PARTIEL (lingots du bûcheron)
+    if (_giftBatch && _giftBatch.to === _giftTarget) return giftBatchCraftSkill();   // LOT (20/10)
     const itemsOf = () => (bot.inventory && bot.inventory.items()) || [];
     const plan = giftSetPlan(itemsOf());
     if (plan.ready) return { ok: true };
@@ -2657,7 +2765,8 @@ async function runGoalSkill(goal) {
     const to = _giftTarget;
     if (!to) { if (isLumberjackObjective()) _ljGift = null; return { ok: true }; }   // plus personne à servir
     // Bûcheron : seulement les pièces de SON plan (il porte les siennes ; le reste de sa poche n'est pas un don).
-    const _pieces = ljGiftPiecesFor(to) || GIFT_PIECES;
+    const _batch = (_giftBatch && _giftBatch.to === to) ? _giftBatch : null;   // LOT (20/10) : ses pièces seulement
+    const _pieces = ljGiftPiecesFor(to) || (_batch ? _batch.pieces.slice() : null) || GIFT_PIECES;
     if (!isAllowed('/tpa ' + to, whitelist)) {
       // /tpa pas coché dans le profil serveur. Défense en profondeur (la cible est déjà gatée à la
       // source dans _giftContext) : on nettoie COMME l'échec de TP ci-dessous — sinon une whitelist
@@ -2689,7 +2798,13 @@ async function runGoalSkill(goal) {
       try { const r = await giveItem(bot, { name: piece }, to); if (r && r.ok) given += 1; } catch (e) {}
     }
     emit({ type: 'gift_delivered', to, pieces: given });
-    _giftDone.set(to, Date.now());                      // le heartbeat le publiera « nu » encore 60 s
+    // Lot partiel : le cartographe reste à finir → re-servable après son prochain heartbeat (90 s) au
+    // lieu des 5 min d'un set complet. Le heartbeat le publiera avec ses NOUVELLES pièces manquantes.
+    _giftDone.set(to, _batch && given > 0 ? Date.now() - (GIFT_DONE_TTL_MS - GIFT_BATCH_REDO_MS) : Date.now());
+    if (_batch) {
+      emit({ type: 'gift_batch', to, pieces: _batch.pieces.slice(), ingots: _batch.ingots, phase: 'delivered', given });
+      _giftBatch = null;
+    }
     try { if (_teamClaims) _teamClaims.release('marmor:' + to); } catch (e) {}
     _giftTarget = null; _giftAt = 0;
     ljAfterGift(to, given);
@@ -3741,6 +3856,11 @@ async function runSkillWithTelemetry(g) {
     emit({ type: 'goal_failed', name: g.name, reason: (r && r.reason) || 'unknown' });
     noteZoneFailure(g.name, r && r.reason);
     noteLumberjackStockFail(g.name, r && r.reason);      // bûcheron : 2 échecs en 10 min → forêt connue
+    // Manque de bois pour un craft (bâtons/planches/table) → demande au bûcheron + attente (20/10).
+    if (!taskToken.cancelled && !migrationOwnsBot()) {
+      const _ww = await woodRequestOnShortage(g, r && r.reason);
+      if (_ww) return _ww;
+    }
   }
   return r;
 }
@@ -4352,8 +4472,16 @@ function noteSafeHome(p, why) {
   _safeHomeSurface = Number.isFinite(p.y) && p.y >= SAFE_HOME_MIN_Y;
   _safeHomePos = { x: p.x, y: p.y, z: p.z };   // COPIE : bot.entity.position est muté en place
   _hostileNearHomeAt = 0;                       // les hostiles vus près de l'ANCIEN home ne campent pas celui-ci
-  try { return saveBaseState(safeHomeMemoWith(loadBaseState(), _safeHomePos, Date.now(), why)) !== false; }
-  catch (e) { return false; }
+  // Home qui n'existait plus côté serveur (20/10) : ce /sethome safe le RECRÉE — on lève la note et on le dit.
+  if (_homeMissingAt[HOME_SAFE]) {
+    delete _homeMissingAt[HOME_SAFE];
+    emit({ type: 'home_set_recovered', name: HOME_SAFE, why, x: Math.round(p.x), y: Math.round(p.y), z: Math.round(p.z) });
+  }
+  try {
+    const memo = safeHomeMemoWith(loadBaseState(), _safeHomePos, Date.now(), why);
+    delete memo[SAFE_MISSING_MEMO_KEY];
+    return saveBaseState(memo) !== false;
+  } catch (e) { return false; }
 }
 
 /** Hostile « vrai » : même prédicat que spawnDangerNow (kind OU nom listé), moins les neutres (enderman). */
@@ -5274,12 +5402,39 @@ async function descentSurvivalTick() {
 // planks→sticks→pioche, puis /tp RETOUR EXACT au spot — pas de respawn, on ne perd pas la mine.
 let _pickRecovering = false;   // garde de ré-entrée : le planner (ensurePick) et mineForType peuvent
                                // tous deux l'appeler — une seule expédition de récupération à la fois.
+let _pickRecoveryRun = null;   // la promesse de l'expédition EN VOL (partagée par les appels concurrents)
+// BOUCLE CHAUDE `gift_pick unknown` ×3-4 dans la même ms (20/10, NethBot2 sessions 288/295/306/312) :
+// après une mort, l'expédition de la vie précédente tourne encore (explore_waypoint continue) ; le planner
+// neuf appelait recoverPickaxe, la garde rendait {ok:false} SANS raison en < 1 ms → `unknown`, et la garde
+// anti-boucle-chaude du planner ne freine qu'à partir du 3e tour instantané. On ATTEND désormais
+// l'expédition en vol (son vrai résultat, sa vraie raison) au lieu de rendre un échec muet.
 async function recoverPickaxe() {
-  if (_pickRecovering) return { ok: bestPickTier() >= 0 };
+  if (_pickRecovering && _pickRecoveryRun) {
+    emit({ type: 'pick_recovery_join' });
+    try {
+      const r = await _pickRecoveryRun;
+      if (bestPickTier() >= 0) return { ok: true };
+      return (r && r.reason) ? r : { ok: false, reason: 'pick_recovery:in_flight_failed' };
+    } catch (e) { return { ok: false, reason: 'pick_recovery:in_flight_error' }; }
+  }
+  if (_pickRecovering) return bestPickTier() >= 0 ? { ok: true } : { ok: false, reason: 'pick_recovery:in_flight' };
   _pickRecovering = true;
+  _pickRecoveryRun = _recoverPickaxeInner();
   try {
-    return await _recoverPickaxeInner();
-  } finally { _pickRecovering = false; }
+    return await _pickRecoveryRun;
+  } finally { _pickRecovering = false; _pickRecoveryRun = null; }
+}
+
+/** Planches → bâtons → pioche avec ce qui est en poche (après une livraison du bûcheron). */
+async function _craftPickFromPocket() {
+  try {
+    const log = ((bot.inventory && bot.inventory.items()) || []).find((i) => i.name.endsWith('_log'));
+    if (log) await craftItem(bot, { name: log.name.replace('_log', '_planks'), count: 3 });
+    await craftSmart({ name: 'stick', count: 4 });
+    await craftSmart({ name: 'stone_pickaxe', count: 1 });
+    if (bestPickTier() < 0) await craftSmart({ name: 'wooden_pickaxe', count: 1 });
+  } catch (e) { /* best-effort */ }
+  return bestPickTier() >= 0;
 }
 async function _recoverPickaxeInner() {
   emit({ type: 'pick_recovery' });
@@ -5294,6 +5449,20 @@ async function _recoverPickaxeInner() {
     return { logs: any('_log'), planks: any('_planks'), sticks: n('stick'),
              cobble: n('cobblestone') + n('cobbled_deepslate'), table: n('crafting_table') };
   };
+  // BÛCHERON D'ÉQUIPE (20/10) : bois insuffisant pour bâtons + table → le demander et attendre AU CHANTIER
+  // (≤ 4 min) au lieu de remonter explorer une zone rasée. null = pas de bûcheron / timeout → expédition.
+  {
+    const iv = _invAt();
+    const short = woodShortForFailure({ reason: 'no_sticks', goalName: 'stone_pickaxe',
+      inv: buildCtxInv(bot), hasTable: !!_nearestTable(bot) });
+    if (short && !IS_MAPPER && !isLumberjackObjective()) {
+      const w = await woodWaitStep({ name: 'pick_recovery', skill: 'gatherLog', args: { count: 16 } }, 'pick_recovery');
+      if (w && w.ok === false && w.reason === 'cancelled') return { ok: false, reason: 'cancelled' };
+      if (w && w.ok && await _craftPickFromPocket()) return { ok: true };
+      if (taskToken.cancelled) return { ok: false, reason: 'cancelled' };
+      if (w) emit({ type: 'pick_recovery_wood_short', logs: iv.logs, planks: iv.planks });
+    }
+  }
   const pp = bot.entity && bot.entity.position;
   const p0 = pp ? { x: Math.floor(pp.x), y: Math.floor(pp.y), z: Math.floor(pp.z) } : null;
   emit({ type: 'pick_recovery_trip', from: p0 });
@@ -5460,6 +5629,62 @@ function regionCenter() {
   const jitter = ((h >> 4) % 200) - 100;
   return { x: base.x + dx + jitter, z: base.z + dz + jitter };
 }
+// ── ESCALIER DE REPLI (20/10, NethBot1 emmuré à (-43,40,-340) sans home, jam_loop de session en session) ─
+// Quand aucun /home ne sort le bot (home absent, campé, ou posé dans la poche elle-même), il creuse un
+// escalier 1×2 vers la surface (skills/digOut.js : outil adapté, fluide → autre direction, 4 directions,
+// borné 90 s). Préempte le planner comme switchLumberjack (jeton CAPTURÉ, attente du skill en vol) puis
+// le relance. Sous terre seulement : en surface sans home, le watchdog NO_GIVE re-pose `safe` tout seul.
+let _digOutBusy = false;      // lu par le jam-watchdog (timer) → niveau module (piège #56)
+let _digOutFailAt = 0;        // dernier échec : pas de re-tentative en rafale à chaque relocate
+const DIG_OUT_RETRY_MS = 180000;
+
+/** Lance l'escalier si le bot est SOUS TERRE et pas dehors (fire-and-forget). true si lancé. */
+function kickDigOut(why) {
+  try {
+    const p = bot.entity && bot.entity.position;
+    if (!p || _digOutBusy || _migrating) return false;
+    if (!(p.y < SAFE_HOME_MIN_Y)) return false;
+    if (why !== 'jam_loop_repeat' && Date.now() - _digOutFailAt < DIG_OUT_RETRY_MS) return false;
+    try { if (isInWater(bot)) return false; } catch (e) { /* lecture ratée : on tente */ }
+    const pos = { x: Math.floor(p.x), y: Math.floor(p.y), z: Math.floor(p.z) };
+    const read = (x, y, z) => { try { return bot.blockAt(vec3Lib(x, y, z)); } catch (e) { return null; } };
+    if (digOutIsOutside(read, pos, { minY: SAFE_HOME_MIN_Y })) return false;
+    digOutAndResume(why).catch((e) => emit({ type: 'error', message: String((e && e.message) || e) }));
+    return true;
+  } catch (e) { return false; }
+}
+
+async function digOutAndResume(why) {
+  if (_digOutBusy || _migrating) return null;
+  _digOutBusy = true;
+  const t0 = Date.now();
+  try {
+    const tok = taskCtl.begin('dig_out', stopMotion);
+    const w0 = Date.now();
+    while ((_skillInFlight > 0 || _autoRunners > 0) && !tok.cancelled && Date.now() - w0 < MIGRATION_PREEMPT_WAIT_MS) {
+      await sleep(250);
+    }
+    if (tok.cancelled) return null;
+    taskToken = tok;
+    try { stopMotion(); } catch (e) {}
+    const p0 = bot.entity && bot.entity.position;
+    const from = p0 ? { x: Math.round(p0.x), y: Math.round(p0.y), z: Math.round(p0.z) } : null;
+    const r = await digOutSkill(bot, { maxMs: DIG_OUT_MAX_MS, minY: SAFE_HOME_MIN_Y }, tok);
+    emit({ type: 'dig_out', ok: !!r.ok, why, dir: r.dir || null, steps: r.steps || 0,
+      took_s: Math.round((Date.now() - t0) / 1000), reason: r.ok ? undefined : r.reason, from });
+    if (r.ok) {
+      _jamEsc = null; _jamSample = null;
+      try { saveBaseState(jamLoopCleared(loadBaseState())); } catch (e) { /* best-effort */ }
+    } else {
+      _digOutFailAt = Date.now();
+    }
+    if (!tok.cancelled && world.objective && world.objective.status === 'in_progress') {
+      startAutonomous(null).catch((e) => emit({ type: 'error', message: String((e && e.message) || e) }));
+    }
+    return r;
+  } finally { _digOutBusy = false; }
+}
+
 let _relocSeq = Math.floor(Math.random() * 997);   // graine par process : pas la même 1re cellule à chaque respawn
 async function relocateToRegion(opts = {}) {
   // SANS-GIVE (catch-all) : relocateToRegion est PUREMENT /spreadplayers → BLOQUÉ par nogive →
@@ -5469,10 +5694,21 @@ async function relocateToRegion(opts = {}) {
   // déjà leur propre goSpawn en amont (ce guard couvre le reste).
   if (NO_GIVE) {
     // HOME CAMPÉ (19/10) : pas d'aller simple vers le camp — on reste sur place (le veto le trace).
-    if (safeHomeVeto('relocate')) return;
+    // 20/10 : « rester sur place » emmuré, c'est la boucle jam_loop de NethBot1 → escalier de repli.
+    if (safeHomeVeto('relocate')) { kickDigOut('home_camped'); return; }
+    // Home `safe` inexistant côté serveur (20/10) : le /home ne partira nulle part — escalier direct.
+    if (safeHomeKnownMissing()) { kickDigOut('no_home'); return; }
     emit({ type: 'relocate_home_safe', mode: opts.forest ? 'forest' : (opts.nearSpawn ? 'near_spawn' : 'default') });
     try { stopMotion(); } catch (e) {}
+    const _rp = bot.entity && bot.entity.position;
+    const _from = _rp ? { x: _rp.x, y: _rp.y, z: _rp.z } : null;   // COPIE : position mutée en place
     if (homewarp.goSpawn(bot, { ctx: 'relocate' })) await sleep(3000);
+    // Le /home n'a sorti le bot de nulle part (home absent, refusé, ou posé dans la poche elle-même) :
+    // un relocate qui ne déplace pas est un échec → escalier vers la surface.
+    const _rp2 = bot.entity && bot.entity.position;
+    if (_from && _rp2 && Math.hypot(_rp2.x - _from.x, _rp2.y - _from.y, _rp2.z - _from.z) < 8) {
+      kickDigOut(safeHomeKnownMissing() ? 'no_home' : 'relocate_no_move');
+    }
     return;
   }
   // Cellule TERRE tirée de la mémoire de monde (biomes non-océan/rivière, ≥256 du spawn) :
@@ -7471,7 +7707,11 @@ async function onSpawn() {
     // tout le bénéfice de la base.
     if (!IS_MAPPER) {
       const st0 = loadBaseState();
-      if (st0 && st0.base && Number.isFinite(st0.base.x) && !_safeHomeSet) {
+      // ⚠️ Pas d'adoption si le serveur a dit que `safe` n'existe pas (20/10, NethBot1) : adopter un home
+      // fantôme, c'est compter sur un filet qui n'existe pas — le watchdog le re-posera à la 1re surface.
+      const _safeGone = !!(st0 && Number.isFinite(st0[SAFE_MISSING_MEMO_KEY]));
+      if (_safeGone && !_homeMissingAt[HOME_SAFE]) _homeMissingAt[HOME_SAFE] = st0[SAFE_MISSING_MEMO_KEY];
+      if (st0 && st0.base && Number.isFinite(st0.base.x) && !_safeHomeSet && !_safeGone) {
         _safeHomeSet = true;
         _safeHomeSurface = (st0.base.y || 0) >= 58;
         _safeHomePos = { x: st0.base.x, y: st0.base.y, z: st0.base.z };
@@ -7536,8 +7776,20 @@ async function onSpawn() {
   }
   if (world.objective && world.objective.status === 'in_progress') {
     emit({ type: 'autonomous_resume', objective: world.objective.type });
-    startAutonomous(null);
+    // jam_loop RÉPÉTÉ au même endroit (20/10, NethBot1 : 4 sessions emmuré à y 40) : escalier d'abord,
+    // le planner repart à la sortie (digOutAndResume le relance, succès ou échec).
+    if (!digOutAtSpawnIfLooping()) startAutonomous(null);
   }
+}
+
+/** Au spawn : 2e jam_loop récent à ≤ 4 blocs d'ici (mémo de base) → escalier. true si lancé. */
+function digOutAtSpawnIfLooping() {
+  try {
+    const p = bot.entity && bot.entity.position;
+    if (!p || !jamLoopAtStart(loadBaseState(), { x: p.x, y: p.y, z: p.z }, Date.now())) return false;
+    emit({ type: 'jam_loop_repeat', x: Math.floor(p.x), y: Math.floor(p.y), z: Math.floor(p.z) });
+    return kickDigOut('jam_loop_repeat');
+  } catch (e) { return false; }
 }
 
 // Ramasse les items tombés autour de la position courante. Borné (temps + nb) pour ne pas geler.
@@ -7944,6 +8196,9 @@ bot.on('messagestr', (msg) => {
   // On invalide le home concerné pour que les filets de secours arrêtent de compter dessus :
   // chantier → re-creuser (pas re-TP) ; safe → sauvetage à pied + re-pose à la prochaine surface sèche.
   const refusedH = homewarp.refusedHome(bot, msg);
+  // 20/10 : « Player has not set a home. » → le home demandé N'EXISTE PAS côté serveur (≠ refus).
+  const missingH = refusedH ? null : homewarp.missingHome(bot, msg);
+  if (missingH) noteHomeMissing(missingH);
   if (refusedH) {
     _homeRefusedAt[refusedH] = Date.now();
     emit({ type: 'home_tp_refused', name: refusedH });
@@ -8710,6 +8965,7 @@ setInterval(async () => {
   try {
     if (!bot.entity || !bot.entity.position) return;
     if (Date.now() < _floatSettleUntil) { _jamSample = null; return; }   // settle post-spawn/warp : pas de jam
+    if (_digOutBusy) { _jamSample = null; return; }                      // l'escalier creuse : ce n'est pas un jam
     const p = bot.entity.position;
     const digging = !!bot.targetDigBlock;
     const hasGoal = !!(bot.pathfinder && bot.pathfinder.goal);
@@ -8789,7 +9045,16 @@ setInterval(async () => {
     // différents → jamais giveUp.
     if (_je.giveUp) {
       try { taskCtl.cancel(); } catch (e) {}
-      emit({ type: 'autonomous_stalled', reason: 'jam_loop', x: Math.floor(p.x), y: Math.floor(p.y), z: Math.floor(p.z) });
+      // 3e TIER (20/10, NethBot1) : le respawn se refait AU MÊME ENDROIT — le compteur survit au process
+      // (mémo de base, fusion) ; au 2e jam_loop ici, le process suivant creuse l'escalier dès le démarrage.
+      let _jl = null;
+      try {
+        const m = jamLoopMemoWith(loadBaseState(), { x: p.x, y: p.y, z: p.z }, now);
+        _jl = m.jamLoop;
+        saveBaseState(m);
+      } catch (e) { /* best-effort */ }
+      emit({ type: 'autonomous_stalled', reason: 'jam_loop', x: Math.floor(p.x), y: Math.floor(p.y), z: Math.floor(p.z),
+        repeat: _jl ? _jl.count : null });
       process.exit(2);
     }
   } catch (e) { /* watchdog : ne crash jamais */ }

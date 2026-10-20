@@ -246,7 +246,7 @@ test('câblage : ctxExtra, dispatch, télémétrie, heartbeat `missing`, timeout
   assert.match(SRC, /if \(goal\.skill === 'lumberjackArmor'\) return lumberjackArmorSkill\(\);/);
   assert.match(SRC, /if \(goal\.skill === 'lumberjackForestTrip'\) return lumberjackForestTripSkill\(\);/);
   assert.match(SRC, /if \(isLumberjackObjective\(\)\) return ljCraftGiftSkill\(\);/);
-  assert.match(SRC, /const _pieces = ljGiftPiecesFor\(to\) \|\| GIFT_PIECES;/);
+  assert.match(SRC, /const _pieces = ljGiftPiecesFor\(to\) \|\| \(_batch \? _batch\.pieces\.slice\(\) : null\) \|\| GIFT_PIECES;/);   // + lot (20/10)
   assert.match(SRC, /for \(const piece of _pieces\) \{/);
   assert.match(SRC, /noteLumberjackStockFail\(g\.name, r && r\.reason\);/);
   assert.match(SRC, /if \(st\) st\.missing = missingIronPieces\(invB, \[\.\.\._wornArmor\(\)\]\);/);
