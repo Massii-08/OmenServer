@@ -132,6 +132,8 @@ function shelterSandbox({ worn = 0, entities = [zombie(6), zombie(8, 2, 'skeleto
     // l'écart de 20 s en lockdown, la comptabilité des ré-abris (cf. index.nightlockdown.test.js).
     // Ce bot n'a pas de `bot.time` : heure inconnue → pas de lockdown → comportement d'avant, à l'identique.
     _shelterInFlight: null, _lockdownShelters: null, isInWater: () => false,
+    // LIT (20/10) : sans lit à portée, trySleepInBedTonight rend false → l'abri historique (testé dans index.bed.test.js)
+    trySleepInBedTonight: async () => false,
     nightLockdown: C.nightLockdown, lockdownShelterNote: C.lockdownShelterNote,
     NIGHT_SHELTER_GAP_MS: C.NIGHT_SHELTER_GAP_MS, NIGHT_UNDERGROUND_Y: C.NIGHT_UNDERGROUND_Y,
   });

@@ -10,13 +10,24 @@ let pfGoals; try { pfGoals = require('mineflayer-pathfinder').goals; } catch (e)
  * huntPassive(bot, {count, maxDistance}, token, deps) → {ok, kills}
  * deps.sleep injectable (tests). Chaque proie : attaque pvp → poll mort (≤20s) → ramasse les drops.
  */
-async function huntPassive(bot, { count = 1, maxDistance = 32 } = {}, token = null, deps = {}) {
+// `names` (optionnel) : ne chasser QUE ces espèces (ex. ['sheep'] pour la laine du lit, cf. bed.js).
+function _nearestNamed(bot, names, radius) {
+  const self = bot.entity && bot.entity.position;
+  if (!self) return null;
+  const set = new Set(names);
+  const e = bot.nearestEntity((x) => x && set.has(x.name) && x.position && x.isValid !== false);
+  if (!e) return null;
+  const d = e.position.distanceTo ? e.position.distanceTo(self) : Infinity;
+  return d <= radius ? e : null;
+}
+
+async function huntPassive(bot, { count = 1, maxDistance = 32, names = null } = {}, token = null, deps = {}) {
   const sleep = deps.sleep || ((ms) => new Promise((r) => setTimeout(r, ms)));
   const killTimeoutMs = deps.killTimeoutMs || 20000;
   let kills = 0;
   for (let i = 0; i < count; i++) {
     if (token && token.cancelled) break;
-    const prey = nearestPassive(bot, maxDistance);
+    const prey = (Array.isArray(names) && names.length) ? _nearestNamed(bot, names, maxDistance) : nearestPassive(bot, maxDistance);
     if (!prey) break;                                       // plus de proie → on rend ce qu'on a
     const w = bestWeapon(bot);
     if (w) { try { await bot.equip(w, 'hand'); } catch (e) {} }

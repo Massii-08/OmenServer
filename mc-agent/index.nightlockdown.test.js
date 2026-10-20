@@ -470,6 +470,8 @@ function shelterSandbox({ inWater = false, ...opts } = {}) {
     dawnExitThreatsNow: () => ({ hostiles: 0, creepers: 0 }), exitAwayFromThreats: () => {},
     hostilesNearNow: () => 0,
     _shelterInFlight: null, _lockdownShelters: null,
+    // LIT (20/10) : sans lit à portée, trySleepInBedTonight rend false → l'abri historique (testé dans index.bed.test.js)
+    trySleepInBedTonight: async () => false,
     isInWater: () => inWater,
     withTimeout: (p) => p,
     log,

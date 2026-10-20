@@ -149,6 +149,9 @@ const {
 const { tierRank } = require('./tools');
 const { createTeleportWatcher, wireTeleportDetection } = require('./teleport');
 const { isNight, shelterUntilDawn, shouldShelter, DAWN_WAIT_MAX_MS, DAWN_SAFE_EXIT_MAX_MS } = require('./skills/shelter');
+// LIT (20/10) : réapparaître dans sa base, pas au spawn du monde campé — cf. bed.js.
+const { bedItemIn, bedRecipeName, woolMissing, sheepKnown, bedMemoWith, bedMemoCleared, bedRetryMemo, bedOf, bedRetryActive,
+  bedSpotPlan, parseBedMessage, sleepErrorReason, sleepDecision, isBedName } = require('./bed');
 const { maybeRunKit } = require('./kit');   // survie mappeur : /kit serveur au démarrage/respawn (décision pure)
 const { needDirtBuffer } = require('./dirt');   // survie mappeur : buffer de blocs posables pour sceller l'abri
 const { panicWall } = require('./skills/panicWall');
@@ -980,7 +983,11 @@ function ctxExtra() {
   // propres filets : réflexe, timer « food run », chair de zombie).
   let passiveNear = false;
   try { passiveNear = !!nearestPassive(bot, HUNT_SIGHT_RADIUS); } catch (e) { passiveNear = false; }
+  // LIT (but `bed`) : lit posé / essai raté en attente / mouton vu ou connu. Jamais de throw.
+  let bedCtx = { bedPlaced: false, bedRetryLater: false, sheepNear: false };
+  try { bedCtx = bedCtxNow(); } catch (e) { /* best-effort : sans info, le but est sauté */ }
   return {
+    ...bedCtx,
     hasTable: !!_nearestTable(bot), y: pos ? pos.y : undefined, worn: [..._wornArmor()], offhand,
     mapperTarget: gift.target, giftReady: gift.ready, giftBatch: !!gift.batch, noWood, passiveNear,
     // Bûcheron : la demande réservée à servir (LUMBERJACK_CHAIN.lj_deliver). Null hors rôle.
@@ -2058,7 +2065,7 @@ const SKILL_TIMEOUT_MS = Number(args.skillTimeout || 90000);
 // (vécu V3Res1/4 : 480s × 4 tentatives = 32 min d'anneaux stériles avant le stall).
 // huntCook + FOOD_TRIP_MS (75 s) : l'EXPÉDITION vers le gibier (marche vers la cellule à animaux la plus
 // proche connue) a son propre plafond, hors du budget de 60 s — un garde-fou de 90 s la couperait en route.
-const SKILL_TIMEOUTS = { descendDiagonal: 900000, branchMine: 900000, caveHunt: 900000, huntCook: 90000 + FOOD_TRIP_MS, smeltCharcoal: 300000, gather: 480000, gatherLog: 180000, ensurePick: 480000, fish: 300000, deliverWood: 120000, lumberjackIdle: 330000, lumberjackArmor: 160000, lumberjackForestTrip: LJ_FOREST_TRIP_MS + 20000 };
+const SKILL_TIMEOUTS = { descendDiagonal: 900000, branchMine: 900000, caveHunt: 900000, huntCook: 90000 + FOOD_TRIP_MS, ensureBed: 240000, smeltCharcoal: 300000, gather: 480000, gatherLog: 180000, ensurePick: 480000, fish: 300000, deliverWood: 120000, lumberjackIdle: 330000, lumberjackArmor: 160000, lumberjackForestTrip: LJ_FOREST_TRIP_MS + 20000 };
 function timeoutFor(skill) { return SKILL_TIMEOUTS[skill] || SKILL_TIMEOUT_MS; }
 function withTimeout(promise, ms, onTimeout) {
   return new Promise((resolve) => {
@@ -2653,6 +2660,7 @@ async function runGoalSkill(goal) {
   if (goal.skill === 'smeltIron') return smeltWithFurnace('raw_iron', 'iron_ingot', goal.args.count || 3);
   if (goal.skill === 'smeltCharcoal') return smeltCharcoalGoal(goal.args.count || 2);
   if (goal.skill === 'huntCook') return huntCookGoal(goal.args.target || 4);
+  if (goal.skill === 'ensureBed') return ensureBedGoal();
   if (goal.skill === 'fish') return fishGoal(goal.args.target || 4);
   if (goal.skill === 'descendDiagonal') {
     // FIX churn re-descente (NO_GIVE) : un chantier profond SEC est mémorisé → y retourner par
@@ -3047,6 +3055,9 @@ async function maybeNightShelter(proactive = false, opts = {}) {
       }
       _stillBusy = true;    // terré jusqu'à l'aube (≤13 min immobile) : immobilité légitime, pas un desync
       try {
+        // LIT (20/10) : à ≤ 16 blocs de son lit, on y dort au lieu de creuser un trou. Nuit passée au lit
+        // → fini ; « monstres à proximité », lit disparu ou réveillé de nuit → l'abri historique ci-dessous.
+        if (!IS_MAPPER && await trySleepInBedTonight(taskToken)) return;
         // `hostilesNear` + `worn` : l'attente des monstres à l'AUBE (shelter étape 3bis, live 19/10 —
         // 14 morts sur 17 « shot by Skeleton » juste après la sortie d'abri, sous une canopée où ils ne
         // brûlent pas). SANS ce branchement l'attente n'existe pas et rien ne le dit : tests verts, bot
@@ -3069,6 +3080,192 @@ async function maybeNightShelter(proactive = false, opts = {}) {
     return true;
   }
   return false;
+}
+
+// ─── LIT : RÉAPPARAÎTRE CHEZ SOI ET DORMIR (20/10) ──────────────────────────────────────────────
+// Mesure live : 17 morts sur 37 < 30 s après la réapparition, de nuit, au spawn du monde campé. Les
+// bots sont non-op (pas de /spawnpoint) : le LIT est le seul moyen « joueur » de déplacer le point de
+// réapparition. Logique pure dans bed.js ; ici, uniquement la glue sur le vrai bot.
+// ⚠️ NIVEAU MODULE (piège #56) : lus par ctxExtra (chaque pas du planner), le handler `messagestr`,
+// maybeNightShelter et les timers.
+let _bedLastSheep = null;        // dernier mouton VU { x, z, at } — « entités vues » (la carte ne liste pas les animaux)
+let _bedLastMsg = null;          // dernier message serveur lié au lit { kind, at } (cf. bed.parseBedMessage)
+let _bedSleeping = false;        // couché en ce moment (dédoublonne les appels de nuit concurrents)
+const BED_SHEEP_HUNT_RADIUS = 48;      // rayon de chasse au mouton (≈ la portée de suivi des entités)
+const BED_HOME_NEAR = 48;              // plus loin que ça de la base, on rentre par /home safe pour poser le lit
+const BED_SPAWN_MSG_WAIT_MS = 2500;    // attente du « Respawn point set » après le clic
+const BED_SLEEP_MAX_MS = 13 * 60 * 1000;   // une nuit MC ≈ 8,7 min (+ marge) : jamais couché à vie
+
+/** Contexte « lit » pour les prédicats du planner (but `bed`). Jamais de throw. */
+function bedCtxNow() {
+  const now = Date.now();
+  let seenNow = false;
+  const pos = bot && bot.entity && bot.entity.position;
+  try {
+    const e = bot.nearestEntity((x) => x && x.name === 'sheep' && x.position && x.isValid !== false);
+    if (e && pos && e.position.distanceTo(pos) <= BED_SHEEP_HUNT_RADIUS) {
+      seenNow = true;
+      _bedLastSheep = { x: e.position.x, z: e.position.z, at: now };
+    }
+  } catch (err) { seenNow = false; }
+  let memo = null;
+  try { memo = loadBaseState(); } catch (err) { memo = null; }
+  return {
+    bedPlaced: !!bedOf(memo),
+    bedRetryLater: bedRetryActive(memo, now),
+    sheepNear: sheepKnown({ seenNow, last: _bedLastSheep, pos: pos ? { x: pos.x, z: pos.z } : null, now }),
+  };
+}
+
+/** Un essai raté : on ne le retente pas avant BED_RETRY_MS (persisté : un bot meurt toutes les 3 min). */
+function bedFail(reason) {
+  try { saveBaseState(bedRetryMemo(loadBaseState(), Date.now())); } catch (e) { /* best-effort */ }
+  emit({ type: 'bed_failed', reason });
+  return { ok: false, reason: 'bed:' + reason };
+}
+
+/** Le lit mémorisé n'existe plus (message serveur ou bloc vérifié) → on l'oublie, le but `bed` re-pose. */
+function noteBedMissing(why) {
+  let memo = null;
+  try { memo = loadBaseState(); } catch (e) { memo = null; }
+  const had = bedOf(memo);
+  if (had) { try { saveBaseState(bedMemoCleared(memo)); } catch (e) { /* best-effort */ } }
+  emit({ type: 'bed_missing', why, had: had ? { x: had.x, y: had.y, z: had.z } : null });
+}
+
+/** Handler `messagestr` : trace les messages du lit (à confirmer en live) et réagit au lit disparu. */
+function onBedMessage(msg) {
+  const kind = parseBedMessage(msg);
+  if (!kind) return null;
+  _bedLastMsg = { kind, at: Date.now() };
+  emit({ type: 'bed_msg', kind, text: String(msg).slice(0, 120) });
+  if (kind === 'spawn_missing') noteBedMissing('server_message');
+  return kind;
+}
+
+/** Fixe la réapparition au lit SANS dormir : clic droit (de jour, MC 1.21 dit « Respawn point set »). */
+async function setSpawnAtBed(block, how = 'activate') {
+  const t0 = Date.now();
+  try { await bot.activateBlock(block); } catch (e) { emit({ type: 'spawn_set', how, ok: false, why: 'activate_error' }); return false; }
+  // De nuit le clic COUCHE le bot (le spawn est fixé quand même) : on se relève, le planner a la main.
+  if (bot.isSleeping) { try { await bot.wake(); } catch (e) { /* best-effort */ } }
+  while (Date.now() - t0 < BED_SPAWN_MSG_WAIT_MS) {
+    if (_bedLastMsg && _bedLastMsg.at >= t0) break;
+    await sleep(250);
+  }
+  const msg = (_bedLastMsg && _bedLastMsg.at >= t0) ? _bedLastMsg.kind : null;
+  const confirmed = msg === 'spawn_set';
+  emit({ type: 'spawn_set', how, ok: msg !== 'spawn_missing' && msg !== 'obstructed', confirmed, msg });
+  return confirmed || msg === null || msg === 'day';
+}
+
+/** Pose le lit en poche à côté du bot. → { ok, pos } */
+async function placeBedNear(itemName) {
+  const pos = bot.entity && bot.entity.position;
+  if (!pos) return { ok: false, reason: 'no_pos' };
+  const feet = { x: Math.floor(pos.x), y: Math.floor(pos.y), z: Math.floor(pos.z) };
+  const plan = bedSpotPlan((x, y, z) => { try { return bot.blockAt(new vec3Lib.Vec3(x, y, z)); } catch (e) { return null; } }, feet);
+  if (!plan.length) return { ok: false, reason: 'no_space' };
+  for (const spot of plan) {
+    const item = bot.inventory.items().find((i) => i.name === itemName);
+    if (!item) return { ok: false, reason: 'no_item' };
+    try {
+      await bot.equip(item, 'hand');
+      const ref = bot.blockAt(new vec3Lib.Vec3(spot.ref.x, spot.ref.y, spot.ref.z));
+      if (!ref) continue;
+      await bot.placeBlock(ref, new vec3Lib.Vec3(0, 1, 0));
+    } catch (e) { /* mineflayer rejette parfois alors que le bloc est posé : on vérifie ci-dessous */ }
+    for (const p of [spot.foot, spot.head]) {
+      const b = bot.blockAt(new vec3Lib.Vec3(p.x, p.y, p.z));
+      if (b && isBedName(b.name)) return { ok: true, pos: spot.foot, block: b };
+    }
+  }
+  return { ok: false, reason: 'place_failed' };
+}
+
+/** Skill du but `bed` : laine (moutons) → lit → retour base → pose → réapparition fixée. */
+async function ensureBedGoal() {
+  const tok = taskToken;
+  let inv = buildCtxInv(bot);
+  let bedName = bedItemIn(inv);
+  if (!bedName) {
+    let tries = 0;
+    while (woolMissing(inv) > 0 && tries < 6) {
+      if (tok.cancelled) return { ok: false, reason: 'cancelled' };
+      tries++;
+      const r = await huntPassive(bot, { count: 1, maxDistance: BED_SHEEP_HUNT_RADIUS, names: ['sheep'] }, tok);
+      if (!r || !r.kills) break;
+      inv = buildCtxInv(bot);
+    }
+    const recipe = bedRecipeName(inv);
+    if (!recipe) return bedFail('no_wool');
+    const c = await craftSmart({ name: recipe, count: 1 });
+    if (!c || c.ok === false) return bedFail('craft:' + String((c && c.reason) || 'failed'));
+    bedName = bedItemIn(buildCtxInv(bot));
+    if (!bedName) return bedFail('craft_no_effect');
+    emit({ type: 'bed_crafted', item: bedName });
+  }
+  if (tok.cancelled) return { ok: false, reason: 'cancelled' };
+  // À la base (près du home `safe`) : c'est là que l'abri de nuit se creuse et que le bot retravaille.
+  const memo = loadBaseState() || {};
+  const p = bot.entity && bot.entity.position;
+  if (memo.base && p && Math.hypot(memo.base.x - p.x, memo.base.z - p.z) > BED_HOME_NEAR && _safeHomeSet) {
+    try {
+      if (homewarp.goHome(bot, HOME_SAFE, { ctx: 'bed' })) { await awaitWarp({ maxMs: 9000 }); await sleep(1200); }
+    } catch (e) { /* home campé/refusé : on pose où l'on est — un lit ailleurs vaut mieux que le spawn campé */ }
+  }
+  const placed = await placeBedNear(bedName);
+  if (!placed.ok) return bedFail('place:' + placed.reason);
+  try { saveBaseState(bedMemoWith(loadBaseState(), placed.pos, Date.now())); } catch (e) { /* best-effort */ }
+  emit({ type: 'bed_placed', x: placed.pos.x, y: placed.pos.y, z: placed.pos.z });
+  await setSpawnAtBed(placed.block, 'activate');
+  return { ok: true };
+}
+
+/**
+ * La nuit, à ≤ 16 blocs de son lit : y dormir au lieu de creuser un trou. true = la nuit est passée au
+ * lit (réveil de jour) ; false = rien fait ou réveillé de nuit → l'appelant s'abrite comme avant.
+ */
+async function trySleepInBedTonight(tok) {
+  if (_bedSleeping) return false;
+  let memo = null;
+  try { memo = loadBaseState(); } catch (e) { memo = null; }
+  const bed = bedOf(memo);
+  const pos = bot.entity && bot.entity.position;
+  const night = (bot.time && bot.time.timeOfDay != null) ? isNight(bot) : null;
+  const d = sleepDecision({ bed, pos: pos ? { x: pos.x, y: pos.y, z: pos.z } : null, night });
+  if (!d.sleep) return false;
+  let block = null;
+  try { block = bot.blockAt(new vec3Lib.Vec3(bed.x, bed.y, bed.z)); } catch (e) { block = null; }
+  if (!block) return false;                                   // chunk pas chargé : on ne conclut rien
+  if (!isBedName(block.name)) { noteBedMissing('block_gone'); return false; }
+  _bedSleeping = true;
+  try {
+    try {
+      await withTimeout(bot.pathfinder.goto(new pfGoals.GoalNear(bed.x, bed.y, bed.z, 2)), 15000,
+        () => { try { stopMotion(); } catch (e) {} });
+    } catch (e) { /* on tente le lit quand même : bot.sleep dira « too far » */ }
+    try { await bot.sleep(block); } catch (e) {
+      emit({ type: 'bed_sleep', ok: false, why: sleepErrorReason(e) });
+      return false;
+    }
+    emit({ type: 'bed_sleep', ok: true, why: 'asleep', dist: d.dist });
+    emit({ type: 'spawn_set', how: 'sleep', ok: true });
+    const t0 = Date.now();
+    let woke = false;
+    const onWake = () => { woke = true; };
+    bot.once('wake', onWake);
+    try {
+      while (!woke && bot.isSleeping && Date.now() - t0 < BED_SLEEP_MAX_MS) {
+        if (tok && tok.cancelled) break;
+        await sleep(1000);
+      }
+    } finally { try { bot.removeListener('wake', onWake); } catch (e) {} }
+    if (bot.isSleeping) { try { await bot.wake(); } catch (e) {} }
+    const stillNight = (bot.time && bot.time.timeOfDay != null) ? isNight(bot) : false;
+    emit({ type: 'bed_sleep', ok: !stillNight, why: stillNight ? 'woken_at_night' : 'dawn', slept_s: Math.round((Date.now() - t0) / 1000) });
+    return !stillNight;
+  } finally { _bedSleeping = false; }
 }
 
 // Échecs EAU consécutifs de descendDiagonal (anti re-perçage d'aquifère — cf. pré-hook descend).
@@ -8307,6 +8504,9 @@ bot.on('whisper', (username, message) => handleIncoming(username, message, true)
 
 // Auto-accept des demandes TP (et trade) UNIQUEMENT des gens de confiance, et seulement si
 // la commande d'acceptation est cochée dans la whitelist (synergie avec la config commandes).
+// LIT : « Respawn point set », « You have no home bed… » (lit détruit → re-pose). Cf. onBedMessage.
+bot.on('messagestr', (msg) => { try { onBedMessage(msg); } catch (e) { /* best-effort */ } });
+
 bot.on('messagestr', (msg) => {
   // RC3 : un /home vient d'être REFUSÉ par la teleport-safety Essentials → le bot n'a PAS bougé.
   // On invalide le home concerné pour que les filets de secours arrêtent de compter dessus :

@@ -242,6 +242,18 @@ const FUEL_RESERVE = 48;
 // Charbon : 3 était dérisoire (1 charbon = 8 fontes, mais il faut aussi les torches). 16 charbons
 // couvrent une armure complète, les outils et l'éclairage d'un tunnel entier.
 const COAL_RESERVE = 16;
+// LIT (20/10) : 17 morts sur 37 tombaient < 30 s après la réapparition, de nuit, au spawn du monde
+// campé. Un lit posé à la base DÉPLACE la réapparition (les bots sont non-op : pas de /spawnpoint) et
+// fait passer la nuit à dormir. Après les outils pierre + épée, AVANT la descente au fer (c'est la 1re
+// nuit qui tue). SATISFIABLE-OU-SAUTABLE (bed.bedGoalMet) : aucun mouton connu → sauté, réessai plus
+// tard. Pas de `withFinal(IA)` : une armure complète n'empêche pas de vouloir réapparaître chez soi.
+// ctx : bedPlaced / bedRetryLater / sheepNear viennent de ctxExtra (index.js), planksOk se calcule ici.
+const BED = require('./bed');
+const BED_GOAL = {
+  name: 'bed',
+  met: (c) => BED.bedGoalMet(Object.assign({}, c, { planksOk: plankable((c && c.inv) || {}, BED.BED_PLANKS) })),
+  skill: 'ensureBed',
+};
 const IRON_ARMOR_CHAIN = [
   ..._IRON_PREFIX.map((g) => withFinal(g, IA)),
   { name: 'cobble_spare', met: (c) => invCount(c.inv, 'cobblestone') >= 6 || picksOK(c) || ironOK(c) || IA(c),
@@ -286,6 +298,7 @@ const IRON_ARMOR_CHAIN = [
   { name: 't1_axe',       met: (c) => hasAxe(c.inv) || invCount(c.inv, 'cobblestone') < 3
                                        || invCount(c.inv, 'stick') < 2 || IA(c),
     skill: 'craft',       args: { name: 'stone_axe', count: 1 } },
+  BED_GOAL,
   // On ne descend pas les mains vides : sous terre, 8 blocs posables = un abri ou un couvert.
   // Cobble/stone d'abord (omniprésents en profondeur ET en surface rocheuse), terre ensuite
   // (drop sans outil). Re-vérifié à chaque tour du planner → le stock se recomplète tout seul
@@ -598,6 +611,7 @@ const _giftGoal = (n) => MAPPER_ARMOR_CHAIN.find((g) => g.name === n);
 const LUMBERJACK_CHAIN = [
   { name: 'lj_deliver', met: (c) => !c.woodRequest, skill: 'deliverWood' },
   { name: 'lj_own_armor', met: (c) => !c.ljOwnArmor, skill: 'lumberjackArmor' },
+  BED_GOAL,
   _giftGoal('gift_craft'),
   _giftGoal('gift_deliver'),
   { name: 'lj_forest',  met: (c) => !c.ljForestTrip, skill: 'lumberjackForestTrip' },
@@ -759,5 +773,5 @@ function firstUnmet(chain, ctx) {
 }
 
 module.exports = {
-  nextObjectiveAfter, chainAfterDone, CHAIN_EMPTY_WINDOW_MS, CHAIN_BASE_DELAY_MS, CHAIN_BACKOFF_MS, CHAIN_FALLBACK,
+  BED_GOAL, nextObjectiveAfter, chainAfterDone, CHAIN_EMPTY_WINDOW_MS, CHAIN_BASE_DELAY_MS, CHAIN_BACKOFF_MS, CHAIN_FALLBACK,
   IRON_HELP_CHAIN, HELP_STOCK, MAPPER_ARMOR_CHAIN, LUMBERJACK_CHAIN, GIFT_SET_INGOTS, DIAMOND_TARGET, hasShield, posableCount, hasSword, hasAxe, buildCtxInv, invCount, anyLog, anyPlanks, MVP_CHAIN, IRON_CHAIN, DIAMOND_CHAIN, IRON_ARMOR_CHAIN, DIAMOND_ARMOR_CHAIN, MAPPER_KIT, chainFor, firstUnmet, armorNeed, armorWornOk, wantsOpportunisticArmor, ARMOR_FORGE_OBJECTIVES };
