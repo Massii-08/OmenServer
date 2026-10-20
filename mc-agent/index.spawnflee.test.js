@@ -21,6 +21,7 @@ const vm = require('node:vm');
 
 const SRC = fs.readFileSync(path.join(__dirname, 'index.js'), 'utf8');
 const U = require('./unstuck');
+const C = require('./creeper');
 const { isFleeHostile } = require('./skills/fleeFrom');
 const { NEUTRAL_NO_PROVOKE } = require('./survival');
 
@@ -72,7 +73,7 @@ function dangerSandbox({ worn = 0, entities = [], position = { x: 0, y: 70, z: 0
   const sb = sandbox({
     bot: { entity: position && { position }, entities: Object.assign({}, entities) },
     _wornArmor: () => new Set(['iron_helmet', 'iron_boots', 'iron_leggings', 'iron_chestplate'].slice(0, worn)),
-    isFleeHostile, NEUTRAL_NO_PROVOKE,
+    isFleeHostile, NEUTRAL_NO_PROVOKE, creeperIsThreat: C.creeperIsThreat,
     ...extra,
   });
   run(sb, fnSrc('isThreatHostile'));    // le prédicat « hostile à craindre » est partagé avec l'abri (cf. index.dawnwait.test.js)
@@ -103,9 +104,13 @@ test('spawnDangerNow : hostile à 20 blocs → pas de danger ; aucun hostile →
 });
 
 test('spawnDangerNow : les mobs listés PAR NOM (kind pas résolu) comptent — même prédicat que escapeDeathCamp', () => {
-  const sb = dangerSandbox({ entities: [{ name: 'creeper', position: { x: 5, y: 70, z: 0 }, isValid: true }] });
+  // AJUSTÉ (20/10) : le creeper doit GONFLER pour compter (creeper.js) ; un creeper calme à 5 blocs, non.
+  const swell = []; swell[C.SWELL_DIR_INDEX] = 1;
+  const sb = dangerSandbox({ entities: [{ name: 'creeper', position: { x: 5, y: 70, z: 0 }, isValid: true, metadata: swell }] });
   const d = sb.spawnDangerNow();
   assert.ok(d && d.mob === 'creeper');
+  assert.strictEqual(dangerSandbox({ entities: [{ name: 'creeper', position: { x: 5, y: 70, z: 0 }, isValid: true }] }).spawnDangerNow(), null,
+    'creeper calme à 5 blocs : pas une raison de fuir au spawn');
 });
 
 test('spawnDangerNow : l enderman (neutre tant qu on ne le regarde pas) ne fait pas fuir ; le zombie derrière, si', () => {

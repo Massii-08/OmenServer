@@ -15,6 +15,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 
+const CR = require('./creeper');
 const SRC = fs.readFileSync(path.join(__dirname, 'index.js'), 'utf8');
 const U = require('./unstuck');
 const SH = require('./skills/shelter');
@@ -39,7 +40,7 @@ function sandbox(extra = {}) {
   const sb = {
     events: [],
     emit(e) { sb.events.push(e); },
-    isFleeHostile, NEUTRAL_NO_PROVOKE, hostilesWithin: U.hostilesWithin,
+    isFleeHostile, NEUTRAL_NO_PROVOKE, hostilesWithin: U.hostilesWithin, creeperIsThreat: CR.creeperIsThreat,
     ...extra,
   };
   return vm.createContext(sb);
@@ -54,10 +55,14 @@ const botAt = (entities, position = { x: 0, y: 70, z: 0 }) =>
   ({ entity: position && { position }, entities: Object.assign({}, entities) });
 
 // ═════════════════════ 1. le prédicat hostile COMMUN (spawn + abri) ═════════════════════════════════
-test('isThreatHostile : zombie/squelette (kind) et creeper (par nom) oui ; enderman neutre, vache, entité retirée, null non', () => {
+test('isThreatHostile : zombie/squelette (kind) et creeper QUI GONFLE (par nom) oui ; enderman neutre, vache, entité retirée, null non', () => {
   const sb = withPredicate({ bot: botAt([]) });
   assert.strictEqual(sb.isThreatHostile(zombie(3)), true);
-  assert.strictEqual(sb.isThreatHostile({ name: 'creeper', position: { x: 1, y: 70, z: 0 } }), true, 'listé par nom, kind pas résolu');
+  const swell = []; swell[CR.SWELL_DIR_INDEX] = 1;
+  assert.strictEqual(sb.isThreatHostile({ name: 'creeper', position: { x: 1, y: 70, z: 0 }, metadata: swell }), true, 'listé par nom, kind pas résolu');
+  // AltoClef 20/10 : un creeper CALME n'est pas une raison de se terrer (il s'évite, cf. creeper.js)
+  assert.strictEqual(sb.isThreatHostile({ name: 'creeper', position: { x: 1, y: 70, z: 0 } }), false, 'creeper calme : pas une menace');
+  assert.strictEqual(sb.isThreatHostile({ name: 'creeper', position: { x: 9, y: 70, z: 0 }, metadata: swell }), false, 'gonfle mais à > 7 blocs');
   assert.strictEqual(sb.isThreatHostile(zombie(3, 0, 'enderman')), false, 'neutre tant qu on ne le regarde pas');
   assert.strictEqual(sb.isThreatHostile({ name: 'cow', kind: 'Passive mobs', position: { x: 1, y: 70, z: 0 } }), false);
   assert.strictEqual(sb.isThreatHostile(zombie(3, 0, 'zombie', { isValid: false })), false, 'entité retirée du monde');
@@ -77,7 +82,8 @@ test('hostilesNearNow : compte les hostiles à ≤ 12 blocs (3D), pas les lointa
     bot: botAt([zombie(5), zombie(9, 3, 'skeleton'), zombie(12, 0, 'creeper'), zombie(20), zombie(3, 0, 'enderman'),
       { name: 'cow', kind: 'Passive mobs', position: { x: 2, y: 70, z: 0 } }]),
   });
-  assert.strictEqual(sb.hostilesNearNow(), 3, 'zombie 5, squelette ~9,5, creeper 12 pile sur la frontière');
+  // AJUSTÉ (20/10) : le creeper CALME à 12 blocs ne compte plus (creeper.js) → zombie 5 + squelette ~9,5
+  assert.strictEqual(sb.hostilesNearNow(), 2, 'zombie 5, squelette ~9,5 ; le creeper calme ne compte pas');
 });
 
 test('hostilesNearNow : personne autour → 0 ; bot sans position → 0 ; relevé qui lève → 0 (jamais coincé dans le trou)', () => {

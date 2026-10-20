@@ -212,3 +212,32 @@ test('shouldReleaseSurfacing : verrou trop VIEUX → on relâche quoi qu il arri
 test('shouldReleaseSurfacing : oxygène inconnu → on relâche (jamais de verrou aveugle)', () => {
   assert.strictEqual(shouldReleaseSurfacing({ o2: null, sinceMs: 100 }), true);
 });
+
+// --- shouldFlee + creeper (AltoClef, 20/10) : ne fuir que si la mèche est allumée ---
+{
+  const { shouldFlee } = require('./reflexes');
+  const vec3 = require('vec3');
+  const botWith = (entities, health = 20) => ({
+    health, food: 20,
+    entity: { position: vec3(0, 64, 0) },
+    nearestEntity(fn) {
+      let best = null, bd = Infinity;
+      for (const e of entities) { if (!fn(e)) continue; const d = e.position.distanceTo(this.entity.position); if (d < bd) { bd = d; best = e; } }
+      return best;
+    },
+  });
+  const creeper = (dx, swell) => {
+    const e = { name: 'creeper', type: 'hostile', position: vec3(dx, 64, 0), metadata: [] };
+    if (swell != null) e.metadata[16] = swell;
+    return e;
+  };
+  test('shouldFlee : creeper CALME à 5 blocs → pas de fuite (avant : fuite dès 6)', () => {
+    assert.strictEqual(shouldFlee(botWith([creeper(5, -1)])), false);
+  });
+  test('shouldFlee : creeper qui GONFLE à 6.5 blocs → fuite', () => {
+    assert.strictEqual(shouldFlee(botWith([creeper(6.5, 1)])), true);
+  });
+  test('shouldFlee : creeper calme à 3 blocs → s éloigner (fuite)', () => {
+    assert.strictEqual(shouldFlee(botWith([creeper(3)])), true);
+  });
+}

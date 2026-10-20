@@ -23,6 +23,7 @@ const {
   nearbyHostiles, isArmored, combatDecision, hasFleeOnly, armorPoints, weaponDamage, combatCapability,
 } = require('../survival');
 const { bestWeapon } = require('../tools');
+const { creeperPlan } = require('../creeper');
 const { ROD_STRING } = require('./fish');   // 2 : la quantité qui débloque la canne (source unique)
 
 // L'araignée COMMUNE, et elle seule. `cave_spider` est volontairement absente (venin).
@@ -55,7 +56,10 @@ function nearestSpider(bot, radius = HUNT_RADIUS) {
  */
 function _fleeAdvised(bot) {
   try {
-    const hostiles = nearbyHostiles(bot, 10);
+    const self = bot.entity && bot.entity.position;
+    // Creeper : seul un creeper qui GONFLE (≤ 7) ou tout proche (≤ 4) compte (creeper.js) — un creeper
+    // calme au loin n'est pas une raison de lâcher la chasse.
+    const hostiles = nearbyHostiles(bot, 10).filter((h) => !(h && h.name === 'creeper') || creeperPlan(h, self) !== 'ignore');
     if (!hostiles.length) return false;
     return combatDecision({
       health: bot.health,

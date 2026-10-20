@@ -6,6 +6,7 @@ const assert = require('node:assert');
 const vec3 = require('vec3');
 const {
   combatDecision, isArmored, nearbyHostiles, hasFood, needHunt, nearestPassive, eatAny, survivalTick,
+  canDealWith, attackDamage, boldFightAdvised, BOLD_MIN_HEALTH,
   hasFleeOnly, FLEE_ONLY_LOWHP_THRESHOLD, combatCapability, armorPoints, weaponDamage,
   SWARM_COUNT, LOW_HEALTH, SWARM_UNARMORED, LOW_HEALTH_UNARMORED, HUNT_HUNGER, EAT_HUNGER, RAW_FOODS,
   CRITICAL_HUNGER, REGEN_FOOD, NO_REGEN_HP_MARGIN,
@@ -264,10 +265,13 @@ test('survivalTick : food critique EN ARMURE COMPLÈTE → flee via les seuils s
 });
 
 test('survivalTick : food ≤ REGEN_FOOD → fuite plus tôt (+NO_REGEN_HP_MARGIN) même sans armure explicite', async () => {
+  // AJUSTÉ (20/10, canDealWith AltoClef) : seul un zombie aux POINGS (canDealWith 2 > 1) ferait désormais
+  // combattre — la règle « on gère le nombre et PV > 8 » l'emporte sur le seuil sans-armure. Le cas
+  // « fuite plus tôt par la faim » reste vrai quand on NE gère PAS le nombre : 2 zombies.
   const lowHp = LOW_HEALTH_UNARMORED + NO_REGEN_HP_MARGIN;
   const { bot } = fakeBot({
     health: lowHp, food: REGEN_FOOD,   // sans armure (pas de slots) : seuil historique LOW_HEALTH_UNARMORED
-    entities: [fakeEntity('zombie', 'Hostile mobs', { x: 4, y: 64, z: 0 })],
+    entities: [0, 1].map((i) => fakeEntity('zombie', 'Hostile mobs', { x: 4 + i, y: 64, z: 0 })),
   });
   let fled = 0;
   const act = await survivalTick(bot, { fleeFrom: () => { fled++; return true; } });
@@ -356,4 +360,99 @@ test('armorPoints / weaponDamage : lecture des slots portés + meilleure épée'
   assert.strictEqual(armorPoints(bot), 7);              // iron_chestplate(6) + leather_boots(1)
   assert.strictEqual(weaponDamage(bot), 3);             // meilleure épée = iron_sword
   assert.strictEqual(weaponDamage({ inventory: { items: () => [] } }), 0);
+});
+
+
+// --- canDealWith (AltoClef MobDefenseChain, 20/10) : COMBATTRE quand on gère le nombre ---
+test('canDealWith : ceil(armure*3.6/20 + (1+dégât)*0.8) + 1', () => {
+  assert.strictEqual(canDealWith(0, 0), 2);              // nu, poings : ceil(0.8)+1
+  assert.strictEqual(canDealWith(0, 4), 5);              // nu, épée en bois : ceil(4)+1
+  assert.strictEqual(canDealWith(15, 6), 10);            // fer complet + épée fer : ceil(2.7+5.6)+1
+});
+test('attackDamage : meilleure arme en poche (épée ou hache, valeurs épée), 0 sans arme', () => {
+  const inv = (names) => ({ inventory: { items: () => names.map((name) => ({ name })) } });
+  assert.strictEqual(attackDamage(inv(['wooden_sword'])), 4);
+  assert.strictEqual(attackDamage(inv(['stone_sword', 'iron_sword'])), 6);
+  assert.strictEqual(attackDamage(inv(['diamond_sword'])), 7);
+  assert.strictEqual(attackDamage(inv(['netherite_sword'])), 8);
+  assert.strictEqual(attackDamage(inv(['stone_axe'])), 5);
+  assert.strictEqual(attackDamage(inv(['cobblestone'])), 0);
+  assert.strictEqual(attackDamage({}), 0);
+});
+test('boldFightAdvised : canDealWith > nb ET PV > 8 ET au moins 1 mob à combattre', () => {
+  assert.strictEqual(boldFightAdvised({ health: 12, fightCount: 2, canDealWith: 5 }), true);
+  assert.strictEqual(boldFightAdvised({ health: BOLD_MIN_HEALTH, fightCount: 1, canDealWith: 5 }), false, 'PV = 8 → non');
+  assert.strictEqual(boldFightAdvised({ health: 20, fightCount: 2, canDealWith: 2 }), false, 'égalité → non');
+  assert.strictEqual(boldFightAdvised({ health: 20, fightCount: 0, canDealWith: 5 }), false, 'rien à combattre');
+  assert.strictEqual(boldFightAdvised({ health: 20, fightCount: 1 }), false, 'sans canDealWith → non');
+  assert.strictEqual(boldFightAdvised({ health: 20, fightCount: 1, canDealWith: 5, food: 6 }), false, 'faim critique : non');
+});
+test('combatDecision : canDealWith > nb ET PV > 8 → fight, MÊME nu là où on fuyait (2 mobs / PV 12)', () => {
+  const base = { armored: false, hostileCount: 2 };
+  assert.strictEqual(combatDecision({ ...base, health: 12 }), 'flee', 'sans canDealWith : historique');
+  assert.strictEqual(combatDecision({ ...base, health: 12, canDealWith: 5, fightCount: 2 }), 'fight');
+  assert.strictEqual(combatDecision({ ...base, health: 12, canDealWith: 2, fightCount: 2 }), 'flee', 'ne gère pas le nombre');
+  assert.strictEqual(combatDecision({ ...base, health: 8, canDealWith: 9, fightCount: 2 }), 'flee', 'PV ≤ 8');
+});
+test('combatDecision : canDealWith ne passe JAMAIS devant creeper / lave / fleeOnly / mappeur', () => {
+  const b = { health: 20, hostileCount: 1, canDealWith: 9, fightCount: 1 };
+  assert.strictEqual(combatDecision({ ...b, hasCreeper: true }), 'flee');
+  assert.strictEqual(combatDecision({ ...b, lavaNear: true }), 'flee');
+  assert.strictEqual(combatDecision({ ...b, fleeOnly: true }), 'flee');
+  assert.strictEqual(combatDecision({ ...b, preferFlee: true, nearestDist: 8 }), 'flee', 'mappeur : fuite par défaut');
+});
+
+function fusing(dx) {
+  const e = fakeEntity('creeper', 'Hostile mobs', { x: dx, y: 64, z: 0 });
+  e.metadata = []; e.metadata[16] = 1;
+  return e;
+}
+test('survivalTick : creeper CALME à > 4 blocs → ignoré (pas de fuite, pas de combat, rien)', async () => {
+  const { bot, calls } = fakeBot({ entities: [fakeEntity('creeper', 'Hostile mobs', { x: 7, y: 64, z: 0 })] });
+  let fled = 0;
+  const act = await survivalTick(bot, { fleeFrom: () => { fled++; return true; } });
+  assert.strictEqual(act, null);
+  assert.strictEqual(fled, 0);
+  assert.deepStrictEqual(calls.attack, []);
+});
+test('survivalTick : creeper qui GONFLE à ≤ 7 blocs → flee', async () => {
+  const { bot, calls } = fakeBot({ items: [['iron_sword', 1]], entities: [fusing(6)] });
+  let fled = 0;
+  const act = await survivalTick(bot, { fleeFrom: () => { fled++; return true; } });
+  assert.strictEqual(act, 'flee');
+  assert.strictEqual(fled, 1);
+  assert.deepStrictEqual(calls.attack, []);
+});
+test('survivalTick : creeper calme à ≤ 4 blocs → s éloigne (flee), jamais frappé', async () => {
+  const { bot, calls } = fakeBot({ items: [['iron_sword', 1]], entities: [fakeEntity('creeper', 'Hostile mobs', { x: 3, y: 64, z: 0 })] });
+  const act = await survivalTick(bot, { fleeFrom: () => true });
+  assert.strictEqual(act, 'flee');
+  assert.deepStrictEqual(calls.attack, []);
+});
+test('survivalTick : zombie + creeper calme lointain → on combat le ZOMBIE (le creeper ne compte pas)', async () => {
+  const { bot, calls } = fakeBot({
+    items: [['stone_sword', 1]],
+    entities: [fakeEntity('creeper', 'Hostile mobs', { x: 2, y: 64, z: 6 }), fakeEntity('zombie', 'Hostile mobs', { x: 4, y: 64, z: 0 })],
+  });
+  const act = await survivalTick(bot, { fleeFrom: () => true });
+  assert.strictEqual(act, 'fight');
+  assert.deepStrictEqual(calls.attack, ['zombie']);
+});
+test('survivalTick : nu + épée de pierre, 2 zombies, PV 12 → fight (canDealWith 6 > 2) + event fight_chosen', async () => {
+  const evs = [];
+  const { bot, calls } = fakeBot({
+    health: 12, items: [['stone_sword', 1]],
+    entities: [0, 1].map((i) => fakeEntity('zombie', 'Hostile mobs', { x: 3 + i, y: 64, z: 0 })),
+  });
+  const act = await survivalTick(bot, { fleeFrom: () => true, emit: (e) => evs.push(e), now: () => 1e9 });
+  assert.strictEqual(act, 'fight');
+  assert.deepStrictEqual(calls.attack, ['zombie']);
+  const fc = evs.find((e) => e.type === 'fight_chosen');
+  assert.ok(fc, 'fight_chosen émis');
+  assert.strictEqual(fc.canDealWith, 6);
+  assert.strictEqual(fc.hostiles, 2);
+});
+test('survivalTick : mappeur (preferFlee) nu + épée, 1 zombie à 6 blocs → toujours flee', async () => {
+  const { bot } = fakeBot({ items: [['iron_sword', 1]], entities: [fakeEntity('zombie', 'Hostile mobs', { x: 6, y: 64, z: 0 })] });
+  assert.strictEqual(await survivalTick(bot, { fleeFrom: () => true, preferFlee: true }), 'flee');
 });

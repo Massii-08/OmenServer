@@ -3,9 +3,11 @@
 // fuir quand PV bas ou creeper proche, RIPOSTER quand attaqué au corps-à-corps (phase B).
 // Pilotés par les events natifs de Mineflayer.
 
+const { creeperPlan } = require('./creeper');
+
 const HUNGER_THRESHOLD = 6;   // sur 20
 const HEALTH_THRESHOLD = 6;   // sur 20
-const CREEPER_RADIUS = 6;     // blocs
+const CREEPER_RADIUS = 7;     // blocs — rayon de RECHERCHE ; la décision vient de creeper.creeperPlan
 // Phase B (régen) : blessé, on mange dès que la faim ne permet plus la régen naturelle (≥18).
 const HURT_HEALTH = 14;       // en dessous : on veut régénérer
 const REGEN_FOOD = 17;        // en dessous de 18 la régen s'arrête → on remange
@@ -87,17 +89,21 @@ async function tryEat(bot) {
   return true;
 }
 
-/** Vrai s'il faut fuir : PV bas (relevé si affamé, cf. NO_REGEN_HP_MARGIN) OU creeper dans le rayon. */
+/** Vrai s'il faut fuir : PV bas (relevé si affamé, cf. NO_REGEN_HP_MARGIN) OU creeper à fuir / à
+ *  s'écarter (creeper.creeperPlan : gonfle à ≤ 7, ou calme à ≤ 4 — un creeper calme plus loin n'est
+ *  pas une raison de fuir, AltoClef 20/10). */
 function shouldFlee(bot) {
   // food absent/undefined → seuil INCHANGÉ (rétro-compat totale). Sous REGEN_FOOD (régén coupée)
   // chaque PV perdu est définitif tant qu'on n'a pas mangé → on décroche NO_REGEN_HP_MARGIN PV plus tôt.
   const lowHealth = (bot.food != null && bot.food <= REGEN_FOOD) ? HEALTH_THRESHOLD + NO_REGEN_HP_MARGIN : HEALTH_THRESHOLD;
   if (bot.health != null && bot.health <= lowHealth) return true;
   const self = (bot.entity && bot.entity.position) || { x: 0, y: 0, z: 0 };
-  const creeper = bot.nearestEntity((e) =>
-    e && (e.type === 'mob' || e.type === 'hostile') && e.name === 'creeper' && e.position &&
-    e.position.distanceTo ? e.position.distanceTo(self) <= CREEPER_RADIUS
-                          : e && e.name === 'creeper');
+  const creeper = bot.nearestEntity((e) => {
+    if (!e || (e.type !== 'mob' && e.type !== 'hostile') || e.name !== 'creeper' || !e.position) return false;
+    if (typeof e.position.distanceTo === 'function' && e.position.distanceTo(self) > CREEPER_RADIUS) return false;
+    const plan = creeperPlan(e, self);
+    return plan === 'flee' || plan === 'step_away';
+  });
   return !!creeper;
 }
 

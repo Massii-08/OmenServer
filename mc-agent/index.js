@@ -33,7 +33,9 @@ const { installBridgeGuard } = require('./bridges');   // pas de pont au-dessus 
 const { copySafetySettings, createMovesKeeper } = require('./pluginMoves');   // fuite de Movements des plugins collect/pvp (19/10)
 const { createGoalTrace, installGoalTrace } = require('./goalTrace');   // DIAG GoalChanged : qui pose un but pendant un goto ? (aucun effet sur le bot)
 const vec3Lib = require('vec3'); // watchdog anti-jam (blocs barrants)
-const { realThreat, woodHidePlan, woodHideStateAt } = require('./threatgate');
+const { realThreat, woodHidePlan, woodHideStateAt, hasLineOfSight } = require('./threatgate');
+const { creeperPlan, creeperIsThreat, isCreeperFusing, awayPoint: creeperAwayPoint, FLEE_KEEP: CREEPER_FLEE_KEEP, STEP_AWAY_KEEP: CREEPER_STEP_AWAY_KEEP } = require('./creeper');
+const { auraTarget, auraPlan } = require('./aura');
 const { gather, woodExpeditionCount, woodExploreShape } = require('./skills/gather');
 const { gotoWithTimeout } = require('./skills/explore');   // trajet borné ET interruptible (abortIf)
 // Kit de secours en coffre (run 10, 20/10) — décisions PURES, glue « KIT DE SECOURS EN COFFRE ».
@@ -749,7 +751,8 @@ function teamAssistTick() {
       if (e && e.position) mates.push({ name: m.name, x: e.position.x, z: e.position.z });
     }
     if (!mates.length) return null;
-    const hostiles = nearbyHostiles(bot, 32).map((h) => ({
+    // Jamais un creeper : l'assister = le frapper au corps-à-corps (explosion). AltoClef 20/10.
+    const hostiles = nearbyHostiles(bot, 32).filter((h) => h && h.name !== 'creeper').map((h) => ({
       name: h.name, x: h.position.x, z: h.position.z, _e: h,
     }));
     const pick = pickMobAssist({
@@ -5052,7 +5055,12 @@ async function escapeDeathCamp() {
  * et les entités retirées du monde (isValid:false).
  */
 function isThreatHostile(e) {
-  return !!e && e.isValid !== false && isFleeHostile(e) && !NEUTRAL_NO_PROVOKE.has(e.name);
+  if (!e || e.isValid === false || !isFleeHostile(e) || NEUTRAL_NO_PROVOKE.has(e.name)) return false;
+  if (e.name !== 'creeper') return true;
+  // CREEPER (AltoClef, 20/10) : une menace SEULEMENT s'il gonfle à ≤ 7 blocs (creeper.js) — un creeper
+  // calme n'est pas une raison de fuir, se terrer ou lâcher un but (le tick creeper l'écarte s'il colle).
+  const p = bot && bot.entity && bot.entity.position;
+  return creeperIsThreat(e, p ? { x: p.x, y: p.y, z: p.z } : null);
 }
 
 /**
@@ -7317,7 +7325,8 @@ setInterval(async () => {
     const hostile = (() => {
       try {
         const e = bot.nearestEntity((x) => x && x.position && isFleeHostile(x)
-          && x.position.distanceTo(bot.entity.position) <= 10);
+          && x.position.distanceTo(bot.entity.position) <= 10
+          && (x.name !== 'creeper' || creeperPlan(x, bot.entity.position) !== 'ignore'));   // creeper calme au loin : pas un frein
         return !!e;
       } catch (e) { return false; }
     })();
@@ -7559,6 +7568,106 @@ async function foodRunTick() {
   finally { _foodRunBusy = false; }
 }
 setInterval(() => { foodRunTick().catch(() => {}); }, 30000);
+
+// ── FRAPPE PASSIVE + CREEPER (AltoClef MobDefenseChain, 20/10) ───────────────────────────────────
+// 63 % des morts arrivent pendant le but `logs`, 43 % dans les 2 min après un respawn. Deux gestes
+// d'un joueur humain qui manquaient :
+//   1. AURA : un hostile (pas un creeper, pas un neutre) à portée de coup et VISIBLE → un coup d'épée
+//      au cooldown 1.9+, SANS annuler la tâche ni poser de but pathfinder (aura.js, pur) ;
+//   2. CREEPER : ne fuir que s'il GONFLE (≤ 7 blocs → se placer à 10) ; calme et collé (≤ 4) → s'écarter
+//      à 6 ; calme plus loin → l'ignorer (creeper.js, pur). Jamais de mêlée sur un creeper.
+// ⚠️ TOUT l'état est de NIVEAU MODULE (piège #56 : un `let` dans onSpawn lu par ce timer = ReferenceError).
+const AURA_TICK_MS = 250;
+const AURA_EVENT_EVERY_MS = 10000;     // aura_hit / creeper_ignored / creeper_avoid : ≤ 1 / 10 s par type
+const CREEPER_SCAN_RADIUS = 10;
+const CREEPER_MOVE_MS = 3000;          // un écart posé : pas de nouveau but pendant 3 s
+let _auraLastHitAt = 0;                // dernier coup OU dernier changement d'arme (remet le cooldown à zéro)
+let _auraBusy = false;                 // un equip est en vol
+let _auraEvAt = {};                    // throttle des events par type
+let _creeperMoveUntil = 0;
+
+/** emit throttlé (≤ 1 / AURA_EVENT_EVERY_MS par type). */
+function _auraEmit(type, payload) {
+  const t = Date.now();
+  const last = _auraEvAt[type];
+  if (last != null && t >= last && t - last < AURA_EVENT_EVERY_MS) return;
+  _auraEvAt[type] = t;
+  emit(Object.assign({ type }, payload));
+}
+
+/** Ligne de vue des yeux du bot vers le haut du corps de l'entité (threatgate). Jamais de throw → false. */
+function canSeeEntityNow(e) {
+  try {
+    const p = bot.entity && bot.entity.position;
+    if (!p || !e || !e.position) return false;
+    const eye = { x: p.x, y: p.y + 1.62, z: p.z };
+    const h = Number.isFinite(e.height) ? e.height * 0.8 : 1.5;
+    const to = { x: e.position.x, y: e.position.y + h, z: e.position.z };
+    return hasLineOfSight(eye, to, (q) => bot.blockAt(vec3Lib(q.x, q.y, q.z)));
+  } catch (err) { return false; }
+}
+
+/** Un tick de frappe passive. Jamais de throw ; ne touche jamais au pathfinder ni au jeton de tâche. */
+function auraTick() {
+  if (_auraBusy) return;
+  try {
+    const p = bot.entity && bot.entity.position;
+    if (!p || bot.health == null || bot.health <= 0) return;
+    const self = { x: p.x, y: p.y, z: p.z };   // COPIE (Vec3 muté en place)
+    const target = auraTarget(Object.values(bot.entities || {}), self, { canSee: canSeeEntityNow });
+    if (!target) return;
+    const w = bestWeapon(bot);
+    const now = Date.now();
+    const plan = auraPlan({
+      target, weapon: w ? w.name : null, held: bot.heldItem ? bot.heldItem.name : null,
+      digging: !!bot.targetDigBlock, eating: !!bot.usingHeldItem,
+      pvpTarget: bot.pvp ? bot.pvp.target : null, lastHitAt: _auraLastHitAt, now,
+    });
+    if (plan.act === 'equip') {
+      _auraBusy = true;
+      _auraLastHitAt = now;   // changer d'objet remet le cooldown 1.9+ à zéro
+      Promise.resolve().then(() => bot.equip(w, 'hand')).catch(() => {}).then(() => { _auraBusy = false; });
+      return;
+    }
+    if (plan.act !== 'hit') return;
+    _auraLastHitAt = now;
+    bot.attack(target);
+    const tp = target.position;
+    _auraEmit('aura_hit', { mob: target.name, dist: Math.round(Math.hypot(tp.x - self.x, tp.y - self.y, tp.z - self.z) * 10) / 10 });
+  } catch (e) { /* best-effort : jamais crasher le bot sur un coup */ }
+}
+
+/** Un tick creeper : fuir s'il gonfle, s'écarter s'il colle, l'ignorer sinon. Jamais de throw. */
+function creeperTick() {
+  try {
+    const now = Date.now();
+    if (now < _creeperMoveUntil) return;
+    if (_shelterInFlight || _stillBusy) return;   // terré / immobilité légitime : on ne sort pas du trou
+    const p = bot.entity && bot.entity.position;
+    if (!p) return;
+    const self = { x: p.x, y: p.y, z: p.z };   // COPIE (Vec3 muté en place)
+    let best = null, bestD = Infinity;
+    for (const e of Object.values(bot.entities || {})) {
+      if (!e || e.name !== 'creeper' || e.isValid === false || !e.position) continue;
+      const d = Math.hypot(e.position.x - self.x, e.position.y - self.y, e.position.z - self.z);
+      if (d <= CREEPER_SCAN_RADIUS && d < bestD) { best = e; bestD = d; }
+    }
+    if (!best) return;
+    const plan = creeperPlan(best, self);
+    const fusing = isCreeperFusing(best);
+    const dist = Math.round(bestD * 10) / 10;
+    if (plan === 'ignore') { _auraEmit('creeper_ignored', { dist, fusing }); return; }
+    const keep = plan === 'flee' ? CREEPER_FLEE_KEEP : CREEPER_STEP_AWAY_KEEP;
+    const dest = creeperAwayPoint(self, best.position, keep);
+    if (!dest) return;
+    if (plan === 'flee' && bot.pvp && bot.pvp.target) { try { bot.pvp.stop(); } catch (e) {} }
+    // But XZ (jamais 3D à l'altitude courante, piège #72b), figé (dynamic=false).
+    bot.pathfinder.setGoal(new pfGoals.GoalNearXZ(dest.x, dest.z, 2), false);
+    _creeperMoveUntil = now + CREEPER_MOVE_MS;
+    _auraEmit('creeper_avoid', { act: plan, dist, fusing });
+  } catch (e) { /* best-effort */ }
+}
+setInterval(() => { auraTick(); creeperTick(); }, AURA_TICK_MS);
 
 // ── PLUS DE PIOCHE → EN REFAIRE UNE (Massii 2026-07-26 : « si ils n'ont plus de pioche ils doivent
 // en faire une »). La capacité existait (`recoverPickaxe`, buts wooden_pickaxe/stone_pickaxe) mais

@@ -61,7 +61,7 @@ function guardSandbox({ appearAtMs = null, dist = 6, worn = 0, night = false, ar
     get entities() { return (appearAtMs != null && sb.clock.t - T0 >= appearAtMs) ? { 1: mob(dist) } : {}; },
   };
   Object.assign(sb, {
-    bot, isFleeHostile, NEUTRAL_NO_PROVOKE,
+    bot, isFleeHostile, NEUTRAL_NO_PROVOKE, creeperIsThreat: require('./creeper').creeperIsThreat,
     spawnDanger: U.spawnDanger, spawnGuardPlan: U.spawnGuardPlan,
     isNight: (b) => !!(b && b.time && b.time.timeOfDay >= 12800 && b.time.timeOfDay <= 23200),
     _wornArmor: () => new Set(['a', 'b', 'c', 'd'].slice(0, worn)),
@@ -334,7 +334,7 @@ test('woodThreatNow : rayon 16 (pas 12), nu seulement, et un mur coupe la ligne 
         blockAt: (p) => ({ boundingBox: (wallX != null && p.x === wallX) ? 'block' : 'empty' }),
       },
       vec3Lib: (x, y, z) => ({ x, y, z }),
-      realThreat: TG.realThreat, SPAWN_DANGER_MIN_WORN: U.SPAWN_DANGER_MIN_WORN, isFleeHostile, NEUTRAL_NO_PROVOKE,
+      realThreat: TG.realThreat, SPAWN_DANGER_MIN_WORN: U.SPAWN_DANGER_MIN_WORN, isFleeHostile, NEUTRAL_NO_PROVOKE, creeperIsThreat: require('./creeper').creeperIsThreat,
       _wornArmor: () => new Set(['a', 'b', 'c', 'd'].slice(0, worn)),
     });
     vm.createContext(sb);

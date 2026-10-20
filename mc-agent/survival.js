@@ -8,6 +8,7 @@
 const { Vec3 } = require('vec3');
 const { FOODS, FLEE_ONLY_ALWAYS, FLEE_ONLY_LOWHP, FLEE_ONLY_LOWHP_THRESHOLD, isFleeOnlyMob, REGEN_FOOD, NO_REGEN_HP_MARGIN } = require('./reflexes');
 const { bestWeapon } = require('./tools');
+const { creeperPlan } = require('./creeper');
 
 const SWARM_COUNT = 3;   // ≥3 hostiles = submergé → fuite (AVEC armure)
 const LOW_HEALTH = 8;    // PV ≤ 8 (4 cœurs) → fuite (AVEC armure)
@@ -54,7 +55,7 @@ const PASSIVE_FOOD_MOBS = new Set(['cow', 'pig', 'chicken', 'sheep', 'rabbit', '
  * `food` (optionnel, 0-20) : hard = pas de régén sous 18 (REGEN_FOOD) ni de sprint sous 7
  * (CRITICAL_HUNGER). Absent/undefined → comportement STRICTEMENT inchangé (rétro-compat).
  */
-function combatDecision({ health, hostileCount, armored, hasCreeper, lavaNear, preferFlee, nearestDist, fleeOnly, capability, food }) {
+function combatDecision({ health, hostileCount, armored, hasCreeper, lavaNear, preferFlee, nearestDist, fleeOnly, capability, food, canDealWith, fightCount }) {
   if (!hostileCount) return null;
   // CREEPER : JAMAIS de mêlée (il explose au contact → mort instantanée même en armure diamant, vécu
   // live R3 22/06 : fight creeper ×2 → dead en deep mining). On FUIT pour casser la ligne d'explosion ;
@@ -70,6 +71,11 @@ function combatDecision({ health, hostileCount, armored, hasCreeper, lavaNear, p
   // Mode MAPPEUR (preferFlee, demande Massii live 2026-07-15) : FUIR par défaut — se défendre
   // UNIQUEMENT si l'assaillant est à portée de coup (risque de hit imminent, ≤3 blocs).
   if (preferFlee) return (nearestDist != null && nearestDist <= 3) ? 'fight' : 'flee';
+  // COMBATTRE QUAND ON GÈRE LE NOMBRE (AltoClef MobDefenseChain, 20/10) : canDealWith > hostiles proches
+  // ET PV > 8 → on se bat au lieu de fuir — y compris NU (une fuite à pied ratée tuait 93 % du temps,
+  // run 10). Passe devant les seuils prudents ci-dessous, jamais devant creeper/lave/fleeOnly/mappeur.
+  // `canDealWith` absent → rien ne change (rétro-compat).
+  if (boldFightAdvised({ health, fightCount: fightCount != null ? fightCount : hostileCount, canDealWith, food })) return 'fight';
   // FAIM (hard, cf. CRITICAL_HUNGER ci-dessus) : ≤6 → sprint coupé, on ne peut plus fuir vite →
   // `armored` forcé à false (seuils prudents) MÊME en armure complète. ≤REGEN_FOOD (régén coupée,
   // reflexes.js) → chaque PV perdu est définitif tant qu'on n'a pas mangé → seuil de fuite basse-
@@ -151,6 +157,46 @@ function combatCapability(armorPts, weaponDmg) {
   return Math.ceil((armorPts || 0) * 3.6 / 20 + (weaponDmg || 0) * 0.8) + 1;
 }
 
+// canDealWith AltoClef (MobDefenseChain) : dégât PLEIN de l'arme (épée bois 4 … netherite 8 ; haches
+// comptées comme l'épée du même matériau — plus fortes mais plus lentes) ; sans arme 0.
+const ATTACK_DAMAGE = {
+  wooden_sword: 4, golden_sword: 4, stone_sword: 5, iron_sword: 6, diamond_sword: 7, netherite_sword: 8,
+  wooden_axe: 4, golden_axe: 4, stone_axe: 5, iron_axe: 6, diamond_axe: 7, netherite_axe: 8,
+};
+const BOLD_MIN_HEALTH = 8;     // PV ≤ 8 → la règle « on gère le nombre » ne s'applique plus
+const FIGHT_COUNT_RADIUS = 8;  // hostiles comptés pour canDealWith : non-creeper, ≤ 8 blocs, visibles
+
+/** Dégât plein de la meilleure arme en poche (0 sans arme). (pur, testable) */
+function attackDamage(bot) {
+  const items = (bot && bot.inventory && typeof bot.inventory.items === 'function') ? bot.inventory.items() : [];
+  let best = 0;
+  for (const it of items || []) { const d = ATTACK_DAMAGE[it && it.name]; if (d && d > best) best = d; }
+  return best;
+}
+/** canDealWith = ceil(armure*3.6/20 + (1+dégât)*0.8) + 1 — nb de mobs qu'on « gère ». (pur) */
+function canDealWith(armorPts, attackDmg) {
+  // −1e-9 : 5 × 0.8 vaut 4.000000000000001 en flottant (ceil → 5 au lieu de 4).
+  return Math.ceil((armorPts || 0) * 3.6 / 20 + (1 + (attackDmg || 0)) * 0.8 - 1e-9) + 1;
+}
+/**
+ * PUR — combattre plutôt que fuir ? canDealWith > fightCount ≥ 1 ET PV > 8. Jamais en faim critique
+ * (≤ CRITICAL_HUNGER : pas de régén, chaque coup encaissé est définitif — on garde la prudence).
+ */
+function boldFightAdvised({ health, fightCount, canDealWith: cdw, food } = {}) {
+  if (cdw == null || !Number.isFinite(cdw)) return false;
+  if (!fightCount || fightCount < 1) return false;
+  if (health == null || !(health > BOLD_MIN_HEALTH)) return false;
+  if (food != null && food <= CRITICAL_HUNGER) return false;
+  return cdw > fightCount;
+}
+
+function _d3(a, b) {
+  try {
+    if (a && typeof a.distanceTo === 'function') return a.distanceTo(b);
+    return Math.sqrt((a.x - b.x) ** 2 + (a.y - b.y) ** 2 + (a.z - b.z) ** 2);
+  } catch (e) { return Infinity; }
+}
+
 /** Hostiles (kind mineflayer 'Hostile mobs') dans le rayon. */
 function nearbyHostiles(bot, radius = 10) {
   const self = bot.entity && bot.entity.position;
@@ -199,23 +245,38 @@ async function eatAny(bot) {
  * ou null si tout est calme. La boucle mapper re-tick tant que non-null (avec un cap anti-blocage).
  * deps : { fleeFrom, emit? } injectables.
  */
+const FIGHT_CHOSEN_EVERY_MS = 10000;   // event `fight_chosen` : au plus 1 / 10 s
+let _lastFightChosenAt = -Infinity;
 async function survivalTick(bot, deps = {}) {
   const emit = deps.emit || (() => {});
-  const hostiles = nearbyHostiles(bot, 10);
-  const hasCreeper = hostiles.some((h) => h && h.name === 'creeper');   // creeper → fuir, jamais mêlée (anti-explosion)
+  const now = typeof deps.now === 'function' ? deps.now : Date.now;
+  const self = bot.entity && bot.entity.position;
+  // CREEPER (AltoClef, 20/10) : un creeper CALME à > 4 blocs n'est ni une raison de fuir ni une cible —
+  // il sort de la liste ; gonfle à ≤ 7 ou calme à ≤ 4 → `hasCreeper` (fuite / s'écarter, jamais de mêlée).
+  const all = nearbyHostiles(bot, 10);
+  let hasCreeper = false;
+  const hostiles = [];
+  for (const h of all) {
+    if (h && h.name === 'creeper') {
+      const plan = creeperPlan(h, self);
+      if (plan === 'flee' || plan === 'step_away') { hasCreeper = true; hostiles.push(h); }
+      continue;
+    }
+    hostiles.push(h);
+  }
   // Lave évaluée seulement s'il y a des hostiles (le scan a un coût) ; injectable pour les tests.
   const lavaNear = hostiles.length ? (deps.lavaNear ? !!deps.lavaNear(bot) : lavaNearby(bot)) : false;
   // distance du plus proche hostile (mode mappeur preferFlee : fight seulement à portée de coup)
-  const self = bot.entity && bot.entity.position;
-  const nearestDist = (hostiles.length && self) ? Math.min(...hostiles.map((h) => {
-    try {
-      if (h.position && typeof h.position.distanceTo === 'function') return h.position.distanceTo(self);
-      return Math.sqrt((h.position.x - self.x) ** 2 + (h.position.y - self.y) ** 2 + (h.position.z - self.z) ** 2);
-    } catch (e) { return Infinity; }
-  })) : null;
+  const nearestDist = (hostiles.length && self) ? Math.min(...hostiles.map((h) => _d3(h.position, self))) : null;
   const fleeOnly = hasFleeOnly(hostiles, bot.health);   // wither_skeleton / hoglin bas-PV → jamais de mêlée
   const capability = combatCapability(armorPoints(bot), weaponDamage(bot));   // canDealWith (cautious-only)
-  const decision = combatDecision({ health: bot.health, hostileCount: hostiles.length, armored: isArmored(bot), hasCreeper, lavaNear, preferFlee: !!deps.preferFlee, nearestDist, fleeOnly, capability, food: bot.food });
+  // canDealWith « audacieux » : hostiles non-creeper à ≤ 8 blocs ET visibles (deps.canSee injecté ;
+  // absent = visible ; qui lève = invisible).
+  const canSee = typeof deps.canSee === 'function' ? deps.canSee : null;
+  const fighters = hostiles.filter((h) => h.name !== 'creeper' && self && _d3(h.position, self) <= FIGHT_COUNT_RADIUS &&
+    (!canSee || (() => { try { return !!canSee(h); } catch (e) { return false; } })()));
+  const cdw = canDealWith(armorPoints(bot), attackDamage(bot));
+  const decision = combatDecision({ health: bot.health, hostileCount: hostiles.length, armored: isArmored(bot), hasCreeper, lavaNear, preferFlee: !!deps.preferFlee, nearestDist, fleeOnly, capability, food: bot.food, canDealWith: cdw, fightCount: fighters.length });
   if (decision === 'flee') {
     try { deps.fleeFrom && deps.fleeFrom(bot); } catch (e) {}
     const ev = { type: 'survival', action: 'flee', hostiles: hostiles.length };
@@ -225,10 +286,20 @@ async function survivalTick(bot, deps = {}) {
     return 'flee';
   }
   if (decision === 'fight') {
+    // Jamais le creeper (il n'arrive ici que si `hasCreeper` est faux, mais on ne frappe pas un creeper).
+    const target = fighters[0] || hostiles.find((h) => h.name !== 'creeper');
+    if (!target) return null;
+    if (!deps.preferFlee && boldFightAdvised({ health: bot.health, fightCount: fighters.length, canDealWith: cdw, food: bot.food })) {
+      const t = now();
+      if (t < _lastFightChosenAt || t - _lastFightChosenAt >= FIGHT_CHOSEN_EVERY_MS) {   // horloge reculée → prêt
+        _lastFightChosenAt = t;
+        emit({ type: 'fight_chosen', canDealWith: cdw, hostiles: fighters.length, health: bot.health });
+      }
+    }
     const w = bestWeapon(bot);
     if (w) { try { await bot.equip(w, 'hand'); } catch (e) {} }
-    try { bot.pvp.attack(hostiles[0]); } catch (e) {}
-    emit({ type: 'survival', action: 'fight', target: hostiles[0].name });
+    try { bot.pvp.attack(target); } catch (e) {}
+    emit({ type: 'survival', action: 'fight', target: target.name });
     return 'fight';
   }
   if (await eatAny(bot)) { emit({ type: 'survival', action: 'eat' }); return 'eat'; }
@@ -248,6 +319,7 @@ async function survivalTick(bot, deps = {}) {
 module.exports = {
   combatDecision, isArmored, nearbyHostiles, hasFood, needHunt, nearestPassive, eatAny, survivalTick, lavaNearby,
   hasFleeOnly, armorPoints, weaponDamage, combatCapability,
+  canDealWith, attackDamage, boldFightAdvised, BOLD_MIN_HEALTH, FIGHT_COUNT_RADIUS, ATTACK_DAMAGE,
   SWARM_COUNT, LOW_HEALTH, SWARM_UNARMORED, LOW_HEALTH_UNARMORED, HUNT_HUNGER, EAT_HUNGER, CRITICAL_HUNGER,
   RAW_FOODS, PASSIVE_FOOD_MOBS, NEUTRAL_NO_PROVOKE,
   FLEE_ONLY_ALWAYS, FLEE_ONLY_LOWHP, FLEE_ONLY_LOWHP_THRESHOLD, REGEN_FOOD, NO_REGEN_HP_MARGIN,
