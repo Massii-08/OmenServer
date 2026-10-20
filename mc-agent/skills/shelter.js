@@ -70,6 +70,38 @@ function dawnExitDecision(opts) {
   return waited >= maxMs ? 'go' : 'wait';
 }
 
+// ─── SORTIE D'ABRI « QUAND C'EST SÛR » (fix 20/10) ───────────────────────────────────────────────
+// Mesuré (run 20/10, 1 h, 36 morts) : 9 morts juste après `shelter:out`. Trois signatures : (1) la sortie
+// d'un bot ARMÉ (≥ 2 pièces) n'attendait jamais, même avec 5 zombies devant la porte (NethBot3 :
+// `out` → `fight_chosen hostiles:5` → mort 57 s plus tard) ; (2) la borne de 60-120 s tombait avec
+// 1-3 hostiles encore là (`dawn_wait reason:timeout hostiles_left:3` → `out` → mort 4 s après) ;
+// (3) un creeper calme à 6-10 blocs ne comptait pas (`out` → creeper à 3,6 blocs 1 s après → explosion).
+// Règle (opt-in, `deps.exitThreats`) : ne sortir que si
+//   - l'heure MC est dans [0, 11500] (soleil levé : zombies et squelettes à découvert brûlent) ;
+//   - aucun hostile non-creeper à ≤ 16 blocs EN VUE de la sortie ;
+//   - aucun creeper à ≤ 10 blocs (calme ou non) ;
+// sinon attendre par tranches de 10 s, borné à 180 s, puis sortir quand même. Armé ou nu : même règle.
+const DAWN_SAFE_EXIT_MAX_MS = 180 * 1000;
+const DAWN_SAFE_CHECK_MS = 10 * 1000;
+const DAY_SAFE_END = 11500;            // timeOfDay ∈ [0, 11500] = jour franc
+
+/**
+ * PUR — sortir de l'abri ? opts = { hostiles, creepers, timeOfDay, waitedMs, maxMs }.
+ * → { act: 'go'|'wait', reason: 'timeout'|'dark'|'creeper'|'hostiles'|'clear' }.
+ * Entrées absentes/absurdes : comptées 0 / heure ignorée (jamais coincé dans le trou sur une erreur).
+ */
+function dawnExitPlan(opts) {
+  const o = (opts && typeof opts === 'object') ? opts : {};
+  const maxMs = (Number.isFinite(o.maxMs) && o.maxMs >= 0) ? o.maxMs : DAWN_SAFE_EXIT_MAX_MS;
+  const waited = (Number.isFinite(o.waitedMs) && o.waitedMs > 0) ? o.waitedMs : 0;
+  if (waited >= maxMs) return { act: 'go', reason: 'timeout' };
+  const t = o.timeOfDay;
+  if (Number.isFinite(t) && t >= 0 && (t % 24000) > DAY_SAFE_END) return { act: 'wait', reason: 'dark' };
+  if (Number.isFinite(o.creepers) && o.creepers > 0) return { act: 'wait', reason: 'creeper' };
+  if (Number.isFinite(o.hostiles) && o.hostiles > 0) return { act: 'wait', reason: 'hostiles' };
+  return { act: 'go', reason: 'clear' };
+}
+
 // ─── ABRI QUITTÉ (discipline de nuit, 19/10 soir) ────────────────────────────────────────────────
 // L'attente ne regardait que l'horloge : un bot DÉLOGÉ de son trou (fuite réflexe, riposte pvp qui
 // poursuit sa cible, sauvetage d'eau, /home d'urgence) restait « à l'abri » jusqu'au matin, debout
@@ -100,6 +132,7 @@ function shelterDisplaced(anchor, pos, maxBlocks = SHELTER_DISPLACED_BLOCKS) {
  * @returns {{cancelled:boolean, displaced?:boolean}}
  */
 async function _waitOutDawnMobs(bot, token, deps, emit, sleep, isDisplaced = null) {
+  if (typeof deps.exitThreats === 'function') return _waitSafeExit(bot, token, deps, emit, sleep, isDisplaced);
   const maxMs = Number.isFinite(deps.dawnWaitMaxMs) ? deps.dawnWaitMaxMs : DAWN_WAIT_MAX_MS;
   const checkMs = (Number.isFinite(deps.dawnCheckMs) && deps.dawnCheckMs > 0) ? deps.dawnCheckMs : DAWN_WAIT_CHECK_MS;
   // Un relevé qui LÈVE vaut « rien » : on ne reste jamais coincé dans le trou sur une erreur de lecture.
@@ -137,6 +170,49 @@ async function _waitOutDawnMobs(bot, token, deps, emit, sleep, isDisplaced = nul
   }
   done(worn >= DAWN_WAIT_MIN_WORN ? 'armed' : (left > 0 ? 'timeout' : 'clear'));
   return { cancelled: false };
+}
+
+/**
+ * Variante « sortie sûre » de l'étape 3bis (deps.exitThreats → { hostiles, creepers }, relu à chaque pas ;
+ * l'heure vient de bot.time.timeOfDay). Un event `dawn_hold {reason, waited_s}` à chaque changement de
+ * raison, puis le `dawn_wait` habituel à la sortie (reason : 'clear' | 'timeout' | 'cancelled' | 'displaced').
+ * Borne : deps.dawnWaitMaxMs s'il est fourni (abri de menace de jour), sinon 180 s ; pas : 10 s.
+ */
+async function _waitSafeExit(bot, token, deps, emit, sleep, isDisplaced) {
+  const maxMs = Number.isFinite(deps.dawnWaitMaxMs) ? deps.dawnWaitMaxMs : DAWN_SAFE_EXIT_MAX_MS;
+  const checkMs = (Number.isFinite(deps.dawnCheckMs) && deps.dawnCheckMs > 0) ? deps.dawnCheckMs : DAWN_SAFE_CHECK_MS;
+  const read = () => {
+    let r = null;
+    try { r = deps.exitThreats(); } catch (e) { r = null; }
+    const tod = bot && bot.time && Number.isFinite(bot.time.timeOfDay) ? bot.time.timeOfDay : null;
+    return { hostiles: r && Number.isFinite(r.hostiles) ? r.hostiles : 0,
+      creepers: r && Number.isFinite(r.creepers) ? r.creepers : 0, timeOfDay: tod };
+  };
+  const t0 = Date.now();
+  let waitedMs = 0;
+  let first = null;
+  let lastReason = null;
+  let cur = { hostiles: 0, creepers: 0 };
+  const done = (reason) => {
+    if (first === null) return;
+    emit({ type: 'shelter', action: 'dawn_wait', hostiles: first, hostiles_left: cur.hostiles + cur.creepers,
+      waited_s: Math.round(waitedMs / 1000), reason });
+  };
+  for (;;) {
+    if (token && token.cancelled) { done('cancelled'); return { cancelled: true }; }
+    if (isDisplaced && isDisplaced()) { done('displaced'); return { cancelled: false, displaced: true }; }
+    cur = read();
+    const plan = dawnExitPlan({ hostiles: cur.hostiles, creepers: cur.creepers, timeOfDay: cur.timeOfDay, waitedMs, maxMs });
+    if (plan.act !== 'wait') { done(plan.reason); return { cancelled: false }; }
+    if (first === null) first = cur.hostiles + cur.creepers;
+    if (plan.reason !== lastReason) {
+      lastReason = plan.reason;
+      emit({ type: 'dawn_hold', reason: plan.reason, waited_s: Math.round(waitedMs / 1000),
+        hostiles: cur.hostiles, creepers: cur.creepers, tod: cur.timeOfDay });
+    }
+    await sleep(checkMs);
+    waitedMs = Math.max(waitedMs + checkMs, Date.now() - t0);
+  }
 }
 
 // ─── LA CELLULE FERMÉE (19/10 soir) ──────────────────────────────────────────────────────────────
@@ -543,7 +619,7 @@ async function shelterUntilDawn(bot, token = null, deps = {}) {
 
   // 3bis) L'AUBE N'EST PAS LA FIN DES MONSTRES : bot nu + hostiles dehors → on reste (borné 120 s).
   // Branchement explicite : sans `deps.hostilesNear` l'attente n'existe pas (comportement d'origine).
-  if (typeof deps.hostilesNear === 'function') {
+  if (typeof deps.hostilesNear === 'function' || typeof deps.exitThreats === 'function') {
     const w = await _waitOutDawnMobs(bot, token, deps, emit, sleep, left);
     if (w.cancelled) return { ok: false, reason: 'cancelled' };
     if (w.displaced) return { ok: false, reason: 'displaced' };
@@ -564,13 +640,21 @@ async function shelterUntilDawn(bot, token = null, deps = {}) {
       }
     } catch (e) { /* best-effort */ }
     emit({ type: 'shelter', action: 'out', ok: true, mode: 'walled' });
+    _afterExit(deps);
     return { ok: true };
   }
   // Pilier de la hauteur RÉELLEMENT creusée : il rebouche le puits en remontant (aucun trou laissé dans le
   // monde), et à 3 de profondeur il ramène les pieds au niveau du sol.
   const up = await pillarUp(bot, { height: Math.max(1, cellRes.depth || 2) }, token, { sleep: deps.pillarSleep || deps.sleep });
   emit({ type: 'shelter', action: 'out', ok: up.ok });
+  _afterExit(deps);
   return { ok: true };
+}
+
+/** Sorti : `deps.onExit` (s'éloigner des hostiles en vue, index.js). Best-effort, jamais de throw. */
+function _afterExit(deps) {
+  if (typeof deps.onExit !== 'function') return;
+  try { deps.onExit(); } catch (e) { /* best-effort */ }
 }
 
 /**
@@ -606,6 +690,7 @@ function shouldShelter(sig = {}) {
 module.exports = {
   isNightTime, isNight, shelterUntilDawn, roofPlan, shouldShelter,
   dawnExitDecision, DAWN_WAIT_MAX_MS, DAWN_WAIT_CHECK_MS, DAWN_WAIT_MIN_WORN,
+  dawnExitPlan, DAWN_SAFE_EXIT_MAX_MS, DAWN_SAFE_CHECK_MS, DAY_SAFE_END,
   shelterDisplaced, SHELTER_DISPLACED_BLOCKS,
   createSpotMemory, cellBlockItem, SHELTER_PIT_DEPTH, SHELTER_MIN_DEPTH, CELL_BLOCKS,
 };

@@ -899,7 +899,8 @@ test('index.js : _foodTripBusy est déclarée AU NIVEAU MODULE (colonne 0), avan
 test('index.js : le confine ET le squad comptent l expédition comme « occupé » (sinon /home ou /tpa la coupent en route)', () => {
   const lines = SRC.split('\n').filter((l) => /const busy = !!bot\.targetDigBlock/.test(l));
   assert.strictEqual(lines.length, 2, 'les deux gardes busy historiques (confine + squad)');
-  for (const l of lines) assert.match(l, /_migrating \|\| _escaping \|\| _foodTripBusy;/, l);
+  // (le squad ajoute `|| _craftDepth > 0` depuis le 20/10 : un /tpa pendant un craft abandonnait la table)
+  for (const l of lines) assert.match(l, /_migrating \|\| _escaping \|\| _foodTripBusy( \|\| _craftDepth > 0)?;/, l);
 });
 
 test('index.js : les garde-fous des appelants laissent la place à l expédition (+ FOOD_TRIP_MS) — sinon ils la couperaient', () => {

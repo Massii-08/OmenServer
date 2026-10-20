@@ -152,6 +152,7 @@ function hideSandbox({ inFlight = null, night = false, shelter = null } = {}) {
     isNight: (b) => !!(b && b.time && b.time.timeOfDay >= 12800 && b.time.timeOfDay <= 23200),
     _shelterInFlight: inFlight, _stillBusy: false, lastShelterT: 0,
     hostilesNearNow: () => 0, _wornArmor: () => new Set(), nightLockdownNow: () => false,
+    dawnExitThreatsNow: () => ({ hostiles: 0, creepers: 0 }), exitAwayFromThreats: () => {},
     stopMotion: () => sb.calls.push('stop'),
     shelterUntilDawn: shelter || (async (b, tok, deps) => { captured.calls.push({ tok, deps, busy: sb._stillBusy }); return { ok: true }; }),
   });

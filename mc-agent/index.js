@@ -35,7 +35,8 @@ const { copySafetySettings, createMovesKeeper } = require('./pluginMoves');   //
 const { createGoalTrace, installGoalTrace } = require('./goalTrace');   // DIAG GoalChanged : qui pose un but pendant un goto ? (aucun effet sur le bot)
 const vec3Lib = require('vec3'); // watchdog anti-jam (blocs barrants)
 const { realThreat, woodHidePlan, woodHideStateAt, hasLineOfSight } = require('./threatgate');
-const { creeperPlan, creeperIsThreat, isCreeperFusing, awayPoint: creeperAwayPoint, FLEE_KEEP: CREEPER_FLEE_KEEP, STEP_AWAY_KEEP: CREEPER_STEP_AWAY_KEEP } = require('./creeper');
+const { creeperPlan, creeperIsThreat, isCreeperFusing, awayPoint: creeperAwayPoint, fleeDone: creeperFleeDone, FLEE_KEEP: CREEPER_FLEE_KEEP } = require('./creeper');
+const { createHoldState, installGoalHold, holdSetGoal, hold: holdGoal, release: releaseGoalHold } = require('./goalHold');   // fuite creeper : le planner ne vole plus le but
 const { auraTarget, auraPlan } = require('./aura');
 const { gather, woodExpeditionCount, woodExploreShape } = require('./skills/gather');
 const { gotoWithTimeout } = require('./skills/explore');   // trajet borné ET interruptible (abortIf)
@@ -143,7 +144,7 @@ const {
 } = require('./lumberjack');
 const { tierRank } = require('./tools');
 const { createTeleportWatcher, wireTeleportDetection } = require('./teleport');
-const { isNight, shelterUntilDawn, shouldShelter, DAWN_WAIT_MAX_MS } = require('./skills/shelter');
+const { isNight, shelterUntilDawn, shouldShelter, DAWN_WAIT_MAX_MS, DAWN_SAFE_EXIT_MAX_MS } = require('./skills/shelter');
 const { maybeRunKit } = require('./kit');   // survie mappeur : /kit serveur au démarrage/respawn (décision pure)
 const { needDirtBuffer } = require('./dirt');   // survie mappeur : buffer de blocs posables pour sceller l'abri
 const { panicWall } = require('./skills/panicWall');
@@ -451,6 +452,7 @@ let panicInFlight = false;    // garde de ré-entrée onPanic. DOIT rester au ni
 // déclarée dans onSpawn, elle lèverait une ReferenceError au 1er tick (le smoke test ne le voit pas).
 const _goalTrace = createGoalTrace({});
 let _goalTraceInstalled = false;   // le wrapper ne se pose qu'UNE fois par process (cf. onSpawn)
+let _goalHoldInstalled = false;    // idem pour le verrou de but (fuite creeper, goalHold.js)
 // FUITE DE MOVEMENTS (19/10, cf. pluginMoves.js) : collect/pvp posent leur Movements d'usine et ne
 // rendent jamais la nôtre. Le gardien se pose UNE fois par process (envelopper deux fois collect, ou
 // écouter deux fois stoppedAttacking, doublerait les restaurations). NIVEAU MODULE, comme ses sœurs.
@@ -716,7 +718,9 @@ async function trySquad() {
   // évasion et le ré-ancrage post-fuite jugerait une zone qu'il n'a jamais atteinte.
   // `_foodTripBusy` aussi : le bot est parti À PIED chercher du gibier loin de la squad, le /tpa le
   // ramènerait au chef au milieu de la marche (ou de la chasse sur place) sans qu'il ait mangé.
-  const busy = !!bot.targetDigBlock || _stillBusy || _imminentBusy || _smeltOppBusy || _armorBusy || _migrating || _escaping || _foodTripBusy;
+  // `_craftDepth` (fix 20/10) : un /tpa tiré pendant un craft à la table laissait la table à 100 blocs
+  // (`squad_join` → `table_abandoned` → `t1_sword craft_failed`, NethBot2 session 278).
+  const busy = !!bot.targetDigBlock || _stillBusy || _imminentBusy || _smeltOppBusy || _armorBusy || _migrating || _escaping || _foodTripBusy || _craftDepth > 0;
   const pick = squadTarget({
     // `y`/`ironZone` de SOI : sans eux un mineur productif se croirait « rien du tout » et
     // remonterait rejoindre un flâneur resté en surface — l'inverse exact du but.
@@ -1730,11 +1734,87 @@ async function withCraftingTable(fn) {
 
 // Craft "intelligent" : tente direct (2×2, ou table déjà à portée) ; si pas de recette / craft échoué
 // faute de table (craft 3×3), pose une table portable, re-tente, puis reprend la table.
-async function craftSmart(args) {
+async function _craftSmartRaw(args) {
   const r = await craftItem(bot, args);
   if (r.ok) return r;
   if (r.reason === 'no_recipe' || r.reason === 'craft_failed') return withCraftingTable(() => craftItem(bot, args));
   return r;
+}
+
+// ── UN CRAFT À LA FOIS, ET PAS EN PLEIN COMBAT (fix 20/10) ───────────────────────────────────────
+// Mesuré (run 20/10, NethBot2, session 278) : `t1_sword` craft_failed ×2 puis craft_no_effect ×2 et
+// `crafting_table` craft_no_effect, TOUS au milieu d'un combat (`survival fight zombie`, `aura_hit`,
+// `team_assist`) ou juste après un `/tpa` de squad tiré PENDANT le craft (`squad_join` → téléporté à
+// 100 blocs de la table qu'il venait de poser → `table_abandoned`). Mécanisme (mineflayer) : un craft
+// à la table ouvre une FENÊTRE ; pendant qu'elle est ouverte, l'aura et mineflayer-pvp changent l'objet
+// en main (`bot.equip` = clics d'inventaire envoyés… sur la mauvaise fenêtre) → le serveur rejette ou
+// désynchronise, le produit n'arrive jamais. Et ~25 appelants de craftSmart (planner, filets pioche/
+// armure/bouclier/torches à minuterie) pouvaient crafter EN MÊME TEMPS.
+// Donc : (1) une FILE — un craft attend la fin du précédent (borné : jamais plus de 20 s, un craft
+// coincé ne gèle pas les autres) ; (2) un hostile à ≤ 5 blocs ou un combat pvp en cours → on attend
+// qu'il soit réglé (borné 8 s, `craft_deferred`) ; (3) pendant le craft, `_craftDepth > 0` coupe l'aura
+// (equip/coup) et le /tpa de squad. ⚠️ NIVEAU MODULE (piège #56).
+const CRAFT_QUEUE_MAX_WAIT_MS = 20000;
+const CRAFT_COMBAT_WAIT_MS = 8000;
+const CRAFT_COMBAT_RADIUS = 5;
+let _craftTail = Promise.resolve();
+let _craftDepth = 0;
+
+/** Combat en cours à portée de craft ? (pvp actif, ou hostile non neutre à ≤ 5 blocs). Jamais de throw. */
+function craftCombatNow() {
+  try {
+    if (bot.pvp && bot.pvp.target) return true;
+    const p = bot.entity && bot.entity.position;
+    if (!p) return false;
+    for (const e of Object.values(bot.entities || {})) {
+      if (!e || e.isValid === false || !e.position) continue;
+      if (!isFleeHostile(e) || NEUTRAL_NO_PROVOKE.has(e.name)) continue;
+      if (Math.hypot(e.position.x - p.x, e.position.y - p.y, e.position.z - p.z) <= CRAFT_COMBAT_RADIUS) return true;
+    }
+  } catch (e) { /* lecture ratée → pas de combat */ }
+  return false;
+}
+
+/** Matière de craft en poche (planches/bûches PAR ESSENCE, bâtons, pierres par type, cases vides). */
+function craftMatterSummary() {
+  const mat = {};
+  let empty = null;
+  try {
+    for (const it of ((bot.inventory && bot.inventory.items()) || [])) {
+      if (!it || !it.name) continue;
+      if (/_planks$|_log$|^stick$|^cobblestone$|^cobbled_deepslate$|^blackstone$|^iron_ingot$|^crafting_table$/.test(it.name)) {
+        mat[it.name] = (mat[it.name] || 0) + (it.count || 0);
+      }
+    }
+    if (bot.inventory && typeof bot.inventory.emptySlotCount === 'function') empty = bot.inventory.emptySlotCount();
+  } catch (e) { /* best-effort */ }
+  return { mat, empty, combat: craftCombatNow() };
+}
+
+async function craftSmart(args) {
+  const prev = _craftTail;
+  let release = () => {};
+  const mine = new Promise((r) => { release = r; });
+  _craftTail = mine;
+  let qTimer = null;
+  await Promise.race([prev, new Promise((r) => { qTimer = setTimeout(r, CRAFT_QUEUE_MAX_WAIT_MS); })]);
+  clearTimeout(qTimer);
+  _craftDepth++;
+  try {
+    const t0 = Date.now();
+    let deferred = false;
+    while (craftCombatNow() && Date.now() - t0 < CRAFT_COMBAT_WAIT_MS) { deferred = true; await sleep(500); }
+    if (deferred) _auraEmit('craft_deferred', { name: args && args.name, waited_ms: Date.now() - t0, combat: craftCombatNow() });
+    const r = await _craftSmartRaw(args);
+    // Échec : dire POURQUOI avec la matière en poche (les logs du 20/10 n'avaient que `no_recipe` /
+    // `craft_no_effect`, sans l'inventaire — impossible de trancher entre essences mélangées, pierres
+    // mélangées, poche pleine ou désync). Throttlé (≤ 1 / 10 s).
+    if (r && !r.ok) _auraEmit('craft_fail_ctx', Object.assign({ name: args && args.name, reason: r.reason }, craftMatterSummary()));
+    return r;
+  } finally {
+    _craftDepth = Math.max(0, _craftDepth - 1);
+    release();
+  }
 }
 
 // Combustibles acceptés pour le smelt : charbon + TOUTES planches/bûches (PAS les bâtons, réservés
@@ -2816,8 +2896,9 @@ async function maybeNightShelter(proactive = false, opts = {}) {
         // est couvert aussi). Armé : toujours faux, l'abri attend l'aube comme avant.
         await withTimeout(shelterUntilDawn(bot, taskToken, {
           emit, hostilesNear: hostilesNearNow, worn: () => _wornArmor().size,
+          exitThreats: dawnExitThreatsNow, onExit: exitAwayFromThreats,   // sortie sûre (fix 20/10)
           endWhenDisplaced: () => nightLockdownNow(),
-        }), 13 * 60 * 1000 + DAWN_WAIT_MAX_MS,
+        }), 13 * 60 * 1000 + Math.max(DAWN_WAIT_MAX_MS, DAWN_SAFE_EXIT_MAX_MS),
         () => { try { stopMotion(); } catch (e) {} });
       } finally { _stillBusy = false; }
     })();
@@ -5669,6 +5750,78 @@ function hostilesNearNow() {
   } catch (e) { return 0; }
 }
 
+// ─── SORTIE D'ABRI SÛRE (fix 20/10 — 9 morts juste après `shelter:out` en 1 h) ─────────────────────
+// La décision est PURE (skills/shelter.dawnExitPlan : heure ∈ [0, 11500], aucun hostile non-creeper EN VUE
+// à ≤ 16, aucun creeper à ≤ 10 ; tranches de 10 s, borne 180 s). Ici, la glue : le relevé injecté
+// (`exitThreats`) et le geste à la sortie (`onExit` : s'éloigner d'abord des hostiles en vue — sous une
+// canopée, zombies et squelettes ne brûlent pas). ⚠️ NIVEAU MODULE (piège #56).
+const DAWN_EXIT_HOSTILE_RADIUS = 16;
+const DAWN_EXIT_CREEPER_RADIUS = 10;
+const DAWN_EXIT_AWAY_KEEP = 16;        // à la sortie : se placer à 16 blocs du barycentre des menaces
+const DAWN_EXIT_AWAY_HOLD_MS = 5000;   // le planner ne reprend la main qu'après 5 s (goalHold)
+
+/**
+ * Point de vue de la SORTIE de l'abri : le bot est au fond de sa cellule, d'où il ne voit rien (toit,
+ * parois) — on lit la ligne de vue depuis le dessus du toit (1er bloc plein surmonté d'air, 2 à 5 blocs
+ * au-dessus des pieds), sinon depuis ses yeux. Plus haut = voit PLUS = prudent.
+ */
+function _shelterExitEye(self) {
+  const x = Math.floor(self.x), z = Math.floor(self.z), y0 = Math.floor(self.y);
+  try {
+    for (let dy = 2; dy <= 5; dy++) {
+      const b = bot.blockAt(vec3Lib(x, y0 + dy, z));
+      const a = bot.blockAt(vec3Lib(x, y0 + dy + 1, z));
+      if (b && b.boundingBox === 'block' && (!a || a.boundingBox !== 'block')) return { x: self.x, y: y0 + dy + 1 + 1.62, z: self.z };
+    }
+  } catch (e) { /* lecture ratée → yeux du bot */ }
+  return { x: self.x, y: self.y + 1.62, z: self.z };
+}
+
+/** Menaces de sortie vues depuis `eye` : hostiles non-creeper en vue à ≤ 16, creepers à ≤ 10 (vus ou non). */
+function _exitThreatList(self, eye) {
+  const out = [];
+  for (const e of Object.values(bot.entities || {})) {
+    if (!e || e.isValid === false || !e.position) continue;
+    if (!isFleeHostile(e) || NEUTRAL_NO_PROVOKE.has(e.name)) continue;
+    const d = Math.hypot(e.position.x - self.x, e.position.y - self.y, e.position.z - self.z);
+    if (e.name === 'creeper') { if (d <= DAWN_EXIT_CREEPER_RADIUS) out.push({ e, d, creeper: true }); continue; }
+    if (d > DAWN_EXIT_HOSTILE_RADIUS) continue;
+    const h = Number.isFinite(e.height) ? e.height * 0.8 : 1.5;
+    const to = { x: e.position.x, y: e.position.y + h, z: e.position.z };
+    if (hasLineOfSight(eye, to, (q) => bot.blockAt(vec3Lib(q.x, q.y, q.z)))) out.push({ e, d, creeper: false });
+  }
+  return out;
+}
+
+/** Relevé injecté dans shelterUntilDawn (`exitThreats`). Jamais de throw : 0/0 sur erreur. */
+function dawnExitThreatsNow() {
+  try {
+    const p = bot.entity && bot.entity.position;
+    if (!p) return { hostiles: 0, creepers: 0 };
+    const self = { x: p.x, y: p.y, z: p.z };   // COPIE (Vec3 muté en place)
+    const list = _exitThreatList(self, _shelterExitEye(self));
+    return { hostiles: list.filter((t) => !t.creeper).length, creepers: list.filter((t) => t.creeper).length };
+  } catch (e) { return { hostiles: 0, creepers: 0 }; }
+}
+
+/** À la sortie (`onExit`) : menaces en vue → s'en éloigner d'abord, but verrouillé 5 s. Jamais de throw. */
+function exitAwayFromThreats() {
+  try {
+    const p = bot.entity && bot.entity.position;
+    if (!p) return;
+    const self = { x: p.x, y: p.y, z: p.z };
+    const list = _exitThreatList(self, { x: self.x, y: self.y + 1.62, z: self.z });
+    if (!list.length) return;
+    const c = { x: 0, z: 0 };
+    for (const t of list) { c.x += t.e.position.x / list.length; c.z += t.e.position.z / list.length; }
+    const dest = creeperAwayPoint(self, { x: c.x, y: self.y, z: c.z }, DAWN_EXIT_AWAY_KEEP);
+    if (!dest) return;
+    holdGoal(_creeperHold, Date.now() + DAWN_EXIT_AWAY_HOLD_MS, 'dawn_exit');
+    holdSetGoal(bot.pathfinder, _creeperHold, new pfGoals.GoalNearXZ(dest.x, dest.z, 2), false);
+    emit({ type: 'dawn_exit_away', n: list.length, nearest: Math.round(Math.min(...list.map((t) => t.d)) * 10) / 10 });
+  } catch (e) { /* best-effort */ }
+}
+
 // ─── LES PREMIÈRES SECONDES APRÈS UN RESPAWN : SE TERRER, PAS COURIR (run 10, 20/10) ──────────────
 // Mesuré (10 h, 263 vies d'ouvrier) : 74 morts < 30 s après un respawn, dont 58 après une fuite À PIED
 // (168 fuites ratées sur 181, 93 %) ; les vies où la cellule d'abri s'est fermée vivent 600 s en médiane
@@ -5730,6 +5883,7 @@ async function hideFromThreat(why, danger, opts = {}) {
     try {
       res = await withTimeout(shelterUntilDawn(bot, tok, {
         emit, hostilesNear: hostilesNearNow, worn: () => _wornArmor().size,
+        exitThreats: dawnExitThreatsNow, onExit: exitAwayFromThreats,   // sortie sûre (fix 20/10)
         dawnWaitMaxMs: maxWaitMs, endWhenDisplaced: () => nightLockdownNow(),
       }), (night ? 13 * 60 * 1000 : 0) + maxWaitMs + 20000,
       () => { tok.cancelled = true; try { stopMotion(); } catch (e) {} });
@@ -6804,6 +6958,14 @@ async function onSpawn() {
       let traced = false;
       try { traced = installGoalTrace(bot.pathfinder, _goalTrace); } catch (e) { /* diag : jamais bloquant */ }
       emit({ type: 'goal_trace_on', ok: traced });
+    }
+    // VERROU DE BUT (fuite creeper, 20/10) : posé PAR-DESSUS goalTrace → un appel ignoré pendant une
+    // fuite n'est pas compté comme une interruption. Une fois par process (pathfinder persistant).
+    if (!_goalHoldInstalled) {
+      _goalHoldInstalled = true;
+      let held = false;
+      try { held = installGoalHold(bot.pathfinder, _creeperHold); } catch (e) { /* jamais bloquant */ }
+      emit({ type: 'goal_hold_on', ok: held });
     }
     // SPRINT « vrai joueur » (Massii 2026-06-22) : `allowSprinting` laisse pathfinder sprinter
     // SEULEMENT sur de longs trajets droits → en minage (déplacements courts) le bot ne sprintait
@@ -8367,12 +8529,14 @@ async function applyDescendHeading() {
 // ⚠️ TOUT l'état est de NIVEAU MODULE (piège #56 : un `let` dans onSpawn lu par ce timer = ReferenceError).
 const AURA_TICK_MS = 250;
 const AURA_EVENT_EVERY_MS = 10000;     // aura_hit / creeper_ignored / creeper_avoid : ≤ 1 / 10 s par type
-const CREEPER_SCAN_RADIUS = 10;
-const CREEPER_MOVE_MS = 3000;          // un écart posé : pas de nouveau but pendant 3 s
+const CREEPER_SCAN_RADIUS = 12;
+const CREEPER_FLEE_MAX_MS = 6000;      // une fuite verrouille le pathfinder 6 s AU PLUS (puis relâche)
+const CREEPER_REPLAN_MS = 1000;        // re-viser le point de fuite (le creeper suit)
 let _auraLastHitAt = 0;                // dernier coup OU dernier changement d'arme (remet le cooldown à zéro)
 let _auraBusy = false;                 // un equip est en vol
 let _auraEvAt = {};                    // throttle des events par type
-let _creeperMoveUntil = 0;
+let _creeperFlee = null;               // fuite en cours : { startedAt, lastSetAt, fusing } | null
+const _creeperHold = createHoldState();   // verrou de but pendant la fuite (goalHold.js)
 
 /** emit throttlé (≤ 1 / AURA_EVENT_EVERY_MS par type). */
 function _auraEmit(type, payload) {
@@ -8398,6 +8562,7 @@ function canSeeEntityNow(e) {
 /** Un tick de frappe passive. Jamais de throw ; ne touche jamais au pathfinder ni au jeton de tâche. */
 function auraTick() {
   if (_auraBusy) return;
+  if (_craftDepth > 0) return;   // fenêtre de craft ouverte : un equip/coup la désynchronise (craftSmart)
   try {
     const p = bot.entity && bot.entity.position;
     if (!p || bot.health == null || bot.health <= 0) return;
@@ -8425,12 +8590,18 @@ function auraTick() {
   } catch (e) { /* best-effort : jamais crasher le bot sur un coup */ }
 }
 
-/** Un tick creeper : fuir s'il gonfle, s'écarter s'il colle, l'ignorer sinon. Jamais de throw. */
+/**
+ * Un tick creeper (fix 20/10 — 11 morts « blown up by Creeper » en 1 h). Tout creeper à ≤ 4,5 blocs, ou
+ * qui gonfle à ≤ 7, déclenche une FUITE FRANCHE jusqu'à ≥ 8 blocs (creeper.fleeDone), réévaluée à CHAQUE
+ * tick (l'ancien verrou de 3 s après un « petit pas » rendait la mèche invisible pendant qu'elle brûlait),
+ * en VERROUILLANT le pathfinder (goalHold) : le planner, un goto, mineflayer-pvp ou un stopMotion ne
+ * peuvent plus reposer leur but par-dessus — mesuré : `explore_waypoint` posé la même milliseconde que
+ * le but de fuite. Le minage en cours est interrompu, le combat pvp arrêté. Jamais de mêlée sur un creeper.
+ * Jamais de throw.
+ */
 function creeperTick() {
   try {
     const now = Date.now();
-    if (now < _creeperMoveUntil) return;
-    if (_shelterInFlight || _stillBusy) return;   // terré / immobilité légitime : on ne sort pas du trou
     const p = bot.entity && bot.entity.position;
     if (!p) return;
     const self = { x: p.x, y: p.y, z: p.z };   // COPIE (Vec3 muté en place)
@@ -8440,19 +8611,39 @@ function creeperTick() {
       const d = Math.hypot(e.position.x - self.x, e.position.y - self.y, e.position.z - self.z);
       if (d <= CREEPER_SCAN_RADIUS && d < bestD) { best = e; bestD = d; }
     }
+    const dist = best ? Math.round(bestD * 10) / 10 : null;
+    if (_creeperFlee) {
+      const took = now - _creeperFlee.startedAt;
+      const done = creeperFleeDone(best, self);
+      if (done || took >= CREEPER_FLEE_MAX_MS) {
+        const dropped = releaseGoalHold(_creeperHold);
+        _creeperFlee = null;
+        _auraEmit('creeper_flee_end', { dist, took_ms: took, dropped, why: done ? 'safe' : 'max' });
+        return;
+      }
+      if (best && isCreeperFusing(best)) _creeperFlee.fusing = true;
+      if (now - _creeperFlee.lastSetAt < CREEPER_REPLAN_MS) return;
+      const dest2 = creeperAwayPoint(self, best.position, CREEPER_FLEE_KEEP);
+      if (!dest2) return;
+      holdSetGoal(bot.pathfinder, _creeperHold, new pfGoals.GoalNearXZ(dest2.x, dest2.z, 1), false);
+      _creeperFlee.lastSetAt = now;
+      return;
+    }
+    if (_shelterInFlight) return;   // terré dans l'abri : on ne sort pas du trou
     if (!best) return;
     const plan = creeperPlan(best, self);
     const fusing = isCreeperFusing(best);
-    const dist = Math.round(bestD * 10) / 10;
     if (plan === 'ignore') { _auraEmit('creeper_ignored', { dist, fusing }); return; }
-    const keep = plan === 'flee' ? CREEPER_FLEE_KEEP : CREEPER_STEP_AWAY_KEEP;
-    const dest = creeperAwayPoint(self, best.position, keep);
+    const dest = creeperAwayPoint(self, best.position, CREEPER_FLEE_KEEP);
     if (!dest) return;
-    if (plan === 'flee' && bot.pvp && bot.pvp.target) { try { bot.pvp.stop(); } catch (e) {} }
-    // But XZ (jamais 3D à l'altitude courante, piège #72b), figé (dynamic=false).
-    bot.pathfinder.setGoal(new pfGoals.GoalNearXZ(dest.x, dest.z, 2), false);
-    _creeperMoveUntil = now + CREEPER_MOVE_MS;
-    _auraEmit('creeper_avoid', { act: plan, dist, fusing });
+    if (bot.pvp && bot.pvp.target) { try { bot.pvp.stop(); } catch (e) {} }
+    if (bot.targetDigBlock && typeof bot.stopDigging === 'function') { try { bot.stopDigging(); } catch (e) {} }
+    holdGoal(_creeperHold, now + CREEPER_FLEE_MAX_MS, 'creeper');
+    // But XZ (jamais 3D à l'altitude courante, piège #72b), figé (dynamic=false), POSÉ À TRAVERS le verrou.
+    holdSetGoal(bot.pathfinder, _creeperHold, new pfGoals.GoalNearXZ(dest.x, dest.z, 1), false);
+    try { if (typeof bot.setControlState === 'function') bot.setControlState('sprint', true); } catch (e) {}
+    _creeperFlee = { startedAt: now, lastSetAt: now, fusing };
+    _auraEmit('creeper_flee', { dist, fusing });
   } catch (e) { /* best-effort */ }
 }
 setInterval(() => { auraTick(); creeperTick(); }, AURA_TICK_MS);

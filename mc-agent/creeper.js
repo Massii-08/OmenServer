@@ -4,10 +4,19 @@
 // Avant : un creeper VU (9-11 blocs, calme) suffisait à fuir, se cacher ou abandonner un but
 // (`spawn_danger_flee mob:creeper`, `threat_hide`, `survival flee`…). Or un creeper ne fait rien tant
 // qu'il ne gonfle pas : vanilla, il commence à gonfler quand sa cible est à < 3 blocs ET en vue, explose
-// 1,5 s plus tard, et ANNULE si la cible s'éloigne à > 7 blocs. D'où trois règles :
-//   - gonfle et ≤ 7 blocs  → 'flee'      : s'éloigner à ~10 blocs (au-delà de 7, la mèche s'éteint) ;
-//   - calme et ≤ 4 blocs   → 'step_away' : s'écarter calmement (il va gonfler) — PAS une raison de se terrer ;
-//   - sinon                → 'ignore'    : ni fuite, ni cachette, ni but abandonné.
+// 1,5 s plus tard, et ANNULE si la cible s'éloigne à > 7 blocs. D'où les règles :
+//   - gonfle et ≤ 7 blocs  → 'flee'   : s'éloigner à ~10 blocs (au-delà de 7, la mèche s'éteint) ;
+//   - calme et ≤ 4,5 blocs → 'flee'   : FUITE FRANCHE aussi (fix 20/10, ci-dessous) ;
+//   - sinon                → 'ignore' : ni fuite, ni cachette, ni but abandonné.
+// Seul un creeper qui GONFLE est une « menace » au sens cachette/abri (creeperIsThreat) : se terrer
+// contre un creeper est inutile (l'explosion traverse les blocs) — on le FUIT, on ne s'emmure pas.
+//
+// ⚠️ Fix 20/10 — l'ancien « calme et ≤ 4 → 'step_away' (s'écarter à 6 blocs) » TUAIT : 11 morts
+// « blown up by Creeper » en 1 h, chacune précédée d'un `creeper_avoid step_away fusing:false` à
+// 2,6-4 blocs, mort 0,4-2,7 s plus tard. Un creeper à < 3 blocs gonfle et explose en 1,5 s : le petit
+// pas (6 blocs, verrouillé 3 s sans réévaluation, et volé au tick suivant par le planner) ne sortait
+// jamais du rayon. La détection de la mèche marche (3 `fusing:true` vus) mais tombe dans le verrou de
+// 3 s : la règle de DISTANCE doit suffire même si la mèche n'est jamais vue.
 // On ne le frappe JAMAIS au corps-à-corps (NO_MELEE, gather.js / aura.js).
 //
 // La mèche : metadata de l'entité (prismarine-entity, tableau indexé par la clé du protocole).
@@ -18,9 +27,11 @@
 const SWELL_DIR_INDEX = 16;
 const IGNITED_INDEX = 18;
 const FUSE_FLEE_RADIUS = 7;    // gonfle à ≤ 7 blocs → fuite (vanilla : la mèche s'éteint au-delà de 7)
-const STEP_AWAY_RADIUS = 4;    // calme à ≤ 4 blocs → s'écarter (il gonfle sous 3)
+const CLOSE_FLEE_RADIUS = 4.5;  // calme à ≤ 4,5 blocs → fuite franche (il gonfle sous 3, explose 1,5 s après)
+const STEP_AWAY_RADIUS = CLOSE_FLEE_RADIUS;   // compat (ancien nom)
+const SAFE_DIST = 8;           // la fuite dure jusqu'à ≥ 8 blocs du creeper
 const FLEE_KEEP = 10;          // fuite : se placer à 10 blocs du creeper
-const STEP_AWAY_KEEP = 6;      // écart calme : 6 blocs
+const STEP_AWAY_KEEP = FLEE_KEEP;   // compat : plus de « petit pas »
 
 function _idx(keys, name, fallback) {
   if (Array.isArray(keys)) { const i = keys.indexOf(name); if (i >= 0) return i; }
@@ -46,20 +57,36 @@ function _dist(a, b) {
 
 /**
  * PUR — que faire de ce creeper ? null si ce n'est pas un creeper.
- * Position du bot inconnue → prudent : 'flee' s'il gonfle, 'step_away' sinon.
+ * Position du bot inconnue → prudent : 'flee'.
  */
 function creeperPlan(entity, selfPos, opts = {}) {
   if (!entity || entity.name !== 'creeper') return null;
   const fusing = isCreeperFusing(entity, opts.metadataKeys);
   const d = _dist(selfPos, entity.position);
-  if (d == null) return fusing ? 'flee' : 'step_away';
+  if (d == null) return 'flee';
   if (fusing) return d <= FUSE_FLEE_RADIUS ? 'flee' : 'ignore';
-  return d <= STEP_AWAY_RADIUS ? 'step_away' : 'ignore';
+  return d <= CLOSE_FLEE_RADIUS ? 'flee' : 'ignore';
 }
 
-/** PUR — ce creeper est-il une MENACE (fuite / cachette / but abandonné) ? Seulement s'il faut le fuir. */
-function creeperIsThreat(entity, selfPos, opts) {
-  return creeperPlan(entity, selfPos, opts) === 'flee';
+/** PUR — ce creeper est-il une MENACE (cachette / but abandonné) ? Seulement s'il GONFLE à ≤ 7 blocs. */
+function creeperIsThreat(entity, selfPos, opts = {}) {
+  if (!entity || entity.name !== 'creeper') return false;
+  if (!isCreeperFusing(entity, opts.metadataKeys)) return false;
+  const d = _dist(selfPos, entity.position);
+  return d == null || d <= FUSE_FLEE_RADIUS;
+}
+
+/**
+ * PUR — la fuite en cours peut-elle s'arrêter ? Oui si le creeper a disparu, ou s'il est à ≥ SAFE_DIST
+ * et ne gonfle pas. Un creeper qui gonfle ENCORE à 8-9 blocs : on continue (la mèche s'éteint à > 7,
+ * mais un creeper qui suit la reprend aussitôt).
+ */
+function fleeDone(entity, selfPos, opts = {}) {
+  if (!entity || entity.isValid === false || !entity.position) return true;
+  const d = _dist(selfPos, entity.position);
+  if (d == null) return false;
+  if (isCreeperFusing(entity, opts.metadataKeys)) return d > FLEE_KEEP;
+  return d >= SAFE_DIST;
 }
 
 /** PUR — point à `keep` blocs du creeper, à l'opposé du bot (XZ ; y du bot, informatif). */
@@ -73,6 +100,6 @@ function awayPoint(selfPos, creeperPos, keep) {
 }
 
 module.exports = {
-  isCreeperFusing, creeperPlan, creeperIsThreat, awayPoint,
-  SWELL_DIR_INDEX, IGNITED_INDEX, FUSE_FLEE_RADIUS, STEP_AWAY_RADIUS, FLEE_KEEP, STEP_AWAY_KEEP,
+  isCreeperFusing, creeperPlan, creeperIsThreat, awayPoint, fleeDone,
+  SWELL_DIR_INDEX, IGNITED_INDEX, FUSE_FLEE_RADIUS, CLOSE_FLEE_RADIUS, STEP_AWAY_RADIUS, SAFE_DIST, FLEE_KEEP, STEP_AWAY_KEEP,
 };

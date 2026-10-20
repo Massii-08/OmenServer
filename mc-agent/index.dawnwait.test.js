@@ -122,7 +122,9 @@ function shelterSandbox({ worn = 0, entities = [zombie(6), zombie(8, 2, 'skeleto
     _wornArmor: () => new Set(['iron_helmet', 'iron_boots', 'iron_leggings', 'iron_chestplate'].slice(0, worn)),
     isNight: () => true,
     shouldShelter: SH.shouldShelter,
-    DAWN_WAIT_MAX_MS: SH.DAWN_WAIT_MAX_MS,
+    DAWN_WAIT_MAX_MS: SH.DAWN_WAIT_MAX_MS, DAWN_SAFE_EXIT_MAX_MS: SH.DAWN_SAFE_EXIT_MAX_MS,
+    // sortie sûre (20/10) : testée dans index.dawnexit.test.js ; ici, seulement présente
+    dawnExitThreatsNow: () => ({ hostiles: 0, creepers: 0 }), exitAwayFromThreats: () => {},
     // le shelterUntilDawn « réel » du test : il capture les deps, qui sont ce qu'on veut vérifier
     shelterUntilDawn: async (b, tok, deps) => { captured.calls.push({ b, tok, deps }); return { ok: true }; },
     withTimeout: (p, ms) => { captured.timeouts.push(ms); return p; },

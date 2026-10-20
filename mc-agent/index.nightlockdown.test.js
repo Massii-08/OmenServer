@@ -137,7 +137,7 @@ function squadSandbox(opts = {}) {
     presence: { list: () => [{ name: 'NethBot1', role: 'worker', x: 300, y: 70, z: 0, at: T0 }] },
     armorNeed: () => 1, buildCtxInv: () => ({}),
     _stillBusy: false, _imminentBusy: false, _smeltOppBusy: false, _armorBusy: false,
-    _migrating: false, _escaping: false, _foodTripBusy: false, _zoneIronMined: 0,
+    _migrating: false, _escaping: false, _foodTripBusy: false, _zoneIronMined: 0, _craftDepth: 0,
     _lastSquadAt: 0, _lastRegroupAt: 0,
     isLumberjackObjective: () => false,   // bûcheron d'équipe (20/10) : hors sujet ici
     squadTarget: R.squadTarget, pickRegroupTarget: R.pickRegroupTarget,
@@ -466,6 +466,8 @@ function shelterSandbox({ inWater = false, ...opts } = {}) {
     FORCED_SHELTER_MIN_GAP_MS: 60000, IS_MAPPER: false, _safeHomeSet: false,
     homewarp: { goHome() { return false; } }, sleep: async () => {}, stopMotion() {},
     shouldShelter: SH.shouldShelter, DAWN_WAIT_MAX_MS: SH.DAWN_WAIT_MAX_MS,
+    DAWN_SAFE_EXIT_MAX_MS: SH.DAWN_SAFE_EXIT_MAX_MS,
+    dawnExitThreatsNow: () => ({ hostiles: 0, creepers: 0 }), exitAwayFromThreats: () => {},
     hostilesNearNow: () => 0,
     _shelterInFlight: null, _lockdownShelters: null,
     isInWater: () => inWater,

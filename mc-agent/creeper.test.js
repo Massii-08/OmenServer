@@ -34,21 +34,23 @@ test('isCreeperFusing : allumé au briquet (is_ignited) → oui ; index lus depu
   assert.strictEqual(C.isCreeperFusing(creeper(3, m2), keys), true, 'index pris dans les clés du registre');
 });
 
-test('creeperPlan : gonfle ≤ 7 → flee ; gonfle > 7 → ignore ; calme ≤ 4 → step_away ; calme > 4 → ignore', () => {
+test('creeperPlan : gonfle ≤ 7 → flee ; gonfle > 7 → ignore ; calme ≤ 4,5 → flee (plus de petit pas) ; calme > 4,5 → ignore', () => {
   assert.strictEqual(C.creeperPlan(creeper(6.9, swelling()), at0), 'flee');
   assert.strictEqual(C.creeperPlan(creeper(8, swelling()), at0), 'ignore');
-  assert.strictEqual(C.creeperPlan(creeper(4, idle()), at0), 'step_away');
+  assert.strictEqual(C.creeperPlan(creeper(4, idle()), at0), 'flee', 'les 11 morts : step_away à 2,6-4 blocs');
+  assert.strictEqual(C.creeperPlan(creeper(2.6, idle()), at0), 'flee');
+  assert.strictEqual(C.creeperPlan(creeper(4.5), at0), 'flee', 'metadata absente = calme, mais trop près');
+  assert.strictEqual(C.creeperPlan(creeper(4.6), at0), 'ignore');
   assert.strictEqual(C.creeperPlan(creeper(9, idle()), at0), 'ignore');
-  assert.strictEqual(C.creeperPlan(creeper(4.5), at0), 'ignore', 'metadata absente = calme');
   assert.strictEqual(C.creeperPlan({ name: 'zombie', position: at0 }, at0), null, 'pas un creeper');
 });
 
-test('creeperPlan : position du bot inconnue → prudent (flee si gonfle, step_away sinon)', () => {
+test('creeperPlan : position du bot inconnue → prudent (flee)', () => {
   assert.strictEqual(C.creeperPlan(creeper(20, swelling()), null), 'flee');
-  assert.strictEqual(C.creeperPlan(creeper(20, idle()), null), 'step_away');
+  assert.strictEqual(C.creeperPlan(creeper(20, idle()), null), 'flee');
 });
 
-test('creeperIsThreat : seul un creeper à fuir (flee) est une menace ; step_away ne justifie pas de se cacher', () => {
+test('creeperIsThreat : seul un creeper qui GONFLE à ≤ 7 est une menace (cachette) ; calme et proche = fuite, pas cachette', () => {
   assert.strictEqual(C.creeperIsThreat(creeper(5, swelling()), at0), true);
   assert.strictEqual(C.creeperIsThreat(creeper(3, idle()), at0), false);
   assert.strictEqual(C.creeperIsThreat(creeper(10, idle()), at0), false);
@@ -60,4 +62,14 @@ test('awayPoint : point à `keep` blocs du creeper, à l opposé ; même colonne
   const q = C.awayPoint(at0, { x: 0, y: 70, z: 0 }, 6);
   assert.ok(Math.abs(Math.hypot(q.x, q.z) - 6) < 1e-9);
   assert.strictEqual(C.awayPoint(null, at0, 6), null);
+});
+
+test('fleeDone : fini à ≥ 8 blocs s il est calme ; s il gonfle encore, seulement au-delà de 10 ; disparu → fini', () => {
+  assert.strictEqual(C.fleeDone(creeper(7.9, idle()), at0), false);
+  assert.strictEqual(C.fleeDone(creeper(8, idle()), at0), true);
+  assert.strictEqual(C.fleeDone(creeper(9, swelling()), at0), false);
+  assert.strictEqual(C.fleeDone(creeper(10.5, swelling()), at0), true);
+  assert.strictEqual(C.fleeDone(null, at0), true);
+  assert.strictEqual(C.fleeDone(creeper(3, idle(), { isValid: false }), at0), true);
+  assert.strictEqual(C.fleeDone(creeper(3, idle()), null), false, 'position inconnue : on continue');
 });
