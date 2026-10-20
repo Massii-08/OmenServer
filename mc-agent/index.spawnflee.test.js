@@ -64,7 +64,7 @@ function sandbox({ disk = { memo: null }, clock = { t: T0 }, ...extra } = {}) {
 }
 const run = (sb, code) => vm.runInContext("'use strict';\n" + code, sb);
 
-// ═════════════════════════════ 1. spawnDangerNow / armSpawnEscapeIfDanger ═════════════════════════
+// ═════════════════════════════ 1. spawnDangerNow ═════════════════════════
 const zombieAt = (dx, dz = 0, name = 'zombie') =>
   ({ name, kind: 'Hostile mobs', position: { x: dx, y: 70, z: dz }, isValid: true });
 
@@ -77,7 +77,6 @@ function dangerSandbox({ worn = 0, entities = [], position = { x: 0, y: 70, z: 0
   });
   run(sb, fnSrc('isThreatHostile'));    // le prédicat « hostile à craindre » est partagé avec l'abri (cf. index.dawnwait.test.js)
   run(sb, fnSrc('spawnDangerNow'));
-  run(sb, fnSrc('armSpawnEscapeIfDanger'));
   return sb;
 }
 
@@ -127,32 +126,7 @@ test('spawnDangerNow : bot sans position / inventaire qui lève → null, jamais
   assert.strictEqual(boom.spawnDangerNow(), null);
 });
 
-test('armSpawnEscapeIfDanger : danger → arme _escapeOnSpawn et TRACE pourquoi (le silence est un bug)', () => {
-  const sb = dangerSandbox({ entities: [zombieAt(8)] });
-  assert.strictEqual(sb._escapeOnSpawn, false);
-  assert.strictEqual(sb.armSpawnEscapeIfDanger(), true);
-  assert.strictEqual(sb._escapeOnSpawn, true);
-  const ev = sb.events.find((e) => e.type === 'spawn_danger_flee');
-  assert.ok(ev, 'event spawn_danger_flee absent');
-  assert.deepStrictEqual({ mob: ev.mob, dist: ev.dist, worn: ev.worn }, { mob: 'zombie', dist: 8, worn: 0 });
-});
-
-test('armSpawnEscapeIfDanger : rien à craindre → ne touche à RIEN (pas d event, pas d armement)', () => {
-  const sb = dangerSandbox({ entities: [zombieAt(30)] });
-  assert.strictEqual(sb.armSpawnEscapeIfDanger(), false);
-  assert.strictEqual(sb._escapeOnSpawn, false);
-  assert.strictEqual(sb.events.length, 0);
-});
-
-test('armSpawnEscapeIfDanger : déjà armé (rafale / historique) → ne ré-évalue pas, n émet rien — UNE fuite par spawn', () => {
-  let looked = 0;
-  const sb = dangerSandbox({ entities: [zombieAt(5)], extra: { _escapeOnSpawn: true } });
-  sb.spawnDangerNow = () => { looked++; return { flee: true, mob: 'zombie', dist: 5, worn: 0 }; };
-  assert.strictEqual(sb.armSpawnEscapeIfDanger(), false);
-  assert.strictEqual(looked, 0);
-  assert.strictEqual(sb._escapeOnSpawn, true);
-  assert.strictEqual(sb.events.length, 0);
-});
+// (armSpawnEscapeIfDanger a été remplacé par guardSpawn — run 10, 20/10 : cf. index.respawnguard.test.js)
 
 // ═════════════════════════════ 2. historique de morts : charger / persister ═══════════════════════
 function historySandbox(opts = {}) {
@@ -264,6 +238,8 @@ function deathSandbox(opts = {}) {
     // et dans index.homesafety.test.js) — ici un témoin qui trace l'ordre des écritures.
     recordDeathPosition: () => { sb.calls.push('pos'); return true; },
     taskCtl: { cancel: () => {} },
+    // keepInventory mesuré (20/10) : le handler relève l'inventaire au moment de la mort
+    _invAtDeath: -1, _invTotal: () => 7,
     process: { exit(code) { exits.push(code); sb.calls.push('exit:' + code); } },
     ...opts,
   });
@@ -400,14 +376,15 @@ test('index.js : importe depuis ./unstuck tout ce que la glue utilise', () => {
   assert.match(SRC, /const \{ NEUTRAL_NO_PROVOKE \} = require\('\.\/survival'\);/);
 });
 
-test('index.js : onSpawn évalue le danger AVANT de consommer _escapeOnSpawn, et la fuite reste attendue (await)', () => {
+test('index.js : onSpawn passe par guardSpawn (attendu) AVANT la base, la dette et le planner', () => {
   const body = grab(/^async function onSpawn\(\) \{[\s\S]*?^\}$/m, 'onSpawn');
-  const arm = body.indexOf('armSpawnEscapeIfDanger()');
-  const gate = body.indexOf('if (_escapeOnSpawn) {');
-  const flee = body.indexOf('await escapeDeathCamp()');
-  assert.ok(arm > 0, 'armSpawnEscapeIfDanger() n est pas appelé dans onSpawn');
-  assert.ok(gate > arm, 'le danger doit être évalué AVANT le test de _escapeOnSpawn');
-  assert.ok(flee > gate, 'la fuite reste attendue (await) : base, dette, planner attendent sa fin');
+  const guard = body.indexOf('await guardSpawn()');
+  assert.ok(guard > 0, 'guardSpawn() doit être ATTENDU dans onSpawn');
+  assert.ok(body.indexOf('poseSafeHomeAtSpawn()') > guard, 'le home safe se pose APRÈS la décision de spawn');
+  assert.ok(body.indexOf('loadDeathDebt()') > guard, 'la dette de mort attend la décision de spawn');
+  assert.ok(body.indexOf('startAutonomous(null)') > guard, 'le planner attend la décision de spawn');
+  assert.ok(!/armSpawnEscapeIfDanger|await escapeDeathCamp\(\)/.test(body), 'plus de chemin parallèle : guardSpawn décide seul');
+  assert.match(fnSrc('guardSpawn'), /_escapeOnSpawn = false;/, 'guardSpawn CONSOMME le drapeau (une décision par spawn)');
 });
 
 test('index.js : le handler death n appelle PAS process.exit sans avoir persisté juste avant', () => {

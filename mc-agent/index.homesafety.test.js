@@ -33,7 +33,8 @@ const NIGHT = 18000;
 const zombie = (x, z, y = 70) => ({ name: 'zombie', kind: 'Hostile mobs', position: { x, y, z }, isValid: true });
 
 const GLUE = ['loadDeathPositions', '_recentDeathPositions', 'recordDeathPosition', 'noteSafeHome', '_isFoe',
-  'noteHostileNearSafeHome', 'safeHomeVeto', '_campedAt', 'maybeMoveCampedSafeHome', 'poseSafeHomeAtSpawn'];
+  'noteHostileNearSafeHome', 'safeHomeVeto', '_campedAt', 'maybeMoveCampedSafeHome', 'poseSafeHomeAtSpawn',
+  'anchorSpawnpoint'];   // run 10 (20/10) : tous les /spawnpoint passent par le veto « zone campée »
 
 /**
  * Bac à sable = le niveau MODULE de index.js, réduit à ce que ces fonctions ont le droit de lire.
@@ -59,7 +60,7 @@ function glue({ disk = { memo: null }, clock = { t: T0 }, bot: botOver = {}, ...
     isFleeHostile: (e) => !!(e && (e.kind === 'Hostile mobs' || e.name === 'creeper')),
     NEUTRAL_NO_PROVOKE: new Set(['enderman']),
     // ce que index.js importe de ./homeSafety et ./homes
-    homeCamped: H.homeCamped, rescueWarpVeto: H.rescueWarpVeto, safeHomeMove: H.safeHomeMove,
+    homeCamped: H.homeCamped, spawnpointVeto: H.spawnpointVeto, rescueWarpVeto: H.rescueWarpVeto, safeHomeMove: H.safeHomeMove,
     spawnSafeHomeAction: H.spawnSafeHomeAction, deathPosPrune: H.deathPosPrune, deathPosLoad: H.deathPosLoad,
     deathPosMemoWith: H.deathPosMemoWith, safeHomeLoad: H.safeHomeLoad, safeHomeMemoWith: H.safeHomeMemoWith,
     nearestHostile: H.nearestHostile, hostileNearHome: H.hostileNearHome, CAMPED_EVENT_EVERY_MS: H.CAMPED_EVENT_EVERY_MS,
@@ -465,4 +466,39 @@ test('index.js : les secours qui ont un REPLI le prennent quand le home est camp
   assert.ok(w.indexOf('safeHomeVeto(') > 0 && w.indexOf('safeHomeVeto(') < w.indexOf('secureSpot('));
   // onSpawn passe par la décision « spawn campé »
   assert.match(grab(/^async function onSpawn\(\) \{[\s\S]*?^\}$/m, 'onSpawn'), /poseSafeHomeAtSpawn\(\);/);
+});
+
+// ═════════════════════════════ /spawnpoint : jamais dans un camp (run 10, 20/10) ═══════════════════
+test('anchorSpawnpoint : au cœur du camp du spawn → AUCUN /spawnpoint, event spawnpoint_vetoed (camped)', () => {
+  const sb = glue({ disk: { memo: campedMemo() } });
+  assert.strictEqual(sb.anchorSpawnpoint('base'), false);
+  assert.ok(!sb.chat.includes('/spawnpoint'), 'le /spawnpoint ne doit pas partir');
+  const ev = sb.events.find((e) => e.type === 'spawnpoint_vetoed');
+  assert.ok(ev, 'le veto doit être tracé (le silence est un bug)');
+  assert.strictEqual(ev.reason, 'camped');
+  assert.strictEqual(ev.why, 'base');
+  assert.strictEqual(ev.deaths, 2);
+});
+
+test('anchorSpawnpoint : loin du camp → /spawnpoint + event command (raison tracée)', () => {
+  const sb = glue({ disk: { memo: campedMemo() }, bot: { entity: { position: { x: 80, y: 70, z: 0 }, onGround: true } } });
+  assert.strictEqual(sb.anchorSpawnpoint('camp_escape'), true);
+  assert.ok(sb.chat.includes('/spawnpoint'));
+  assert.ok(sb.events.some((e) => e.type === 'command' && e.command === '/spawnpoint' && e.reason === 'camp_escape'));
+});
+
+test('anchorSpawnpoint : position illisible → pas d ancrage à l aveugle', () => {
+  const sb = glue({ bot: { entity: null } });
+  assert.strictEqual(sb.anchorSpawnpoint('kit_done'), false);
+  assert.strictEqual(sb.chat.length, 0);
+  assert.strictEqual(sb.events.find((e) => e.type === 'spawnpoint_vetoed').reason, 'no_position');
+});
+
+test('index.js : PLUS AUCUN /spawnpoint hors de anchorSpawnpoint (tous les ancrages passent par le veto)', () => {
+  const raw = SRC.match(/bot\.chat\('\/spawnpoint'\)/g) || [];
+  assert.strictEqual(raw.length, 1, 'un seul envoi brut, celui de anchorSpawnpoint');
+  assert.match(fnSrc('anchorSpawnpoint'), /bot\.chat\('\/spawnpoint'\)/);
+  for (const why of ['camp_warp', 'camp_escape', 'migration', 'camped_move', 'base', 'kit_done']) {
+    assert.ok(SRC.includes(`anchorSpawnpoint('${why}')`), `ancrage ${why} non routé par le veto`);
+  }
 });

@@ -121,6 +121,23 @@ function homeCamped(o = {}) {
   return deathsNear(o.home, o.deaths, o.now, o) >= minDeaths;
 }
 
+/**
+ * PUR — faut-il REFUSER un `/spawnpoint` ICI ? (run 10, 20/10 : 39 `/spawnpoint` posés, 67 `home_safe_camped`
+ * — le point de réapparition devenait le camp lui-même, et chaque mort renvoyait le bot nu sous les arcs.)
+ * Veto SSI la position est illisible (on n'ancre pas à l'aveugle) OU campée au sens de homeCamped
+ * (≥ 2 morts récentes à ≤ 24 blocs). Garder l'ancien point de réapparition est moins pire que d'en
+ * cimenter un neuf dans le camp. Mêmes options que homeCamped (radius, windowMs, minDeaths).
+ * @param {{pos, deaths, now}} o
+ * @returns {{veto: boolean, reason: 'no_position'|'camped'|'ok', deaths?: number}}
+ */
+function spawnpointVeto(o = {}) {
+  if (!o || !_pos(o.pos)) return { veto: true, reason: 'no_position' };
+  const n = deathsNear(o.pos, o.deaths, o.now, o);
+  const minDeaths = _finite(o.minDeaths) ? o.minDeaths : CAMP_MIN_DEATHS;
+  if (n >= minDeaths) return { veto: true, reason: 'camped', deaths: n };
+  return { veto: false, reason: 'ok', deaths: n };
+}
+
 /** PUR — un hostile a-t-il été SIGNALÉ près du home récemment ? (`true`, ou horodatage de moins de `ttlMs`) */
 function hostileSeenRecently(seen, now, ttlMs = HOSTILE_SEEN_MS) {
   if (seen === true) return true;
@@ -248,7 +265,7 @@ function hostileNearHome({ home, entities, isHostile, radius = CAMP_RADIUS } = {
 }
 
 module.exports = {
-  homeCamped, rescueWarpVeto, safeHomeMove, spawnSafeHomeAction,
+  homeCamped, spawnpointVeto, rescueWarpVeto, safeHomeMove, spawnSafeHomeAction,
   deathPosPrune, deathPosLoad, deathPosMemoWith, deathsNear,
   safeHomeLoad, safeHomeMemoWith, nearestHostile, hostileNearHome, hostileSeenRecently,
   CAMP_RADIUS, CAMP_WINDOW_MS, CAMP_MIN_DEATHS, DEATH_POS_CAP, HOSTILE_SEEN_MS,

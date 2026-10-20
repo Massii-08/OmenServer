@@ -462,7 +462,39 @@ function escapeArmed(times, now) {
   return burst >= ESCAPE_BURST_DEATHS || recent.length >= ESCAPE_SLOW_DEATHS;
 }
 
-const DEATH_LOOP_LIMIT = 5;          // 5 morts / 10 min DANS CE PROCESS → process.exit(2)
+// --- LES PREMIÈRES SECONDES APRÈS UN RESPAWN : SE TERRER, PAS COURIR (run 10, 20/10) -------------
+//
+// Mesuré sur 10 h (5 bots partis de zéro, 263 vies d'ouvrier) :
+//   - 74 morts dans les 30 s d'un respawn ; 58 d'entre elles suivaient une fuite à pied
+//     (`death_camp_escape` mode walk) ; sur 181 fuites tracées, 168 RATÉES (93 %) ;
+//   - vies AVEC fuite à pied : médiane 58 s ; sans : 353 s ;
+//   - vies où une cellule d'abri s'est fermée (`shelter sealed:true`) : médiane 600 s, 1 seule mort < 30 s
+//     sur 102 — le trou de 3 + toit (~3-6 s) est LA réponse qui marche contre les squelettes ;
+//   - `spawn_danger_flee` émis 0 fois : les entités arrivent 1-4 s APRÈS l'event `spawn` (1re réaction
+//     à un hostile : < 1 s dans 5 vies, < 4 s dans 98) — le relevé à l'instant 0 ne voyait jamais rien.
+// D'où la décision PURE ci-dessous, appelée par index.js après une courte fenêtre d'observation :
+//   nu + hostile à ≤ 12 blocs → 'hide' (s'enterrer TOUT DE SUITE, attendre que la zone se vide) ;
+//   nu + évasion armée + nuit → 'hide' aussi (courir 40 blocs à découvert, nu, de nuit = la mort) ;
+//   évasion armée, de jour, rien en vue → 'escape' (la fuite à pied d'avant, inchangée) ;
+//   armuré → l'évasion d'avant si armée, sinon rien.
+/**
+ * @param {{danger?:boolean, escapeArmed?:boolean, night?:boolean|null, worn?:number, minWorn?:number}} o
+ *   `night` : true/false/null (heure inconnue → pas de règle de nuit, comme caution.nightLockdown).
+ * @returns {{act:'hide'|'escape'|'none', reason:string}}
+ */
+function spawnGuardPlan(o = {}) {
+  const opts = (o && typeof o === 'object') ? o : {};
+  const minWorn = Number.isFinite(opts.minWorn) ? opts.minWorn : SPAWN_DANGER_MIN_WORN;
+  const worn = (Number.isFinite(opts.worn) && opts.worn > 0) ? opts.worn : 0;
+  const armed = opts.escapeArmed === true;
+  if (worn >= minWorn) return armed ? { act: 'escape', reason: 'camp_armored' } : { act: 'none', reason: 'armored' };
+  if (opts.danger === true) return { act: 'hide', reason: 'hostile_near' };
+  if (armed && opts.night === true) return { act: 'hide', reason: 'camp_night' };
+  if (armed) return { act: 'escape', reason: 'camp' };
+  return { act: 'none', reason: 'clear' };
+}
+
+const DEATH_LOOP_LIMIT = 5;         // 5 morts / 10 min DANS CE PROCESS → process.exit(2)
 
 /**
  * PUR — ce process est-il pris dans une boucle de morts ? Ne compte que SES morts (`t >= bootAt`).
@@ -484,6 +516,6 @@ module.exports = {
   escapePlan, escapeReached, canReanchorSpawn,
   ESCAPE_MIN_DIST, ESCAPE_MAX_DIST, ESCAPE_SAFE_RADIUS, ESCAPE_REACHED_DIST,
   spawnDanger, SPAWN_DANGER_RADIUS, SPAWN_DANGER_MIN_WORN, scanHostiles, hostilesWithin,
-  deathTimesPrune, deathTimesLoad, deathMemoWith, escapeArmed, deathLoopTripped,
+  deathTimesPrune, deathTimesLoad, deathMemoWith, escapeArmed, deathLoopTripped, spawnGuardPlan,
   DEATH_WINDOW_MS, DEATH_HISTORY_CAP, DEATH_LOOP_LIMIT,
 };

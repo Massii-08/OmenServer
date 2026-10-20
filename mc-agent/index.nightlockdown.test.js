@@ -655,7 +655,14 @@ test('index.js : desync / rappel confine respectent la retenue de nuit ; ramassa
 });
 
 test('index.js : tous les appelants de maybeNightShelter passent par le MÊME abri (aucune copie de shelterUntilDawn ailleurs)', () => {
-  assert.strictEqual((SRC.match(/shelterUntilDawn\(bot,/g) || []).length, 1, 'un seul point d entrée vers le trou');
+  // DEUX points d'entrée vers le trou : l'abri de nuit (maybeNightShelter) et le repli face à une menace
+  // (hideFromThreat, run 10 20/10 : respawn campé, bois sous les flèches). Les deux REJOIGNENT l'abri en
+  // cours avant de creuser et publient le leur dans `_shelterInFlight` : un seul trou à la fois.
+  assert.strictEqual((SRC.match(/shelterUntilDawn\(bot,/g) || []).length, 2, 'deux points d entrée, pas plus');
+  const hide = fnSrc('hideFromThreat');
+  assert.ok(hide.indexOf('if (_shelterInFlight)') >= 0 && hide.indexOf('if (_shelterInFlight)') < hide.indexOf('shelterUntilDawn(bot,'),
+    'hideFromThreat rallie l abri en cours AVANT de creuser');
+  assert.match(hide, /_shelterInFlight = run;/);
   const body = fnSrc('maybeNightShelter');
   assert.ok(body.indexOf('if (_shelterInFlight)') < body.indexOf('shouldShelter(sig)'), 'le ralliement passe avant toute décision');
   assert.match(body, /const _shelterGap = lockdown \? NIGHT_SHELTER_GAP_MS : \(opts\.force \? FORCED_SHELTER_MIN_GAP_MS : 10 \* 60 \* 1000\);/);

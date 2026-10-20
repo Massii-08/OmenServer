@@ -33,7 +33,10 @@ const { installBridgeGuard } = require('./bridges');   // pas de pont au-dessus 
 const { copySafetySettings, createMovesKeeper } = require('./pluginMoves');   // fuite de Movements des plugins collect/pvp (19/10)
 const { createGoalTrace, installGoalTrace } = require('./goalTrace');   // DIAG GoalChanged : qui pose un but pendant un goto ? (aucun effet sur le bot)
 const vec3Lib = require('vec3'); // watchdog anti-jam (blocs barrants)
-const { gather, woodExpeditionCount } = require('./skills/gather');
+const { gather, woodExpeditionCount, woodExploreShape } = require('./skills/gather');
+const { gotoWithTimeout } = require('./skills/explore');   // trajet borné ET interruptible (abortIf)
+// Kit de secours en coffre (run 10, 20/10) — décisions PURES, glue « KIT DE SECOURS EN COFFRE ».
+const { depositPlan, restorePlan, STASH_NEAR_BASE } = require('./stash');
 const { mineDown } = require('./skills/mineDown');
 const { guard } = require('./skills/guard');
 const { giveItem, giveAll } = require('./skills/give');
@@ -71,7 +74,9 @@ const { runMapper, createExpiringSet } = require('./mapper');   // createExpirin
 const { isInWater, escapeWater, findLandTarget, isFloatingStuck, recoverFloating, isFrozenDesync,
   escapePlan, escapeReached, canReanchorSpawn, ESCAPE_SAFE_RADIUS,
   // Fuite dès le spawn + historique de morts persisté (live 19/10, MapBot1) — décisions PURES, cf. unstuck.js.
-  spawnDanger, hostilesWithin, deathTimesPrune, deathTimesLoad, deathMemoWith, escapeArmed, deathLoopTripped } = require('./unstuck');
+  spawnDanger, hostilesWithin, deathTimesPrune, deathTimesLoad, deathMemoWith, escapeArmed, deathLoopTripped,
+  // Premières secondes après un respawn : se terrer plutôt que courir (run 10, 20/10).
+  spawnGuardPlan } = require('./unstuck');
 // Neutres tant qu'on ne les provoque pas (enderman) : jamais une raison de fuir au spawn (même liste que nearbyHostiles).
 const { NEUTRAL_NO_PROVOKE } = require('./survival');
 const deathzones = require('./deathzones'); // ban-zone des camps de mort (≥2 alertes → fuite active)
@@ -96,11 +101,11 @@ const { recordWorkStuck } = require('./workStuck'); // chantier menant à une im
 // SYSTÈME À 3 HOMES (Massii 27/07) : safe = LA BASE, work = le chantier courant, death = la dette
 // de mort. Le serveur n'autorise que 3 homes et le code en posait 4 → un /sethome échouait EN
 // SILENCE sur chaque bot (bug prouvé world_mn5). Voir homes.js.
-const { HOME_SAFE, HOME_WORK, HOME_DEATH, LEGACY_HOMES, canBookmarkDeath, openDebt, debtAction, isSurfaceSpot, SAFE_HOME_MIN_Y, isSilentSafeFailure } = require('./homes');
+const { HOME_SAFE, HOME_WORK, HOME_DEATH, LEGACY_HOMES, canBookmarkDeath, openDebt, debtAction, inventoryKept, isSurfaceSpot, SAFE_HOME_MIN_Y, isSilentSafeFailure } = require('./homes');
 // HOME `safe` CAMPÉ (live 19/10, MapBot2 : 8 morts en 3 min — chaque secours le ramenait au camp du
 // spawn). Décisions PURES ; la glue (veto, re-pose, mémo) est plus bas, section « HOME safe CAMPÉ ».
 const {
-  homeCamped, rescueWarpVeto, safeHomeMove, spawnSafeHomeAction, deathPosPrune, deathPosLoad, deathPosMemoWith,
+  homeCamped, spawnpointVeto, rescueWarpVeto, safeHomeMove, spawnSafeHomeAction, deathPosPrune, deathPosLoad, deathPosMemoWith,
   safeHomeLoad, safeHomeMemoWith, nearestHostile, hostileNearHome, CAMPED_EVENT_EVERY_MS,
 } = require('./homeSafety');
 const { recordJam } = require('./jamEscalate'); // JAM persistant au MÊME endroit → relocate forcé (live 22/06 SOIR ResBot2)
@@ -292,9 +297,13 @@ let deathTimes = [];        // morts récentes (10 min) — HÉRITÉES du mémo 
 let _deathHistoryLoaded = false;   // l'historique a été relu du mémo (UNE fois par process)
 const _bootAt = Date.now();        // démarrage de CE process : sépare ses morts propres des morts héritées
                                    // (le garde-fou death_loop ne compte que les siennes, cf. deathLoopTripped)
+// keepInventory MESURÉ (20/10 — le propriétaire bascule le réglage entre deux runs) : total d'objets
+// relevé au moment de la mort, comparé au respawn par homes.inventoryKept. Lu par recoverDeathDebt (timer
+// compris) → NIVEAU MODULE (piège #56). -1 = pas de mort vue dans ce process (aucune preuve).
+let _invAtDeath = -1;
 let _escapeOnSpawn = false; // anti-camping : 2 morts <60 s → au prochain spawn, escapeDeathCamp()
                             // (sans-give : fuite À PIED puis re-spawnpoint SEULEMENT si au calme)
-                            // Armé aussi par un danger visible au spawn (armSpawnEscapeIfDanger) ou par un
+                            // Lu et CONSOMMÉ par guardSpawn (qui observe aussi le danger visible au spawn) ; armé aussi par un
                             // historique hérité qui dit « ce spawn est campé » (loadDeathHistory).
 // Fuite d'évasion EN COURS. Garde de niveau MODULE (piège #56) lue par les deux mécanismes de TP
 // automatique (enforcement confine + squad /tpa) : un yank pendant la fuite ramènerait le bot vers
@@ -1818,7 +1827,8 @@ async function runGoalSkill(goal) {
     const _localWood = !!(_logIds.length && bot.findBlock({ matching: _logIds, maxDistance: 48 }));
     const _count = woodExpeditionCount(goal.args.count, _localWood);
     if (_count !== goal.args.count) emit({ type: 'wood_expedition', batch: _count });
-    return gather(bot, { name: logNames.length ? logNames : 'oak_log', count: _count, explore: true }, taskToken);
+    // Bois SANS MOURIR (run 10) : repli à l'abri si un hostile menace un bot nu, exploration courte.
+    return gatherWoodSafely({ name: logNames.length ? logNames : 'oak_log', count: _count, explore: true });
   }
   // explore:true sur les gather de la chaîne autonome (bois/pierre/minerai) → le bot va chercher
   // la ressource si elle n'est pas dans le voisinage. (Les gather opportunistes internes — branchMine
@@ -2714,7 +2724,7 @@ async function migrateZone(reason) {
       try { homewarp.delhome(bot, HOME_SAFE); } catch (e) { /* best-effort */ }
       homewarp.bookmark(bot, HOME_SAFE);
       noteSafeHome(p2, 'migration');   // état du process + `safeHome` persisté (le process suivant doit le savoir)
-      try { bot.chat('/spawnpoint'); } catch (e) {}
+      anchorSpawnpoint('migration');   // jamais dans un camp (homeSafety.spawnpointVeto)
       const base = { x: Math.round(p2.x), y: Math.round(p2.y), z: Math.round(p2.z) };
       const st = loadBaseState() || {};
       saveBaseState(Object.assign({}, st, { base, personal: true }));
@@ -3719,7 +3729,7 @@ function maybeMoveCampedSafeHome() {
     noteSafeHome(p, 'camped');
     _safeHomeMovedAt = now;
     const to = { x: Math.round(p.x), y: Math.round(p.y), z: Math.round(p.z) };
-    try { bot.chat('/spawnpoint'); } catch (e) {}   // les respawns aussi quittent le camp (op seulement)
+    anchorSpawnpoint('camped_move');   // les respawns aussi quittent le camp (op seulement ; veto si l'arrivée est campée)
     if (!IS_MAPPER) saveBaseState(Object.assign({}, loadBaseState() || {}, { base: to }));
     if (CONFINE) CONFINE = { x: to.x, z: to.z, radius: CONFINE.radius };
     if (_confineDyn) _confineDyn = { x: to.x, z: to.z, radius: _confineDyn.radius };
@@ -3867,8 +3877,12 @@ async function recoverDeathDebt() {
   const decide = () => {
     let worn = 0;
     try { worn = _wornArmor().size; } catch (e) { /* inventaire pas encore livré → 0 = prudent */ }
+    // keepInventory ON → l'inventaire est revenu avec le bot : rien au sol, la dette se lève SANS
+    // se téléporter au camp. Sous keepInventory OFF il revient vide → faux → comportement d'origine.
+    let keptInventory = false;
+    try { keptInventory = inventoryKept({ before: _invAtDeath, after: _invTotal(() => true) }); } catch (e) { keptInventory = false; }
     return debtAction({
-      debt: debt0, now: Date.now(), worn,
+      debt: debt0, now: Date.now(), worn, keptInventory,
       night: (bot.time && bot.time.timeOfDay != null) ? isNight(bot) : null,
     });
   };
@@ -3884,6 +3898,9 @@ async function recoverDeathDebt() {
     // elle l'est : nuit + nu → on diffère au lieu de se téléporter. (`return` → le finally lève la garde.)
     const again = decide();
     if (again.act === 'defer') { deferDeathDebt(debt0, again.reason); return; }
+    // L'inventaire n'est souvent livré qu'APRÈS la 1re décision (paquets post-spawn) : c'est ici que
+    // keepInventory se voit — on lève la dette au lieu de partir (`return` → le finally lève la garde).
+    if (again.act === 'settle') { settleDeathDebt(again.reason); return; }
     emit({ type: 'death_recover_home', x: debt0.x, y: debt0.y, z: debt0.z });
     homewarp.goHome(bot, HOME_DEATH);
     await awaitWarp({ maxMs: 8000 }); // atterrissage OU warmup teleport-delay
@@ -4057,8 +4074,8 @@ async function establishBase(opts = {}) {
     noteSafeHome(p, 'base');   // état du process + `safeHome` persisté (relu par le process suivant)
     // « mettre un home pour l'utiliser comme spawn » : /spawnpoint ancre le respawn ICI, donc une
     // mort ne renvoie plus au spawn du monde partagé (précédent : /spawnpoint post-kit des bots
-    // ressource, cf. 'kit_done').
-    try { bot.chat('/spawnpoint'); } catch (e) {}
+    // ressource, cf. 'kit_done'). Jamais dans un camp (veto homeSafety.spawnpointVeto).
+    anchorSpawnpoint('base');
     const base = { x: Math.round(p.x), y: Math.round(p.y), z: Math.round(p.z) };
     // FUSION sur l'état COURANT du mémo (relu ICI, pas `st` pris avant les gotos de 90 s). Un objet
     // neuf effaçait `deaths`, `deathDebt` et `zone` à chaque établissement de base : l'aller-retour du
@@ -4879,6 +4896,7 @@ async function relocateToRegion(opts = {}) {
 // ⚠️ Fonction de NIVEAU MODULE (piège #56 : une garde déclarée dans onSpawn et lue ailleurs
 // compile, passe les tests, et tue le process au 1er tick).
 const ESCAPE_WALK_TIMEOUT_MS = 20000;   // la fuite est prioritaire mais BORNÉE : le planner attend
+const ESCAPE_THREAT_POLL_MS = 500;      // relevé du danger pendant la course (cf. « MENACE EN ROUTE »)
 async function escapeDeathCamp() {
   const p0 = bot.entity && bot.entity.position;
   // ⚠️ COPIE IMMÉDIATE : `bot.entity.position` est un Vec3 MUTÉ EN PLACE par mineflayer — garder la
@@ -4893,14 +4911,14 @@ async function escapeDeathCamp() {
     pos: start,
     hostile: threat && threat.position,
   });
-  if (!plan) { emit({ type: 'death_camp_escape', mode: 'none' }); return; }
+  if (!plan) { emit({ type: 'death_camp_escape', mode: 'none' }); return { escaped: false }; }
 
   if (plan.mode === 'warp') {
     // ADMIN (mappeurs, serveurs de test) : /spreadplayers marche vraiment → comportement HISTORIQUE.
     emit({ type: 'death_camp_escape', mode: 'warp' });
     try { await relocateToRegion(); } catch (e) { /* best-effort */ }
-    try { bot.chat('/spawnpoint'); } catch (e) {}
-    return;
+    anchorSpawnpoint('camp_warp');       // veto si l'arrivée est elle-même campée
+    return { escaped: true };
   }
 
   emit({
@@ -4917,14 +4935,27 @@ async function escapeDeathCamp() {
   // GoalNearXZ : l'altitude est libre — n'importe quelle sortie fait l'affaire quand on fuit
   // (et un but concret a une heuristique positive/décroissante : A* fini, borné par
   // applyPathfinderBounds — JAMAIS de GoalInvert ici, piège #48/OOM du 25/07).
+  // MENACE EN ROUTE (run 10, 20/10) : 168 fuites ratées sur 181 — le bot nu courait 40-50 blocs sous les
+  // flèches jusqu'au bout. Un danger qui surgit pendant la course (nu + hostile ≤ 12, spawnDangerNow)
+  // COUPE la fuite : l'appelant (guardSpawn) se terre aussitôt. Armuré : spawnDangerNow rend null → inchangé.
+  let enRoute = null;
+  const watch = setInterval(() => {
+    if (enRoute) return;
+    const d = spawnDangerNow();
+    if (d) { enRoute = d; try { stopMotion(); } catch (e) {} }
+  }, ESCAPE_THREAT_POLL_MS);
   try {
     await withTimeout(bot.pathfinder.goto(new pfGoals.GoalNearXZ(plan.x, plan.z, 4)),
       ESCAPE_WALK_TIMEOUT_MS, () => { try { stopMotion(); } catch (e) {} });
   } catch (e) { /* NoPath/annulation : c'est la distance PARCOURUE qui tranche, pas ce retour */ }
   // JAMAIS coincé à true (un flag busy figé gèlerait les 2 TP) — mais on ne relâche que si
   // personne n'a pris la main entre-temps, sinon on éteindrait la garde d'une fuite VIVANTE.
-  finally { if (gen === _escapeGen) _escaping = false; }
-  if (gen !== _escapeGen) { emit({ type: 'death_camp_escape_superseded' }); return; }
+  finally { clearInterval(watch); if (gen === _escapeGen) _escaping = false; }
+  if (gen !== _escapeGen) { emit({ type: 'death_camp_escape_superseded' }); return { escaped: false }; }
+  if (enRoute) {
+    emit({ type: 'death_camp_escape_threat', mob: enRoute.mob, dist: Math.round(enRoute.dist * 10) / 10 });
+    return { escaped: false, threat: enRoute };
+  }
 
   const p1 = bot.entity && bot.entity.position;
   const escaped = escapeReached(start, p1 && { x: p1.x, y: p1.y, z: p1.z });
@@ -4937,8 +4968,7 @@ async function escapeDeathCamp() {
   } catch (e) { nearestHostileDist = null; }
 
   if (canReanchorSpawn({ escaped, nearestHostileDist })) {
-    try { bot.chat('/spawnpoint'); } catch (e) {}
-    emit({ type: 'death_camp_reanchor', x: Math.round(p1.x), z: Math.round(p1.z) });
+    if (anchorSpawnpoint('camp_escape')) emit({ type: 'death_camp_reanchor', x: Math.round(p1.x), z: Math.round(p1.z) });
   } else {
     // Pas d'ancrage : on ne fige RIEN dans une zone qu'on n'a pas su quitter proprement.
     emit({
@@ -4946,6 +4976,7 @@ async function escapeDeathCamp() {
       hostileDist: nearestHostileDist == null ? null : Math.round(nearestHostileDist),
     });
   }
+  return { escaped };
 }
 
 // ─── FUITE DÈS LE SPAWN, SANS ATTENDRE DE MOURIR (live 19/10, MapBot1) ───────────────────────────
@@ -5003,20 +5034,292 @@ function hostilesNearNow() {
   } catch (e) { return 0; }
 }
 
+// ─── LES PREMIÈRES SECONDES APRÈS UN RESPAWN : SE TERRER, PAS COURIR (run 10, 20/10) ──────────────
+// Mesuré (10 h, 263 vies d'ouvrier) : 74 morts < 30 s après un respawn, dont 58 après une fuite À PIED
+// (168 fuites ratées sur 181, 93 %) ; les vies où la cellule d'abri s'est fermée vivent 600 s en médiane
+// (1 mort < 30 s sur 102). Et `spawn_danger_flee` n'a JAMAIS été émis : à l'event `spawn` les entités ne
+// sont pas encore arrivées (1re réaction à un hostile : < 1 s dans 5 vies, < 4 s dans 98) — d'où une
+// courte FENÊTRE d'observation, puis la règle pure unstuck.spawnGuardPlan :
+//   'hide'   → s'enterrer TOUT DE SUITE (puits de 3 + toit, ~3-6 s) et attendre que la zone se vide
+//              (borné 90 s ; de nuit, l'abri attend l'aube comme la discipline de nuit) ;
+//   'escape' → la fuite à pied d'avant (de jour, rien en vue) — désormais COUPÉE dès qu'un danger surgit
+//              en route, et suivie d'un abri ;
+//   'none'   → rien.
+// ⚠️ Fonctions et constantes de NIVEAU MODULE (piège #56), comme escapeDeathCamp.
+const SPAWN_SENSE_MS = 4000;          // fenêtre d'observation après le spawn (98/263 menaces vues < 4 s)
+const SPAWN_SENSE_STEP_MS = 400;
+const THREAT_HIDE_MAX_MS = 90000;     // borne de l'attente « zone vide » (règle de vitesse du propriétaire)
+const WOOD_HIDE_MAX_MS = 60000;       // bois : on attend moins, la récolte reprend vite
+const WOOD_HIDE_ROUNDS = 3;           // bois : au plus 3 replis par tentative de `logs`…
+const WOOD_HIDE_WINDOW_MS = 90000;    // …et plus AUCUN repli commencé après 90 s : un abri dure ≤ ~80 s, on finit
+                                      // donc avant le garde-fou du skill (SKILL_TIMEOUTS.gatherLog = 180 s) — sinon
+                                      // le planner enchaînerait une autre tâche pendant que le bot est au fond du trou.
+
+/** Observe le danger pendant SPAWN_SENSE_MS (sort dès qu'il est vu). null si rien. Jamais de throw. */
+async function senseSpawnDanger() {
+  const t0 = Date.now();
+  for (;;) {
+    const d = spawnDangerNow();
+    if (d) return d;
+    if (Date.now() - t0 >= SPAWN_SENSE_MS) return null;
+    await sleep(SPAWN_SENSE_STEP_MS);
+  }
+}
+
 /**
- * Au spawn : arme l'évasion SI un danger est visible (et qu'elle ne l'est pas déjà). Le test de
- * `_escapeOnSpawn` qui suit dans onSpawn consomme le drapeau → UNE seule fuite par spawn, quelle que
- * soit la raison (rafale de morts, historique hérité, ou ce danger-ci). Trace la raison : sans elle
- * `death_camp_escape` ne dit pas pourquoi un bot qui n'est jamais mort part en courant.
- * @returns true si CE danger a armé l'évasion.
+ * S'enterrer face à une menace (puits de 3 + toit) et attendre que la zone se vide, BORNÉ. Réutilise
+ * shelterUntilDawn : de jour la boucle de nuit est sautée et seule l'attente « hostiles ≤ 12 blocs »
+ * (étape 3bis, borne `maxWaitMs`) tient le bot dans son trou ; de nuit il attend l'aube (discipline de
+ * nuit, bot nu). UN SEUL abri à la fois : un abri en cours est REJOINT (comme maybeNightShelter).
+ * Jeton PROPRE (le global taskToken peut être celui, annulé, de la vie précédente) ; `withTimeout`
+ * n'annulant rien, le dépassement ANNULE ce jeton lui-même.
+ * @returns {{ok:boolean, reason?:string, joined?:boolean}}
  */
-function armSpawnEscapeIfDanger() {
-  if (_escapeOnSpawn) return false;
-  const danger = spawnDangerNow();
-  if (!danger) return false;
-  _escapeOnSpawn = true;
-  emit({ type: 'spawn_danger_flee', mob: danger.mob, dist: Math.round(danger.dist * 10) / 10, worn: danger.worn });
+async function hideFromThreat(why, danger, opts = {}) {
+  if (_shelterInFlight) {
+    try { await _shelterInFlight; } catch (e) { /* l'abri en cours a ses propres garde-fous */ }
+    return { ok: true, joined: true };
+  }
+  const maxWaitMs = Number.isFinite(opts.maxWaitMs) ? opts.maxWaitMs : THREAT_HIDE_MAX_MS;
+  const night = !!(bot.time && bot.time.timeOfDay != null && isNight(bot));
+  const t0 = Date.now();
+  const tok = { cancelled: false };
+  emit({
+    type: 'threat_hide', why, night,
+    mob: (danger && danger.mob) || null,
+    dist: (danger && Number.isFinite(danger.dist)) ? Math.round(danger.dist * 10) / 10 : null,
+  });
+  lastShelterT = t0;      // l'abri nocturne ne relance pas un 2e trou dans la foulée
+  let res = null;
+  const run = (async () => {
+    _stillBusy = true;    // terré : immobilité légitime (pas un desync)
+    try {
+      res = await withTimeout(shelterUntilDawn(bot, tok, {
+        emit, hostilesNear: hostilesNearNow, worn: () => _wornArmor().size,
+        dawnWaitMaxMs: maxWaitMs, endWhenDisplaced: () => nightLockdownNow(),
+      }), (night ? 13 * 60 * 1000 : 0) + maxWaitMs + 20000,
+      () => { tok.cancelled = true; try { stopMotion(); } catch (e) {} });
+    } finally { _stillBusy = false; }
+  })();
+  _shelterInFlight = run;
+  try { await run; } finally { if (_shelterInFlight === run) _shelterInFlight = null; }
+  const out = res || { ok: false, reason: 'error' };
+  emit({ type: 'threat_hide_done', why, ok: !!out.ok, reason: out.reason || null, took_s: Math.round((Date.now() - t0) / 1000) });
+  return out;
+}
+
+/**
+ * Au spawn : observe, décide (spawnGuardPlan), agit. UNE décision par spawn : `_escapeOnSpawn` est
+ * CONSOMMÉ ici quelle que soit la branche (une nouvelle rafale de morts le ré-armera).
+ * Attendu (await) par onSpawn : base, dette de mort, regroupement et planner attendent sa fin — sinon le
+ * bot repartirait travailler à portée d'arc.
+ */
+async function guardSpawn() {
+  let danger = null;
+  try { danger = await senseSpawnDanger(); } catch (e) { danger = null; }
+  const armed = _escapeOnSpawn;
+  _escapeOnSpawn = false;
+  const wornNow = () => { try { return _wornArmor().size; } catch (e) { return 0; } };
+  const nightNow = () => ((bot.time && bot.time.timeOfDay != null) ? isNight(bot) : null);
+  const plan = spawnGuardPlan({ danger: !!danger, escapeArmed: armed, night: nightNow(), worn: wornNow() });
+  if (plan.act === 'none') return plan;
+  emit({
+    type: 'spawn_guard', act: plan.act, reason: plan.reason, armed, worn: wornNow(),
+    mob: danger ? danger.mob : null, dist: danger ? Math.round(danger.dist * 10) / 10 : null,
+  });
+  if (plan.act === 'hide') {
+    // La vie précédente peut encore tenir le pathfinder : on coupe, puis on se terre.
+    try { taskCtl.cancel(); } catch (e) {}
+    try { stopMotion(); } catch (e) {}
+    const h = await hideFromThreat('spawn', danger);
+    // Camp armé : la fuite n'est retentée QU'AU CALME et de jour (la même règle pure re-tranche).
+    // Abri raté (pas de sol où creuser, cellule impossible) : idem — mieux vaut la fuite que rester planté.
+    if (!armed) return plan;
+    const again = spawnGuardPlan({ danger: !!spawnDangerNow(), escapeArmed: true, night: nightNow(), worn: wornNow() });
+    if (again.act !== 'escape') return plan;
+    emit({ type: 'spawn_guard', act: 'escape', reason: (h && h.ok) ? 'camp_after_hide' : 'camp_hide_failed', armed, worn: wornNow() });
+  }
+  let r = null;
+  try { r = await escapeDeathCamp(); } catch (e) { r = null; /* best-effort : jamais bloquer le respawn */ }
+  if (r && r.threat) await hideFromThreat('escape', r.threat);
+  return plan;
+}
+
+/**
+ * Pose le /spawnpoint ICI — SAUF dans une zone campée (homeSafety.spawnpointVeto, ≥ 2 morts récentes à
+ * ≤ 24 blocs) ou position illisible. Run 10 : 39 `/spawnpoint` posés pour 67 `home_safe_camped` — le
+ * point de réapparition devenait le camp lui-même. TOUS les ancrages du respawn passent par ici.
+ * @returns true si la commande est partie.
+ */
+function anchorSpawnpoint(reason) {
+  const p0 = bot.entity && bot.entity.position;
+  const pos = p0 ? { x: p0.x, y: p0.y, z: p0.z } : null;   // COPIE (Vec3 muté en place)
+  let v;
+  try { v = spawnpointVeto({ pos, deaths: _recentDeathPositions(), now: Date.now() }); }
+  catch (e) { v = { veto: true, reason: 'error' }; }
+  if (v.veto) {
+    emit({ type: 'spawnpoint_vetoed', reason: v.reason, why: reason, deaths: v.deaths != null ? v.deaths : null,
+      x: pos ? Math.round(pos.x) : null, z: pos ? Math.round(pos.z) : null });
+    return false;
+  }
+  try { bot.chat('/spawnpoint'); } catch (e) { return false; }
+  emit({ type: 'command', command: '/spawnpoint', reason });
   return true;
+}
+
+/**
+ * Bois sans mourir : un bot NU a-t-il un hostile à ≤ 16 blocs MAINTENANT ? (spawnDanger, rayon 16 —
+ * le même prédicat « hostile à craindre » que le spawn). null sinon. Jamais de throw.
+ */
+const WOOD_DANGER_RADIUS = 16;
+function woodDangerNow() {
+  try {
+    const pos = bot.entity && bot.entity.position;
+    if (!pos) return null;
+    const d = spawnDanger({
+      worn: _wornArmor().size, pos, radius: WOOD_DANGER_RADIUS,
+      entities: Object.values(bot.entities || {}), isHostile: isThreatHostile,
+    });
+    return d.flee ? d : null;
+  } catch (e) { return null; }
+}
+
+/**
+ * Récolte de bois SANS MOURIR (run 10 : 63 % des morts pendant `logs`, 223/231 en surface). Nu :
+ *   - hostile à ≤ 16 blocs AVANT de partir → on se terre d'abord (≤ 60 s), puis on récolte ;
+ *   - hostile qui surgit PENDANT la récolte/l'exploration → gather rend la main (reason 'danger',
+ *     trajet coupé net), on se terre, on reprend — au plus WOOD_HIDE_ROUNDS fois ;
+ *   - exploration courte (woodExploreShape : anneaux ≤ 144 au lieu de 256).
+ * Armuré : un seul passage, forme d'exploration d'origine. Le skill reste borné par SKILL_TIMEOUTS.gatherLog.
+ */
+async function gatherWoodSafely(gargs) {
+  const t0 = Date.now();
+  const worn = (() => { try { return _wornArmor().size; } catch (e) { return 0; } })();
+  const shape = woodExploreShape({ worn });
+  // De NUIT la discipline de nuit possède le trou (attente jusqu'à l'aube, ≫ le budget du skill) : ici on
+  // rend seulement la main sur danger, elle fait le reste.
+  const canHide = () => Date.now() - t0 < WOOD_HIDE_WINDOW_MS
+    && !(bot.time && bot.time.timeOfDay != null && isNight(bot));
+  let hides = 0;
+  const hide = async (d) => { hides++; await hideFromThreat('wood', d, { maxWaitMs: WOOD_HIDE_MAX_MS }); };
+  const mayHide = () => hides < WOOD_HIDE_ROUNDS && canHide();
+  let r = null;
+  for (;;) {
+    if (taskToken.cancelled) return { ok: false, reason: 'cancelled' };
+    // Menace AVANT de partir : on se terre d'abord (ou on rend la main si on ne peut plus).
+    const d = woodDangerNow();
+    if (d) {
+      if (!mayHide()) return r || { ok: false, got: 0, reason: 'danger' };
+      await hide(d);
+      continue;          // re-lire : la zone peut ne pas s'être vidée (borne d'attente atteinte)
+    }
+    r = await gather(bot, Object.assign({}, gargs, shape ? { exploreShape: shape } : {},
+      { danger: () => !!woodDangerNow() }), taskToken);
+    if (!(r && r.reason === 'danger')) return r;
+    if (r.ok) return r;                    // lot partiel déjà en poche : le planner re-dérive
+    // Menace PENDANT la récolte (gather a rendu la main, trajet coupé) : se terrer, puis reprendre.
+    if (!mayHide()) return r;              // plus de repli permis (3 faits, 90 s passées, ou la nuit)
+    await hide(woodDangerNow());
+  }
+}
+
+// ─── KIT DE SECOURS EN COFFRE (run 10, 20/10) ─────────────────────────────────────────────────────
+// Décisions PURES dans stash.js (depositPlan / restorePlan) ; ici la glue. Le coffre est rangé dans le
+// mémo de base (`stash: {x,y,z,at,items}`, écrit en FUSION — piège #61). Dépôt : à la base ou au point de
+// respawn, de jour, au calme, une fois les outils de pierre + le four obtenus, et seulement du SURPLUS.
+// Retrait : au respawn, si le bot a tout perdu (pas de pioche pierre — sous keepInventory ON il la garde :
+// rien ne se passe), à ≤ 48 blocs, zone du coffre non campée. Events `stash_deposit` / `stash_restore`.
+// ⚠️ Gardes de NIVEAU MODULE (piège #56) : lues par le hook du planner, hors de onSpawn.
+const STASH_CHECK_EVERY_MS = 60000;   // le hook du planner ne relit l'état qu'une fois par minute
+const STASH_WALK_MS = 30000;          // ≤ 48 blocs : 30 s suffisent, au-delà on renonce (vitesse)
+let _stashCheckedAt = 0;
+let _stashBusy = false;
+let _lastRespawnPos = null;           // COPIE de la position au dernier `spawn` (là où l'on revient en mourant)
+
+function _invSnapshot() {
+  return ((bot.inventory && bot.inventory.items()) || []).map((i) => ({ name: i.name, count: i.count }));
+}
+
+/** Ce qui a VRAIMENT quitté l'inventaire (avant − après), restreint aux noms prévus. */
+function _stashedDiff(before, after, planned) {
+  const tot = (list) => { const m = {}; for (const i of list || []) m[i.name] = (m[i.name] || 0) + i.count; return m; };
+  const b = tot(before), a = tot(after);
+  const names = new Set((planned || []).map((i) => i.name));
+  const out = [];
+  for (const n of names) { const d = (b[n] || 0) - (a[n] || 0); if (d > 0) out.push({ name: n, count: d }); }
+  return out;
+}
+
+/** Hook du planner (avant chaque but) : dépose le kit quand c'est le moment. Jamais de throw. */
+async function stashKitIfReady() {
+  if (!NO_GIVE || IS_MAPPER || _stashBusy) return null;
+  const now = Date.now();
+  if (now - _stashCheckedAt < STASH_CHECK_EVERY_MS) return null;
+  _stashCheckedAt = now;
+  const st = loadBaseState() || {};
+  const p0 = bot.entity && bot.entity.position;
+  const p = p0 ? { x: p0.x, y: p0.y, z: p0.z } : null;
+  const ref = (st.base && Number.isFinite(st.base.x)) ? st.base : _lastRespawnPos;
+  const nearBase = !!(p && ref && Math.hypot(p.x - ref.x, p.z - ref.z) <= STASH_NEAR_BASE);
+  const inv = _invSnapshot();
+  const night = !!(bot.time && bot.time.timeOfDay != null && isNight(bot));
+  const safe = !!p && p.y >= SAFE_HOME_MIN_Y && !night && !woodDangerNow();
+  const plan = depositPlan({ inv, hasFurnace: inv.some((i) => i.name === 'furnace'), stash: st.stash || null, nearBase, safe });
+  if (plan.act !== 'deposit') return plan;
+  _stashBusy = true;
+  try {
+    if (plan.craftSparePick) { try { await craftSmart({ name: 'stone_pickaxe', count: 1 }); } catch (e) { /* la rechange reste optionnelle */ } }
+    let r;
+    try { r = await bankDeposit(plan.items); } catch (e) { r = { ok: false, reason: 'exception' }; }
+    if (!r || !r.ok) { emit({ type: 'stash_failed', reason: (r && r.reason) || 'error' }); return plan; }
+    const items = _stashedDiff(r.before, r.after, plan.items);
+    if (!items.length) { emit({ type: 'stash_failed', reason: 'nothing_stored' }); return plan; }
+    const pos = { x: Math.round(r.pos.x), y: Math.round(r.pos.y), z: Math.round(r.pos.z) };
+    saveBaseState(Object.assign({}, loadBaseState() || {}, { stash: Object.assign({}, pos, { at: Date.now(), items }) }));
+    emit(Object.assign({ type: 'stash_deposit' }, pos, { items }));
+    return plan;
+  } finally { _stashBusy = false; }
+}
+
+/** Au respawn : reprendre le kit au lieu de recommencer au bois. Jamais de throw. */
+async function restoreStashIfUseful() {
+  if (!NO_GIVE || IS_MAPPER) return null;
+  const st = loadBaseState() || {};
+  const stash = st.stash || null;
+  if (!stash) return null;
+  const p0 = bot.entity && bot.entity.position;
+  const pos = p0 ? { x: p0.x, y: p0.y, z: p0.z } : null;
+  const camped = (() => { try { return _campedAt({ x: stash.x, y: stash.y, z: stash.z }); } catch (e) { return false; } })();
+  const plan = restorePlan({ stash, pos, inv: _invSnapshot(), camped });
+  if (plan.act !== 'restore') {
+    if (plan.reason !== 'has_pickaxe') emit({ type: 'stash_skip', reason: plan.reason, dist: plan.dist != null ? Math.round(plan.dist) : null });
+    return plan;
+  }
+  const done = (o) => { emit(Object.assign({ type: 'stash_restore' }, o)); return plan; };
+  try {
+    await gotoWithTimeout(bot, new pfGoals.GoalNear(stash.x, stash.y, stash.z, 2), STASH_WALK_MS, () => !!woodDangerNow());
+  } catch (e) {
+    return done({ ok: false, reason: (e && e.message === 'goto_danger') ? 'danger' : 'unreachable' });
+  }
+  const blk = (() => { try { return bot.blockAt(vec3Lib(stash.x, stash.y, stash.z)); } catch (e) { return null; } })();
+  if (!blk || blk.name !== 'chest') {
+    // Coffre détruit/pillé : on oublie ce kit (sinon chaque respawn y marcherait pour rien).
+    saveBaseState(Object.assign({}, loadBaseState() || {}, { stash: null }));
+    return done({ ok: false, reason: 'chest_missing' });
+  }
+  let chest;
+  try { chest = await bot.openContainer(blk); } catch (e) { return done({ ok: false, reason: 'open_failed' }); }
+  const got = [];
+  let left = [];
+  try {
+    for (const it of chest.containerItems()) {
+      try { await chest.withdraw(it.type, null, it.count); got.push({ name: it.name, count: it.count }); } catch (e) { /* inventaire plein/désync */ }
+    }
+    left = chest.containerItems().map((i) => ({ name: i.name, count: i.count }));
+  } finally { try { chest.close(); } catch (e) {} }
+  // Coffre vidé → plus de kit (un nouveau dépôt redeviendra possible une fois les outils refaits).
+  saveBaseState(Object.assign({}, loadBaseState() || {}, { stash: left.length ? Object.assign({}, stash, { items: left }) : null }));
+  return done({ ok: true, items: got, left: left.length });
 }
 
 // FONTE FINALE (exigence Massii : LIVRER des lingots d'or/fer FONDUS, pas du minerai brut).
@@ -5145,7 +5448,7 @@ async function startResource() {
   // SPAWNPOINT post-kit (phase 3) : le spawn du monde est un LAC déforesté — chaque mort y
   // renvoyait le bot (re-nage + re-voyage ~10 min). Bot OP → ancre son respawn ICI (zone kit
   // saine, équipée). Une mort ne coûte plus que le retour à la mine.
-  try { bot.chat('/spawnpoint'); emit({ type: 'command', command: '/spawnpoint', reason: 'kit_done' }); } catch (e) {}
+  anchorSpawnpoint('kit_done');   // trace `command` reason kit_done (ou `spawnpoint_vetoed` si campé)
   const quota = loadQuota();
   // Claims anti-collision (fichier partagé du groupe) — seulement si fourni par le manager.
   const claims = args.claims ? createClaims(String(args.claims), { username: bot.username }) : null;
@@ -5355,7 +5658,8 @@ async function runAutonomousBody(sender, objType, myTok) {
   const chain = chainFor(objType);               // pioche pierre (MVP) ou pioche fer (IRON_CHAIN)
   const runChain = () => runPlanner(bot, {
     chain,
-    runSkill: (g) => runSkillWithTelemetry(g),
+    // Avant chaque but : déposer le kit de secours si c'est le moment (1 relevé/min, jamais de throw).
+    runSkill: async (g) => { try { await stashKitIfReady(); } catch (e) { /* best-effort */ } return runSkillWithTelemetry(g); },
     ctxExtra,
     onStep: (g) => emit({ type: 'goal', name: g.name }),
   }, myTok);
@@ -6301,14 +6605,14 @@ async function onSpawn() {
   // mort, /tpa de regroupement, planner autonome) attend la fin de la fuite — sinon le bot
   // repartirait travailler à portée d'arc du campeur. Voir escapeDeathCamp : en sans-give c'est
   // une fuite À PIED, et le /spawnpoint n'est reposé qu'une fois au calme.
-  // + FUITE DÈS LE SPAWN (live 19/10, MapBot1) : nu ET un hostile à ≤ 12 blocs → on part TOUT DE SUITE,
-  // sans attendre d'avoir été tué (cf. armSpawnEscapeIfDanger). Évalué ICI, juste avant le test du
-  // drapeau, pour qu'une seule fuite serve toutes les raisons (rafale, historique hérité, danger vu).
-  armSpawnEscapeIfDanger();
-  if (_escapeOnSpawn) {
-    _escapeOnSpawn = false;
-    try { await escapeDeathCamp(); } catch (e) { /* best-effort : jamais bloquer le respawn */ }
-  }
+  // + PREMIÈRES SECONDES (run 10, 20/10) : nu ET un hostile à ≤ 12 blocs dans les 4 s qui suivent le
+  // spawn → on se TERRE (puits + toit) au lieu de courir ; de nuit, nu, un camp ne se fuit plus à
+  // découvert non plus. guardSpawn observe, décide (unstuck.spawnGuardPlan) et CONSOMME `_escapeOnSpawn`
+  // — une seule décision par spawn, quelle que soit la raison (rafale, historique hérité, danger vu).
+  try { await guardSpawn(); } catch (e) { /* best-effort : jamais bloquer le respawn */ }
+  // KIT DE SECOURS (run 10) : nu, près de son coffre, zone saine → reprendre le kit AVANT la base, la
+  // dette et le planner (qui sinon repartirait au bois). No-op sous keepInventory ON (pioche gardée).
+  try { await restoreStashIfUseful(); } catch (e) { /* best-effort */ }
   // ─── Warp légitime (NO_GIVE + MAPPEUR) : home 'safe' surface + récupération post-mort ───────────
   // Le MAPPEUR (Massii live 2026-07-15 : « je ne le vois pas poser l'home et revenir ») pose aussi
   // un home 'safe' de surface au spawn → la nuit il fait /home safe puis s'abrite (cf. maybeNightShelter).
@@ -6576,6 +6880,8 @@ bot._mcaSafeVeto = (ctx) => !!safeHomeVeto(ctx);
 
 bot.on('spawn', () => {
   _floatSettleUntil = Date.now() + 15000;
+  // Là où l'on revient en mourant (COPIE : Vec3 muté en place) — référence du dépôt du kit de secours.
+  try { const sp = bot.entity && bot.entity.position; if (sp) _lastRespawnPos = { x: sp.x, y: sp.y, z: sp.z }; } catch (e) {}
   // L'état de zone est REPRIS du mémo, jamais réinitialisé : son horloge doit traverser les
   // respawns, sinon l'hystérésis de 15 min n'est jamais atteinte (le bot respawn plus souvent).
   if (!_zoneAnchoredAt) loadZoneState();
@@ -6814,6 +7120,9 @@ let lastDeath = null; // {x,y,z,t} — pour retourner ramasser ses items au resp
 
 bot.on('death', () => {
   emit({ type: 'status', state: 'dead' });
+  // Relevé AVANT que le serveur ne vide l'inventaire (keepInventory OFF) : à l'event `death`, les slots
+  // sont encore ceux de la vie qui s'achève. Jamais de throw dans ce handler (il persiste l'historique).
+  try { _invAtDeath = _invTotal(() => true); } catch (e) { _invAtDeath = -1; }
   const p = bot.entity && bot.entity.position;
   if (p) lastDeath = { x: p.x, y: p.y, z: p.z, t: Date.now() };
   // LIEUX DE MORT RÉPÉTÉE (deathspots.js, toute cause confondue — chutes/ravins compris, ≠

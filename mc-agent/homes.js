@@ -148,6 +148,12 @@ function debtAction(o = {}) {
   }
   const ttl = o.ttlMs != null ? o.ttlMs : DEBT_TTL_MS;
   if ((o.now - debt.at) > ttl) return { act: 'settle', reason: 'despawned' };
+  // keepInventory ON (entraînement, 20/10) : le respawn rend l'inventaire → rien n'est tombé au sol,
+  // la dette n'a plus d'objet. La lever ICI, AVANT le départ : sans ça le bot se téléportait (/home death)
+  // nu au lieu exact de sa mort — le camp — pour constater qu'il n'y avait rien à ramasser (185
+  // `death_recover_home` sur le run 10). Sous keepInventory OFF l'inventaire est vide au respawn →
+  // `keptInventory` faux → comportement inchangé. Le jugement lui-même est inventoryKept (pur).
+  if (o.keptInventory === true) return { act: 'settle', reason: 'kept_inventory' };
   if (o.arrived && (o.dropsLeft || 0) <= 0) return { act: 'settle', reason: 'recovered' };
   if (o.arrived) return { act: 'recover', reason: 'drops_left' };
   // Avant le départ seulement (`arrived` a déjà tranché plus haut : sur place, on ne re-diffère pas).
@@ -155,7 +161,25 @@ function debtAction(o = {}) {
   return { act: 'recover' };
 }
 
+/**
+ * PUR — l'inventaire a-t-il SURVÉCU à la mort (keepInventory ON) ? On compare le total d'objets relevé
+ * au moment de la mort (`before`) à celui d'après le respawn (`after`). Ne suppose RIEN du réglage du
+ * serveur : il le MESURE, mort après mort (le propriétaire bascule keepInventory entre deux runs).
+ *   - rien avant la mort → rien à perdre : faux (aucune preuve, on garde le comportement d'origine) ;
+ *   - après ≥ la moitié d'avant → gardé. La moitié, et pas l'égalité : quelques objets peuvent avoir été
+ *     consommés/jetés juste avant la mort ; et un /kit de respawn (cartographes) donne une poignée
+ *     d'objets, loin de la moitié d'un inventaire de travail — il ne passe pas pour un inventaire gardé.
+ * @param {{before?: number, after?: number}} o  totaux d'objets (somme des `count`)
+ */
+function inventoryKept(o = {}) {
+  const before = (o && Number.isFinite(o.before)) ? o.before : 0;
+  const after = (o && Number.isFinite(o.after)) ? o.after : 0;
+  if (before <= 0) return false;
+  return after * 2 >= before;
+}
+
 module.exports = {
+  inventoryKept,
   HOME_SAFE, HOME_WORK, HOME_DEATH, HOMES, LEGACY_HOMES,
   canBookmarkDeath, openDebt, debtAction, DEBT_TTL_MS, DEBT_MIN_WORN,
   isSurfaceSpot, SAFE_HOME_MIN_Y, isSilentSafeFailure,

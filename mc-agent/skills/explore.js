@@ -82,18 +82,37 @@ function buildDirectedGoal(target, range) {
 // goto borné : pathfinder.goto peut rester gelé INDÉFINIMENT sur une cible inatteignable
 // (océan, surplomb) → timeout → setGoal(null) + reject → l'appelant passe à la suite
 // (directed → anneaux ; waypoint → waypoint suivant). Le skill ne gèle jamais.
-function gotoWithTimeout(bot, goal, ms) {
+// `abortIf` (optionnel, run 10 20/10) : relu toutes les ABORT_POLL_MS pendant le trajet ; vrai → on coupe
+// le pathfinder et on rejette 'goto_danger'. C'est ce qui permet d'INTERROMPRE une marche de 90 s vers un
+// waypoint lointain quand un hostile surgit à côté d'un bot nu (63 % des morts du run 10 pendant `logs`,
+// dont 43 sur 71 au 3e anneau d'exploration) au lieu de la finir sous les flèches. Un prédicat qui lève
+// vaut « non » (on ne coupe pas un trajet sur une erreur de lecture).
+const ABORT_POLL_MS = 500;
+function gotoWithTimeout(bot, goal, ms, abortIf = null) {
   if (!(bot.pathfinder && bot.pathfinder.goto)) return Promise.resolve();
   return new Promise((resolve, reject) => {
     let done = false;
+    let poll = null;
+    const finish = () => { done = true; clearTimeout(t); if (poll) clearInterval(poll); };
     const t = setTimeout(() => {
-      if (done) return; done = true;
+      if (done) return; finish();
       try { bot.pathfinder.setGoal && bot.pathfinder.setGoal(null); } catch (e) {}
       reject(new Error('goto_timeout'));
     }, ms);
+    if (typeof abortIf === 'function') {
+      poll = setInterval(() => {
+        if (done) return;
+        let stop = false;
+        try { stop = !!abortIf(); } catch (e) { stop = false; }
+        if (!stop) return;
+        finish();
+        try { bot.pathfinder.setGoal && bot.pathfinder.setGoal(null); } catch (e) {}
+        reject(new Error('goto_danger'));
+      }, ABORT_POLL_MS);
+    }
     bot.pathfinder.goto(goal).then(
-      (v) => { if (!done) { done = true; clearTimeout(t); resolve(v); } },
-      (e) => { if (!done) { done = true; clearTimeout(t); reject(e); } }
+      (v) => { if (!done) { finish(); resolve(v); } },
+      (e) => { if (!done) { finish(); reject(e); } }
     );
   });
 }
@@ -145,6 +164,14 @@ async function exploreRun(bot, opts, origin, stats) {
   const token = opts.token || null;
   const emit = opts.emit || null;
   const now = opts.now || Date.now;
+  // DANGER (run 10, 20/10) : `opts.danger()` vrai = un bot nu a un hostile à portée → on arrête d'explorer
+  // TOUT DE SUITE (avant chaque trajet ET pendant, via gotoWithTimeout/abortIf) et on rend
+  // {ok:false, reason:'danger'} : l'appelant s'abrite puis reprend. Jamais de markExhausted sur ce motif
+  // (la cible n'a rien prouvé, c'est le bot qui a dû reculer). Absent → comportement d'origine.
+  const dangerFn = typeof opts.danger === 'function' ? opts.danger : null;
+  const inDanger = () => { if (!dangerFn) return false; try { return !!dangerFn(); } catch (e) { return false; } };
+  const isDangerErr = (e) => !!(e && e.message === 'goto_danger');
+  const DANGER = { ok: false, reason: 'danger' };
   // Bornes des gotos (cf. gotoWithTimeout) : trajet dirigé long (≤1500 blocs) vs hop de waypoint.
   const directedGotoTimeoutMs = opts.directedGotoTimeoutMs || 240000;
   const gotoTimeoutMs = opts.gotoTimeoutMs || 90000;
@@ -217,8 +244,9 @@ async function exploreRun(bot, opts, origin, stats) {
       let attempts = 0;
       while (attempts < 6) {
         attempts++;
+        if (inDanger()) return DANGER;
         try {
-          await gotoWithTimeout(bot, buildDirectedGoal(target, 8), directedGotoTimeoutMs);
+          await gotoWithTimeout(bot, buildDirectedGoal(target, 8), directedGotoTimeoutMs, dangerFn);
           if (token && token.cancelled) return { ok: false, reason: 'cancelled' };
           const hit = bot.findBlock({ matching, maxDistance: scanRadius });
           if (hit) return { ok: true, found: hit.position, traveled: 0, directed: true };
@@ -226,6 +254,7 @@ async function exploreRun(bot, opts, origin, stats) {
           break; // → anneaux depuis ici
         } catch (e) {
           noteError(e);
+          if (isDangerErr(e)) return DANGER;
           if (e && e.message === 'goto_timeout') break; // gelé → anneaux
           if (token && token.cancelled) return { ok: false, reason: 'cancelled' };
           const cur = (bot.entity && bot.entity.position) || origin;
@@ -256,8 +285,9 @@ async function exploreRun(bot, opts, origin, stats) {
       curRing = wp.r;
       if (ringRecalls > 0) {
         ringRecalls--;
+        if (inDanger()) return DANGER;
         try {
-          await gotoWithTimeout(bot, buildDirectedGoal(dTarget, 8), directedGotoTimeoutMs);
+          await gotoWithTimeout(bot, buildDirectedGoal(dTarget, 8), directedGotoTimeoutMs, dangerFn);
           if (token && token.cancelled) return { ok: false, reason: 'cancelled' };
           const hit = bot.findBlock({ matching, maxDistance: scanRadius });
           if (hit) return { ok: true, found: hit.position, traveled: 0, directed: true };
@@ -265,10 +295,12 @@ async function exploreRun(bot, opts, origin, stats) {
           ringRecalls = 0; // plus de rappel
         } catch (e) {
           noteError(e);
+          if (isDangerErr(e)) return DANGER;
           if (e && e.message === 'goto_timeout') ringRecalls = 0; // gelé → on n'insiste plus
         }
       }
     }
+    if (inDanger()) return DANGER;
     const gx = wp.x + (rng() * 2 - 1) * jitterMax;
     const gz = wp.z + (rng() * 2 - 1) * jitterMax;
     if (emit) { try { emit({ type: 'explore_waypoint', x: Math.round(gx), z: Math.round(gz), r: Math.round(wp.r) }); } catch (e) {} }
@@ -278,8 +310,9 @@ async function exploreRun(bot, opts, origin, stats) {
     const x0 = p0 ? p0.x : NaN, z0 = p0 ? p0.z : NaN, t0 = now();
     try {
       // But XZ : l'altitude de la surface à ce waypoint est INCONNUE (cf. buildNearXZGoal).
-      await gotoWithTimeout(bot, buildNearXZGoal(gx, gz, 8), gotoTimeoutMs);
+      await gotoWithTimeout(bot, buildNearXZGoal(gx, gz, 8), gotoTimeoutMs, dangerFn);
     } catch (e) {
+      if (isDangerErr(e)) { noteError(e); return DANGER; }
       // Waypoint inatteignable ou goto gelé (timeout) → on tente le suivant… sauf si le bot est ENFERMÉ :
       // rejeté en < 1,5 s ET resté sur place (< 2 blocs) STUCK_AFTER fois d'affilée = la spirale entière
       // serait « parcourue » en quelques secondes sans bouger (world_ax5 : 35 waypoints en 10 s). Ne

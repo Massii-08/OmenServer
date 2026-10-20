@@ -14,6 +14,23 @@ function woodExpeditionCount(baseCount, localWood) {
   return Math.max(baseCount, WOOD_EXPEDITION);
 }
 
+// FORME DE L'EXPLORATION BOIS d'un bot NU (run 10, 20/10). Mesuré : 197 morts pendant `logs` ; des 71
+// vies mortes après avoir exploré, 43 avaient atteint le 3e anneau (r = 240 blocs), 17 le 2e, 11 le 1er
+// — plus le bot s'éloigne de son point de départ, plus il meurt (zone inconnue, pas d'abri préparé, et
+// la vieille forêt de bouleaux du spawn ne brûle pas ses monstres). Nu, on ratisse donc PRÈS et serré :
+// anneaux de 48 jusqu'à 144 (3 anneaux, ≤ 144 blocs du départ) au lieu de 80 → 256. Sans bois à 144 blocs,
+// l'échec `not_found` alimente la migration de zone (zone.js), qui déplace toute la base vers une forêt
+// connue — un voyage organisé au lieu d'une errance à découvert. Armuré (≥ 2 pièces) : inchangé.
+// La cible DIRIGÉE (mémoire de monde) reste permise : elle vise un bois CONNU, pas une errance.
+const WOOD_NAKED_STEP = 48;
+const WOOD_NAKED_MAX_RADIUS = 144;
+const WOOD_MIN_WORN = 2;             // même « nu » que unstuck.SPAWN_DANGER_MIN_WORN / caution
+function woodExploreShape({ worn = 0 } = {}) {
+  const w = Number.isFinite(worn) && worn > 0 ? worn : 0;
+  if (w >= WOOD_MIN_WORN) return null;   // null = forme par défaut d'explore (80 → 256)
+  return { step: WOOD_NAKED_STEP, maxRadius: WOOD_NAKED_MAX_RADIUS };
+}
+
 function _ids(bot, name) {
   if (!bot.registry || !bot.registry.blocksByName) return null;
   if (Array.isArray(name)) {
@@ -25,6 +42,12 @@ function _ids(bot, name) {
   }
   const def = bot.registry.blocksByName[name];
   return def ? [def.id] : null;
+}
+
+/** Prédicat de danger injecté : un prédicat qui lève vaut « non » (jamais d'arrêt sur une erreur de lecture). */
+function _dangerNow(fn) {
+  if (typeof fn !== 'function') return false;
+  try { return !!fn(); } catch (e) { return false; }
 }
 
 /** Mob hostile à portée (≤ radius) du bot, ou null. */
@@ -67,7 +90,10 @@ async function defendIfNeeded(bot) {
 }
 
 /** Récolte `count`× le bloc `name` le + proche. {ok, reason?/got}. `token` = annulation. */
-async function gather(bot, { name, count = 1, maxDistance = 64, explore: doExplore = false, collectTimeoutMs = 90000 } = {}, token = null) {
+// `danger` (optionnel, () => bool) : relu avant chaque bloc et pendant l'exploration ; vrai → on rend la
+// main TOUT DE SUITE avec reason 'danger' (ok:true si on a déjà récolté quelque chose : le lot partiel
+// compte). `exploreShape` ({step, maxRadius}) est passé tel quel à explore (cf. woodExploreShape).
+async function gather(bot, { name, count = 1, maxDistance = 64, explore: doExplore = false, collectTimeoutMs = 90000, danger = null, exploreShape = null } = {}, token = null) {
   if (!name || (Array.isArray(name) && name.length === 0)) return { ok: false, reason: 'no_block' };
   // collectBlock.collect peut geler INDÉFINIMENT (cible inminable après approche : lave, désync — aucun
   // timeout interne) → branchMine (opportunisme) figé jusqu'à 900s, HORS de portée des watchdogs
@@ -92,6 +118,7 @@ async function gather(bot, { name, count = 1, maxDistance = 64, explore: doExplo
   const keyOf = (p) => `${p.x},${p.y},${p.z}`;
   for (let i = 0; i < count; i++) {
     if (token && token.cancelled) return { ok: true, got, cancelled: true };
+    if (_dangerNow(danger)) return { ok: got > 0, got, reason: 'danger' };
     await defendIfNeeded(bot);
     let block = bot.findBlock({ matching: ids, maxDistance });
     if (block && failed.has(keyOf(block.position))) block = null; // cible déjà ratée = comme absente
@@ -102,8 +129,10 @@ async function gather(bot, { name, count = 1, maxDistance = 64, explore: doExplo
       explorations++;
       // emit : les events explore (explore_directed/explore_waypoint) remontent dans le flux stdout
       // du bot → observables en live (run.log / manager). Sans ça le biais dirigé est invisible.
-      const ex = await explore(bot, { name, matching: ids, scanRadius: maxDistance, token, emit: bot._emit || null });
+      const ex = await explore(bot, Object.assign({ name, matching: ids, scanRadius: maxDistance, token, emit: bot._emit || null },
+        exploreShape || {}, typeof danger === 'function' ? { danger } : {}));
       if (token && token.cancelled) return { ok: true, got, cancelled: true };
+      if (ex && ex.reason === 'danger') return { ok: got > 0, got, reason: 'danger' };
       if (ex && ex.ok) {
         block = bot.findBlock({ matching: ids, maxDistance });
         if (block && failed.has(keyOf(block.position))) block = null;
@@ -141,4 +170,5 @@ async function gather(bot, { name, count = 1, maxDistance = 64, explore: doExplo
   return { ok: true, got };
 }
 
-module.exports = { gather, nearbyHostile, defendIfNeeded, woodExpeditionCount, WOOD_EXPEDITION, NO_MELEE };
+module.exports = { gather, nearbyHostile, defendIfNeeded, woodExpeditionCount, WOOD_EXPEDITION, NO_MELEE,
+  woodExploreShape, WOOD_NAKED_STEP, WOOD_NAKED_MAX_RADIUS };
