@@ -23,7 +23,10 @@ const WOOL_COLORS = Object.freeze([
 const BED_WOOL = 3;
 const BED_PLANKS = 3;
 const BED_SLEEP_MAX_DIST = 16;            // au-delà on ne marche pas jusqu'au lit la nuit (on s'abrite sur place)
-const BED_RETRY_MS = 10 * 60 * 1000;      // un lit raté (pas de mouton, craft/pose impossible) : on réessaie dans 10 min
+const BED_RETRY_MS = 10 * 60 * 1000;
+// Budget TOTAL de la chasse au mouton dans le skill (21/10) : le délai de skill (240 s) n'annule rien
+// (withTimeout), seul un budget lu DANS la boucle borne vraiment l'expédition.
+const BED_HUNT_BUDGET_MS = 90 * 1000;      // un lit raté (pas de mouton, craft/pose impossible) : on réessaie dans 10 min
 const BED_SHEEP_SEEN_MS = 10 * 60 * 1000; // un mouton vu il y a < 10 min compte encore comme « connu »
 const BED_SHEEP_KNOWN_DIST = 96;          // … s'il était à ≤ 96 blocs (la zone chargée, view-distance 6)
 const BED_MEMO_KEY = 'bed';               // champ du mémo de base : { x, y, z, at }
@@ -72,6 +75,10 @@ function bedGoalMet(c) {
   if (o.bedPlaced) return true;
   if (o.bedRetryLater) return true;
   if (bedItemIn(o.inv)) return false;                 // un lit en poche : il reste à le poser
+  // NUIT (bot nu, discipline de nuit) : chasser le mouton dans le noir est la mort assurée, et le but
+  // ne fait alors qu'occuper la nuit (21/10, NethBot1 : but `bed` retenu 455 s par l'abri de nuit, sans
+  // jamais rien tenter). Sauté ; il revient seul au jour. Un lit déjà EN POCHE se pose quand même.
+  if (o.nightLockdown) return true;
   if (bedRecipeName(o.inv)) return !o.planksOk;       // laine là : on craft si le bois suit
   return !o.sheepNear;                                // pas de laine : il faut un mouton en vue/connu
 }
@@ -184,7 +191,7 @@ function sleepDecision({ bed, pos, night } = {}) {
 }
 
 module.exports = {
-  WOOL_COLORS, BED_WOOL, BED_PLANKS, BED_SLEEP_MAX_DIST, BED_RETRY_MS, BED_SHEEP_SEEN_MS, BED_SHEEP_KNOWN_DIST,
+  WOOL_COLORS, BED_WOOL, BED_PLANKS, BED_SLEEP_MAX_DIST, BED_RETRY_MS, BED_HUNT_BUDGET_MS, BED_SHEEP_SEEN_MS, BED_SHEEP_KNOWN_DIST,
   BED_MEMO_KEY, BED_RETRY_MEMO_KEY,
   isBedName, bedItemIn, woolBest, bedRecipeName, woolMissing, bedGoalMet, sheepKnown,
   bedMemoWith, bedMemoCleared, bedRetryMemo, bedOf, bedRetryActive,

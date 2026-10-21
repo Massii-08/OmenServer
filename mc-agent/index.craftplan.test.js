@@ -33,6 +33,7 @@ function craftSandbox({ inv, tableNear = false, craftItemImpl } = {}) {
     TABLE_SEEK: 48, _badTables: { has: () => false },
     _nearestTable: () => (tableNear ? { position: { x: 1, y: 70, z: 0 } } : null),
     withCraftingTable: async (fn) => fn(),
+    recycleNearbyTable: async () => null, blacklistBadTable: () => {},   // aucune table posée en vue (21/10)
     Date: { now: () => sb.clock.t }, clock: { t: 0 },
     withTimeout: async (p) => p,
     bot: { inventory: { items: () => Object.entries(sb.inv).filter(([, c]) => c > 0).map(([name, count]) => ({ name, count })) } },

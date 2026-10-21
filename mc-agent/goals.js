@@ -782,6 +782,26 @@ function wantsOpportunisticArmor(objType) {
   return ARMOR_FORGE_OBJECTIVES.has(objType);
 }
 
+// ─── RETOUR EN ARRIÈRE QUAND L'ARMURE A DISPARU (21/10) ────────────────────────────────────────
+// Mesure « zéro → armure » (NethBot3) : le bot avait FINI son armure juste avant le top départ
+// (`autonomous_done_ctx` : 4 pièces fer portées → chain iron_armor → iron_help, objectif PERSISTÉ dans
+// le world). Puis les inventaires sont vidés (RCON `clear`, armure portée comprise) : au respawn,
+// `autonomous_resume` repart sur iron_help — dont le 1er but `help_pick` (« pioche capable de miner
+// le fer ») lance l'expédition de récupération de pioche (demande de bois 4 min, trajet /home safe,
+// explore…) au lieu de la chaîne normale bûches → planches → table → pioche bois. 15 min en boucle
+// `pick_recovery:no_wood` → timeout → mort → re-help_pick. Cause : `nextObjectiveAfter` ne route
+// QUE vers l'avant, aucun chemin ne ramenait un bot à iron_armor (même angle mort que #61 bis : une
+// pièce d'armure perdue après le passage sur ces objectifs ne se reforgeait que par le timer).
+// Règle : les objectifs qu'on n'atteint qu'APRÈS l'armure fer (aide, armure des cartographes) exigent
+// l'armure fer couverte (portée ou en poche) ; sinon on repart sur iron_armor, dont la chaîne contient
+// tout le démarrage. `diamond` n'en fait pas partie : il peut être lancé directement, sans armure.
+const POST_IRON_ARMOR_OBJECTIVES = new Set(['iron_help', 'mapper_armor']);
+/** PUR — objectif à lancer vraiment : `iron_armor` si l'objectif persisté suppose une armure qu'on n'a plus. */
+function objectiveForStart(objective, ctx) {
+  if (!POST_IRON_ARMOR_OBJECTIVES.has(objective) || !ctx || !ctx.inv) return objective;
+  return IA(ctx) ? objective : 'iron_armor';
+}
+
 function chainFor(objective) {
   if (objective === 'diamond') return DIAMOND_CHAIN;
   if (objective === 'iron_help') return IRON_HELP_CHAIN;
@@ -813,5 +833,5 @@ function firstUnmet(chain, ctx, skip) {
 }
 
 module.exports = {
-  BED_GOAL, nextObjectiveAfter, chainAfterDone, CHAIN_EMPTY_WINDOW_MS, CHAIN_BASE_DELAY_MS, CHAIN_BACKOFF_MS, CHAIN_FALLBACK,
+  BED_GOAL, nextObjectiveAfter, chainAfterDone, objectiveForStart, POST_IRON_ARMOR_OBJECTIVES, CHAIN_EMPTY_WINDOW_MS, CHAIN_BASE_DELAY_MS, CHAIN_BACKOFF_MS, CHAIN_FALLBACK,
   IRON_HELP_CHAIN, HELP_STOCK, MAPPER_ARMOR_CHAIN, LUMBERJACK_CHAIN, GIFT_SET_INGOTS, DIAMOND_TARGET, hasShield, posableCount, hasSword, hasAxe, buildCtxInv, invCount, anyLog, anyPlanks, MVP_CHAIN, IRON_CHAIN, DIAMOND_CHAIN, IRON_ARMOR_CHAIN, DIAMOND_ARMOR_CHAIN, MAPPER_KIT, chainFor, firstUnmet, armorNeed, armorWornOk, wantsOpportunisticArmor, ARMOR_FORGE_OBJECTIVES };

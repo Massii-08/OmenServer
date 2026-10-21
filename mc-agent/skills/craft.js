@@ -123,6 +123,40 @@ async function _awaitCraftEffect(bot, itemName, before, sleep) {
   }
 }
 
+// ─── GRILLE 2×2 ET CURSEUR PROPRES (21/10) ────────────────────────────────────────────────────
+// Mesure « zéro → armure » (NethBot2, 21/10) : `crafting_table` → `craft_no_effect` ×4 en 2,5 s puis
+// retry 90 s, avec 9 planches de bouleau et 24 cases vides en poche. Rien ne manquait : le craft
+// partait, le serveur ne rendait rien. Même signature qu'au 20/10 (`stick` → planches : bûches parties,
+// planches nulle part) : deux crafts 2×2, juste après un craft 3×3 interrompu (table abandonnée,
+// téléportation de squad, abri de nuit). Cause plausible (NON prouvée en live — le log ne voit pas la
+// grille) : un objet resté sur le CURSEUR ou dans la GRILLE 2×2 du joueur (cases 1-4, invisibles de
+// `inventory.items()` qui ne lit que 9-44). mineflayer pose alors ses ingrédients PAR-DESSUS : le motif
+// est faux, la case résultat vide, `bot.craft` rend la main sans rien. Le serveur, lui, ne vide cette
+// grille qu'à la FERMETURE de l'inventaire (paquet close_window id 0 — la touche Échap d'un joueur) ;
+// mineflayer ne l'envoie jamais pour l'inventaire du joueur. D'où : (1) avant un craft, grille/curseur
+// encombrés côté local → on ferme l'inventaire ; (2) après un `craft_no_effect`, même remise à zéro
+// (l'état peut n'être faux que côté serveur) et UNE seconde tentative, jamais plus.
+// Jamais quand une AUTRE fenêtre est ouverte (four en cours, coffre) : on ne la ferme pas sous un autre.
+const GRID_RESET_SETTLE_MS = 400;   // le temps que le serveur renvoie les cases rendues
+
+/** PUR — ce qui encombre la grille 2×2 du joueur : cases 0-4 occupées (0 = résultat) + curseur. */
+function craftGridLeftovers(inventory) {
+  const out = { slots: [], cursor: false };
+  if (!inventory) return out;
+  const s = inventory.slots;
+  if (Array.isArray(s)) for (let i = 0; i <= 4; i++) if (s[i]) out.slots.push(i);
+  out.cursor = !!inventory.selectedItem;
+  return out;
+}
+
+/** Ferme l'inventaire du joueur (Échap) pour que le serveur rende grille et curseur. true si fait. */
+async function _resetPlayerGrid(bot, sleep) {
+  if (bot.currentWindow || typeof bot.closeWindow !== 'function' || !bot.inventory) return false;
+  try { bot.closeWindow(bot.inventory); } catch (e) { return false; }
+  await sleep(GRID_RESET_SETTLE_MS);
+  return true;
+}
+
 // ─── PLACE POUR LE RÉSULTAT (19/10) ───────────────────────────────────────────────────────────
 // Le remède de fond du cas n°2 ci-dessus, l'inventaire PLEIN. `putSelectedItemRange` (mineflayer)
 // fusionne le résultat dans les piles NON PLEINES du même item, puis dans la 1re case vide — et sans
@@ -338,15 +372,32 @@ async function craftItem(bot, { name, count = 1, _fixPlanks = true, _sleep, _fre
   // De la place pour le résultat AVANT de crafter (inventaire plein → mineflayer le jetterait au sol).
   const tossed = await _makeRoom(bot, id, produced, recipes[0], count);
   if (tossed) freed.push(tossed);
-  // Lu AVANT le craft — un stock préexistant ne doit pas passer pour un effet.
-  const before = _countOf(bot, produced);
-  try { await bot.craft(recipes[0], count, table || undefined); }
-  catch (e) { return done({ ok: false, reason: 'craft_failed' }); }
-  // Inventaire illisible (vieux stub partiel) : rien à constater, contrat historique `{ok:true}`.
-  if (before === null) return done({ ok: true });
-  return done((await _awaitCraftEffect(bot, produced, before, sleep))
-    ? { ok: true }
-    : { ok: false, reason: 'craft_no_effect' });
+  // Grille 2×2 / curseur encombrés AVANT de crafter → Échap (cf. « GRILLE 2×2 ET CURSEUR PROPRES »).
+  let reset = false;
+  const left = craftGridLeftovers(bot.inventory);
+  if (left.slots.length || left.cursor) reset = await _resetPlayerGrid(bot, sleep);
+  const withReset = (r) => (reset ? Object.assign({}, r, { gridReset: true }) : r);
+  const attempt = async () => {
+    // Lu AVANT le craft — un stock préexistant ne doit pas passer pour un effet.
+    const before = _countOf(bot, produced);
+    try { await bot.craft(recipes[0], count, table || undefined); }
+    catch (e) { return { ok: false, reason: 'craft_failed' }; }
+    // Inventaire illisible (vieux stub partiel) : rien à constater, contrat historique `{ok:true}`.
+    if (before === null) return { ok: true };
+    return (await _awaitCraftEffect(bot, produced, before, sleep))
+      ? { ok: true }
+      : { ok: false, reason: 'craft_no_effect' };
+  };
+  let r = await attempt();
+  // Aucun effet : remise à zéro de la grille côté serveur puis UNE seconde tentative (jamais plus —
+  // une désync qui survit à l'Échap n'est pas de ce ressort, le planner a ses propres bornes).
+  if (!r.ok && r.reason === 'craft_no_effect' && await _resetPlayerGrid(bot, sleep)) {
+    reset = true;
+    const recipes2 = bot.recipesFor(id, null, 1, table) || [];
+    if (!recipes2.length && !table) recipes2.push(...(bot.recipesFor(id, null, 1, null) || []));
+    if (recipes2.length) { recipes[0] = recipes2[0]; r = await attempt(); }
+  }
+  return done(withReset(r));
 }
 
 // Décision PURE : que faire quand un craft 3×3 a échoué ?
@@ -371,5 +422,5 @@ function tablePlan({ tableInReach = false, tableSeen = false, hasTableItem = fal
 
 module.exports = {
   craftItem, _nearestTable, tableKey, tablePlan, TABLE_REACH, TABLE_SEEK, EFFECT_POLL_MS, EFFECT_TIMEOUT_MS,
-  pickJunkToToss, needsRoomFor, COBBLE_KEEP, JUNK_TIERS,
+  pickJunkToToss, needsRoomFor, COBBLE_KEEP, JUNK_TIERS, craftGridLeftovers, GRID_RESET_SETTLE_MS,
 };

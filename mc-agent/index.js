@@ -53,7 +53,7 @@ const { equipItem, eat } = require('./skills/equip');
 const { loiter } = require('./skills/loiter');
 const fs = require('fs');
 const { runPlanner } = require('./planner');
-const { chainFor, buildCtxInv, firstUnmet, armorNeed, chainAfterDone, wantsOpportunisticArmor, GIFT_SET_INGOTS } = require('./goals');
+const { chainFor, buildCtxInv, firstUnmet, armorNeed, chainAfterDone, wantsOpportunisticArmor, GIFT_SET_INGOTS, objectiveForStart } = require('./goals');
 const { isForbiddenCheat } = require('./nogive');
 const homewarp = require('./homewarp'); // couche warp LÉGITIME sans-give (/sethome+/home ; goSpawn=/home safe)
 const { secureSpot } = require('./skills/secureSpot'); // secure-then-warp : pilier/se murer/flotter AVANT le /home
@@ -159,7 +159,7 @@ const { createTeleportWatcher, wireTeleportDetection } = require('./teleport');
 const { isNight, shelterUntilDawn, shouldShelter, DAWN_WAIT_MAX_MS, DAWN_SAFE_EXIT_MAX_MS } = require('./skills/shelter');
 // LIT (20/10) : réapparaître dans sa base, pas au spawn du monde campé — cf. bed.js.
 const { bedItemIn, bedRecipeName, woolMissing, sheepKnown, bedMemoWith, bedMemoCleared, bedRetryMemo, bedOf, bedRetryActive,
-  bedSpotPlan, parseBedMessage, sleepErrorReason, sleepDecision, isBedName } = require('./bed');
+  bedSpotPlan, parseBedMessage, sleepErrorReason, sleepDecision, isBedName, BED_HUNT_BUDGET_MS } = require('./bed');
 const { maybeRunKit } = require('./kit');   // survie mappeur : /kit serveur au démarrage/respawn (décision pure)
 const { needDirtBuffer } = require('./dirt');   // survie mappeur : buffer de blocs posables pour sceller l'abri
 const { panicWall } = require('./skills/panicWall');
@@ -1879,6 +1879,45 @@ const _badTables = createExpiringSet({ ttlMs: 30 * 60 * 1000 });
 // ⚠️ findBlock(6) > portée d'interaction (~4.5) : une table « proche » peut être INATTEIGNABLE (jungle :
 // posée sous la canopée pendant que le bot est dans l'arbre) → on s'en APPROCHE d'abord ; si le craft
 // échoue quand même, on pose une table portable en fallback (vu live MapT1 : stall wooden_pickaxe ×4).
+/**
+ * Table ABANDONNÉE en vue (≤ TABLE_SEEK, hors liste noire) : aller la REPRENDRE. Rend true/false = table
+ * en poche après la tentative, null = aucune table candidate. `blacklist(pos, why)` marque une reprise
+ * ratée. Partagé par withCraftingTable (branche `recycle`) et par le but `crafting_table` (21/10).
+ */
+async function recycleNearbyTable(blacklist) {
+  const litter = _nearestTable(bot, TABLE_SEEK, { exclude: _badTables });
+  if (!litter) return null;
+  try {
+    if (bot.entity.position.distanceTo(litter.position) > 3) {
+      await withTimeout(
+        bot.pathfinder.goto(new pfGoals.GoalNear(litter.position.x, litter.position.y, litter.position.z, 2)),
+        30000, () => { try { stopMotion(); } catch (e) {} }
+      );
+    }
+    await reclaimBlock(litter.position);
+  } catch (e) { /* pas de chemin → on retombe sur la fabrication */ }
+  // `reclaimBlock` ne LÈVE jamais (il avale ses échecs et n'émet que `reclaim_failed`) : le seul
+  // moyen de savoir que la reprise a raté est de regarder si la table est TOUJOURS là. Si oui elle
+  // est inutilisable (hors de portée, incassable…) → liste noire, sinon on la retenterait — 30 s de
+  // marche + 2 reprises ratées — à chaque craft suivant.
+  try {
+    const left = bot.blockAt(litter.position);
+    if (left && left.name === 'crafting_table') blacklist(litter.position, 'reclaim_failed');
+  } catch (e) { /* best-effort */ }
+  const ok = ((bot.inventory && bot.inventory.items()) || []).some((i) => i.name === 'crafting_table');
+  emit({ type: 'table_recycled', ok });
+  return ok;
+}
+
+/** Liste noire des tables inutilisables (un event par table). Niveau module : partagé. */
+function blacklistBadTable(pos, why) {
+  try {
+    if (!pos || _badTables.has(tableKey(pos))) return;
+    _badTables.add(tableKey(pos));
+    emit({ type: 'table_blacklisted', why, x: pos.x, y: pos.y, z: pos.z });
+  } catch (e) { /* best-effort : l'observabilité ne doit jamais casser un craft */ }
+}
+
 async function withCraftingTable(fn) {
   // On CHERCHE loin (TABLE_SEEK) puis on marche jusqu'à la table : réutiliser une table déjà
   // posée évite d'en semer une nouvelle à chaque craft. Avec l'ancien rayon de 6, une table à
@@ -1887,13 +1926,7 @@ async function withCraftingTable(fn) {
                          // `table_present` a fait pointer 3 h de logs vers la table alors que
                          // la vraie cause était `no_recipe`, run world_mn14)
   // Marque une table INUTILISABLE : liste noire + UN event par table (pas un par tentative).
-  const blacklistTable = (pos, why) => {
-    try {
-      if (!pos || _badTables.has(tableKey(pos))) return;
-      _badTables.add(tableKey(pos));
-      emit({ type: 'table_blacklisted', why, x: pos.x, y: pos.y, z: pos.z });
-    } catch (e) { /* best-effort : l'observabilité ne doit jamais casser un craft */ }
-  };
+  const blacklistTable = blacklistBadTable;
   const t = _nearestTable(bot, TABLE_SEEK, { exclude: _badTables });
   if (t) {
     try {
@@ -1934,28 +1967,8 @@ async function withCraftingTable(fn) {
   // Table ABANDONNÉE en vue (une mort ou un timeout a coupé le cycle avant la reprise) : aller
   // la REPRENDRE plutôt que d'en fabriquer une neuve → le terrain se nettoie au lieu de se joncher.
   if (plan === 'recycle') {
-    const litter = _nearestTable(bot, TABLE_SEEK, { exclude: _badTables });
-    if (litter) {
-      try {
-        if (bot.entity.position.distanceTo(litter.position) > 3) {
-          await withTimeout(
-            bot.pathfinder.goto(new pfGoals.GoalNear(litter.position.x, litter.position.y, litter.position.z, 2)),
-            30000, () => { try { stopMotion(); } catch (e) {} }
-          );
-        }
-        await reclaimBlock(litter.position);
-      } catch (e) { /* pas de chemin → on retombe sur la fabrication */ }
-      // `reclaimBlock` ne LÈVE jamais (il avale ses échecs et n'émet que `reclaim_failed`) : le seul
-      // moyen de savoir que la reprise a raté est de regarder si la table est TOUJOURS là. Si oui elle
-      // est inutilisable (hors de portée, incassable…) → liste noire, sinon on la retenterait — 30 s de
-      // marche + 2 reprises ratées — à chaque craft suivant.
-      try {
-        const left = bot.blockAt(litter.position);
-        if (left && left.name === 'crafting_table') blacklistTable(litter.position, 'reclaim_failed');
-      } catch (e) { /* best-effort */ }
-      hasTableItem = ((bot.inventory && bot.inventory.items()) || []).some((i) => i.name === 'crafting_table');
-      emit({ type: 'table_recycled', ok: hasTableItem });
-    }
+    const got = await recycleNearbyTable(blacklistTable);
+    if (got !== null) hasTableItem = got;
   }
   if (!hasTableItem) {
     // Re-craft 2×2 (4 planks). Planks manquantes mais BÛCHES en poche → planches d'abord
@@ -2048,6 +2061,14 @@ async function _craftPrereqs(args) {
 }
 
 async function _craftSmartRaw(args) {
+  // TABLE : en reprendre une posée AVANT d'en fabriquer une (21/10, NethBot2 : table du four abandonnée
+  // à 1-2 blocs — `reclaim_failed` — puis le but `crafting_table` re-crafte en boucle sans effet). Le
+  // but veut une table EN POCHE : une table posée et reprenable la donne sans planche ni craft.
+  if (args && args.name === 'crafting_table'
+      && !((bot.inventory && bot.inventory.items()) || []).some((i) => i.name === 'crafting_table')) {
+    const got = await recycleNearbyTable(blacklistBadTable);
+    if (got) return { ok: true, recycled: true };
+  }
   const pre = await _craftPrereqs(args);
   if (pre) return pre;
   const r = await craftItem(bot, args);
@@ -3355,6 +3376,7 @@ function bedCtxNow() {
   return {
     bedPlaced: !!bedOf(memo),
     bedRetryLater: bedRetryActive(memo, now),
+    nightLockdown: (() => { try { return !!nightLockdownNow(); } catch (err) { return false; } })(),
     sheepNear: sheepKnown({ seenNow, last: _bedLastSheep, pos: pos ? { x: pos.x, z: pos.z } : null, now }),
   };
 }
@@ -3432,8 +3454,10 @@ async function ensureBedGoal() {
   let bedName = bedItemIn(inv);
   if (!bedName) {
     let tries = 0;
+    const huntT0 = Date.now();
     while (woolMissing(inv) > 0 && tries < 6) {
       if (tok.cancelled) return { ok: false, reason: 'cancelled' };
+      if (Date.now() - huntT0 > BED_HUNT_BUDGET_MS) break;    // budget épuisé → no_wool, retry dans 10 min
       tries++;
       const r = await huntPassive(bot, { count: 1, maxDistance: BED_SHEEP_HUNT_RADIUS, names: ['sheep'] }, tok);
       if (!r || !r.kills) break;
@@ -7696,7 +7720,13 @@ async function startResource() {
 // Lance (ou relance) la boucle autonome ; le planner re-dérive depuis l'état courant.
 async function startAutonomous(sender) {
   // objectif : depuis le world (seedé par le backend/launch), sinon --objective, sinon pioche pierre.
-  const objType = (world.objective && world.objective.type) || args.objective || 'stone_pickaxe';
+  let objType = (world.objective && world.objective.type) || args.objective || 'stone_pickaxe';
+  // Objectif persisté d'APRÈS l'armure (iron_help, mapper_armor) mais armure disparue (inventaire vidé,
+  // pièces cassées) → on repart sur iron_armor et sa chaîne de démarrage (21/10, cf. goals.objectiveForStart).
+  try {
+    const back = objectiveForStart(objType, { inv: buildCtxInv(bot), worn: [..._wornArmor()] });
+    if (back !== objType) { emit({ type: 'objective_regressed', from: objType, to: back }); objType = back; }
+  } catch (e) { /* best-effort : objectif inchangé */ }
   setObjective(world, { type: objType, status: 'in_progress' });
   saveWorld(worldFile, world);
   taskToken = taskCtl.begin('autonomous', stopMotion);

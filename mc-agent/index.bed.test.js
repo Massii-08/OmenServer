@@ -67,6 +67,7 @@ function sandbox(bot, extra = {}) {
     isNight: (b) => b.time.timeOfDay >= 13000,
     buildCtxInv: (b) => Object.assign({}, b._inv),
     taskToken: { cancelled: false },
+    nightLockdownNow: () => sb.lockdown === true,   // 21/10 : but `bed` sauté la nuit (bot nu)
     homewarp: { goHome() { return false; } }, HOME_SAFE: 'safe', _safeHomeSet: false,
     awaitWarp: async () => ({ warped: false }),
     huntPassive: async () => ({ ok: false, kills: 0 }),
@@ -97,7 +98,10 @@ test('bedCtxNow : mouton vu → sheepNear et mémorisé ; plus vu mais récent e
 
 test('bedCtxNow : lit posé et essai raté lus dans le MÉMO DE BASE (survivent au respawn)', () => {
   const sb = sandbox(makeBot());
-  assert.deepStrictEqual({ ...sb.bedCtxNow() }, { bedPlaced: false, bedRetryLater: false, sheepNear: false });
+  assert.deepStrictEqual({ ...sb.bedCtxNow() }, { bedPlaced: false, bedRetryLater: false, nightLockdown: false, sheepNear: false });
+  sb.lockdown = true;
+  assert.strictEqual(sb.bedCtxNow().nightLockdown, true);
+  sb.lockdown = false;
   sb.memo = B.bedRetryMemo({ base: { x: 0, y: 64, z: 0 } }, sb.now);
   assert.strictEqual(sb.bedCtxNow().bedRetryLater, true);
   sb.memo = B.bedMemoWith(sb.memo, { x: 1, y: 64, z: 0 }, sb.now);
@@ -229,4 +233,14 @@ test('index.js : le lit est BRANCHÉ (abri de nuit, planner, ctxExtra, messages 
   assert.match(SRC, /ensureBed: 240000/);
   // niveau MODULE (piège #56) : lus par ctxExtra, le handler messagestr et l'abri de nuit
   for (const v of ['_bedLastSheep', '_bedLastMsg', '_bedSleeping']) assert.match(SRC, new RegExp(`^let ${v} = `, 'm'), v);
+});
+
+test('ensureBedGoal : chasse BORNÉE dans le temps (21/10) — 60 s par mouton sans laine → arrêt après 90 s, no_wool', async () => {
+  const bot = makeBot({ inv: { oak_planks: 3 } });
+  let hunts = 0;
+  const sb = sandbox(bot, { huntPassive: async () => { hunts++; sb.now += 60000; return { ok: true, kills: 1 }; } });
+  const r = await sb.ensureBedGoal();
+  assert.strictEqual(r.ok, false);
+  assert.strictEqual(r.reason, 'bed:no_wool');
+  assert.strictEqual(hunts, 2, '2 chasses (120 s > budget 90 s) au lieu de 6');
 });
