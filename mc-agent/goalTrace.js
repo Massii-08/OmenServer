@@ -25,7 +25,14 @@
 
 const UNKNOWN = '(inconnu)';
 const OVERFLOW = '(autres)';
-const OWN_FILE = 'goalTrace.js';                       // nos propres frames (wrapper) ne sont jamais « l'appelant »
+// Fichiers 100% passe-plats : jamais « l'appelant ». goalTrace.js = notre propre wrapper ; goalHold.js
+// (verrou de but, posé PAR-DESSUS goalTrace depuis le 20/10 — cf. index.js "VERROU DE BUT … posé
+// PAR-DESSUS goalTrace") = son `held` relaie INCONDITIONNELLEMENT vers nous (`orig.apply`), donc SA
+// frame était systématiquement la première rencontrée → tout s'attribuait à "Object.held@goalHold.js:40"
+// quel que soit le vrai appelant (mesuré en prod 21/10, NethBot1/MapBot1 : 100% des lignes `goal_trace`
+// pointaient sur goalHold.js). Le diagnostic « qui me vole mon but » (cf. en-tête du fichier) ne disait
+// plus rien d'utile depuis cette date.
+const PASSTHROUGH_FILES = new Set(['goalTrace.js', 'goalHold.js']);
 // Passe-plats vers setGoal(null) : index.js ET skills/branchMine.js ont chacun leur `stopMotion`. Ce qu'on
 // veut savoir, c'est QUI l'a appelé (il y en a ~90 sites), pas qu'il a lui-même appelé setGoal.
 const SKIP_FUNCTIONS = new Set(['stopMotion']);
@@ -96,7 +103,7 @@ function callerFromStack(stack) {
   for (const raw of stack.split(/\r?\n/)) {
     const f = parseFrame(raw);
     if (!f || !f.file) continue;                       // en-tête d'erreur, ou plomberie V8 (new Promise…)
-    if (baseOf(f.file) === OWN_FILE) continue;         // le wrapper lui-même
+    if (PASSTHROUGH_FILES.has(baseOf(f.file))) continue; // notre wrapper, ou le verrou goalHold posé par-dessus
     if (SKIP_FUNCTIONS.has(f.bare)) continue;          // passe-plats : on veut l'appelant de stopMotion
     const lib = libOf(f.file);
     if (lib) {

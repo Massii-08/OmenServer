@@ -67,6 +67,28 @@ test('stopMotion avec receveur (Object.stopMotion) et celui de skills/branchMine
   assert.equal(callerFromStack(s), 'approach@branchMine.js:88');
 });
 
+test('goalHold (verrou de but, posé PAR-DESSUS goalTrace) est sauté : on rend le VRAI appelant, pas "held"', () => {
+  // Pile réelle relevée en prod (NethBot1/MapBot1, 21/10) : depuis que goalHold.js enveloppe
+  // setGoal PAR-DESSUS goalTrace, CHAQUE appel passe par son passe-plats `held` (goalHold.js:40,
+  // `return orig.apply(this, arguments)`) avant d'atteindre notre wrapper — qui attribuait alors
+  // TOUT, sans exception, à "Object.held@goalHold.js:40" au lieu du vrai appelant. Le diagnostic
+  // censé dire « qui me vole mon but » (cf. en-tête du fichier) ne disait plus rien d'utile.
+  const s = stack(
+    `Object.held (${MC}/goalHold.js:40:12)`,
+    `explore (${MC}/skills/explore.js:210:15)`,
+  );
+  assert.equal(callerFromStack(s), 'explore@explore.js:210');
+});
+
+test('goalHold via son propriétaire (holdSetGoal, fuite creeper) : sauté aussi, on remonte au code qui pose le verrou', () => {
+  const s = stack(
+    `Object.held (${MC}/goalHold.js:40:12)`,
+    `holdSetGoal (${MC}/goalHold.js:50:44)`,
+    `fleeNow (${MC}/index.js:3201:5)`,
+  );
+  assert.equal(callerFromStack(s), 'fleeNow@index.js:3201');
+});
+
 test('goto via le VRAI pathfinder : frames mineflayer-pathfinder + new Promise sautées → la fonction qui a lancé le goto', () => {
   // Pile réelle relevée avec le plugin mineflayer-pathfinder 2.4.5 injecté sur un faux bot.
   const s = stack(
