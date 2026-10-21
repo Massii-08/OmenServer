@@ -100,3 +100,18 @@ test('backoff : la matière change → levé immédiatement ; ok() efface', () =
   B.ok('x');
   assert.strictEqual(B.size(), 0);
 });
+
+// MapBot2 (session-113, 22/10) : `goal_failed name:planks reason:unknown_item` ×8 en boucle serrée.
+// `logBase` est déjà testé en PRIVÉ via planIntermediates (cf. test mushroom_stem/stripped_oak_log
+// plus haut) mais n'était pas exporté → le dispatcher de index.js (goal.skill==='craftPlanks')
+// réimplémentait sa propre recherche de bûche en `.endsWith('_log')` NU, sans exclure `stripped_*`,
+// et nommait la planche par simple `.replace('_log','_planks')` → `stripped_birch_boat`/`_planks`
+// n'existent PAS comme items (minecraft-data), boucle infinie. `logBase` exporté = la seule vraie
+// essence convertible, prête à être branchée là où c'est encore fait à la main.
+test('logBase exporté : exclut stripped_* et mushroom_stem, gère _log et _stem', () => {
+  assert.strictEqual(P.logBase('birch_log'), 'birch');
+  assert.strictEqual(P.logBase('crimson_stem'), 'crimson');
+  assert.strictEqual(P.logBase('stripped_birch_log'), null);
+  assert.strictEqual(P.logBase('mushroom_stem'), null);
+  assert.strictEqual(P.logBase('cobblestone'), null);
+});

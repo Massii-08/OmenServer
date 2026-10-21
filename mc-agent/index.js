@@ -46,7 +46,7 @@ const { mineDown } = require('./skills/mineDown');
 const { guard } = require('./skills/guard');
 const { giveItem, giveAll } = require('./skills/give');
 const { craftItem } = require('./skills/craft');
-const { planIntermediates, craftSignature, createCraftBackoff } = require('./craftPlan');
+const { planIntermediates, craftSignature, createCraftBackoff, logBase } = require('./craftPlan');
 const { respawnFleePlan, fleeStuck, RESPAWN_FLEE_LEGS, RESPAWN_FLEE_LEG_MS, RESPAWN_STUCK_MS } = require('./respawnFlee');
 const { deposit } = require('./skills/deposit');
 const { equipItem, eat } = require('./skills/equip');
@@ -2886,11 +2886,14 @@ async function runGoalSkill(goal) {
     finally { _exploreBusy = false; }
   }
   if (goal.skill === 'craftPlanks') {
-    const log = bot.inventory.items().find((i) => i.name.endsWith('_log'));
+    // logBase exclut les bûches écorcées (stripped_*) : minecraft-data n'a aucune recette
+    // stripped_X_log → X_planks, les nommer ainsi crafte un item INEXISTANT (unknown_item,
+    // boucle infinie — vécu live MapBot2 session-113/108, cf. craftPlan.test.js).
+    const log = bot.inventory.items().find((i) => logBase(i.name));
     if (!log) return { ok: false, reason: 'not_found' };
     // ne pas sur-demander : convertir au plus le nb de bûches de cette essence (sinon bot.craft throw)
     const same = bot.inventory.items().filter((i) => i.name === log.name).reduce((s, i) => s + i.count, 0);
-    return craftItem(bot, { name: log.name.replace('_log', '_planks'), count: Math.min(goal.args.count || 1, same) });
+    return craftItem(bot, { name: logBase(log.name) + '_planks', count: Math.min(goal.args.count || 1, same) });
   }
   if (goal.skill === 'craft') {
     // torches : adapter le nb de lots au charbon disponible (1 charbon → 1 lot de 4 au lieu d'un

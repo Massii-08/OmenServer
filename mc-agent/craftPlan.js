@@ -199,6 +199,6 @@ function createCraftBackoff({ baseMs = BACKOFF_BASE_MS, maxMs = BACKOFF_MAX_MS }
 }
 
 module.exports = {
-  planIntermediates, craftSignature, createCraftBackoff, toCounts,
+  planIntermediates, craftSignature, createCraftBackoff, toCounts, logBase: _logBase,
   RECIPES, PLANKS_PER_LOG, STICKS_PER_CRAFT, TABLE_PLANKS, BACKOFF_BASE_MS, BACKOFF_MAX_MS,
 };
