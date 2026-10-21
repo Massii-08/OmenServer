@@ -469,6 +469,28 @@ test('index.js : les secours qui ont un REPLI le prennent quand le home est camp
   assert.match(grab(/^async function onSpawn\(\) \{[\s\S]*?^\}$/m, 'onSpawn'), /poseSafeHomeAtSpawn\(\);/);
 });
 
+// ⚠️ Mesure live (MapBot1, 22/10 00:36-00:52) : 3 morts en 10 min + `goal_failed name:'logs'
+// reason:'not_found'` ×16 en rafales de ~30 ms (0 waypoint, 0 attendu réel) pendant une séquence de
+// `death_camp_ban`/`death_camp_flee` répétée — le MAPPER_KIT cherchait du bois (gatherLog→explore)
+// EXACTEMENT quand le watchdog 1 s déclenchait `fleeDeathCamp` en fire-and-forget (`.catch(()=>{})`,
+// jamais attendu par onSpawn). `escapeDeathCamp` (verdict 'escape') s'annonce (`_escaping`,
+// `_escapeGen`) ET coupe proprement la tâche en cours (`taskCtl.cancel()`) avant de toucher le
+// pathfinder ; `fleeDeathCamp` (déclenché par `death_camp_ban`, l'AUTRE chemin vers le même but : fuir
+// la zone) ne faisait NI L'UN NI L'AUTRE — son `stopMotion()` + `bot.pathfinder.goto(...)` coupait le
+// goto du kit EN PLEIN VOL sans le prévenir, le laissant échouer en rafale au lieu de voir un `token.
+// cancelled` propre (même famille que #72a : une routine de timer qui se bat avec le planner pour le
+// pathfinder, déjà corrigée ailleurs — mais pas ici).
+test('index.js : fleeDeathCamp annule proprement la tâche en cours avant de prendre le pathfinder (comme escapeDeathCamp)', () => {
+  const f = fnSrc('fleeDeathCamp');
+  const cancelAt = f.indexOf('taskCtl.cancel()');
+  assert.ok(cancelAt >= 0, 'fleeDeathCamp doit annuler taskCtl AVANT de bouger (sinon le kit en vol subit le goto sans le savoir)');
+  const stopAt = f.indexOf('stopMotion()');
+  const gotoAt = f.indexOf('bot.pathfinder.goto(');
+  assert.ok(cancelAt < stopAt && stopAt < gotoAt, 'ordre : cancel puis stop puis goto (même ordre qu`escapeDeathCamp)');
+  assert.match(f, /_escaping = true;/, 'annoncé busy pour les gardes confine/squad (même famille que _exploreBusy/_foodTripBusy)');
+  assert.match(f, /finally \{[^}]*_escaping = false;[^}]*\}/, 'le verrou est rendu même si la fuite échoue/throw');
+});
+
 // ═════════════════════════════ /spawnpoint : jamais dans un camp (run 10, 20/10) ═══════════════════
 test('anchorSpawnpoint : au cœur du camp du spawn → AUCUN /spawnpoint, event spawnpoint_vetoed (camped)', () => {
   const sb = glue({ disk: { memo: campedMemo() } });

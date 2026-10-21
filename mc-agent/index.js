@@ -559,7 +559,16 @@ async function fleeDeathCamp(fromPos) {
   const tx = Math.round(fromPos.x + Math.cos(ang) * 90);
   const tz = Math.round(fromPos.z + Math.sin(ang) * 90);
   emit({ type: 'death_camp_flee', via: 'foot', x: tx, z: tz });
+  // Mesure live (MapBot1, 22/10) : ce watchdog est fire-and-forget (appelé sans await depuis le
+  // timer 1 s, `.catch(()=>{})`) — sans s'annoncer, la coupure du mouvement suivie d'une nouvelle
+  // destination pathfinder arrivait en plein vol du `gather(explore:true)` du kit (bois), qui
+  // subissait le reset du pathfinder SANS voir `token.cancelled` → rafales de `goal_failed logs
+  // not_found` en ~30 ms au lieu d'un échec propre.
+  // Même remède qu'`escapeDeathCamp` : on annule la tâche en cours ET on s'annonce busy (même
+  // famille que `_exploreBusy`/`_foodTripBusy`, lue par les gardes confine/squad) AVANT de bouger.
+  try { taskCtl.cancel(); } catch (e) {}
   try { stopMotion(); } catch (e) {}
+  _escaping = true;
   try {
     // But XZ : l'altitude à 90 blocs est INCONNUE. L'ancien GoalNear(tx, y_du_camp, tz, 4) était une
     // sphère 3D inatteignable sur relief → NoPath instantané, `withTimeout` l'avale en silence et le bot
@@ -568,6 +577,7 @@ async function fleeDeathCamp(fromPos) {
     await withTimeout(bot.pathfinder.goto(new pfGoals.GoalNearXZ(tx, tz, 4)),
       90000, () => { try { stopMotion(); } catch (e) {} });
   } catch (e) { /* best-effort */ }
+  finally { _escaping = false; }
 }
 
 // CAMP DE BASE (brique 3 v1, Massii 16/07) : à l'ancre, poser un FOUR (fixe, jamais reclaim —
