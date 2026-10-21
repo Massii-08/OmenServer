@@ -56,10 +56,16 @@ def test_le_heap_node_est_plafonne(monkeypatch):
     assert flags, f"aucun plafond de heap dans la commande : {cmd}"
     mb = int(flags[0].split("=", 1)[1])
     assert 256 <= mb <= 1536, f"plafond irréaliste ({mb} Mo)"
-    # Relevé le 28/07 (#56 : serveur MC déménagé sur Minestrator → l'Omen n'a plus que les bots)
-    # pour donner de la marge aux épisodes turbulents (cache de colonnes mineflayer) et casser le
-    # crash-loop OOM. En dessous de 1024, on retombe sur l'ancien plafond « anti-co-location ».
-    assert mb >= 1024, f"plafond trop bas depuis l'offload MC ({mb} Mo) — cf. #48/#56"
+    # Relevé le 21/10 (veille autonome) : le banc d'essai LOCAL de ce dépôt fait de nouveau
+    # tourner le serveur MC CO-LOCALISÉ sur cette même machine (conteneur docker
+    # omen-minecraft-trusted-test, mesuré 6,1/8,5 Go = 71 % le 21/10 20:51) — la prémisse du
+    # plafond 1024 (#56, "l'Omen n'héberge plus que les bots, ~8 Go libres") ne tient plus pour
+    # ce banc. Sous ce plafond, 48 sessions ont crashé en "JavaScript heap out of memory" sur
+    # 10-20/10-21 (≈15 % des sessions du jour), y compris des bots CALMES (aucune mort, aucun
+    # téléport) OOM en 86-102 s — un plafond haut n'a pas évité ces crashs, il a seulement laissé
+    # la machine (swap 4/4 Go plein) pousser plus loin avant de les détecter. On revient au
+    # plafond "anti-co-location" d'origine (#48).
+    assert mb <= 768, f"plafond trop haut pour une MC co-localisée sur cette machine ({mb} Mo) — cf. #48/#56"
 
 
 def test_le_plafond_precede_le_script(monkeypatch):
