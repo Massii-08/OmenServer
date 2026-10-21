@@ -11,7 +11,7 @@
 // Un minerai isolé ne vaut pas le déplacement ; une GRAPPE (≥ 3 minerais à ≤ 6 blocs les uns des
 // autres) signe une paroi de grotte. On choisit la grappe la plus RENTABLE :
 //     score = minerais secs / (distance + pénalité de profondeur)
-// et on exclut : trop loin (> 200 blocs), hors de la zone de confinement, réservée par un
+// et on exclut : trop loin (> 80 blocs), hors de la zone de confinement, réservée par un
 // coéquipier (claim `cave:<cellule>`), tentée en échec il y a moins de 30 min (mémo de base
 // persisté), ou noyée (part de minerais `wet` ≥ 1/3 — on ne descend pas dans une grotte inondée).
 //
@@ -21,7 +21,10 @@
 const IRON_ORES = new Set(['iron_ore', 'deepslate_iron_ore']);
 const CAVE_LINK = 6;                     // blocs : deux minerais plus proches appartiennent à la même paroi
 const CAVE_MIN_ORES = 3;                 // en dessous, ce n'est pas une grotte rentable
-const CAVE_MAX_DIST = 200;               // blocs
+const CAVE_MAX_DIST = 80;                // blocs (mesuré : à 170-190 blocs, 70 cibles sur 81 `unreachable`)
+const CAVE_UNREACH_STREAK = 3;           // disjoncteur : 3 échecs `unreachable`…
+const CAVE_UNREACH_WINDOW_MS = 15 * 60 * 1000;   // …en moins de 15 min…
+const CAVE_COOLDOWN_MS = 20 * 60 * 1000;         // …=> plus de cible pendant 20 min (branch-mine habituel)
 const CAVE_FAIL_TTL_MS = 30 * 60 * 1000; // une grappe ratée n'est pas re-tentée avant 30 min
 const CAVE_FAIL_NEAR = 8;                // une grappe dont le centre est à ≤ 8 blocs d'un essai raté = la même
 const CAVE_FAILS_CAP = 40;
@@ -136,6 +139,21 @@ function caveFailsAdd(fails, cave, why, now) {
   return kept.slice(-CAVE_FAILS_CAP);
 }
 
+/**
+ * Disjoncteur : instant (ms) jusqu'auquel plus aucune grappe n'est proposée, ou 0. Déclenché par
+ * CAVE_UNREACH_STREAK échecs `unreachable` consécutifs dans CAVE_UNREACH_WINDOW_MS ; le repos court
+ * CAVE_COOLDOWN_MS à compter du dernier de la série.
+ */
+function caveCooldownUntil(fails, now) {
+  const t = Number.isFinite(now) ? now : Date.now();
+  const at = caveFailsPrune(fails, t).filter((f) => f.why === 'unreachable').map((f) => f.at).sort((a, b) => a - b);
+  let until = 0;
+  for (let i = CAVE_UNREACH_STREAK - 1; i < at.length; i++) {
+    if (at[i] - at[i - (CAVE_UNREACH_STREAK - 1)] <= CAVE_UNREACH_WINDOW_MS) until = Math.max(until, at[i] + CAVE_COOLDOWN_MS);
+  }
+  return until > t ? until : 0;
+}
+
 function _nearFail(center, fails) {
   const n2 = CAVE_FAIL_NEAR * CAVE_FAIL_NEAR;
   return fails.some((f) => (f.x - center.x) ** 2 + (f.y - center.y) ** 2 + (f.z - center.z) ** 2 <= n2);
@@ -156,6 +174,7 @@ function rankIronCaves(ores, from, o = {}) {
   const maxDist = Number.isFinite(o.maxDist) ? o.maxDist : CAVE_MAX_DIST;
   const minOres = Number.isFinite(o.minOres) ? o.minOres : CAVE_MIN_ORES;
   const fails = caveFailsPrune(o.fails, now);
+  if (caveCooldownUntil(fails, now)) return [];
   const isClaimed = typeof o.isClaimed === 'function' ? o.isClaimed : () => false;
   const conf = o.confine && Number.isFinite(o.confine.x) && Number.isFinite(o.confine.radius) ? o.confine : null;
   // Pré-filtre grossier par distance : on ne regroupe pas les minerais de l'autre bout de la carte.
@@ -194,5 +213,6 @@ module.exports = {
   IRON_ORES, CAVE_LINK, CAVE_MIN_ORES, CAVE_MAX_DIST, CAVE_FAIL_TTL_MS, CAVE_FAIL_NEAR, CAVE_CELL,
   DEPTH_K, WET_SHARE_MAX, CAVE_FAILS_CAP,
   isIronOre, exposedIronOres, clusterOres, centroid, caveKey, orderOres,
+  CAVE_UNREACH_STREAK, CAVE_UNREACH_WINDOW_MS, CAVE_COOLDOWN_MS, caveCooldownUntil,
   caveFailsPrune, caveFailsAdd, rankIronCaves, pickIronCave,
 };

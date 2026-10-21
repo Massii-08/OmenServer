@@ -59,9 +59,9 @@ test('pickIronCave : la profondeur pénalise (même distance, grappe en dessous 
   assert.strictEqual(c.y, 64);
 });
 
-test('pickIronCave : > 200 blocs exclu', () => {
-  assert.strictEqual(C.pickIronCave(wall(210, 64, 0, 5), FROM), null);
-  assert.ok(C.pickIronCave(wall(190, 64, 0, 3), FROM));
+test('pickIronCave : > 80 blocs exclu', () => {
+  assert.strictEqual(C.pickIronCave(wall(100, 64, 0, 5), FROM), null);
+  assert.ok(C.pickIronCave(wall(70, 64, 0, 3), FROM));
   assert.strictEqual(C.pickIronCave(wall(100, 64, 0, 5), FROM, { maxDist: 50 }), null);
 });
 
@@ -100,10 +100,10 @@ test('pickIronCave : grotte noyée (≥ 1/3 wet) exclue, wet jamais compté ni v
 });
 
 test('pickIronCave : hors confinement exclu', () => {
-  const a = wall(120, 64, 0, 5);
+  const a = wall(70, 64, 0, 5);
   assert.ok(C.pickIronCave(a, FROM));
-  assert.strictEqual(C.pickIronCave(a, FROM, { confine: { x: 0, z: 0, radius: 100 } }), null);
-  assert.ok(C.pickIronCave(a, FROM, { confine: { x: 100, z: 0, radius: 100 } }));
+  assert.strictEqual(C.pickIronCave(a, FROM, { confine: { x: 0, z: 0, radius: 60 } }), null);
+  assert.ok(C.pickIronCave(a, FROM, { confine: { x: 70, z: 0, radius: 60 } }));
 });
 
 test('pickIronCave : entrées absurdes → null, jamais de throw', () => {
@@ -130,4 +130,24 @@ test('caveFailsPrune/Add : TTL, futur rejeté, plafond', () => {
 
 test('caveKey : cellule 16³ du centre', () => {
   assert.strictEqual(C.caveKey({ x: 17, y: -3, z: 31 }), 'cave:1,-1,1');
+});
+
+test('disjoncteur unreachable : 2 échecs → cible, 3 → null, repos écoulé → cible, autre motif ignoré', () => {
+  const now = 50_000_000;
+  const far = (x) => ({ x, y: 64, z: 0, key: 'k' + x });
+  const mk = (whys, ages) => whys.reduce((f, w, i) => C.caveFailsAdd(f, far(500 + i * 50), w, now - ages[i]), []);
+  const target = wall(20, 64, 0, 4);
+  const MIN = 60_000;
+  assert.ok(C.pickIronCave(target, FROM, { now, fails: mk(['unreachable', 'unreachable'], [3 * MIN, 2 * MIN]) }));
+  const three = mk(['unreachable', 'unreachable', 'unreachable'], [5 * MIN, 3 * MIN, MIN]);
+  assert.strictEqual(C.pickIronCave(target, FROM, { now, fails: three }), null);
+  assert.ok(C.caveCooldownUntil(three, now) > now);
+  // 3e échec il y a > 20 min (mais < 30 min, TTL) : repos fini
+  const old = mk(['unreachable', 'unreachable', 'unreachable'], [28 * MIN, 26 * MIN, 24 * MIN]);
+  assert.ok(C.pickIronCave(target, FROM, { now, fails: old }));
+  // autres motifs ne comptent pas
+  assert.ok(C.pickIronCave(target, FROM, { now, fails: mk(['unreachable', 'timeout', 'unreachable'], [5 * MIN, 3 * MIN, MIN]) }));
+  // 3 échecs étalés sur plus de 15 min ne déclenchent pas
+  assert.ok(C.pickIronCave(target, FROM, { now, fails: mk(['unreachable', 'unreachable', 'unreachable'], [25 * MIN, 12 * MIN, MIN]) }));
+  assert.strictEqual(C.CAVE_MAX_DIST, 80);
 });

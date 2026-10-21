@@ -4613,6 +4613,7 @@ async function returnToWork(why) {
 // self-healing relance le bot après chaque mort, un Set de process re-ciblerait la même grotte morte.
 const IRON_CAVE_CACHE_MS = 30000;    // ctxExtra tourne à chaque pas : on ne relit pas 8 Mo de carte à chaque fois
 let _ironCaveCache = { at: 0, cave: null };
+let _caveCooldownEmitted = 0;        // `until` déjà annoncé : un event par entrée en cooldown
 let _caveTorchAt = 0;
 let _caveTorchPos = null;
 const IRON_CAVE_OBJECTIVES = new Set(['iron_armor', 'diamond_armor']);
@@ -4658,9 +4659,15 @@ function ironCaveCtx() {
   try {
     const p = bot && bot.entity && bot.entity.position;
     if (p && _caveInvTier() >= 2) {
+      const fails = loadCaveFails(now);
+      const until = caveIronPick.caveCooldownUntil(fails, now);
+      if (until && until !== _caveCooldownEmitted) {
+        _caveCooldownEmitted = until;
+        emit({ type: 'cave_cooldown', fails: fails.filter((f) => f.why === 'unreachable').length, until });
+      }
       cave = caveIronPick.pickIronCave(_caveWorldOres(), { x: p.x, y: p.y, z: p.z }, {
         now,
-        fails: loadCaveFails(now),
+        fails,
         isClaimed: (k) => { const c = _teamClaims && _teamClaims.peek(k); return !!(c && c.by !== bot.username); },
         confine: CONFINE || _confineDyn,
       });
