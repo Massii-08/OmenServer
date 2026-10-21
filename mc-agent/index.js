@@ -9614,9 +9614,11 @@ setInterval(async () => {
       if (!plan) continue;
       if (plan === 'walk') {
         try {
-          await oreGrabGoto(new pfGoals.GoalNear(blk.position.x, blk.position.y, blk.position.z, 2), 12000);
+          await oreGrabGoto(new pfGoals.GoalNear(blk.position.x, blk.position.y, blk.position.z, 1), 12000);
         } catch (e) { continue; }               // inatteignable → on laisse, sans insister
-        if (blk.position.distanceTo(bot.entity.position) > oregrab.ORE_REACH) continue;
+        // Portée de RAMASSAGE (PICKUP_REACH), pas portée de MINAGE (ORE_REACH) : miner depuis plus
+        // loin détruit le bloc mais abandonne le drop au sol (mesure 21/10 : coal jamais ramassé).
+        if (blk.position.distanceTo(bot.entity.position) > oregrab.PICKUP_REACH) continue;
       }
       const tool = bestToolFor(bot, blk);
       if (tool) { try { await bot.equip(tool, 'hand'); } catch (e) {} }

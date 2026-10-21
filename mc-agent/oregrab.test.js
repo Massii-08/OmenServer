@@ -116,9 +116,25 @@ test('ce qui SERT aux chaines reste ramasse (garde-fou anti-sur-filtrage)', () =
 // dans les PAROIS, à 5-10 blocs. Un joueur fait trois pas.
 const { oreStepPlan, ORE_STEP_MAX, ORE_REACH } = require('./oregrab');
 
-test('minerai deja a portee de bras : on mine sans bouger', () => {
-  assert.strictEqual(oreStepPlan({ name: 'iron_ore', dist: 2 }), 'reach');
-  assert.strictEqual(oreStepPlan({ name: 'deepslate_iron_ore', dist: ORE_REACH }), 'reach');
+// ─── PORTÉE DE MINAGE ≠ PORTÉE DE RAMASSAGE (mesure veille 21/10, NethBot1-3) ────────────────────
+// `ore_grabbed` du charbon tirait 1/5/3 fois sur les 3 ouvriers — et le mot "coal" n'apparaissait
+// JAMAIS dans leur inventaire (craft_fail_ctx) de toute la session. Cause : le minage depuis
+// ORE_REACH (4,2 blocs, la portée de BRAS) détruit le bloc mais le drop reste au sol, hors de la
+// portée de RAMASSAGE auto d'un item (beaucoup plus courte) — le bot ne s'approche jamais du drop.
+// Sans charbon : aucune torche ne se pose (`no_coal` en boucle) → branchMine creuse dans le noir
+// total → les monstres apparaissent DANS le tunnel → morts répétées (alerte "NethBot3 : 3 morts
+// en 10 min"). `PICKUP_REACH` est la distance où le ramassage auto est garanti ; `ORE_REACH` reste
+// la portée de MINAGE (canHarvest, et le seuil après approche dans index.js).
+const { PICKUP_REACH } = require('./oregrab');
+
+test('minerai deja a portee de RAMASSAGE (pas seulement de bras) : on mine sans bouger', () => {
+  assert.strictEqual(oreStepPlan({ name: 'iron_ore', dist: 1 }), 'reach');
+  assert.strictEqual(oreStepPlan({ name: 'deepslate_iron_ore', dist: PICKUP_REACH }), 'reach');
+});
+
+test('minerai a portee de bras MAIS hors portee de ramassage : on y va quand meme (sinon le drop est perdu)', () => {
+  assert.strictEqual(oreStepPlan({ name: 'iron_ore', dist: 2 }), 'walk');
+  assert.strictEqual(oreStepPlan({ name: 'deepslate_iron_ore', dist: ORE_REACH }), 'walk');
 });
 
 test('minerai a quelques pas : on y va (c est le cas de la photo)', () => {
@@ -162,20 +178,26 @@ test('grabScope : la migration prime même sans autre but posé', () => {
   assert.strictEqual(grabScope({ migrating: true, goal: {} }).run, false);
 });
 
-test('grabScope : un AUTRE but actif → portée de bras seulement, mais le détour rare reste permis', () => {
+test('grabScope : un AUTRE but actif → portée de RAMASSAGE seulement (jamais de walk), le détour rare reste permis', () => {
+  // `maxDist` est descendu de ORE_REACH (4,2, portée de bras) à PICKUP_REACH (mesure 21/10) : sans
+  // ce garde-fou, un minerai "à portée de bras seulement" pendant un trajet en cours était miné
+  // sans que le drop soit jamais récupéré — on gaspillait l'ore pour rien.
   const s = grabScope({ goal: { planner: true } });
   assert.strictEqual(s.run, true);
   assert.strictEqual(s.detour, true, 'diamant/émeraude/débris : rare, vaut l interruption');
   assert.strictEqual(s.walk, false, 'plus de quelques pas vers du fer');
   assert.strictEqual(s.drops, false, 'plus de marche vers un item au sol');
   assert.strictEqual(s.approach, false, 'plus de goto pour contourner une paroi');
-  assert.strictEqual(s.maxDist, ORE_REACH);
+  assert.strictEqual(s.maxDist, PICKUP_REACH);
   assert.ok(s.scan >= ORE_REACH && s.scan < ORE_STEP_MAX, 'le scan se limite à ce qu on a le droit de miner');
 });
 
-test('grabScope : en portée de bras, oreStepPlan ne rend plus jamais walk', () => {
+test('grabScope : en portée de bras seulement, oreStepPlan ne rend plus jamais walk NI un reach non ramassable', () => {
   const { maxDist } = grabScope({ goal: { planner: true } });
-  assert.strictEqual(oreStepPlan({ name: 'iron_ore', dist: 3, maxDist }), 'reach');
+  assert.strictEqual(oreStepPlan({ name: 'iron_ore', dist: 1, maxDist }), 'reach');
+  // à 3 blocs : à portée de bras (< ORE_REACH) mais hors portée de ramassage ET walk interdit ici
+  // (trajet en cours) → on laisse plutôt que de gaspiller le minerai (avant : 'reach' à tort).
+  assert.strictEqual(oreStepPlan({ name: 'iron_ore', dist: 3, maxDist }), null);
   assert.strictEqual(oreStepPlan({ name: 'iron_ore', dist: 8, maxDist }), null);
 });
 
@@ -248,6 +270,16 @@ test('index.js : le timer de ramassage consulte grabScope (migration, trajet en 
   const t1 = _src.indexOf('}, 800);', t0);
   assert.ok(t0 > 0 && t1 > t0, 'timer de ramassage introuvable');
   assert.strictEqual(/bot\.pathfinder\.goto\(/.test(_src.slice(t0, t1)), false, 'goto direct dans le timer : passer par oreGrabGoto');
+});
+
+test('index.js : apres l approche (walk), on exige la portee de RAMASSAGE avant de miner (pas juste ORE_REACH)', () => {
+  const t0 = _src.indexOf('setInterval(async () => {\n  if (_oreGrabBusy) return;');
+  const t1 = _src.indexOf('}, 800);', t0);
+  const body = _src.slice(t0, t1);
+  assert.match(body, /GoalNear\(blk\.position\.x, blk\.position\.y, blk\.position\.z, 1\)/,
+    'rayon d approche resserre a 1 bloc (etait 2 : trop loin pour le ramassage auto)');
+  assert.match(body, /distanceTo\(bot\.entity\.position\) > oregrab\.PICKUP_REACH/,
+    'le seuil post-approche doit etre PICKUP_REACH, pas ORE_REACH (portee de minage != portee de ramassage)');
 });
 
 test('index.js : ore_grabbed émis UNE fois, seulement si le bloc a disparu, et sans compter le fer', () => {

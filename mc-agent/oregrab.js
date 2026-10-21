@@ -145,13 +145,24 @@ function noteDetour(memo, key, now) {
 // On garde le principe (une ponctuation, pas une priorité) : rayon court, un seul minerai par
 // passe, et toutes les gardes de `shouldGrab` inchangées.
 const ORE_STEP_MAX = 12;      // portee de marche ET rayon de scan (index.js) : une seule source de verite
-const ORE_REACH = 4.2;        // portée de bras : en deçà, aucun déplacement nécessaire
+const ORE_REACH = 4.2;        // portée de BRAS (minage) : au-delà, le bloc est hors de portée de pioche
+
+// ─── PORTÉE DE MINAGE ≠ PORTÉE DE RAMASSAGE (mesure veille 21/10, NethBot1-3) ───────────────────
+// Miner un bloc depuis ORE_REACH (4,2 blocs) le détruit, mais le drop qui apparaît À LA POSITION DU
+// BLOC reste hors de portée de ramassage auto d'un item (bien plus courte que la portée de bras) si
+// le bot ne s'en approche pas ensuite. Preuve : "coal" n'apparaissait JAMAIS dans l'inventaire des
+// 3 ouvriers malgré plusieurs `ore_grabbed` de coal_ore chacun → 0 torche posée de toute la session
+// (`no_coal` en boucle) → branchMine creusait dans le noir total → morts répétées par squelette.
+// `PICKUP_REACH` est la distance où le ramassage auto est garanti ; en-deçà, miner sans bouger est
+// sûr. Au-delà (même dans ORE_REACH), il FAUT s'approcher du drop, sinon il est juste perdu.
+const PICKUP_REACH = 1.6;
 
 /**
  * Faut-il faire quelques pas pour ce minerai ? (pur)
- * @returns {'reach'|'walk'|null} — 'reach' = déjà à portée, 'walk' = s'en approcher, null = laisser.
+ * @returns {'reach'|'walk'|null} — 'reach' = déjà à portée de RAMASSAGE, 'walk' = s'en approcher
+ *   (pour pouvoir récupérer le drop, pas seulement le miner), null = laisser.
  */
-function oreStepPlan({ name, dist, maxDist = ORE_STEP_MAX, reach = ORE_REACH } = {}) {
+function oreStepPlan({ name, dist, maxDist = ORE_STEP_MAX, reach = PICKUP_REACH } = {}) {
   if (!isWantedOre(name)) return null;
   if (typeof dist !== 'number' || !Number.isFinite(dist) || dist < 0) return null;
   if (dist <= reach) return 'reach';
@@ -191,7 +202,10 @@ function grabScope({ migrating = false, goal = null, ownGoal = null } = {}) {
   }
   const otherTrip = goal != null && goal !== ownGoal;
   if (otherTrip) {
-    return { run: true, detour: true, walk: false, drops: false, approach: false, maxDist: ORE_REACH, scan: REACH_SCAN };
+    // maxDist = PICKUP_REACH (pas ORE_REACH) : aucun `walk` n'est permis ici (trajet en cours), donc
+    // un minerai à portée de bras mais hors portée de ramassage ne doit PAS être miné (drop perdu) —
+    // oreStepPlan doit rendre null, pas 'reach'. Voir PICKUP_REACH ci-dessus.
+    return { run: true, detour: true, walk: false, drops: false, approach: false, maxDist: PICKUP_REACH, scan: REACH_SCAN };
   }
   return { run: true, detour: true, walk: true, drops: true, approach: true, maxDist: ORE_STEP_MAX, scan: ORE_STEP_MAX };
 }
@@ -221,7 +235,7 @@ function oreGone(before, after) {
 module.exports = {
   WANTED_ORES, isWantedOre, canHarvest, shouldGrab,
   VALUABLE_DROPS, isValuableDrop, DETOUR_ORES, isDetourWorthy,
-  oreStepPlan, ORE_STEP_MAX, ORE_REACH,
+  oreStepPlan, ORE_STEP_MAX, ORE_REACH, PICKUP_REACH,
   grabScope, mayApproach, REACH_SCAN, oreGone,
   DETOUR_MAX_TRIES, DETOUR_BAN_MS, detourKey, detourAllowed, noteDetour,
 };
