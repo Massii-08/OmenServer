@@ -148,13 +148,22 @@ function isMiningGoal(goal) {
   return !!(goal.name && SQUAD_HOLD_GOAL_RE.test(String(goal.name)));
 }
 
+// Bois (21/10, run « zéro → armure ») : `woodWaitStep` (16806a1) fait désormais chercher son bois
+// en surface à un ouvrier non-bûcheron. `goal.skill === 'gatherLog'` couvre 'logs'/'lj_stock'/etc.
+// SANS l'exception « chef mineur au fond » de isMiningGoal : descendre ne sert à rien pour du bois
+// (pas d'arbre sous terre) — contrairement au minage, où le /tpa EST la descente qu'on visait.
+// Mesuré : NethBot2 tiré vers son chef mineur deux fois en moins d'une minute, jamais le temps
+// qu'un `explore_summary` aboutisse (`waypoints:0 reached:0`) — la squad annulait le fix du jour.
+function isWoodWorkGoal(goal) { return !!(goal && goal.skill === 'gatherLog'); }
+
 /**
  * PUR — raison de NE PAS rejoindre la squad, ou null.
  * @param self {y?} · goal {name, skill} | null · leader : entrée de présence du chef (ou null)
- * @returns 'underground' | 'mining_goal' | null
+ * @returns 'underground' | 'wood_goal' | 'mining_goal' | null
  */
 function squadHold({ self, goal, leader } = {}) {
   if (self && Number.isFinite(self.y) && self.y < SQUAD_HOLD_Y) return 'underground';
+  if (isWoodWorkGoal(goal)) return 'wood_goal';
   if (isMiningGoal(goal) && !(leader && _isWorkingMiner(leader))) return 'mining_goal';
   return null;
 }

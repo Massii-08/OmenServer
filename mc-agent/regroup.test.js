@@ -337,3 +337,35 @@ test('squadTarget : en surface en route vers le fond, chef MINEUR au fond → le
   assert.ok(r);
   assert.strictEqual(r.name, 'Miner');
 });
+
+// ─── NE JAMAIS ARRACHER UN RÉCOLTEUR DE BOIS SOUS TERRE (21/10, run « zéro → armure ») ──────────
+// Vécu NethBot2 : `woodWaitStep` (16806a1) le fait désormais chercher SON bois en surface quand le
+// bûcheron ne livre pas. Mesuré en session (session-52) : `squad_join to:NethBot3 dist:501` puis
+// `dist:480`, deux fois en moins d'une minute, CHAQUE FOIS avant qu'un seul `explore_summary` ait pu
+// aboutir (`waypoints:0 reached:0`) — le chef (NethBot3) est un mineur productif au fond, donc la
+// règle catégorielle « chef mineur au fond + moi en surface ⇒ je descends » (squadTarget) tirait à
+// chaque cooldown (30 s), sans jamais laisser le temps d'atteindre une forêt. Contrairement au
+// minage (où descendre SERT le but), descendre pendant une recherche de bois ne sert à rien (pas
+// d'arbre sous terre) et casse le trajet en cours : la squad a donc annulé elle-même le fix qui
+// venait d'être déployé.
+test('isMiningGoal : le bois (gatherLog) n\'en fait toujours pas partie — squadHold a sa propre règle', () => {
+  assert.ok(!isMiningGoal({ name: 'logs', skill: 'gatherLog' }));
+  assert.ok(!isMiningGoal({ name: 'lj_stock', skill: 'gatherLog' }));
+});
+
+test('squadHold : but de bois (gatherLog) → wood_goal, MÊME si le chef est un mineur productif au fond', () => {
+  const goal = { name: 'logs', skill: 'gatherLog' };
+  assert.strictEqual(squadHold({ self: { y: 70 }, goal, leader: { y: 12, ironZone: 48 } }), 'wood_goal');
+  assert.strictEqual(squadHold({ self: { y: 70 }, goal, leader: null }), 'wood_goal');
+});
+
+test('squadTarget : récolteur de bois en surface, chef mineur au fond → pas de /tpa, trace wood_goal', () => {
+  const skips = [];
+  const mates = [worker({ name: 'NethBot3', x: 580, z: 300, y: 12, ironZone: 48 })];
+  const r = squadTarget({
+    self: { x: 90, z: 15, y: 70, ironZone: 0 }, selfName: 'NethBot2', mates, now: T, lastAt: 0,
+    goal: { name: 'logs', skill: 'gatherLog' }, onSkip: (why, to) => skips.push([why, to]),
+  });
+  assert.strictEqual(r, null);
+  assert.deepStrictEqual(skips, [['wood_goal', 'NethBot3']]);
+});
