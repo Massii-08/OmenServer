@@ -6203,9 +6203,15 @@ async function ensureTorches() {
     const planks = inv().find((i) => i.name.endsWith('_planks'));
     if (planks) { try { await craftSmart({ name: 'stick', count: 4 }); } catch (e) {} }
   }
-  if ((count('coal') + count('charcoal')) < 1 || count('stick') < 1) return; // toujours rien → on mine sans
+  const coalAvail = count('coal') + count('charcoal');
+  if (coalAvail < 1 || count('stick') < 1) return; // toujours rien → on mine sans
+  // ⚠️ NE JAMAIS demander plus que le charbon dispo (veille 21/10) : la recette veut 1 charbon PAR
+  // torche — avec 1-7 charbons (le cas courant en branch-mine, le charbon n'arrive pas par lot de 8),
+  // `count: 8` en dur échouait SYSTÉMATIQUEMENT (`no_coal`) et se refaisait à chaque survivalTick
+  // (toutes les ~4 paliers) jusqu'à ce que le charbon atteigne 8 — des centaines de craft_fail_ctx
+  // inutiles par session de minage. Même borne que le but planner équivalent (index.js, `coalHave`).
   try {
-    const r = await craftSmart({ name: 'torch', count: 8 });
+    const r = await craftSmart({ name: 'torch', count: Math.min(8, coalAvail) });
     if (r && r.ok) emit({ type: 'gear_craft', item: 'torch', ok: true, why: 'mob_aware' });
   } catch (e) { /* best-effort */ }
 }
