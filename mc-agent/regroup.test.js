@@ -274,3 +274,66 @@ test('bûcheron (20/10) : jamais chef de squad ni cible de regroupement — il v
   const r = pickRegroupTarget({ ...BASE, mates: [mate('AAA', 300, 0, { role: 'lumberjack' })] });
   assert.strictEqual(r, null);
 });
+
+// ─── NE JAMAIS ARRACHER UN MINEUR DE SA MINE (21/10) ────────────────────────────────────────────
+// Vécu : NethBot3 à y=15 en `iron_deep` → `squad_join to:NethBot2 dist:81` → atterri en SURFACE
+// (299,65,335), puis `descend_y16` ×19 `max_depth` : 36 min perdues.
+const { squadHold, isMiningGoal, SQUAD_HOLD_Y } = require('./regroup');
+
+test('squadHold : sous terre (y < 50) → underground, quel que soit le chef', () => {
+  assert.strictEqual(SQUAD_HOLD_Y, 50);
+  assert.strictEqual(squadHold({ self: { y: 15 } }), 'underground');
+  assert.strictEqual(squadHold({ self: { y: 49 }, leader: { y: 12, ironZone: 9 } }), 'underground');
+  assert.strictEqual(squadHold({ self: { y: 64 } }), null);
+});
+
+test('isMiningGoal : descente, fer, branch-mine, fonte — pas le bois', () => {
+  for (const g of [{ name: 'descend_y16', skill: 'descendDiagonal' }, { name: 'iron_deep', skill: 'branchMine' },
+    { name: 'iron_cave', skill: 'caveIron' }, { name: 'iron_ingot', skill: 'smeltIron' }, { name: 'whatever', skill: 'branchMine' }]) {
+    assert.ok(isMiningGoal(g), JSON.stringify(g));
+  }
+  for (const g of [null, { name: 'logs', skill: 'gatherLog' }, { name: 'sticks', skill: 'craft' }]) {
+    assert.ok(!isMiningGoal(g), JSON.stringify(g));
+  }
+});
+
+test('squadHold : but de minage → mining_goal, SAUF chef mineur au fond (la descente gratuite reste)', () => {
+  const goal = { name: 'descend_y16', skill: 'descendDiagonal' };
+  assert.strictEqual(squadHold({ self: { y: 70 }, goal, leader: { y: 70, ironZone: 0 } }), 'mining_goal');
+  assert.strictEqual(squadHold({ self: { y: 70 }, goal, leader: null }), 'mining_goal');
+  assert.strictEqual(squadHold({ self: { y: 70 }, goal, leader: { y: 12, ironZone: 5 } }), null);
+});
+
+test('squadTarget : le cas vécu — mineur à y=15 en iron_deep, chef à 81 blocs → pas de /tpa, trace underground', () => {
+  const skips = [];
+  const mates = [worker({ name: 'NethBot2', x: 80, z: 10, y: 15, ironZone: 3 })];
+  const r = squadTarget({
+    self: { x: 4, z: 33, y: 15, ironZone: 0 }, selfName: 'NethBot3', mates, now: T, lastAt: 0,
+    goal: { name: 'iron_deep', skill: 'branchMine' }, onSkip: (why, to) => skips.push([why, to]),
+  });
+  assert.strictEqual(r, null);
+  assert.deepStrictEqual(skips, [['underground', 'NethBot2']]);
+});
+
+test('squadTarget : en surface avec un but de descente, un chef de SURFACE n\'attire pas le mineur', () => {
+  const skips = [];
+  const mates = [worker({ name: 'Aaa', x: 300, z: 0, y: 70, ironZone: 0 })];
+  const r = squadTarget({
+    self: { x: 0, z: 0, y: 70, ironZone: 0 }, selfName: 'Zzz', mates, now: T, lastAt: 0,
+    goal: { name: 'descend_y16', skill: 'descendDiagonal' }, onSkip: (why) => skips.push(why),
+  });
+  assert.strictEqual(r, null);
+  assert.deepStrictEqual(skips, ['mining_goal']);
+  // Témoin : même situation sans but de minage → le /tpa part (comportement d'avant).
+  assert.ok(squadTarget({ self: { x: 0, z: 0, y: 70 }, selfName: 'Zzz', mates, now: T, lastAt: 0 }));
+});
+
+test('squadTarget : en surface en route vers le fond, chef MINEUR au fond → le /tpa part (descente gratuite)', () => {
+  const mates = [worker({ name: 'Miner', x: 232, z: 3, y: 12, ironZone: 48 })];
+  const r = squadTarget({
+    self: { x: 218, z: 14, y: 70, ironZone: 0 }, selfName: 'Surface', mates, now: T, lastAt: 0,
+    goal: { name: 'descend_y16', skill: 'descendDiagonal' },
+  });
+  assert.ok(r);
+  assert.strictEqual(r.name, 'Miner');
+});

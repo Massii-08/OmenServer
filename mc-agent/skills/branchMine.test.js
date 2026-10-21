@@ -161,14 +161,44 @@ test('branchMine : EAU DEVANT (case cible) -> TOURNE, ne creuse JAMAIS dans l ea
   assert.ok(calls.dig.length > 0, 'doit continuer à miner ailleurs (serpentin sec), pas se figer');
 });
 
-test('branchMine : cobble<8 -> reason cobble_low', async () => {
-  const { bot } = makeBot({ y: -54, inv: [
+test('branchMine : cobble<8 au départ → on MINE quand même (miner produit le cobble, 21/10)', async () => {
+  const inv = [
+    { name: 'iron_pickaxe', count: 1, type: 'pickaxe' },
+    { name: 'cobblestone', count: 3, type: 'block' },
+  ];
+  const { bot, calls } = makeBot({ y: -54, inv });
+  // comme en vrai : chaque bloc de deepslate creusé rend un cobbled_deepslate
+  const dig0 = bot.dig.bind(bot);
+  bot.dig = async (b) => { await dig0(b); const c = inv.find((i) => i.name === 'cobbled_deepslate'); if (c) c.count++; else inv.push({ name: 'cobbled_deepslate', count: 1, type: 'block' }); };
+  const r = await branchMine(bot, { targetY: -54, mainLength: 6 });
+  assert.notStrictEqual(r.reason, 'cobble_low');
+  assert.ok(calls.dig.length > 0, 'le tunnel démarre');
+});
+
+test('branchMine : réserve sous 8 qui ne remonte JAMAIS (rien de murable) → cobble_low, après des pas réels', async () => {
+  const { bot, calls } = makeBot({ y: -54, inv: [
     { name: 'iron_pickaxe', count: 1, type: 'pickaxe' },
     { name: 'cobblestone', count: 5, type: 'block' },
   ] });
-  const r = await branchMine(bot, { targetY: -54, mainLength: 6 });
+  const r = await branchMine(bot, { targetY: -54, mainLength: 40, branchSpacing: 100 });
   assert.strictEqual(r.ok, false);
   assert.strictEqual(r.reason, 'cobble_low');
+  assert.ok(calls.dig.length >= 10, `a creusé avant d'abandonner (digs=${calls.dig.length})`);
+});
+
+test('branchMine : sans pioche → no_pickaxe tout de suite (pas cobble_low) ; onNoPickaxe tenté d\'abord', async () => {
+  const inv = [{ name: 'cobblestone', count: 3, type: 'block' }];
+  const { bot } = makeBot({ y: 13, inv });
+  let tried = 0;
+  const r = await branchMine(bot, { targetY: 16, mainLength: 6, onNoPickaxe: async () => { tried++; return false; } });
+  assert.strictEqual(r.reason, 'no_pickaxe');
+  assert.strictEqual(tried, 1);
+  // re-fabrication réussie → le minage part
+  const inv2 = [{ name: 'cobblestone', count: 3, type: 'block' }];
+  const { bot: bot2, calls: calls2 } = makeBot({ y: 13, inv: inv2 });
+  const r2 = await branchMine(bot2, { targetY: 16, mainLength: 4, onNoPickaxe: async () => { inv2.push({ name: 'stone_pickaxe', count: 1, type: 'pickaxe' }); return true; } });
+  assert.notStrictEqual(r2.reason, 'no_pickaxe');
+  assert.ok(calls2.dig.length > 0);
 });
 
 test('branchMine : ramasse opportunément le fer voisin', async () => {

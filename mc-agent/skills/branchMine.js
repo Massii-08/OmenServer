@@ -78,6 +78,7 @@ async function approach(bot, target, range = 3, opts = null) {
 }
 
 const COBBLE_RESERVE_MIN = 8;
+const COBBLE_LOW_STREAK = 12;   // pas sous la réserve SANS gain avant d'abandonner `cobble_low`
 const COBBLE_TARGET_INIT = 16;
 // Matériaux de murage anti-lave : le creusage de deepslate génère du cobbled_deepslate à l'infini
 // → fini les aborts cobble_low en profondeur (le cobblestone de surface n'est plus le seul stock).
@@ -480,10 +481,29 @@ async function branchMine(bot, opts = {}, token = null) {
   const tooDeep = start.y < targetY - 6 && !(opts.allowDeeper && start.y >= -59);
   if (start.y > targetY + 2 || tooDeep) { dbg('start', { phase: 'branchMine:bail', reason: 'wrong_depth', startY: start.y, targetY }); return { ok: false, reason: 'wrong_depth' }; }
 
-  if (countWallable(bot) < COBBLE_TARGET_INIT / 2) {
-    // tolère un peu en dessous de 16 (gather peut en avoir consommé) mais on garde la réserve mini.
-    if (countWallable(bot) < COBBLE_RESERVE_MIN) return { ok: false, reason: 'cobble_low' };
+  // PIOCHE D'ABORD (21/10). Sans pioche on ne mine RIEN (jamais à la main, Massii #5) : le dire tout de
+  // suite, avec le vrai nom, au lieu du `cobble_low` qui le masquait (NethBot2 à y=13 : 16 `cobble_low`
+  // en < 50 ms par rafale — il n'avait plus de pioche, et 3 cobble). Une re-fabrication sur place est
+  // tentée d'abord (opts.onNoPickaxe), comme en cours de tunnel.
+  const hasPick = () => ((bot.inventory && bot.inventory.items()) || []).some((it) => it && /_pickaxe$/.test(it.name));
+  if (!hasPick()) {
+    let fixed = false;
+    if (typeof opts.onNoPickaxe === 'function') { try { fixed = !!(await opts.onNoPickaxe()); } catch (e) { fixed = false; } }
+    if (!fixed || !hasPick()) return { ok: false, reason: 'no_pickaxe' };
   }
+  // RÉSERVE DE MURAGE : PAS une condition de départ (21/10). Miner PRODUIT le cobble (chaque bloc de
+  // pierre/deepslate creusé en rend un) : exiger 8 blocs avant le 1er coup de pioche refusait le
+  // minage précisément au bot qui en avait le plus besoin. On démarre avec ce qu'on a ; on ne s'arrête
+  // `cobble_low` que si la réserve reste sous le minimum SANS remonter pendant COBBLE_LOW_STREAK pas
+  // (couche qui ne rend rien de murable : tuf, granite, grotte…).
+  let lowStreak = 0;
+  let lastWall = countWallable(bot);
+  const cobbleLow = () => {
+    const w = countWallable(bot);
+    if (w >= COBBLE_RESERVE_MIN || w > lastWall) { lowStreak = 0; lastWall = w; return false; }
+    lastWall = w;
+    return ++lowStreak >= COBBLE_LOW_STREAK;
+  };
 
   const dir = (opts.heading && (opts.heading.dx || opts.heading.dz))
     ? { dx: Math.sign(opts.heading.dx || 0), dz: Math.sign(opts.heading.dz || 0) }
@@ -548,7 +568,7 @@ async function branchMine(bot, opts = {}, token = null) {
     for (let n = 1; n <= mainLength; n++) {
       if (token && token.cancelled) return { ok: true, cancelled: true, ores: deltaOres(oresBefore, snapshotOres(bot)), gotDiamond: countItem(bot, 'diamond') > 0, heading };
       if (checkStall()) { stopReasonS = 'stalled'; break; }
-      if (countWallable(bot) < COBBLE_RESERVE_MIN) { stopReasonS = 'cobble_low'; break; }
+      if (cobbleLow()) { stopReasonS = 'cobble_low'; break; }
       if (stopReached()) break;                             // quota du type rempli
       if (onSurvivalTick && n % survivalEvery === 0) { try { await onSurvivalTick(n); } catch (e) { /* best-effort */ } }
       const footTarget = p(cx + heading.dx, oy, cz + heading.dz);
@@ -613,7 +633,7 @@ async function branchMine(bot, opts = {}, token = null) {
     // Stall : aucun progrès (position figée + aucun ore récolté) depuis > stallMs → échec réel
     // (l'appelant relocate). On échantillonne EN TÊTE de boucle.
     if (checkStall()) { stopReason = 'stalled'; break; }
-    if (countWallable(bot) < COBBLE_RESERVE_MIN) { stopReason = 'cobble_low'; break; }
+    if (cobbleLow()) { stopReason = 'cobble_low'; break; }
     if (stopReached()) break;                                          // objectif rempli
 
     // Survie/lumière PENDANT le tunnel (hole E) : tous les survivalEvery paliers, hook opt-in.
@@ -664,7 +684,7 @@ async function branchMine(bot, opts = {}, token = null) {
         for (let j = 1; j <= branchLength; j++) {
           if (token && token.cancelled) break;
           if (stopReached()) break outer;
-          if (countWallable(bot) < COBBLE_RESERVE_MIN) { stopReason = 'cobble_low'; break outer; }
+          if (cobbleLow()) { stopReason = 'cobble_low'; break outer; }
           // Survie + détection de stall DANS la branche (bug review #4) : sans ça, une branche de
           // plusieurs minutes laissait le bot sans défense (mobs) et un blocage stallait 900s.
           if (checkStall()) { stopReason = 'stalled'; break outer; }

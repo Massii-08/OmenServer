@@ -147,7 +147,7 @@ function squadSandbox(opts = {}) {
     armorNeed: () => 1, buildCtxInv: () => ({}),
     _stillBusy: false, _imminentBusy: false, _smeltOppBusy: false, _armorBusy: false,
     _migrating: false, _escaping: false, _foodTripBusy: false, _zoneIronMined: 0, _craftDepth: 0,
-    _lastSquadAt: 0, _lastRegroupAt: 0,
+    _lastSquadAt: 0, _lastRegroupAt: 0, _curGoal: null, _squadSkipWhy: null, _squadSkipAt: 0,
     isLumberjackObjective: () => false,   // bûcheron d'équipe (20/10) : hors sujet ici
     squadTarget: R.squadTarget, pickRegroupTarget: R.pickRegroupTarget,
     isAllowed: () => true, whitelist: null,
@@ -157,6 +157,7 @@ function squadSandbox(opts = {}) {
     shelters,
   }, opts));
   run(sb, fnSrc('regroupNightGuard'));
+  run(sb, fnSrc('noteSquadSkip'));
   run(sb, fnSrc('trySquad'));
   run(sb, fnSrc('tryRegroup'));
   return sb;
@@ -193,6 +194,35 @@ test('SQUAD / REGROUPEMENT : armé (2 pièces) de nuit, ou nu de JOUR → le /tp
   await dayNude.tryRegroup();
   assert.deepStrictEqual(dayNude.chat, ['/tpa NethBot1']);
   assert.strictEqual(dayNude.shelters.length, 0);
+});
+
+// 21/10 : le mineur au fond n'est jamais arraché (regroup.squadHold), et le refus est TRACÉ (squad_skip).
+test('SQUAD : mineur à y=15 en iron_deep, de jour → aucun /tpa, squad_skip{why:underground} (1 seul event)', async () => {
+  const sb = squadSandbox({ worn: 2, timeOfDay: DAY, pos: { x: 4, y: 15, z: 33 } });
+  run(sb, "_curGoal = { name: 'iron_deep', skill: 'branchMine', at: 0 }");
+  assert.deepStrictEqual(plain(await sb.trySquad()), { ok: false, reason: 'no_need' });
+  sb.clock.t += 60000;
+  await sb.trySquad();
+  assert.deepStrictEqual(sb.chat, []);
+  const sk = ofType(sb, 'squad_skip');
+  assert.strictEqual(sk.length, 1, 'dédup au changement de raison');
+  assert.strictEqual(sk[0].why, 'underground');
+  assert.strictEqual(sk[0].goal, 'iron_deep');
+  assert.strictEqual(sk[0].y, 15);
+});
+
+test('SQUAD : en surface en descente vers le fond, chef de surface → mining_goal, aucun /tpa', async () => {
+  const sb = squadSandbox({ worn: 2, timeOfDay: DAY });
+  run(sb, "_curGoal = { name: 'descend_y16', skill: 'descendDiagonal', at: 0 }");
+  await sb.trySquad();
+  assert.deepStrictEqual(sb.chat, []);
+  assert.strictEqual(ofType(sb, 'squad_skip')[0].why, 'mining_goal');
+});
+
+test('runSkillWithTelemetry : pose _curGoal pendant le skill et le retire après', () => {
+  const body = fnSrc('runSkillWithTelemetry');
+  assert.match(body, /_curGoal = _cg;/);
+  assert.match(body, /if \(_curGoal === _cg\) _curGoal = null;/);
 });
 
 // ═════════════════════ 3. entraide de combat : n'engage pas ════════════════════════════════════════
@@ -264,7 +294,7 @@ function plannerSandbox({ shelterStub, onSleep, ...opts } = {}) {
     settleSurvivalKit: async () => { log.settles++; },
     runGoalSkill: async (g) => { log.skills.push(g.name); return { ok: true, ran: g.name }; },
     withTimeout: (p) => p, timeoutFor: () => 60000, stopMotion() {},
-    MINING_GOALS: new Set(), _zoneMiningMs: 0, noteZoneFailure() {}, _skillInFlight: 0,
+    MINING_GOALS: new Set(), _zoneMiningMs: 0, noteZoneFailure() {}, _skillInFlight: 0, _curGoal: null,
     woodWaitStep: async () => null,        // bûcheron d'équipe (20/10) : aucun bûcheron → comportement historique
     isInWater: () => false,
     lastShelterT: 0, _shelterInFlight: null, _nightHold: 0,

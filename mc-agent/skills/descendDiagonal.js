@@ -30,6 +30,8 @@ function cardinalFromYaw(yaw) {
   return { dx: 1, dz: 0 };
 }
 
+const NO_PROGRESS_STEPS = 8;   // paliers sans gagner 1 bloc de profondeur → `no_progress`
+
 function isLava(name) { return name === 'lava' || name === 'flowing_lava'; }
 function isWater(name) { return name === 'water' || name === 'flowing_water'; }
 
@@ -71,6 +73,13 @@ async function descendDiagonal(bot, { targetY = -54, maxDepth = 200, onSurvivalT
   // Cap arrondi UNE FOIS au début — on garde l'alignement à la grille pour toute la descente.
   const dir = cardinalFromYaw(bot.entity.yaw || 0);
   let steps = 0;
+  // SURPLACE (21/10, NethBot3 : `descend_y16` → `max_depth` ×19, chacun en 10-20 s) : 200 « paliers »
+  // en 10 s = AUCUN palier réel — les cibles étaient air / invisibles (canSeeBlock) et le goto vers la
+  // marche échouait aussitôt, donc `steps++` tournait à vide jusqu'à maxDepth. Un escalier descend d'un
+  // bloc par palier : NO_PROGRESS_STEPS paliers sans gagner un bloc de profondeur = on est coincé ici,
+  // échec NOMMÉ `no_progress` (positionnel → l'appelant tourne/se décale, cf. dropAhead.js).
+  let bestY = Infinity;
+  let stagnant = 0;
 
   while (steps < maxDepth) {
     if (token && token.cancelled) return { ok: true, reachedY, cancelled: true };
@@ -93,6 +102,8 @@ async function descendDiagonal(bot, { targetY = -54, maxDepth = 200, onSurvivalT
     const fz = Math.floor(p.z);
     reachedY = p.y;
     if (p.y <= targetY) return { ok: true, reachedY };
+    if (fy < bestY) { bestY = fy; stagnant = 0; }
+    else if (++stagnant >= NO_PROGRESS_STEPS) return { ok: false, reachedY, reason: 'no_progress', steps };
 
     // 5 sondages anti-lave/anti-cave : devant-bas (cible escalier), devant (yeux), devant-haut,
     // devant×2 (à voir si grotte plus loin), devant-bas×2 (idem niveau pied).
@@ -182,4 +193,4 @@ async function descendDiagonal(bot, { targetY = -54, maxDepth = 200, onSurvivalT
   return { ok: false, reachedY, reason: 'max_depth' };
 }
 
-module.exports = { descendDiagonal, cardinalFromYaw };
+module.exports = { descendDiagonal, cardinalFromYaw, NO_PROGRESS_STEPS };

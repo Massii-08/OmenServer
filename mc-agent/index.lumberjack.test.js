@@ -293,7 +293,7 @@ test('câblage : runSkillWithTelemetry consulte woodWaitStep APRÈS la nuit et n
     woodWaitStep: async (g) => (g.skill === 'gatherLog' ? { ok: true } : null),
     runGoalSkill: async (g) => { skills.push(g.name); return { ok: true }; },
     withTimeout: (p) => p, timeoutFor: () => 1, stopMotion() {}, MINING_GOALS: new Set(), _zoneMiningMs: 0,
-    noteZoneFailure() {}, _skillInFlight: 0,
+    noteZoneFailure() {}, _skillInFlight: 0, _curGoal: null,
     _furnaceJob: null, FURNACE_JOB_KEEP_SKILLS: new Set(), finishFurnaceJob: async () => {},
   };
   vm.createContext(sb);
@@ -322,4 +322,23 @@ test('attente avec inventaire PLEIN → une pile de déchet jetée pour pouvoir 
   await run(sb, 'woodWaitStep(' + JSON.stringify(LOGS_GOAL) + ')');
   assert.ok(sb.events.some((e) => e.type === 'wood_wait_room' && e.tossed === 'dirt'));
   assert.ok(sb.items.some((i) => i.name === 'iron_ingot'), 'jamais autre chose que du déchet');
+});
+
+// 21/10 : `lj_stock`/`logs` timeout accusent la ZONE (pondérés) — sinon le bûcheron (63 min de `lj_stock`)
+// et NethBot2 (28,6 min de `logs`) restaient dans une zone rasée avec `logsNotFound:0`.
+test('câblage : noteZoneFailure compte lj_stock/logs timeout comme manque de bois (pondéré)', () => {
+  const Z = require('./zone');
+  const sb = {
+    Date: { now: () => T0 }, zoneFailureKind: Z.zoneFailureKind, zoneFailureWeight: Z.zoneFailureWeight,
+    windowAdd: Z.windowAdd, _zoneWaterFails: 0, _zoneWaterWin: [], _zoneLogsNotFound: 0, _zoneLogsWin: [],
+    _needsWoodTrip: false,
+  };
+  vm.createContext(sb);
+  run(sb, fnSrc('noteZoneFailure'));
+  run(sb, "noteZoneFailure('lj_stock', 'timeout')");
+  run(sb, "noteZoneFailure('logs', 'timeout')");
+  run(sb, "noteZoneFailure('furnace', 'timeout')");
+  assert.strictEqual(sb._zoneLogsNotFound, 2 * Z.WOOD_TIMEOUT_WEIGHT);
+  assert.strictEqual(Z.windowSum(sb._zoneLogsWin, T0), 2 * Z.WOOD_TIMEOUT_WEIGHT);
+  assert.strictEqual(sb._needsWoodTrip, true);
 });

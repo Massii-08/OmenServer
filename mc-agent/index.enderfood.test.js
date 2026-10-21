@@ -195,6 +195,28 @@ test('onDropAhead : 3e → tourne encore (cumulé), 4e → décalage 30-50 blocs
   assert.ok(d >= 29 && d <= 51, `décalage ${d}`);
 });
 
+test('onDropAhead(no_progress|max_depth) : surplace de descente → même règle de cap + descend_loop_break (21/10)', async () => {
+  const sb = sandbox({ yaw: 0 });
+  run(sb, constSrc('DESCEND_POSITIONAL_RE'));
+  assert.ok(run(sb, "DESCEND_POSITIONAL_RE.test('no_progress') && DESCEND_POSITIONAL_RE.test('max_depth') && !DESCEND_POSITIONAL_RE.test('water_ahead')"));
+  await run(sb, "onDropAhead('max_depth')");
+  assert.strictEqual(sb.events.length, 0, '1er : rien');
+  await run(sb, "onDropAhead('no_progress')");
+  const br = sb.events.find((e) => e.type === 'descend_loop_break');
+  assert.ok(br && br.reason === 'no_progress' && br.action === 'turn' && br.count === 2, JSON.stringify(sb.events));
+  assert.ok(sb.events.some((e) => e.type === 'drop_ahead_turn' && e.mode === 'turn'));
+  for (let i = 0; i < 2; i++) await run(sb, "onDropAhead('no_progress')");
+  assert.ok(sb.events.some((e) => e.type === 'descend_loop_break' && e.action === 'shift'), 'au 4e : décalage à pied');
+  assert.ok(sb.calls.some((c) => c[0] === 'goto' && c[1] === 'xz'));
+});
+
+test('runGoalSkill : la descente traite no_progress/max_depth comme drop_ahead ; descend_relocate en GoalNearXZ', () => {
+  const body = fnSrc('runGoalSkill');
+  assert.match(body, /DESCEND_POSITIONAL_RE\.test\(String\(r\.reason \|\| ''\)\)\) await onDropAhead\(r\.reason\)/);
+  assert.match(body, /descend_relocate[\s\S]{0,800}GoalNearXZ\(_tx, _tz, 3\)/);
+  assert.doesNotMatch(body, /descend_relocate'[^\n]*\n[^\n]*\n[^\n]*\n[^\n]*\n\s*try \{ await withTimeout\(bot\.pathfinder\.goto\(new pfGoals\.GoalNear\(_tx, Math/);
+});
+
 test('applyDescendHeading : cap périmé (> 10 min) → ignoré', async () => {
   const sb = sandbox();
   run(sb, '_descendHeading = { yaw: 1, at: Date.now() - DESCEND_HEADING_TTL_MS - 1 }');
@@ -205,7 +227,7 @@ test('applyDescendHeading : cap périmé (> 10 min) → ignoré', async () => {
 test('runGoalSkill : la descente applique le cap mémorisé et traite drop_ahead', () => {
   const body = fnSrc('runGoalSkill');
   assert.match(body, /await applyDescendHeading\(\);\s*\n\s*(?:const|let) r = await descendDiagonal/);
-  assert.match(body, /onDropAhead\(\)/);
+  assert.match(body, /onDropAhead\(/);
 });
 
 function foodTickSandbox({ y = 15, food = 6, points = 0, tripAt = null, base = {} } = {}) {

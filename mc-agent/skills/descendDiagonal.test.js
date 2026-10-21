@@ -224,3 +224,18 @@ test('descendDiagonal : stopWhen qui lève = ignoré (best-effort, la descente c
   assert.strictEqual(r.ok, true);
   assert.ok(!r.stopped);
 });
+
+// SURPLACE (21/10, NethBot3) : `max_depth` ×19 en 10-20 s chacun = 200 paliers à vide. Ici le goto
+// échoue toujours (marche inaccessible) et rien n'est creusable (canSeeBlock faux) : avant, la boucle
+// allait jusqu'à maxDepth ; désormais `no_progress` au 8e palier sans gain de profondeur.
+test('descendDiagonal : coincé sur place (goto KO, rien de visible) → no_progress, pas max_depth', async () => {
+  const { bot } = makeBot({ startY: 64 });
+  bot.canSeeBlock = () => false;
+  let gotos = 0;
+  bot.pathfinder.goto = async () => { gotos++; throw new Error('NoPath'); };
+  const { NO_PROGRESS_STEPS } = require('./descendDiagonal');
+  const r = await descendDiagonal(bot, { targetY: 16, maxDepth: 200 });
+  assert.strictEqual(r.ok, false);
+  assert.strictEqual(r.reason, 'no_progress');
+  assert.ok(gotos <= NO_PROGRESS_STEPS, `gotos=${gotos} : sortie rapide, pas 200 tours`);
+});

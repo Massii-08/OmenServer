@@ -100,7 +100,7 @@ const { recordOceanStuck } = require('./oceanEscalate'); // baie humide PERSISTA
 const {
   zoneVerdict, verdictTelemetry, pickMigrationTarget, migrationLeg, legHeading, LEG_STUCK_MIN, legDigRetry, legIsGood, minDistFor,
   ironUnits, ironSampleGain,
-  zoneFailureKind, zoneStateInit, zoneStateLoad, zoneStateAfterMigration, MAX_LEGS, MIGRATE_MIN_PROGRESS, LOADED_RADIUS,
+  zoneFailureKind, zoneFailureWeight, zoneStateInit, zoneStateLoad, zoneStateAfterMigration, MAX_LEGS, MIGRATE_MIN_PROGRESS, LOADED_RADIUS,
   LOGS_NOT_FOUND_MAX, windowAdd, windowSum, windowPrune, ZONE_WINDOW_MS,
   zoneStateAfterFailedMigration, migrationEarlyExitOk, pruneFailedTargets, migrationArrivalOk,
   depletedForZone, migrationKeepWalking, migrationConfineGraceMs,
@@ -741,6 +741,18 @@ async function tryRegroup() {
 // tryRegroup, qui ne servait qu'après une mort : chef DÉTERMINISTE (tout le monde converge au même
 // point au lieu de se courir après) et seuil serré (64 blocs, 60 s) au lieu de 120 blocs / 2 min.
 let _lastSquadAt = 0;
+// But du planner EN COURS ({name, skill, at}) — lu par trySquad (timer) : NIVEAU MODULE (piège #56).
+// Posé/retiré par runSkillWithTelemetry autour de l'exécution réelle du skill.
+let _curGoal = null;
+let _squadSkipWhy = null;     // dernière raison `squad_skip` tracée (dédup au changement, anti-spam 20 s)
+let _squadSkipAt = 0;
+function noteSquadSkip(why, to) {
+  const t = Date.now();
+  if (why === _squadSkipWhy && t - _squadSkipAt < 5 * 60000) return;
+  _squadSkipWhy = why; _squadSkipAt = t;
+  emit({ type: 'squad_skip', why, to: to || null, goal: (_curGoal && _curGoal.name) || null,
+    y: (bot.entity && bot.entity.position) ? Math.round(bot.entity.position.y) : null });
+}
 async function trySquad() {
   if (!REGROUP || !presence) return { ok: false, reason: 'disabled' };
   if (isLumberjackObjective()) return { ok: false, reason: 'lumberjack' };   // jamais tiré au fond de la mine
@@ -770,8 +782,11 @@ async function trySquad() {
     self: { x: p.x, z: p.z, y: Math.round(p.y), ironZone: _zoneIronMined },
     selfName: bot.username, mates: presence.list(),
     armorComplete, busy, now: Date.now(), lastAt: _lastSquadAt,
+    // Mineur au fond / but de minage-descente-fonte → jamais arraché (regroup.squadHold, 21/10).
+    goal: _curGoal, onSkip: noteSquadSkip,
   });
   if (!pick) return { ok: false, reason: 'no_need' };
+  _squadSkipWhy = null;
   if (!isAllowed('/tpa ' + pick.name, whitelist)) {
     emit({ type: 'squad_blocked', to: pick.name });          // /tpa pas coché dans le profil serveur
     return { ok: false, reason: 'not_whitelisted' };
@@ -2780,7 +2795,10 @@ async function runGoalSkill(goal) {
           _tx = alt.x; _tz = alt.z;
         }
         emit({ type: 'descend_relocate', x: _tx, z: _tz, fails: _descendWaterFails });
-        try { await withTimeout(bot.pathfinder.goto(new pfGoals.GoalNear(_tx, Math.round(_p.y), _tz, 3)), 60000, () => { try { stopMotion(); } catch (e) {} }); } catch (e) {}
+        // GoalNearXZ, PAS GoalNear à l'altitude courante (piège #72b) : en terrain vallonné le but 3D
+        // était insatisfiable → NoPath instantané → le bot ne bougeait pas (vécu 21/10 : `descend_relocate`
+        // puis `unjam` au MÊME point (298,63,334), et le puits suivant re-percé au même endroit).
+        try { await withTimeout(bot.pathfinder.goto(new pfGoals.GoalNearXZ(_tx, _tz, 3)), 60000, () => { try { stopMotion(); } catch (e) {} }); } catch (e) {}
       }
     }
   }
@@ -2872,7 +2890,9 @@ async function runGoalSkill(goal) {
     }
     // `drop_ahead` (vide devant, pont impossible) : relancer du même point avec le même regard = même
     // échec garanti (vécu ×4 en 5 ms). Au 2e au même endroit on tourne, au 4e on se décale (dropAhead.js).
-    if (r && r.ok === false && r.reason === 'drop_ahead') await onDropAhead();
+    // `no_progress` / `max_depth` (21/10, NethBot3 : `max_depth` ×19 au même endroit en 10-20 s chacun —
+    // surplace, cf. descendDiagonal) sont POSITIONNELS comme `drop_ahead` : même règle de cap/décalage.
+    if (r && r.ok === false && DESCEND_POSITIONAL_RE.test(String(r.reason || ''))) await onDropAhead(r.reason);
     // suivi des échecs EAU → le pré-hook ci-dessus décale le prochain essai (anti re-perçage d'aquifère)
     if (r && r.ok === false && /water|flood|drown/i.test(String(r.reason || ''))) _descendWaterFails++;
     else if (r && r.ok) {
@@ -2881,7 +2901,7 @@ async function runGoalSkill(goal) {
       _workStuckTimes = [];
       // chantier profond atteint & SEC → mémoriser (les re-descentes suivantes = /home work, pas de creusage)
       if (NO_GIVE && !isInWater(bot)) { try { homewarp.bookmark(bot, HOME_WORK); } catch (e) {} _workSet = true; _workPos = _botXZ(); _workDrownTimes = []; emit({ type: 'work_bookmarked' }); }
-    } else if (NO_GIVE && _workSet && r && r.ok === false && /drop_ahead|max_depth|air_at_y|lava_ahead/i.test(String(r.reason || ''))) {
+    } else if (NO_GIVE && _workSet && r && r.ok === false && /drop_ahead|max_depth|no_progress|air_at_y|lava_ahead/i.test(String(r.reason || ''))) {
       // Le chantier mène en boucle à une impasse SÈCHE (grotte/vide/lave minée autour du puits) : miroir
       // SEC de workDrown (live NethBot4 world_mn9 : 15× descend_via_home_work→drop_ahead, 0 minerai).
       // Au seuil, on OUBLIE le chantier + on ARME le relocate (_descendWaterFails) → la re-descente creuse
@@ -3587,13 +3607,15 @@ let _needsWoodTrip = false;   // un échec a prouvé le manque de bois → la pr
  *  `pick_recovery:no_sticks` accuse la ZONE (pas de bois) et non le bot. */
 function noteZoneFailure(goalName, reason) {
   const kind = zoneFailureKind(goalName, reason);
+  // Un `timeout` de récolte de bois (logs, lj_stock…) pèse plus qu'un `not_found` (zone.zoneFailureWeight).
+  const w = zoneFailureWeight(goalName, reason) || 1;
   const now = Date.now();
   // Chaque échec alimente DEUX compteurs : le cumul de zone (verrou `noWood`, qui doit tenir
   // jusqu'à la migration) et la fenêtre glissante (le verdict, qui juge un DÉBIT).
   if (kind === 'water') { _zoneWaterFails += 1; _zoneWaterWin = windowAdd(_zoneWaterWin, 1, now); }
   else if (kind === 'wood') {
-    _zoneLogsNotFound += 1;
-    _zoneLogsWin = windowAdd(_zoneLogsWin, 1, now);
+    _zoneLogsNotFound += w;
+    _zoneLogsWin = windowAdd(_zoneLogsWin, w, now);
     _needsWoodTrip = true;
   }
 }
@@ -4588,7 +4610,9 @@ async function runSkillWithTelemetry(g) {
   // qu'il ait vraiment rendu la main avant de marcher.
   const run = (async () => {
     _skillInFlight++;
-    try { return await runGoalSkill(g); } finally { _skillInFlight--; }
+    const _cg = { name: g.name, skill: g.skill, at: _t0 };
+    _curGoal = _cg;                                           // lu par trySquad (squadHold)
+    try { return await runGoalSkill(g); } finally { _skillInFlight--; if (_curGoal === _cg) _curGoal = null; }
   })();
   const r = await withTimeout(run, timeoutFor(g.skill), () => { try { stopMotion(); } catch (e) {} });
   // Temps de MINAGE effectif : c'est le dénominateur du rendement de la zone (verdict 'exhausted').
@@ -6481,7 +6505,7 @@ async function mineForType(type, needed, opts = {}) {
       const yNow = (bot.entity && bot.entity.position) ? bot.entity.position.y : 999;
       if (yNow <= targetY + 2) break;                    // arrivé malgré le reason (edge)
       const why = (d && d.reason) || 'timeout';
-      if (why === 'lava_ahead' || why === 'water_ahead' || why === 'air_at_y_-50' || why === 'drop_ahead') {
+      if (why === 'lava_ahead' || why === 'water_ahead' || why === 'air_at_y_-50' || why === 'drop_ahead' || why === 'no_progress') {
         lavaTurns++;
         if (lavaTurns > 3) return { ok: false, reason: why };   // 4 cardinaux barrés → vraie impasse
         await aimSwingTo(((bot.entity && bot.entity.yaw) || 0) + Math.PI / 2, 0, 'turn');  // capture-clone E : swing humain si humanAim, sinon snap
@@ -9756,14 +9780,21 @@ function descentFoodGateCheck() {
   return r.allow;
 }
 
-/** Un `drop_ahead` vient d'arriver : 2e au même endroit → +90°, 4e → décalage 30-50 blocs à pied. */
-async function onDropAhead() {
+/** Échecs de descente POSITIONNELS : relancer du même point dans le même cap = même échec garanti. */
+const DESCEND_POSITIONAL_RE = /^(drop_ahead|no_progress|max_depth)$/;
+
+/** Un échec positionnel de descente (`drop_ahead`, `no_progress`, `max_depth`) vient d'arriver :
+ *  2e au même endroit → +90°, 4e → décalage 30-50 blocs à pied (dropAhead.js). */
+async function onDropAhead(reason = 'drop_ahead') {
   const p = bot.entity && bot.entity.position;
   if (!p) return;
   const here = { x: p.x, z: p.z };
   const n = noteDropAhead(_dropSites, here, Date.now());
   _dropSites = n.sites;
   if (n.action === 'none') return;
+  if (reason !== 'drop_ahead') {
+    emit({ type: 'descend_loop_break', reason, action: n.action, count: n.count, x: Math.round(here.x), z: Math.round(here.z) });
+  }
   if (n.action === 'turn') {
     const from = (_descendHeading && Date.now() - _descendHeading.at < DESCEND_HEADING_TTL_MS)
       ? _descendHeading.yaw : (bot.entity.yaw || 0);

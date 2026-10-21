@@ -1219,3 +1219,36 @@ test('index.js : migrationLegTo retente la jambe EN CREUSANT via legDigRetry, ev
   assert.ok(body.indexOf('canDig: false }, walkLeg') < body.indexOf('canDig: true }, walkLeg'), 'sans creuser D ABORD');
   assert.match(_src, /^const _legDigEmitted = new WeakSet\(\);/m, 'niveau MODULE (piège #56)');
 });
+
+// ─── TIMEOUT DE RÉCOLTE DE BOIS = ZONE RASÉE (21/10) ────────────────────────────────────────────
+// NethBot2 : `logs` 28,6 min (5 × timeout) ; bûcheron NethBot1 : `lj_stock` 63 min (timeouts, 13 morts).
+// Verdict pourtant `stay … logsNotFound:0` : ces échecs n'étaient pas comptés.
+test('timeout d une RÉCOLTE de bois (logs, lj_stock, plank_buffer…) → wood, pondéré', () => {
+  const { zoneFailureWeight, WOOD_TIMEOUT_WEIGHT } = require('./zone');
+  for (const g of ['logs', 'lj_stock', 'plank_buffer', 'gift_planks']) {
+    assert.strictEqual(zoneFailureKind(g, 'timeout'), 'wood', g);
+    assert.strictEqual(zoneFailureWeight(g, 'timeout'), WOOD_TIMEOUT_WEIGHT, g);
+  }
+  assert.strictEqual(zoneFailureKind('lj_stock', 'not_found'), 'wood');
+  assert.strictEqual(zoneFailureWeight('lj_stock', 'not_found'), 1);
+  // 3 timeouts de récolte en 20 min suffisent à franchir le seuil `wood` (8)
+  assert.ok(3 * WOOD_TIMEOUT_WEIGHT >= 8);
+});
+
+test('timeout hors récolte de bois (craft, four, minage) → n accuse PAS la zone', () => {
+  const { zoneFailureWeight } = require('./zone');
+  for (const g of ['crafting_table', 'sticks', 'furnace', 'iron_deep', 'descend_y16', 'spare_picks']) {
+    assert.strictEqual(zoneFailureKind(g, 'timeout'), null, g);
+    assert.strictEqual(zoneFailureWeight(g, 'timeout'), 0, g);
+  }
+  assert.strictEqual(zoneFailureKind('lj_stock', 'danger'), null);
+  assert.strictEqual(zoneFailureKind('lj_stock', 'cancelled'), null);
+});
+
+test('le verdict migre `wood` après 3 timeouts de récolte dans la fenêtre (bois : forêt la plus proche)', () => {
+  const { zoneFailureWeight } = require('./zone');
+  const logs = 3 * zoneFailureWeight('logs', 'timeout');
+  const v = zoneVerdict({ minutesInZone: 30, waterFails: 0, logsNotFound: logs, ironMined: 0,
+    miningMinutes: 0, depletedNear: 0, dryCellKnown: true, lastMigrationAt: 0, isNight: false, now: 1e12 });
+  assert.deepStrictEqual(v, { verdict: 'migrate', reason: 'wood' });
+});

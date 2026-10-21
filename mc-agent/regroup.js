@@ -125,13 +125,47 @@ function squadLeader({ selfName, mates, now, self, freshMs = FRESH_MS } = {}) {
   return best ? String(best.name) : null;
 }
 
+// ─── NE JAMAIS ARRACHER UN MINEUR DE SA MINE (21/10, run « zéro → armure de fer ») ──────────────
+// Mesuré : NethBot3 minait à y=15 (`iron_deep`) → `squad_join to:NethBot2 dist:81` → téléporté en
+// SURFACE à (299,65,335) (la présence du chef datait d'avant sa remontée) → `descend_y16` ×19
+// `max_depth` au nouvel endroit, 36 min perdues. Le /tpa de squad sert à NE PAS laisser un bot
+// traîner seul ; un bot qui est AU FOND ou qui est en train d'y aller/d'y produire est exactement
+// là où on le veut. Règles (PUR) :
+//   (a) sous terre (y < SQUAD_HOLD_Y) → jamais de /tpa de squad (il ne peut atterrir que plus haut,
+//       ou à un fond qu'il a déjà) ;
+//   (b) but courant de minage/descente/fonte → jamais, SAUF la règle catégorielle « chef mineur au
+//       fond + moi en surface ⇒ je descends » (le /tpa EST alors la descente, gratuite) ;
+//   (c) un chef en surface n'attire donc jamais un mineur : (a) le tient au fond, (b) en descente.
+const SQUAD_HOLD_Y = 50;
+const SQUAD_HOLD_SKILLS = new Set(['descendDiagonal', 'branchMine', 'caveIron', 'caveHunt',
+  'smeltIron', 'smeltCharcoal']);
+const SQUAD_HOLD_GOAL_RE = /^(descend|iron_|branch|smelt|cobble_lava|diamond)/;
+
+/** PUR — ce but est-il du minage/descente/fonte ? `goal` = {name, skill} ou null. */
+function isMiningGoal(goal) {
+  if (!goal) return false;
+  if (goal.skill && SQUAD_HOLD_SKILLS.has(String(goal.skill))) return true;
+  return !!(goal.name && SQUAD_HOLD_GOAL_RE.test(String(goal.name)));
+}
+
+/**
+ * PUR — raison de NE PAS rejoindre la squad, ou null.
+ * @param self {y?} · goal {name, skill} | null · leader : entrée de présence du chef (ou null)
+ * @returns 'underground' | 'mining_goal' | null
+ */
+function squadHold({ self, goal, leader } = {}) {
+  if (self && Number.isFinite(self.y) && self.y < SQUAD_HOLD_Y) return 'underground';
+  if (isMiningGoal(goal) && !(leader && _isWorkingMiner(leader))) return 'mining_goal';
+  return null;
+}
+
 /**
  * PUR — faut-il rejoindre la squad maintenant ? {name, dist} ou null.
  * null quand : je SUIS le chef · pas de chef · déjà assez près · cooldown · armure complète
  * (une fois équipé, la règle historique de Massii reste « chacun reprend sa route »).
  */
 function squadTarget({
-  self, selfName, mates, armorComplete, now, lastAt, busy,
+  self, selfName, mates, armorComplete, now, lastAt, busy, goal = null, onSkip = null,
   near = SQUAD_NEAR, cooldownMs = SQUAD_COOLDOWN_MS, freshMs = FRESH_MS,
 } = {}) {
   // busy = minage/tâche longue en cours. Piège #42c : tp'er un bot en plein goto rejette la
@@ -146,6 +180,12 @@ function squadTarget({
   const m = (mates || []).find((x) => x && x.name === leader
     && typeof x.x === 'number' && typeof x.z === 'number');
   if (!m) return null;
+  // Mineur au fond / en route vers le fond : on ne l'arrache pas (cf. squadHold). `onSkip` = trace.
+  const hold = squadHold({ self, goal, leader: m });
+  if (hold) {
+    if (typeof onSkip === 'function') { try { onSkip(hold, leader); } catch (e) { /* trace best-effort */ } }
+    return null;
+  }
   // ⚠️ LA VERTICALE COMPTE (mesuré live 27/07). `_d` est horizontale : un bot de SURFACE à 17
   // blocs à plat d'un mineur à y=12 était jugé « déjà assez près » — alors qu'il y a 44 blocs de
   // ROCHE entre eux et qu'il ne descendra jamais tout seul. C'est exactement ce que Massii
@@ -169,4 +209,5 @@ function squadTarget({
 module.exports = {
   pickRegroupTarget, FRESH_MS, MIN_FAR, COOLDOWN_MS,
   squadLeader, squadTarget, SQUAD_NEAR, SQUAD_COOLDOWN_MS, UNDERGROUND_Y,
+  squadHold, isMiningGoal, SQUAD_HOLD_Y,
 };

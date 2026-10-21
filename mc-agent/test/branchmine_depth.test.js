@@ -11,7 +11,7 @@ const assert = require('node:assert');
 const { branchMine } = require('../skills/branchMine');
 
 // Bot minimal : la porte ne lit que entity.position ; le probe post-porte = countWallable
-// (inventaire vide → cobble_low, préuve que la porte est PASSÉE sans lancer le minage réel).
+// (inventaire vide → no_pickaxe depuis le 21/10, preuve que la porte est PASSÉE sans lancer le minage réel).
 function fakeBot(y) {
   return {
     entity: { position: { x: 0, y, z: 0 }, yaw: 0 },
@@ -32,10 +32,10 @@ test('branchMine: trop PROFOND sans allowDeeper → wrong_depth (rétro-compat)'
   assert.strictEqual(r.reason, 'wrong_depth');
 });
 
-test('branchMine: trop profond AVEC allowDeeper → porte passée (probe cobble_low)', async () => {
+test('branchMine: trop profond AVEC allowDeeper → porte passée (probe no_pickaxe)', async () => {
   const r = await branchMine(fakeBot(4), { targetY: 16, allowDeeper: true });
   assert.strictEqual(r.ok, false);
-  assert.strictEqual(r.reason, 'cobble_low'); // ≠ wrong_depth : le minage au niveau courant est admis
+  assert.strictEqual(r.reason, 'no_pickaxe'); // ≠ wrong_depth : le minage au niveau courant est admis
 });
 
 test('branchMine: allowDeeper ne débloque PAS le trop-haut', async () => {
@@ -50,5 +50,5 @@ test('branchMine: allowDeeper a un PLANCHER bedrock (y < -59 → wrong_depth)', 
 
 test('branchMine: fenêtre historique intacte (y = targetY-6 passe sans flag)', async () => {
   const r = await branchMine(fakeBot(10), { targetY: 16 });
-  assert.strictEqual(r.reason, 'cobble_low');
+  assert.strictEqual(r.reason, 'no_pickaxe');
 });
