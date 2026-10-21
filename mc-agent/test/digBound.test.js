@@ -36,6 +36,40 @@ describe('boundedDig', () => {
     assert.ok(Date.now() - t0 < 1000);
     assert.equal(bot.stops, 1);
   });
+  it('un `forcedMove` qui ne déplace pas le bot (resync serveur, respawn confirm) est IGNORÉ — le creusage continue', async () => {
+    // Vécu live 21/10 (NethBot1, mort en boucle) : `forcedMove` émis par mineflayer sans que la position
+    // n'ait bougé (dist:0 dans l'event `shelter teleported`) — le creusage de l'abri était abandonné à
+    // tort juste après le respawn, précisément quand il est vital. Avec `bot.entity.position` connu,
+    // un `forcedMove` qui laisse la position quasi inchangée ne doit PAS être traité comme un téléport.
+    const bot = hangingBot();
+    bot.entity = { position: new Vec3(10.5, 64, 10.5) };
+    setTimeout(() => bot.emit('forcedMove'), 10);
+    const t0 = Date.now();
+    const r = await boundedDig(bot, { position: new Vec3(0, 0, 0) }, { timeoutMs: 60 });
+    // Le `forcedMove` n'a pas abouti à un abandon : on va jusqu'à la borne de temps (pas de sortie <1000ms
+    // sur 'teleported' puisqu'aucun déplacement réel n'a eu lieu).
+    assert.equal(r.reason, 'timeout');
+    assert.ok(Date.now() - t0 >= 50, 'ne doit pas sortir immédiatement sur un forcedMove sans déplacement');
+    assert.equal(bot.stops, 1);
+  });
+  it('un `forcedMove` qui déplace RÉELLEMENT le bot (vrai téléport) abandonne toujours sans attendre la borne', async () => {
+    const bot = hangingBot();
+    bot.entity = { position: new Vec3(10.5, 64, 10.5) };
+    setTimeout(() => { bot.entity.position = new Vec3(267.5, 58, 341.5); bot.emit('forcedMove'); }, 10);
+    const t0 = Date.now();
+    const r = await boundedDig(bot, { position: new Vec3(0, 0, 0) }, { timeoutMs: 15000 });
+    assert.equal(r.reason, 'teleported');
+    assert.ok(Date.now() - t0 < 1000);
+    assert.equal(bot.stops, 1);
+  });
+  it('sans `bot.entity` (contrat d\'origine, faux bots des tests) : tout forcedMove reste un téléport', async () => {
+    const bot = hangingBot();
+    setTimeout(() => bot.emit('forcedMove'), 10);
+    const t0 = Date.now();
+    const r = await boundedDig(bot, { position: new Vec3(0, 0, 0) }, { timeoutMs: 15000 });
+    assert.equal(r.reason, 'teleported');
+    assert.ok(Date.now() - t0 < 1000);
+  });
   it('abandonne quand le jeton est annulé', async () => {
     const bot = hangingBot();
     const token = { cancelled: false };
