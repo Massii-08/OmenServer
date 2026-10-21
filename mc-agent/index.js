@@ -4908,6 +4908,8 @@ async function runCaveIron() {
       placeTorch: () => _caveTorch(),
       // Le chantier EST la grotte : après une mort, `/home work` ramène ici (dette de mort à part).
       markWork: () => {
+        // Le bûcheron garde `work` sur son coin de coupe : une tranche de fer ne le déplace pas.
+        if (isLumberjackObjective()) return false;
         if (isInWater(bot)) return false;
         if (!homewarp.bookmark(bot, HOME_WORK)) return false;
         _workSet = true; _workPos = _botXZ();

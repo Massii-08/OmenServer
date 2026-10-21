@@ -58,6 +58,7 @@ function sandbox(o = {}) {
     taskToken: { cancelled: false },
     vec3Lib: (x, y, z) => ({ x, y, z }),
     isInWater: () => false,
+    isLumberjackObjective: () => false,
     homewarp: { bookmark: () => true },
     HOME_WORK: 'work', _workSet: false, _workPos: null, _botXZ: () => ({ x: 0, z: 0 }),
     caveIronSkill: async (opts) => { sb.captured = opts; return o.skillResult || { ok: true, mined: 4 }; },
