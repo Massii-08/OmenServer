@@ -210,6 +210,14 @@ function secureTactic(s = {}) {
 }
 
 const IMMINENT_HP = 6;
+
+/** PV au/sous le seuil imminent ? (pur, même seuil que classifyImminent). Health absent/NaN → false
+ *  (ne jamais bloquer sans donnée fiable). Sert de garde pour différer les actions qui désarment
+ *  le bot (ex. craftSmart coupe l'aura pendant la fenêtre de craft, cf. index.js:10059). */
+function isCriticalHealth(health, threshold = IMMINENT_HP) {
+  return typeof health === 'number' && !Number.isNaN(health) && health <= threshold;
+}
+
 function classifyImminent(s) {
   const h = s && s.health;
   if (typeof h !== 'number' || h > IMMINENT_HP) return null;
@@ -248,7 +256,7 @@ function dropsWithin(entities, center, radius) {
 module.exports = {
   bookmark, goHome, goSpawn, goSafe: goSpawn, goWork, delhome,
   sanitizeName, RESERVED, classifyImminent, dropsWithin,
-  IMMINENT_HP, isTpRefusal, refusedHome, effectiveVerdict, REFUSAL_DEGRADE_MS,
+  IMMINENT_HP, isCriticalHealth, isTpRefusal, refusedHome, effectiveVerdict, REFUSAL_DEGRADE_MS,
   isNoHomeSet, missingHome,
   isTpWarmup, isTpCancelled, isTpAlreadyPending, secureTactic,
 };

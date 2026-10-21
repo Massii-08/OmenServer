@@ -2141,7 +2141,19 @@ async function craftSmart(args) {
   try {
     const t0 = Date.now();
     let deferred = false;
-    while (craftCombatNow() && Date.now() - t0 < CRAFT_COMBAT_WAIT_MS) { deferred = true; await sleep(500); }
+    while (craftCombatNow() && !homewarp.isCriticalHealth(bot.health) && Date.now() - t0 < CRAFT_COMBAT_WAIT_MS) {
+      deferred = true; await sleep(500);
+    }
+    // PV CRITIQUES (fix 21/10, veille autonome) : `_craftDepth > 0` COUPE l'aura/équipement
+    // (index.js:10059, « coupe l'aura (equip/coup) ») — crafter désarme le bot pile quand il en a
+    // le plus besoin. Mesuré NethBot3 session-94 : craft torche déféré 2,5 s pendant un combat à
+    // 4,33 PV, exécuté dès que le combat redevient momentanément faux, mort ~500 ms après. Vérifié
+    // avant ET après le différé (les PV peuvent chuter PENDANT l'attente) : à PV critiques, aucun
+    // craft n'en vaut le prix.
+    if (homewarp.isCriticalHealth(bot.health)) {
+      _auraEmit('craft_skipped_low_hp', { name: args && args.name, health: bot.health, waited_ms: deferred ? Date.now() - t0 : 0 });
+      return { ok: false, reason: 'low_hp_skip' };
+    }
     if (deferred) _auraEmit('craft_deferred', { name: args && args.name, waited_ms: Date.now() - t0, combat: craftCombatNow() });
     const r = await _craftSmartRaw(args);
     // Échec : dire POURQUOI avec la matière en poche (les logs du 20/10 n'avaient que `no_recipe` /

@@ -10,6 +10,7 @@ const path = require('node:path');
 const vm = require('node:vm');
 const { isFleeHostile } = require('./skills/fleeFrom');
 const { NEUTRAL_NO_PROVOKE } = require('./survival');
+const homewarp = require('./homewarp');
 
 const SRC = fs.readFileSync(path.join(__dirname, 'index.js'), 'utf8');
 function grab(re, label) {
@@ -32,11 +33,12 @@ function sandbox({ entities = [], raw } = {}) {
     Date: { now: () => clock.t },
     sleep: async (ms) => { clock.t += ms; },
     setTimeout, clearTimeout, Promise,
-    isFleeHostile, NEUTRAL_NO_PROVOKE,
+    isFleeHostile, NEUTRAL_NO_PROVOKE, homewarp,
     bot: {
       entity: { position: { x: 0, y: 70, z: 0 } },
       entities: Object.fromEntries(entities.map((e, i) => [i, e])),
       pvp: { target: null },
+      health: 20,
       inventory: { items: () => [{ name: 'birch_planks', count: 1 }, { name: 'acacia_planks', count: 1 }, { name: 'dirt', count: 5 }], emptySlotCount: () => 0 },
     },
     _craftSmartRaw: raw || (async (a) => { sb.log.push('start:' + a.name); await Promise.resolve(); sb.log.push('end:' + a.name); return { ok: true }; }),
@@ -102,6 +104,40 @@ test('craftSmart : échec → craft_fail_ctx avec la matière PAR ESSENCE et les
   await assert.rejects(() => run(sb2, "craftSmart({ name: 'x' })"));
   assert.strictEqual(run(sb2, '_craftDepth'), 0, 'compteur rendu même sur exception');
   await assert.rejects(() => run(sb2, "craftSmart({ name: 'y' })"), 'la file n est pas bloquée : le craft suivant s exécute');
+});
+
+// PV CRITIQUES (fix 21/10, veille autonome, NethBot3 session-94) : craft torche déféré 2,5 s pendant
+// un combat à 4,33 PV, exécuté dès que le combat redevient momentanément faux → mort ~500 ms après
+// (crafter coupe l'aura, cf. test ci-dessous). Aucun craft ne doit partir à PV critiques (≤6, seuil
+// homewarp.IMMINENT_HP), ni au départ, ni après un différé où les PV auraient chuté entre-temps.
+test('craftSmart : PV critiques → craft SKIPPÉ (ni au départ, ni après un différé)', async () => {
+  const sb = sandbox({});
+  sb.bot.health = 4.5;
+  const r = await run(sb, "craftSmart({ name: 'torch' })");
+  assert.strictEqual(r.ok, false);
+  assert.strictEqual(r.reason, 'low_hp_skip');
+  assert.strictEqual(sb.log.length, 0, 'le craft RAW n a jamais démarré');
+  const ev = sb.events.find((e) => e.type === 'craft_skipped_low_hp');
+  assert.ok(ev && ev.name === 'torch' && ev.health === 4.5, JSON.stringify(ev));
+  assert.strictEqual(run(sb, '_craftDepth'), 0, 'compteur rendu même sur skip');
+
+  // Les PV chutent à critique PENDANT le différé combat (démarre à 20, un zombie à 3 blocs force
+  // l attente) : le craft ne doit PAS partir juste parce que le combat s est arrêté avant les PV.
+  const sb2 = sandbox({ entities: [zombie(3)] });
+  const origSleep = sb2.sleep;
+  sb2.sleep = async (ms) => { await origSleep(ms); if (sb2.clock.t >= 1000) sb2.bot.health = 5; };
+  const r2 = await run(sb2, "craftSmart({ name: 'torch' })");
+  assert.strictEqual(r2.ok, false);
+  assert.strictEqual(r2.reason, 'low_hp_skip');
+  assert.strictEqual(sb2.log.length, 0);
+});
+
+test('craftSmart : PV sains → aucun impact (non-régression)', async () => {
+  const sb = sandbox({});
+  sb.bot.health = 20;
+  const r = await run(sb, "craftSmart({ name: 'torch' })");
+  assert.strictEqual(r.ok, true);
+  assert.ok(!sb.events.some((e) => e.type === 'craft_skipped_low_hp'));
 });
 
 test('index.js : l aura et le /tpa de squad respectent un craft en cours', () => {

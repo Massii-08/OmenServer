@@ -3,7 +3,7 @@ const { test } = require('node:test');
 const assert = require('node:assert');
 const {
   bookmark, goHome, goSpawn, goWork, delhome, sanitizeName, RESERVED, classifyImminent, dropsWithin,
-  isTpRefusal, refusedHome, effectiveVerdict, isTpWarmup, isTpCancelled, secureTactic,
+  isTpRefusal, refusedHome, effectiveVerdict, isTpWarmup, isTpCancelled, secureTactic, isCriticalHealth,
 } = require('./homewarp');
 const { isForbiddenCheat } = require('./nogive');
 
@@ -336,4 +336,28 @@ test('goHome safe : sans veto installé (autres bots, tests) → comportement d 
   const bot = fakeBot();
   assert.strictEqual(goHome(bot, 'safe'), 'safe');
   assert.deepStrictEqual(bot.sent, ['/home safe']);
+});
+
+// ─── isCriticalHealth : garde HP critique pour craftSmart (NethBot3 session-94, 21/10) ───────────
+// Mesuré en veille autonome : NethBot3 fightait un skeleton à 4.33 PV, un craft de torche DÉFÉRÉ
+// 2.5 s s'est exécuté dès la fin du différé (combat redevenu false un instant) alors que les PV
+// restaient critiques — et `_craftDepth > 0` COUPE l'aura/équipement pendant tout le craft
+// (index.js:10059) : crafter à cet instant désarme le bot pile quand il en a le plus besoin. Mort
+// ~500 ms après le craft_deferred. isCriticalHealth réutilise le même seuil que classifyImminent
+// (IMMINENT_HP = 6).
+test('isCriticalHealth : PV au/sous le seuil imminent → true', () => {
+  assert.strictEqual(isCriticalHealth(6), true);
+  assert.strictEqual(isCriticalHealth(4.333333969116211), true);
+  assert.strictEqual(isCriticalHealth(0), true);
+});
+
+test('isCriticalHealth : PV au-dessus du seuil → false', () => {
+  assert.strictEqual(isCriticalHealth(6.001), false);
+  assert.strictEqual(isCriticalHealth(20), false);
+});
+
+test('isCriticalHealth : health absent/invalide → false (ne bloque jamais sans donnée fiable)', () => {
+  assert.strictEqual(isCriticalHealth(undefined), false);
+  assert.strictEqual(isCriticalHealth(null), false);
+  assert.strictEqual(isCriticalHealth(NaN), false);
 });
