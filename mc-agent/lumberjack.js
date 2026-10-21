@@ -373,7 +373,44 @@ function giftBatchFor({ target, ingots, pocket, brokenPocket, now } = {}) {
   return pickMapperForLumberjack({ mates: [target], selfName: null, now, ingots, pocket, brokenPocket });
 }
 
+// ─── BÛCHERON OISIF → FER (21/10) ─────────────────────────────────────────────────────────────────
+// Mesure (run de zéro du 21/10) : `lj_wait` = 64 min sur 303 (21 %) — le bûcheron, stock plein et
+// personne à servir, attendait par tranches de 5 min. Or c'est LUI qui fournit l'armure des
+// cartographes (gift_craft) et la sienne (lj_own_armor), toutes deux en LINGOTS. Un joueur dans sa
+// position irait chercher du fer pendant que les autres n'ont besoin de rien.
+// Tranche BORNÉE (4 min), PRÉEMPTÉE par toute demande de bois (câblage : index.js ljIronSlice) :
+//   'smelt' : du fer brut en poche et de quoi fondre (four en poche, ou 8 cobble pour en faire un) ;
+//   'cave'  : une grappe de fer EXPOSÉ connue (caveIron — le fer des parois de grotte, proche surface) ;
+//   null    : rien d'utile → l'attente historique.
+const LJ_IRON_TARGET = 24;              // un set complet de cartographe ; au-delà, le fer attend son forgeron
+const LJ_IRON_SLICE_MS = 240000;        // une tranche ; la demande de bois la coupe avant
+const LJ_IRON_RETRY_MS = 20000;         // entre deux tranches (anti boucle chaude sur un échec instantané)
+const LJ_IRON_CHECK_MS = 30000;         // pendant l'attente, on re-regarde s'il y a du fer à aller chercher
+const FURNACE_COBBLE = 8;
+const SMELT_BATCH = 4;
+
+/**
+ * PUR — que faire du temps mort du bûcheron ? sig = { rawIron, ingots, cobble, hasFurnace, hasStonePick,
+ * caveAvailable, nightLock, now, lastSliceAt }. → 'smelt' | 'cave' | null.
+ */
+function ljIronSlicePlan(sig = {}) {
+  const raw = Math.max(0, Number(sig.rawIron) || 0);
+  const ingots = Math.max(0, Number(sig.ingots) || 0);
+  const now = Number(sig.now) || 0;
+  if (now - (Number(sig.lastSliceAt) || 0) < LJ_IRON_RETRY_MS) return null;
+  // Fondre d'abord : quelques secondes de four, et c'est ce qui débloque les forges. Par lot de 4 (la
+  // pièce la moins chère) tant qu'une grotte reste à miner : chaque fonte brûle du stock de bois.
+  const canSmelt = sig.hasFurnace || (Number(sig.cobble) || 0) >= FURNACE_COBBLE;
+  if (canSmelt && (raw >= SMELT_BATCH || (raw > 0 && !sig.caveAvailable))) return 'smelt';
+  if (raw + ingots >= LJ_IRON_TARGET) return null;
+  if (sig.nightLock) return null;           // nu de nuit : la discipline de nuit garde la main
+  if (!sig.hasStonePick) return null;       // le fer exige une pioche pierre
+  if (!sig.caveAvailable) return null;
+  return 'cave';
+}
+
 module.exports = {
+  ljIronSlicePlan, LJ_IRON_TARGET, LJ_IRON_SLICE_MS, LJ_IRON_RETRY_MS, LJ_IRON_CHECK_MS,
   WOOD_REQUEST_TTL_MS, WOOD_REQUEST_COOLDOWN_MS, LUMBERJACK_FRESH_MS, WOOD_WANT_MIN, WOOD_WANT_MAX,
   LUMBERJACK_STOCK, LUMBERJACK_RESERVE, WOOD_MIN_GIFT,
   isWoodGoal, woodWantFor, logCount, activeLumberjack, woodWaitDecision, preferredLumberjack,

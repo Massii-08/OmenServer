@@ -68,6 +68,7 @@ const { _nearestTable, tableKey, tablePlan, TABLE_REACH, TABLE_SEEK, pickJunkToT
 const { placeBlockNear } = require('./skills/placeBlockNear');
 const { smelt, logsToConvert, fuelUnits } = require('./skills/smelt');
 const { descendDiagonal } = require('./skills/descendDiagonal');
+const { pickTier, stoneBatchWant, stoneStairPlan } = require('./stoneDig');
 const { pickWornOutToReport } = require('./wornOut');
 const { branchMine, floodFillVein } = require('./skills/branchMine');
 const { caveHunt } = require('./skills/caveHunt');   // cave-first diamant (Massii 26/07)
@@ -147,6 +148,7 @@ const {
   missingIronPieces, ownArmorAction, pickMapperForLumberjack, ljGiftReady,
   woodShortForFailure, giftBatchFor,
   stockFailsPrune, stockFailsAdd, needsForestTrip, forestTriedAdd, pickForestCell, LJ_FOREST_TRIP_MS,
+  ljIronSlicePlan, LJ_IRON_SLICE_MS, LJ_IRON_CHECK_MS,
 } = require('./lumberjack');
 const { tierRank } = require('./tools');
 const { createTeleportWatcher, wireTeleportDetection } = require('./teleport');
@@ -1372,8 +1374,15 @@ async function deliverWoodSkill() {
 async function lumberjackIdleSkill() {
   const t0 = Date.now();
   _ljEmit('lumberjack_idle', { stock: logCount(buildCtxInv(bot)) }, 300000);
+  let ironCheckAt = 0;
   while (Date.now() - t0 < LJ_IDLE_MAX_MS) {
     if (taskToken.cancelled || migrationOwnsBot()) return { ok: false, reason: 'cancelled' };
+    // TEMPS MORT → FER (21/10) : plutôt qu'attendre, une tranche de fer bornée et préemptable.
+    if (Date.now() - ironCheckAt >= LJ_IRON_CHECK_MS) {
+      ironCheckAt = Date.now();
+      const sliced = await ljIronSliceStep();
+      if (sliced) return sliced;
+    }
     await sleep(2000);
     if (logCount(buildCtxInv(bot)) < LUMBERJACK_STOCK) return { ok: true };   // stock entamé → refaire
     if (Date.now() - _ljAt >= LJ_CACHE_MS && _ljContext()) return { ok: true }; // une demande arrive
@@ -1382,6 +1391,88 @@ async function lumberjackIdleSkill() {
     if (worn < 2 && isNight(bot)) return { held: 'night' };                  // rendre la main à la discipline de nuit
   }
   return { held: 'idle' };
+}
+
+// ─── BÛCHERON OISIF → FER (21/10, cf. lumberjack.ljIronSlicePlan) ────────────────────────────────
+// Une TRANCHE : jeton DÉRIVÉ (annulé par le parent OU par la tranche elle-même) posé comme taskToken le
+// temps du skill — runCaveIron / smelt le capturent, floodFillVein et les goto le lisent. Un chien de
+// garde coupe la tranche dès qu'une demande de bois arrive (même test que l'attente historique) ou au
+// bout de LJ_IRON_SLICE_MS : `withTimeout` n'annulerait rien, le jeton, si. ⚠️ NIVEAU MODULE (#56).
+let _ljIronSliceAt = 0;
+
+/** Plan + exécution ; null si rien d'utile (l'attente historique reprend). */
+async function ljIronSliceStep() {
+  try {
+    const items = (bot.inventory && bot.inventory.items()) || [];
+    const n = (name) => items.reduce((s, i) => s + (i && i.name === name ? i.count : 0), 0);
+    let worn = 0;
+    try { worn = _wornArmor().size; } catch (e) { worn = 0; }
+    const act = ljIronSlicePlan({
+      rawIron: n('raw_iron'), ingots: n('iron_ingot'), cobble: n('cobblestone'),
+      hasFurnace: n('furnace') > 0,
+      hasStonePick: items.some((i) => i && /^(stone|iron|diamond|netherite)_pickaxe$/.test(i.name)),
+      caveAvailable: _ljCaveAvailable(),
+      nightLock: worn < 2 && bot.time && bot.time.timeOfDay != null && isNight(bot),
+      now: Date.now(), lastSliceAt: _ljIronSliceAt,
+    });
+    if (!act) return null;
+    return await ljIronSlice(act);
+  } catch (e) { return null; }
+}
+
+/** Grappe de fer exposé connue (même source que le but iron_cave). Jamais de throw. */
+function _ljCaveAvailable() {
+  try { return !!ironCaveCtx(); } catch (e) { return false; }
+}
+
+async function ljIronSlice(act) {
+  _ljIronSliceAt = Date.now();
+  const parent = taskToken;
+  let stop = false;
+  let why = null;
+  const slice = {
+    get cancelled() { return stop || !!(parent && parent.cancelled); },
+    set cancelled(v) { if (v) stop = true; },
+  };
+  const count = (name) => ((bot.inventory && bot.inventory.items()) || [])
+    .reduce((s, i) => s + (i && i.name === name ? i.count : 0), 0);
+  const t0 = Date.now();
+  const raw0 = count('raw_iron');
+  const ing0 = count('iron_ingot');
+  emit({ type: 'lj_iron_slice', phase: 'start', act });
+  taskToken = slice;
+  const watch = setInterval(() => {
+    if (stop) return;
+    if (Date.now() - t0 >= LJ_IRON_SLICE_MS) why = 'slice_time';
+    else if (Date.now() - _ljAt >= LJ_CACHE_MS && _ljContext()) why = 'wood_request';
+    else return;
+    stop = true;
+    try { stopMotion(); } catch (e) {}
+  }, 2000);
+  let r = null;
+  try {
+    if (act === 'smelt') {
+      if (count('furnace') < 1) {
+        const rf = await craftSmart({ name: 'furnace', count: 1 });
+        if (!(rf && rf.ok)) r = { ok: false, reason: 'no_furnace' };
+      }
+      if (!r && !slice.cancelled) r = await smeltWithFurnace('raw_iron', 'iron_ingot', count('raw_iron'));
+    } else {
+      r = await runCaveIron();
+    }
+  } catch (e) {
+    r = { ok: false, reason: 'error' };
+  } finally {
+    clearInterval(watch);
+    if (taskToken === slice) taskToken = parent;      // une préemption (migration) a pu le remplacer
+    _ljIronSliceAt = Date.now();                       // le répit anti boucle chaude part de la FIN
+  }
+  emit({ type: 'lj_iron_slice', phase: 'end', act, ok: !!(r && r.ok),
+    reason: why || (r && r.reason) || null, raw: count('raw_iron') - raw0, ingots: count('iron_ingot') - ing0,
+    took_s: Math.round((Date.now() - t0) / 1000) });
+  if (parent && parent.cancelled) return { ok: false, reason: 'cancelled' };
+  // Rien n'est un échec du rôle : le planner re-dérive (une demande de bois passe en tête de chaîne).
+  return { ok: true };
 }
 
 /**
@@ -2453,6 +2544,54 @@ function woodTripWanted(goal) {
 }
 
 // Dispatch d'un but de la chaîne vers le skill réel (0 token).
+// ─── PIERRE « COMME UN JOUEUR » (21/10, cf. stoneDig.js) ─────────────────────────────────────────
+// 1) ESCALIER : avec une pioche, on creuse un escalier 1×2 (descendDiagonal) jusqu'à avoir le LOT en
+//    poche — chaque palier mine la marche et la tête, la pierre tombe devant et se ramasse en avançant.
+//    Plus de collectBlock vers une pierre à 60 blocs dans une colline, plus d'exploration de surface.
+// 2) REPLI (eau/lave/vide devant, pas de pioche, déjà au fond) : l'ancien chemin, pour ce qui manque.
+async function gatherStone(goal) {
+  const tok = taskToken;                                   // CAPTURÉ (une préemption ne nous le vole pas)
+  const items = () => (bot.inventory && bot.inventory.items()) || [];
+  const cobble = () => items().reduce((n, i) => n + (i && i.name === 'cobblestone' ? i.count : 0), 0);
+  const count = Number(goal.args && goal.args.count) || 1;
+  const tier = pickTier(items());
+  const have0 = cobble();
+  const want = stoneBatchWant({ count, have: have0, tier, isMapper: IS_MAPPER });
+  const p = bot.entity && bot.entity.position;
+  const plan = stoneStairPlan({ y: p ? p.y : undefined, tier });
+  let got = 0;
+  if (plan) {
+    const t0 = Date.now();
+    let rs = null;
+    try {
+      rs = await descendDiagonal(bot, Object.assign({}, plan, {
+        stopWhen: () => cobble() - have0 >= want,
+        // Survie LÉGÈRE seulement (combat/fuite/manger) : ni torches (miner du charbon désaligne
+        // l'escalier, cf. descendDiagonal) ni tossJunk (il jetterait le cobble qu'on vient chercher).
+        onSurvivalTick: async () => {
+          try { await survivalTick(bot, { fleeFrom, emit }); } catch (e) {}
+          try { await eat(bot); } catch (e) {}
+        },
+        survivalEvery: 4,
+      }), tok);
+    } catch (e) { rs = { ok: false, reason: 'error' }; }
+    got = Math.max(0, cobble() - have0);
+    emit({ type: 'stone_stair', goal: goal.name, want, got, ok: !!(rs && rs.ok), reason: (rs && rs.reason) || null,
+      stopped: !!(rs && rs.stopped), took_ms: Date.now() - t0 });
+    if (tok.cancelled) return { ok: got > 0, got, cancelled: true };
+    if (got >= Math.min(want, count)) return { ok: true, got };
+  }
+  // Repli historique : pas de pierre visible ≤ 32 → creuser 4 blocs puis miner sur place.
+  const def = bot.registry.blocksByName.stone;
+  if (def && !bot.findBlock({ matching: [def.id], maxDistance: 32 })) {
+    await mineDown(bot, { count: 4, land: true }, tok);   // `count` (pas `depth`, ignoré : 1 seul bloc creusé) + atterrissage entre deux coups
+    if (tok.cancelled) return { ok: false, reason: 'cancelled' };
+  }
+  const r = await gather(bot, { ...goal.args, count: Math.max(1, count - got), explore: true }, tok);
+  if (got > 0 && r && r.ok === false) return { ok: true, got };   // le lot partiel de l'escalier compte
+  return r;
+}
+
 async function runGoalSkill(goal) {
   // #1 retours live : coincé dans l'eau → s'en sortir AVANT de tenter le skill (sinon le pathfinder
   // rame dans l'angle jusqu'au timeout, le planner re-dérive, et ça recommence).
@@ -2631,13 +2770,7 @@ async function runGoalSkill(goal) {
   if (goal.skill === 'gather') {
     // PIERRE : inutile de roamer (timeouts ×3 vécus Surv6) — la couche de pierre est à 3-5 blocs
     // sous l'herbe PARTOUT → pas de pierre visible ≤32 ? on creuse 4 blocs et on mine sur place.
-    if (goal.args.name === 'stone') {
-      const def = bot.registry.blocksByName.stone;
-      if (def && !bot.findBlock({ matching: [def.id], maxDistance: 32 })) {
-        await mineDown(bot, { count: 4, land: true }, taskToken);   // `count` (pas `depth`, ignoré : 1 seul bloc creusé) + atterrissage entre deux coups
-        if (taskToken.cancelled) return { ok: false, reason: 'cancelled' };
-      }
-    }
+    if (goal.args.name === 'stone') return gatherStone(goal);
     return gather(bot, { ...goal.args, explore: true }, taskToken);
   }
   if (goal.skill === 'craftPlanks') {

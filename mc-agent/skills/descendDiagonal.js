@@ -61,7 +61,10 @@ function buildGoal(x, y, z) {
   return { x, y, z };
 }
 
-async function descendDiagonal(bot, { targetY = -54, maxDepth = 200, onSurvivalTick = null, survivalEvery = 4 } = {}, token = null) {
+// `stopWhen` (optionnel, () => bool, 21/10) : relu avant CHAQUE palier ; vrai → on s'arrête net avec
+// {ok:true, stopped:true}. Sert à l'escalier « pierre » (stoneDig.js) : un joueur qui veut 30 cobble
+// creuse un escalier jusqu'à les avoir, il ne descend pas jusqu'à Y16. Un prédicat qui lève = « non ».
+async function descendDiagonal(bot, { targetY = -54, maxDepth = 200, onSurvivalTick = null, survivalEvery = 4, stopWhen = null } = {}, token = null) {
   let reachedY = bot.entity && bot.entity.position ? bot.entity.position.y : 0;
   if (reachedY <= targetY) return { ok: true, reachedY };
 
@@ -71,6 +74,11 @@ async function descendDiagonal(bot, { targetY = -54, maxDepth = 200, onSurvivalT
 
   while (steps < maxDepth) {
     if (token && token.cancelled) return { ok: true, reachedY, cancelled: true };
+    if (typeof stopWhen === 'function') {
+      let stop = false;
+      try { stop = !!stopWhen(); } catch (e) { stop = false; }
+      if (stop) return { ok: true, reachedY: bot.entity.position.y, stopped: true };
+    }
     // SURVIE PENDANT LA DESCENTE (hole E / bug review #7) : la descente Y64→-58 dure plusieurs minutes,
     // pendant lesquelles AUCUNE survie ne tournait (réflexes event-driven seuls). Hook LÉGER tous les
     // survivalEvery paliers : combat/fuite/manger UNIQUEMENT (l'appelant n'y met PAS ensureTorches —

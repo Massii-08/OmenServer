@@ -90,6 +90,8 @@ function sandbox(o = {}) {
     pickWoodRequest: L.pickWoodRequest, tossPlan: L.tossPlan,
     pickJunkToToss: require('./skills/craft').pickJunkToToss,
     WOOD_REQUEST_TTL_MS: L.WOOD_REQUEST_TTL_MS, WOOD_MIN_GIFT: L.WOOD_MIN_GIFT, LUMBERJACK_STOCK: L.LUMBERJACK_STOCK,
+    // temps mort → fer (21/10) : testé dans index.ljiron.test.js ; ici « rien d'utile » = attente historique
+    ljIronSliceStep: async () => (o.slice ? o.slice() : null), LJ_IRON_CHECK_MS: L.LJ_IRON_CHECK_MS,
   };
   sb._teamClaims = o.noClaims ? null : fakeClaims(sb);
   vm.createContext(sb);

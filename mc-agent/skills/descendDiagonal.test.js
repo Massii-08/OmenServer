@@ -207,3 +207,20 @@ test('descendDiagonal : chute finissant dans l\'EAU sans pont -> water_ahead (JA
   assert.strictEqual(r.ok, false);
   assert.strictEqual(r.reason, 'water_ahead');
 });
+
+test('descendDiagonal : stopWhen vrai → arrêt net avec stopped:true (escalier « jusqu\'à N cobble », 21/10)', async () => {
+  const { bot, calls } = makeBot({ startY: 64 });
+  let checks = 0;
+  const r = await descendDiagonal(bot, { targetY: 20, maxDepth: 40, stopWhen: () => (++checks) > 3 });
+  assert.strictEqual(r.ok, true);
+  assert.strictEqual(r.stopped, true);
+  assert.ok(calls.dig.length > 0 && calls.dig.length <= 6, `3 paliers creusés au plus (digs=${calls.dig.length})`);
+  assert.ok(r.reachedY > 58, `reachedY=${r.reachedY}`);
+});
+
+test('descendDiagonal : stopWhen qui lève = ignoré (best-effort, la descente continue)', async () => {
+  const { bot } = makeBot({ startY: 10 });
+  const r = await descendDiagonal(bot, { targetY: 5, maxDepth: 20, stopWhen: () => { throw new Error('x'); } });
+  assert.strictEqual(r.ok, true);
+  assert.ok(!r.stopped);
+});

@@ -1,0 +1,116 @@
+'use strict';
+// CÂBLAGE « bûcheron oisif → fer » (21/10) : vrai texte de ljIronSliceStep / ljIronSlice (index.js) dans
+// un bac à sable vm strict. La décision pure est testée dans lumberjack.test.js (ljIronSlicePlan).
+const test = require('node:test');
+const assert = require('node:assert');
+const fs = require('node:fs');
+const path = require('node:path');
+const vm = require('node:vm');
+const L = require('./lumberjack');
+
+const SRC = fs.readFileSync(path.join(__dirname, 'index.js'), 'utf8');
+const grab = (re, label) => { const m = SRC.match(re); assert.ok(m, `${label} introuvable au niveau module`); return m[0]; };
+const fnSrc = (name) => grab(new RegExp(`^(?:async )?function ${name}\\([^)]*\\) \\{[\\s\\S]*?^\\}$`, 'm'), name);
+const letSrc = (name) => grab(new RegExp(`^let ${name} = [^;]+;`, 'm'), name);
+const T0 = 1_800_000_000_000;
+
+function sandbox(o = {}) {
+  const clock = { t: T0 };
+  const sb = {
+    events: [], calls: [], clock,
+    emit(e) { sb.events.push(e); },
+    Date: { now: () => clock.t }, Object, Math, Number, Promise, Set,
+    items: (o.items || []).map((i) => Object.assign({}, i)),
+    _tick: null,
+    setInterval: (fn) => { sb._tick = fn; return 1; },
+    clearInterval: () => { sb._tick = null; sb.calls.push('clearInterval'); },
+    sleep: async (ms) => { clock.t += ms; if (sb._tick) sb._tick(); },
+    taskToken: { cancelled: false },
+    _ljAt: 0, LJ_CACHE_MS: 10000,
+    _ljContext: () => (o.requestAt != null && clock.t >= o.requestAt ? { to: 'NethBot1' } : null),
+    stopMotion: () => sb.calls.push('stop'),
+    _wornArmor: () => new Set(o.worn || []),
+    isNight: () => !!o.night,
+    ironCaveCtx: () => (o.cave === false ? null : { key: 'c1' }),
+    ljIronSlicePlan: L.ljIronSlicePlan, LJ_IRON_SLICE_MS: L.LJ_IRON_SLICE_MS,
+    // grotte : mine 1 fer toutes les 10 s tant que le jeton CAPTURÉ n'est pas annulé
+    runCaveIron: async () => {
+      const tok = sb.taskToken;
+      sb.calls.push('cave');
+      while (!tok.cancelled) {
+        await sb.sleep(10000);
+        if (!tok.cancelled) { const r = sb.items.find((i) => i.name === 'raw_iron'); if (r) r.count++; else sb.items.push({ name: 'raw_iron', count: 1 }); }
+        if (clock.t - T0 > 3600000) throw new Error('jamais annulé');
+      }
+      return { ok: true };
+    },
+    craftSmart: async (a) => { sb.calls.push('craft:' + a.name); if (o.furnaceCraft === false) return { ok: false }; sb.items.push({ name: 'furnace', count: 1 }); return { ok: true }; },
+    smeltWithFurnace: async (i, out, n) => {
+      sb.calls.push(['smelt', i, n]);
+      const r = sb.items.find((x) => x.name === 'raw_iron'); r.count -= n;
+      sb.items.push({ name: 'iron_ingot', count: n });
+      return { ok: true };
+    },
+    bot: { time: { timeOfDay: 6000 }, inventory: { items: () => sb.items.filter((i) => i.count > 0) } },
+  };
+  vm.createContext(sb);
+  vm.runInContext("'use strict';\n" + letSrc('_ljIronSliceAt'), sb);
+  for (const f of ['ljIronSliceStep', '_ljCaveAvailable', 'ljIronSlice']) vm.runInContext("'use strict';\n" + fnSrc(f), sb);
+  vm.runInContext('globalThis.__get = (n) => eval(n);', sb);
+  return sb;
+}
+const run = (sb, code) => vm.runInContext(code, sb);
+const PICK = { name: 'stone_pickaxe', count: 1 };
+
+test('grotte connue : tranche lancée, coupée par une DEMANDE DE BOIS, jeton parent rendu', async () => {
+  const sb = sandbox({ items: [PICK], requestAt: T0 + 60000 });
+  const parent = sb.taskToken;
+  const r = await run(sb, 'ljIronSliceStep()');
+  assert.deepStrictEqual(JSON.parse(JSON.stringify(r)), { ok: true });
+  assert.strictEqual(sb.taskToken, parent, 'taskToken restauré');
+  assert.ok(sb.calls.includes('stop') && sb.calls.includes('clearInterval'));
+  const end = sb.events.find((e) => e.type === 'lj_iron_slice' && e.phase === 'end');
+  assert.strictEqual(end.reason, 'wood_request');
+  assert.ok(end.raw >= 4, `fer miné pendant la tranche (${end.raw})`);
+  assert.ok(sb.clock.t - T0 < 120000, 'coupée vite après la demande');
+});
+
+test('sans demande : la tranche s\'arrête au bout de LJ_IRON_SLICE_MS (borne), puis cooldown', async () => {
+  const sb = sandbox({ items: [PICK] });
+  await run(sb, 'ljIronSliceStep()');
+  const end = sb.events.find((e) => e.type === 'lj_iron_slice' && e.phase === 'end');
+  assert.strictEqual(end.reason, 'slice_time');
+  assert.ok(sb.clock.t - T0 >= L.LJ_IRON_SLICE_MS && sb.clock.t - T0 < L.LJ_IRON_SLICE_MS + 15000);
+  assert.strictEqual(await run(sb, 'ljIronSliceStep()'), null, 'retry immédiat refusé');
+});
+
+test('fer brut en poche, pas de four mais 8 cobble → craft du four puis fonte de TOUT le brut', async () => {
+  const sb = sandbox({ items: [PICK, { name: 'raw_iron', count: 5 }, { name: 'cobblestone', count: 8 }] });
+  await run(sb, 'ljIronSliceStep()');
+  assert.deepStrictEqual(sb.calls.filter((c) => c !== 'clearInterval'), ['craft:furnace', ['smelt', 'raw_iron', 5]]);
+  const end = sb.events.find((e) => e.type === 'lj_iron_slice' && e.phase === 'end');
+  assert.strictEqual(end.act, 'smelt');
+  assert.strictEqual(end.ingots, 5);
+});
+
+test('rien d\'utile (pas de grotte, pas de fer) / nu de nuit → null : l\'attente historique reprend', async () => {
+  assert.strictEqual(await run(sandbox({ items: [PICK], cave: false }), 'ljIronSliceStep()'), null);
+  assert.strictEqual(await run(sandbox({ items: [PICK], night: true }), 'ljIronSliceStep()'), null);
+  assert.strictEqual(await run(sandbox({ items: [] }), 'ljIronSliceStep()'), null, 'sans pioche pierre');
+});
+
+test('préemption (migration) pendant la tranche : jeton remplacé jamais écrasé, retour cancelled', async () => {
+  const sb = sandbox({ items: [PICK] });
+  const parent = sb.taskToken;
+  const mig = { cancelled: false, mig: true };
+  sb.runCaveIron = async () => { const tok = sb.taskToken; parent.cancelled = true; sb.taskToken = mig; return tok.cancelled ? { ok: false, reason: 'cancelled' } : { ok: true }; };
+  const r = await run(sb, 'ljIronSliceStep()');
+  assert.deepStrictEqual(JSON.parse(JSON.stringify(r)), { ok: false, reason: 'cancelled' });
+  assert.strictEqual(sb.taskToken, mig, 'le jeton de la migration reste en place');
+});
+
+test('câblage : lumberjackIdleSkill consulte ljIronSliceStep pendant l\'attente', () => {
+  const src = fnSrc('lumberjackIdleSkill');
+  assert.match(src, /await ljIronSliceStep\(\)/);
+  assert.match(SRC, /^let _ljIronSliceAt = 0;/m);
+});

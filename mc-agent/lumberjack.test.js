@@ -281,3 +281,29 @@ test('giftBatchFor : rien d’abordable → null ; pièce déjà en poche = grat
   assert.strictEqual(b.ingots, 0);
   assert.strictEqual(giftBatchFor({ target: null, ingots: 20, now }), null);
 });
+
+// ─── bûcheron oisif → fer (21/10) ─────────────────────────────────────────────────────────────────
+{
+  const base = { rawIron: 0, ingots: 0, cobble: 0, hasFurnace: false, hasStonePick: true, caveAvailable: true,
+    nightLock: false, now: 1e6, lastSliceAt: 0 };
+  test('ljIronSlicePlan : fer brut + four (ou 8 cobble) → fondre d\'abord', () => {
+    assert.strictEqual(L.ljIronSlicePlan({ ...base, rawIron: 4, hasFurnace: true }), 'smelt');
+    assert.strictEqual(L.ljIronSlicePlan({ ...base, rawIron: 4, cobble: 8 }), 'smelt');
+    assert.strictEqual(L.ljIronSlicePlan({ ...base, rawIron: 4, cobble: 7 }), 'cave', 'pas de quoi fondre → miner encore');
+    assert.strictEqual(L.ljIronSlicePlan({ ...base, rawIron: 3, hasFurnace: true }), 'cave', 'lot de 4 tant qu\'une grotte reste');
+    assert.strictEqual(L.ljIronSlicePlan({ ...base, rawIron: 3, hasFurnace: true, caveAvailable: false }), 'smelt', 'plus de grotte → fondre le reste');
+    assert.strictEqual(L.ljIronSlicePlan({ ...base, rawIron: 4, hasFurnace: true, nightLock: true }), 'smelt', 'fondre se fait dans l\'abri');
+  });
+  test('ljIronSlicePlan : grappe connue + pioche pierre + jour → grotte', () => {
+    assert.strictEqual(L.ljIronSlicePlan(base), 'cave');
+    assert.strictEqual(L.ljIronSlicePlan({ ...base, caveAvailable: false }), null);
+    assert.strictEqual(L.ljIronSlicePlan({ ...base, hasStonePick: false }), null);
+    assert.strictEqual(L.ljIronSlicePlan({ ...base, nightLock: true }), null);
+  });
+  test('ljIronSlicePlan : assez de fer → rien ; tranche récente → rien (anti boucle chaude)', () => {
+    assert.strictEqual(L.ljIronSlicePlan({ ...base, ingots: 20, rawIron: 4 }), null, '24 en poche, rien pour fondre');
+    assert.strictEqual(L.ljIronSlicePlan({ ...base, ingots: 24 }), null);
+    assert.strictEqual(L.ljIronSlicePlan({ ...base, lastSliceAt: base.now - 5000 }), null);
+    assert.strictEqual(L.ljIronSlicePlan({ ...base, lastSliceAt: base.now - 25000 }), 'cave');
+  });
+}
