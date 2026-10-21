@@ -151,3 +151,55 @@ test('disjoncteur unreachable : 2 échecs → cible, 3 → null, repos écoulé 
   assert.ok(C.pickIronCave(target, FROM, { now, fails: mk(['unreachable', 'unreachable', 'unreachable'], [25 * MIN, 12 * MIN, MIN]) }));
   assert.strictEqual(C.CAVE_MAX_DIST, 80);
 });
+
+// ── ACCÈS PLAUSIBLE + ESCALADE (21/10, mesure 3 h : 25 `unreachable` sur 32 cibles, 11 à > 24 blocs
+// en vertical du bot ; mêmes grappes reprises toutes les 30 min — (79,11,-44) ×4).
+test('accès plausible : grappe à > 24 blocs en vertical exclue, sauf entrée de grotte ouverte connue près d\'elle', () => {
+  const deep = wall(20, 30, 0, 4);                       // 34 blocs sous le bot (y 64)
+  assert.strictEqual(C.pickIronCave(deep, FROM), null);
+  assert.ok(C.pickIronCave(wall(20, 40, 0, 4), FROM), '24 blocs : accepté');
+  const above = wall(20, 90, 0, 4);                      // 26 au-dessus : même règle
+  assert.strictEqual(C.pickIronCave(above, FROM), null);
+  // entrée connue (worlds.<w>.caves {x,y,z,at,flooded}) à ≤ 32 blocs en XZ, au-dessus de la grappe
+  const caves = [{ x: 30, y: 62, z: 10, at: 't', flooded: false }];
+  assert.ok(C.pickIronCave(deep, FROM, { caves }));
+  // inondée, trop loin, ou SOUS la grappe : ne compte pas
+  assert.strictEqual(C.pickIronCave(deep, FROM, { caves: [{ x: 30, y: 62, z: 10, flooded: true }] }), null);
+  assert.strictEqual(C.pickIronCave(deep, FROM, { caves: [{ x: 90, y: 62, z: 10, flooded: false }] }), null);
+  assert.strictEqual(C.pickIronCave(deep, FROM, { caves: [{ x: 30, y: 10, z: 10, flooded: false }] }), null);
+  assert.strictEqual(C.pickIronCave(deep, FROM, { caves: [null, { x: 'a' }] }), null);
+  assert.strictEqual(C.CAVE_ACCESS_DY, 24);
+});
+
+test('caveAccessible : PUR, entrées absurdes → false', () => {
+  assert.strictEqual(C.caveAccessible({ x: 0, y: 30, z: 0 }, { x: 0, y: 64, z: 0 }, null), false);
+  assert.strictEqual(C.caveAccessible({ x: 0, y: 50, z: 0 }, { x: 0, y: 64, z: 0 }, null), true);
+  assert.strictEqual(C.caveAccessible(null, { x: 0, y: 64, z: 0 }, []), false);
+});
+
+test('escalade : 2e déclenchement du disjoncteur en 2 h → grottes désactivées 2 h', () => {
+  const H = 3600_000, MIN = 60_000;
+  const t0 = 100 * H;
+  // 1er déclenchement (repos jusqu'à t0+20min)
+  let trips = C.caveBreakerNote([], t0 + C.CAVE_COOLDOWN_MS, t0);
+  assert.strictEqual(trips.length, 1);
+  assert.strictEqual(C.caveDisabledUntil(trips, t0), 0, 'un seul déclenchement : repos simple');
+  // le même repos revu à chaque pas du planner : pas un nouveau déclenchement
+  trips = C.caveBreakerNote(trips, t0 + C.CAVE_COOLDOWN_MS, t0 + 5 * MIN);
+  trips = C.caveBreakerNote(trips, t0 + C.CAVE_COOLDOWN_MS + 3 * MIN, t0 + 6 * MIN);   // until prolongé = même repos
+  assert.strictEqual(trips.length, 1);
+  // 2e déclenchement 1 h plus tard → désactivé 2 h à compter de lui
+  const t1 = t0 + H;
+  trips = C.caveBreakerNote(trips, t1 + C.CAVE_COOLDOWN_MS, t1);
+  assert.strictEqual(trips.length, 2);
+  assert.strictEqual(C.caveDisabledUntil(trips, t1), t1 + C.CAVE_DISABLE_MS);
+  assert.ok(C.caveDisabledUntil(trips, t1 + C.CAVE_DISABLE_MS - 1) > 0);
+  assert.strictEqual(C.caveDisabledUntil(trips, t1 + C.CAVE_DISABLE_MS + 1), 0, 'au bout de 2 h : retour');
+  // deux déclenchements espacés de plus de 2 h : pas d'escalade
+  let far = C.caveBreakerNote([], t0 + C.CAVE_COOLDOWN_MS, t0);
+  far = C.caveBreakerNote(far, t0 + 3 * H + C.CAVE_COOLDOWN_MS, t0 + 3 * H);
+  assert.strictEqual(C.caveDisabledUntil(far, t0 + 3 * H), 0);
+  // entrées absurdes / futur
+  assert.deepStrictEqual(C.caveBreakerNote(null, 0, t0), []);
+  assert.strictEqual(C.caveDisabledUntil([{ at: t0 + H, until: 0 }, { at: 'x' }], t0), 0);
+});

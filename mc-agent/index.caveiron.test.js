@@ -35,7 +35,8 @@ function sandbox(o = {}) {
     caveIronPick,
     args: { 'world-memory': '/tmp/wm.json' },
     // Forme EXACTE du fichier écrit par le backend (mc_agent_world_memory.add_ore).
-    loadMemory: () => ({ worlds: { overworld: { ores: o.ores || [] } } }),
+    // + `caves` (mc_agent_world_memory.add_cave : {x,y,z,at,flooded}).
+    loadMemory: () => ({ worlds: { overworld: { ores: o.ores || [], caves: o.caves || [] } } }),
     world: { objective: { type: o.objective || 'iron_armor', status: 'in_progress' } },
     CONFINE: o.confine || null, _confineDyn: null,
     items: o.items || [{ name: 'stone_pickaxe', count: 1 }],
@@ -65,7 +66,8 @@ function sandbox(o = {}) {
   };
   vm.createContext(sb);
   run(sb, [constSrc('IRON_CAVE_CACHE_MS'), letSrc('_ironCaveCache'), constSrc('IRON_CAVE_OBJECTIVES'),
-    fnSrc('_caveInvTier'), fnSrc('_caveWorldOres'), fnSrc('loadCaveFails'), fnSrc('noteCaveTried'),
+    letSrc('_caveCooldownEmitted'), letSrc('_caveDisabledEmitted'),
+    fnSrc('_caveInvTier'), fnSrc('_caveWorld'), fnSrc('_caveWorldOres'), fnSrc('loadCaveFails'), fnSrc('noteCaveTried'),
     fnSrc('ironCaveCtx'), fnSrc('runCaveIron'),
     'this.ironCaveCtx = ironCaveCtx; this.runCaveIron = runCaveIron; this.noteCaveTried = noteCaveTried;',
     'this.resetCache = () => { _ironCaveCache = { at: 0, cave: null }; };'].join('\n'));
@@ -172,6 +174,41 @@ test('runCaveIron : sondes passées au skill (état du minerai, vue, home work)'
   const sb2 = sandbox({ ores: GRAPPE, canSee: false });
   await sb2.runCaveIron();
   assert.strictEqual(sb2.captured.canSee({ x: 20, y: 50, z: 0 }), false);
+});
+
+// ── 21/10 : accès plausible + escalade du disjoncteur ──
+const DEEP = [ore(20, 20, 0), ore(22, 20, 0), ore(24, 21, 1)];          // 44 blocs sous le bot (y 64)
+
+test('ironCaveCtx : grappe à > 24 blocs en vertical ignorée, sauf entrée de grotte connue (worlds.<w>.caves)', () => {
+  assert.strictEqual(sandbox({ ores: DEEP }).ironCaveCtx(), null);
+  assert.ok(sandbox({ ores: DEEP, caves: [{ x: 25, y: 60, z: 5, at: 'x', flooded: false }] }).ironCaveCtx());
+  assert.strictEqual(sandbox({ ores: DEEP, caves: [{ x: 25, y: 60, z: 5, at: 'x', flooded: true }] }).ironCaveCtx(), null);
+});
+
+test('ironCaveCtx : 2e repos du disjoncteur en 2 h → iron_cave coupé 2 h, persisté (survit au respawn)', () => {
+  const MIN = 60_000;
+  const unreach = (ago, x) => ({ x, y: 64, z: 0, key: 'k' + x, why: 'unreachable', at: T0 - ago });
+  // 1er déclenchement il y a 1 h, déjà persisté ; 3 nouveaux échecs maintenant → 2e déclenchement
+  const base = { keep: 1, caveBreaks: [{ at: T0 - 60 * MIN, until: T0 - 40 * MIN }],
+    caveFails: [unreach(4 * MIN, 500), unreach(2 * MIN, 550), unreach(MIN, 600)] };
+  const sb = sandbox({ ores: GRAPPE, base });
+  assert.strictEqual(sb.ironCaveCtx(), null);
+  assert.strictEqual(sb.base.caveBreaks.length, 2);
+  assert.strictEqual(sb.base.keep, 1, 'mémo fusionné');
+  const ev = sb.events.find((e) => e.type === 'cave_disabled');
+  assert.ok(ev && ev.until > T0 + 100 * MIN);
+  // process neuf (respawn), échecs expirés : toujours coupé grâce au mémo
+  const sb2 = sandbox({ ores: GRAPPE, base: { caveBreaks: sb.base.caveBreaks } });
+  sb2.clock.t = T0 + 60 * MIN;
+  assert.strictEqual(sb2.ironCaveCtx(), null);
+  sb2.clock.t = T0 + caveIronPick.CAVE_DISABLE_MS + 1000;
+  sb2.resetCache();
+  assert.ok(sb2.ironCaveCtx(), 'au bout de 2 h, les grottes reviennent');
+  // un seul déclenchement : repos simple, pas de coupure
+  const sb3 = sandbox({ ores: GRAPPE, base: { caveFails: [unreach(4 * MIN, 500), unreach(2 * MIN, 550), unreach(MIN, 600)] } });
+  assert.strictEqual(sb3.ironCaveCtx(), null);
+  assert.strictEqual(sb3.base.caveBreaks.length, 1);
+  assert.ok(!sb3.events.some((e) => e.type === 'cave_disabled'));
 });
 
 test('dispatch : runGoalSkill route caveIron, armure avant la grotte, timeout déclaré', () => {

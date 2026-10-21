@@ -77,24 +77,51 @@ function woodWaitDecision({ isLumberjack, isMapper, lumberjack, request, timedOu
   return { action: 'wait', remainingMs: ttlMs - age };
 }
 
+// ÉLIGIBILITÉ (mesure 3 h, 21/10) : NethBot1 élu bûcheron à 0 pièce — 112 min en `lj_stock` (65 % du
+// temps), 16 morts, 135 abris, 18 tranches de fer sans UNE pièce d'armure. Un bûcheron nu en surface
+// en Hard meurt en boucle et ne livre rien. On n'élit donc qu'un ouvrier dont l'armure de fer est
+// COMPLÈTE ET PORTÉE ; tant que personne ne l'est, pas de bûcheron (chacun suit `iron_armor`, qui
+// coupe son bois lui-même en surface — l'attente de bois n'existe que pour un ouvrier sous terre).
+const LUMBERJACK_MIN_WORN = 4;
+const _ARMOR_SLOTS = ['helmet', 'chestplate', 'leggings', 'boots'];
+const _IRON_OR_BETTER = ['iron', 'diamond', 'netherite'];
+
+/**
+ * PUR — nombre d'emplacements couverts par une pièce de fer (ou mieux) PORTÉE. `worn` = noms des
+ * pièces des slots 5-8 (index.js `_wornArmor()`, qui écarte déjà les pièces quasi cassées).
+ */
+function wornIronCount(worn) {
+  let set;
+  try { set = new Set(worn || []); } catch (e) { return 0; }
+  let n = 0;
+  for (const slot of _ARMOR_SLOTS) {
+    if (_IRON_OR_BETTER.some((mat) => set.has(`${mat}_${slot}`))) n += 1;
+  }
+  return n;
+}
+
 /**
  * PUR — le bûcheron PRÉFÉRÉ du groupe (déterministe : tous les bots calculent le même) :
- * l'ouvrier le mieux armé (pièces fer acquises), nom ASC en départage. Jamais un cartographe.
- * null s'il y a moins de 2 ouvriers frais (seul, un bûcheron n'aurait personne à servir et ne
- * ferait plus rien d'autre). `selfArmor` = MON armure réelle (pas celle publiée il y a 60 s).
+ * parmi les ouvriers ÉLIGIBLES (≥ 4 pièces fer PORTÉES : `worn` du heartbeat, `selfWorn` pour soi —
+ * PAS `armor`, qui compte aussi les pièces en poche), le mieux armé, nom ASC en départage. Jamais un
+ * cartographe. null s'il y a moins de 2 ouvriers frais (seul, un bûcheron n'aurait personne à servir)
+ * ou si aucun n'est éligible. Une présence sans `worn` (ancien process) = non éligible (sens sûr).
  */
-function preferredLumberjack({ selfName, selfArmor, mates, now, freshMs = LUMBERJACK_FRESH_MS } = {}) {
+function preferredLumberjack({ selfName, selfArmor, selfWorn, mates, now, freshMs = LUMBERJACK_FRESH_MS,
+  minWorn = LUMBERJACK_MIN_WORN } = {}) {
   const t = now || Date.now();
   const all = [];
-  if (selfName) all.push({ name: String(selfName), armor: selfArmor || 0 });
+  if (selfName) all.push({ name: String(selfName), armor: selfArmor || 0, worn: Number(selfWorn) || 0 });
   for (const m of mates || []) {
     if (!m || !m.name || m.name === selfName || m.role === 'mapper') continue;
     if (!_fresh(m, t, freshMs)) continue;
-    all.push({ name: String(m.name), armor: m.armor || 0 });
+    all.push({ name: String(m.name), armor: m.armor || 0, worn: Number(m.worn) || 0 });
   }
   if (all.length < 2) return null;
-  all.sort((a, b) => (b.armor - a.armor) || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
-  return all[0].name;
+  const eligible = all.filter((c) => c.worn >= minWorn);
+  if (!eligible.length) return null;
+  eligible.sort((a, b) => (b.armor - a.armor) || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+  return eligible[0].name;
 }
 
 /**
@@ -103,10 +130,14 @@ function preferredLumberjack({ selfName, selfArmor, mates, now, freshMs = LUMBER
  *  'follower' : un autre est bûcheron (ou je ne suis pas le préféré) ;
  *  'keep'     : la claim est à moi → je suis (ou deviens) bûcheron, je rafraîchis ;
  *  'claim'    : claim libre et c'est à moi de la prendre (préféré, ou déjà bûcheron = sticky) ;
- *  'release'  : je tiens la claim mais il n'y a plus personne à servir (seul ouvrier frais).
+ *  'release'  : je tiens la claim mais il n'y a plus personne à servir (seul ouvrier frais), ou je ne
+ *               suis plus éligible (`selfEligible === false` : une pièce usée/perdue → je rends le rôle
+ *               et je reforge ; un autre ouvrier 4/4 pourra être élu).
+ * `selfEligible` absent = comportement historique (pas de garde d'armure).
  */
-function lumberjackVerdict({ selfName, holder, preferred, amLumberjack } = {}) {
+function lumberjackVerdict({ selfName, holder, preferred, amLumberjack, selfEligible } = {}) {
   if (holder && holder.by && holder.by !== selfName) return 'follower';
+  if (selfEligible === false) return (amLumberjack || (holder && holder.by === selfName)) ? 'release' : 'follower';
   if (!preferred) return (holder || amLumberjack) ? 'release' : 'follower';
   if (holder && holder.by === selfName) return 'keep';
   if (amLumberjack || preferred === selfName) return 'claim';
@@ -428,6 +459,7 @@ module.exports = {
   WOOD_REQUEST_TTL_MS, WOOD_REQUEST_COOLDOWN_MS, WOOD_UNDERGROUND_Y, LUMBERJACK_FRESH_MS, WOOD_WANT_MIN, WOOD_WANT_MAX,
   LUMBERJACK_STOCK, LUMBERJACK_RESERVE, WOOD_MIN_GIFT,
   isWoodGoal, woodWantFor, logCount, activeLumberjack, woodWaitDecision, preferredLumberjack,
+  LUMBERJACK_MIN_WORN, wornIronCount,
   lumberjackVerdict, pickWoodRequest, tossPlan,
   ARMOR_ORDER, MIN_PIECE_INGOTS, missingIronPieces, ownArmorAction, pickMapperForLumberjack, ljGiftReady,
   LJ_STOCK_FAIL_WINDOW_MS, LJ_STOCK_FAILS_FOR_TRIP, LJ_FOREST_TRIP_MS, LJ_FOREST_MIN_DIST, LJ_FOREST_MAX_DIST,

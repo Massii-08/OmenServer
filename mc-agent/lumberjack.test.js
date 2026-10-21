@@ -62,23 +62,46 @@ test('woodWaitDecision : après un timeout, 10 min d\'autonomie bois', () => {
   assert.strictEqual(d2.action, 'request');
 });
 
-test('preferredLumberjack : le mieux armé, nom en départage, jamais un mappeur', () => {
-  const mates = [mate('NethBot2', { armor: 1 }), mate('NethBot3', { armor: 4 }), mate('MapBot1', { role: 'mapper', armor: 4 }),
-    mate('NethBot1', { armor: 4 })];
-  assert.strictEqual(L.preferredLumberjack({ selfName: 'NethBot2', selfArmor: 1, mates, now: NOW }), 'NethBot1');
+test('preferredLumberjack : seuls les ouvriers à 4/4 PORTÉES sont éligibles, nom en départage, jamais un mappeur', () => {
+  // `worn` = pièces PORTÉES (heartbeat) ; `armor` compte aussi la poche → il ne suffit pas.
+  const mates = [mate('NethBot2', { armor: 1, worn: 1 }), mate('NethBot3', { armor: 4, worn: 4 }),
+    mate('MapBot1', { role: 'mapper', armor: 4, worn: 4 }), mate('NethBot1', { armor: 4, worn: 4 })];
+  assert.strictEqual(L.preferredLumberjack({ selfName: 'NethBot2', selfArmor: 1, selfWorn: 1, mates, now: NOW }), 'NethBot1');
   // présence périmée exclue
-  const m2 = [mate('NethBot1', { armor: 4, at: NOW - L.LUMBERJACK_FRESH_MS - 5 }), mate('NethBot3', { armor: 4 })];
-  assert.strictEqual(L.preferredLumberjack({ selfName: 'NethBot2', selfArmor: 1, mates: m2, now: NOW }), 'NethBot3');
+  const m2 = [mate('NethBot1', { armor: 4, worn: 4, at: NOW - L.LUMBERJACK_FRESH_MS - 5 }), mate('NethBot3', { armor: 4, worn: 4 })];
+  assert.strictEqual(L.preferredLumberjack({ selfName: 'NethBot2', selfArmor: 1, selfWorn: 1, mates: m2, now: NOW }), 'NethBot3');
+});
+
+test('preferredLumberjack : AUCUN bûcheron tant que personne n\'a 4/4 portées (mesure 21/10 : bûcheron nu = 16 morts)', () => {
+  const mates = [mate('NethBot1', { armor: 0, worn: 0 }), mate('NethBot3', { armor: 3, worn: 3 })];
+  assert.strictEqual(L.preferredLumberjack({ selfName: 'NethBot2', selfArmor: 0, selfWorn: 0, mates, now: NOW }), null);
+  // 4 pièces ACQUISES dont une en poche ≠ 4 portées
+  const m2 = [mate('NethBot1', { armor: 4, worn: 3 }), mate('NethBot3', { armor: 0, worn: 0 })];
+  assert.strictEqual(L.preferredLumberjack({ selfName: 'NethBot2', selfArmor: 4, selfWorn: 3, mates: m2, now: NOW }), null);
+  // présence d'un ancien process sans `worn` → pas éligible (sûr)
+  const m3 = [mate('NethBot1', { armor: 4 }), mate('NethBot3', { armor: 0 })];
+  assert.strictEqual(L.preferredLumberjack({ selfName: 'NethBot2', selfArmor: 0, mates: m3, now: NOW }), null);
 });
 
 test('preferredLumberjack : pas d\'élection si je suis le seul ouvrier', () => {
-  const mates = [mate('MapBot1', { role: 'mapper' })];
-  assert.strictEqual(L.preferredLumberjack({ selfName: 'NethBot1', selfArmor: 4, mates, now: NOW }), null);
+  const mates = [mate('MapBot1', { role: 'mapper', worn: 4 })];
+  assert.strictEqual(L.preferredLumberjack({ selfName: 'NethBot1', selfArmor: 4, selfWorn: 4, mates, now: NOW }), null);
 });
 
-test('preferredLumberjack : soi compte avec SON armure, pas celle publiée il y a 60 s', () => {
-  const mates = [mate('NethBot1', { armor: 2 }), mate('NethBot2', { armor: 0 })];
-  assert.strictEqual(L.preferredLumberjack({ selfName: 'NethBot2', selfArmor: 3, mates, now: NOW }), 'NethBot2');
+test('preferredLumberjack : soi compte avec SES pièces portées, pas celles publiées il y a 60 s', () => {
+  const mates = [mate('NethBot1', { armor: 2, worn: 2 }), mate('NethBot2', { armor: 0, worn: 0 })];
+  assert.strictEqual(L.preferredLumberjack({ selfName: 'NethBot2', selfArmor: 4, selfWorn: 4, mates, now: NOW }), 'NethBot2');
+  // un ouvrier nu n'est pas candidat, mais il compte pour « il y a quelqu'un à servir »
+  assert.strictEqual(L.preferredLumberjack({ selfName: 'NethBot1', selfArmor: 4, selfWorn: 4,
+    mates: [mate('NethBot2', { worn: 0 })], now: NOW }), 'NethBot1');
+});
+
+test('wornIronCount : pièces fer (ou mieux) portées, une par emplacement', () => {
+  assert.strictEqual(L.wornIronCount(['iron_helmet', 'iron_chestplate', 'iron_leggings', 'iron_boots']), 4);
+  assert.strictEqual(L.wornIronCount(['diamond_helmet', 'iron_chestplate', 'netherite_leggings', 'iron_boots']), 4);
+  assert.strictEqual(L.wornIronCount(['leather_helmet', 'iron_chestplate', 'golden_boots']), 1);
+  assert.strictEqual(L.wornIronCount(new Set(['iron_boots'])), 1);
+  assert.strictEqual(L.wornIronCount(null), 0);
 });
 
 test('lumberjackVerdict : claim à un autre frais → follower ; à moi → keep ; libre → claim si préféré', () => {
@@ -91,6 +114,20 @@ test('lumberjackVerdict : claim à un autre frais → follower ; à moi → keep
   assert.strictEqual(L.lumberjackVerdict({ ...base, holder: null, preferred: 'B', amLumberjack: true }), 'claim');
   // plus aucun coéquipier (preferred null) : un bûcheron rend le rôle
   assert.strictEqual(L.lumberjackVerdict({ ...base, holder: { by: 'A', at: NOW }, preferred: null, amLumberjack: true }), 'release');
+});
+
+test('lumberjackVerdict : bûcheron qui perd une pièce (usure) → il rend le rôle, même s\'il tient la claim', () => {
+  const base = { selfName: 'A', now: NOW, selfEligible: false };
+  assert.strictEqual(L.lumberjackVerdict({ ...base, holder: { by: 'A', at: NOW }, preferred: 'B', amLumberjack: true }), 'release');
+  assert.strictEqual(L.lumberjackVerdict({ ...base, holder: null, preferred: 'B', amLumberjack: true }), 'release');
+  assert.strictEqual(L.lumberjackVerdict({ ...base, holder: { by: 'A', at: NOW }, preferred: null }), 'release');
+  // non bûcheron, non éligible : simple suiveur (jamais de claim)
+  assert.strictEqual(L.lumberjackVerdict({ ...base, holder: null, preferred: 'B' }), 'follower');
+  assert.strictEqual(L.lumberjackVerdict({ ...base, holder: null, preferred: null }), 'follower');
+  // claim d'un autre : suiveur
+  assert.strictEqual(L.lumberjackVerdict({ ...base, holder: { by: 'B', at: NOW }, preferred: 'B', amLumberjack: true }), 'follower');
+  // éligible : comportement historique inchangé
+  assert.strictEqual(L.lumberjackVerdict({ selfName: 'A', holder: null, preferred: 'B', amLumberjack: true, selfEligible: true }), 'claim');
 });
 
 test('pickWoodRequest : la demande la plus ANCIENNE, quantité bornée par stock − réserve', () => {

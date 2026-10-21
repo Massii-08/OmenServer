@@ -149,6 +149,7 @@ const { teamStatus, pickDonation, allArmored, pickMobAssist, pickMapperToEquip, 
 const {
   isWoodGoal, woodWantFor, logCount, activeLumberjack, woodWaitDecision, WOOD_UNDERGROUND_Y, preferredLumberjack,
   lumberjackVerdict, pickWoodRequest, tossPlan, WOOD_REQUEST_TTL_MS, WOOD_MIN_GIFT, LUMBERJACK_STOCK,
+  wornIronCount, LUMBERJACK_MIN_WORN,
   missingIronPieces, ownArmorAction, pickMapperForLumberjack, ljGiftReady,
   woodShortForFailure, giftBatchFor,
   stockFailsPrune, stockFailsAdd, needsForestTrip, forestTriedAdd, pickForestCell, LJ_FOREST_TRIP_MS,
@@ -1581,7 +1582,9 @@ async function switchLumberjack(toLumberjack, why) {
       saveBaseState(st);
       if (_woodReq) setWoodRequest(null);                    // le bûcheron ne se demande rien à lui-même
     } else {
-      to = st.lumberjackPrev || 'iron_armor';
+      // Rôle rendu pour cause d'armure incomplète (usure/perte) : on REFORGE d'abord — la chaîne
+      // iron_armor rend la main à la suite (iron_help → mapper_armor → diamant) une fois 4/4.
+      to = why === 'unarmored' ? 'iron_armor' : (st.lumberjackPrev || 'iron_armor');
       delete st.lumberjackPrev;
       saveBaseState(st);
       _workSet = false;                                      // `work` pointe le spot de coupe, pas une mine
@@ -1614,12 +1617,19 @@ async function lumberjackTick() {
   if (!amLj && world.objective.type === 'resource') return null;
   const now = Date.now();
   let selfArmor = 0;
-  try { selfArmor = teamStatus(buildCtxInv(bot), [..._wornArmor()]).armor; } catch (e) { selfArmor = 0; }
+  let selfWorn = 0;
+  try {
+    const worn = [..._wornArmor()];
+    selfArmor = teamStatus(buildCtxInv(bot), worn).armor;
+    selfWorn = wornIronCount(worn);
+  } catch (e) { selfArmor = 0; selfWorn = 0; }
+  // ÉLIGIBILITÉ (21/10) : bûcheron = armure de fer 4/4 PORTÉE, sinon pas de rôle (cf. lumberjack.js).
+  const selfEligible = selfWorn >= LUMBERJACK_MIN_WORN;
   let mates = [];
   try { mates = presence.list(); } catch (e) { mates = []; }
-  const preferred = preferredLumberjack({ selfName: bot.username, selfArmor, mates, now });
+  const preferred = preferredLumberjack({ selfName: bot.username, selfArmor, selfWorn, mates, now });
   const holder = _teamClaims.peek(LJ_CLAIM);
-  const v = lumberjackVerdict({ selfName: bot.username, holder, preferred, amLumberjack: amLj });
+  const v = lumberjackVerdict({ selfName: bot.username, holder, preferred, amLumberjack: amLj, selfEligible });
   if (v === 'keep' || v === 'claim') {
     const ok = (v === 'keep' && _teamClaims.refresh(LJ_CLAIM)) || _teamClaims.tryClaim(LJ_CLAIM);
     if (ok && !amLj) await switchLumberjack(true, v === 'keep' ? 'claim_held' : 'elected');
@@ -1627,7 +1637,7 @@ async function lumberjackTick() {
   }
   if (v === 'release') {
     try { _teamClaims.release(LJ_CLAIM); } catch (e) {}
-    if (amLj) await switchLumberjack(false, 'alone');
+    if (amLj) await switchLumberjack(false, selfEligible ? 'alone' : 'unarmored');
     return v;
   }
   if (amLj) await switchLumberjack(false, 'claim_lost');
@@ -5290,6 +5300,7 @@ async function returnToWork(why) {
 const IRON_CAVE_CACHE_MS = 30000;    // ctxExtra tourne à chaque pas : on ne relit pas 8 Mo de carte à chaque fois
 let _ironCaveCache = { at: 0, cave: null };
 let _caveCooldownEmitted = 0;        // `until` déjà annoncé : un event par entrée en cooldown
+let _caveDisabledEmitted = 0;        // idem pour la désactivation 2 h (escalade, 21/10)
 let _caveTorchAt = 0;
 let _caveTorchPos = null;
 const IRON_CAVE_OBJECTIVES = new Set(['iron_armor', 'diamond_armor']);
@@ -5303,11 +5314,16 @@ function _caveInvTier() {
   return best;
 }
 
-/** Ores de la mémoire partagée pour le monde courant (même résolution de clé que le dry-steer). */
-function _caveWorldOres() {
+/** Entrée `worlds.<w>` de la mémoire partagée pour le monde courant (même résolution de clé que le dry-steer). */
+function _caveWorld() {
   const mem = args['world-memory'] ? loadMemory(String(args['world-memory'])) : bot._worldMemory;
   const wk = String(bot._worldKey || 'overworld');
-  const w = mem && mem.worlds && (mem.worlds[wk] || mem.worlds[wk.replace(/^minecraft:/, '')]);
+  return (mem && mem.worlds && (mem.worlds[wk] || mem.worlds[wk.replace(/^minecraft:/, '')])) || null;
+}
+
+/** Ores de la mémoire partagée pour le monde courant. */
+function _caveWorldOres() {
+  const w = _caveWorld();
   return (w && Array.isArray(w.ores)) ? w.ores : [];
 }
 
@@ -5341,12 +5357,35 @@ function ironCaveCtx() {
         _caveCooldownEmitted = until;
         emit({ type: 'cave_cooldown', fails: fails.filter((f) => f.why === 'unreachable').length, until });
       }
-      cave = caveIronPick.pickIronCave(_caveWorldOres(), { x: p.x, y: p.y, z: p.z }, {
-        now,
-        fails,
-        isClaimed: (k) => { const c = _teamClaims && _teamClaims.peek(k); return !!(c && c.by !== bot.username); },
-        confine: CONFINE || _confineDyn,
-      });
+      // ESCALADE (21/10) : chaque repos du disjoncteur est PERSISTÉ (mémo base, fusion) ; au 2e en 2 h,
+      // iron_cave est coupé 2 h — cf. caveIron.caveBreakerNote/caveDisabledUntil.
+      const st = loadBaseState() || {};
+      let breaks = Array.isArray(st.caveBreaks) ? st.caveBreaks : [];
+      if (until) {
+        const next = caveIronPick.caveBreakerNote(breaks, until, now);
+        if (JSON.stringify(next) !== JSON.stringify(breaks)) {
+          breaks = next;
+          saveBaseState(Object.assign({}, st, { caveBreaks: breaks }));
+        }
+      }
+      const off = caveIronPick.caveDisabledUntil(breaks, now);
+      if (off) {
+        if (off !== _caveDisabledEmitted) {
+          _caveDisabledEmitted = off;
+          emit({ type: 'cave_disabled', until: off, breaks: breaks.length });
+        }
+      } else {
+        const w = _caveWorld();
+        cave = caveIronPick.pickIronCave((w && Array.isArray(w.ores)) ? w.ores : [], { x: p.x, y: p.y, z: p.z }, {
+          now,
+          fails,
+          isClaimed: (k) => { const c = _teamClaims && _teamClaims.peek(k); return !!(c && c.by !== bot.username); },
+          confine: CONFINE || _confineDyn,
+          // Entrées de grotte notées par les cartographes (worlds.<w>.caves {x,y,z,at,flooded}) :
+          // une grappe à > 24 blocs en vertical n'est visée que si une entrée ouverte mène à elle.
+          caves: (w && Array.isArray(w.caves)) ? w.caves : [],
+        });
+      }
     }
   } catch (e) { cave = null; }
   _ironCaveCache = { at: now, cave };
@@ -8079,6 +8118,9 @@ async function onSpawn() {
           // QUELLES pièces manquent (pas seulement combien) : le bûcheron forge des pièces à l'unité
           // pour un cartographe (20/10 soir) — sans ce champ il lui forgerait un 2e casque.
           if (st) st.missing = missingIronPieces(invB, [..._wornArmor()]);
+          // `worn` = pièces fer (ou mieux) PORTÉES (21/10) : critère d'éligibilité au rôle de bûcheron.
+          // `armor` ne suffit pas — il compte aussi les pièces en poche.
+          if (st) st.worn = wornIronCount([..._wornArmor()]);
         } catch (e) {}
         // `y` + `ironZone` : c'est ce qui permet de distinguer un MINEUR AU TRAVAIL d'un bot qui
         // traîne en surface. Sans eux, `squadLeader` ne pouvait trancher qu'à l'alphabet — et si

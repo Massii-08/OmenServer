@@ -87,6 +87,7 @@ function sandbox(o = {}) {
     _ljReleaseGift: () => sb.calls.push('ljReleaseGift'),   // armure du bûcheron (testée dans index.ljarmor.test.js)
     isWoodGoal: L.isWoodGoal, woodWantFor: L.woodWantFor, logCount: L.logCount, activeLumberjack: L.activeLumberjack,
     woodWaitDecision: L.woodWaitDecision, preferredLumberjack: L.preferredLumberjack, lumberjackVerdict: L.lumberjackVerdict,
+    wornIronCount: L.wornIronCount, LUMBERJACK_MIN_WORN: L.LUMBERJACK_MIN_WORN,
     pickWoodRequest: L.pickWoodRequest, tossPlan: L.tossPlan,
     pickJunkToToss: require('./skills/craft').pickJunkToToss,
     WOOD_REQUEST_TTL_MS: L.WOOD_REQUEST_TTL_MS, WOOD_UNDERGROUND_Y: L.WOOD_UNDERGROUND_Y, WOOD_MIN_GIFT: L.WOOD_MIN_GIFT, LUMBERJACK_STOCK: L.LUMBERJACK_STOCK,
@@ -267,11 +268,46 @@ test('élection : jamais un cartographe, jamais sans /tpa, jamais par-dessus un 
   assert.strictEqual(await run(m, 'lumberjackTick()'), null);
   const t = sandbox({ name: 'NethBot1', tpa: false, mates });
   assert.strictEqual(await run(t, 'lumberjackTick()'), null);
-  const o = sandbox({ name: 'NethBot1', mates, worn: ['iron_boots'] });
+  // (21/10 : 4/4 portées exigées pour être élu — l'ancienne version élisait à 1 seule botte)
+  const o = sandbox({ name: 'NethBot1', mates, worn: ['iron_helmet', 'iron_chestplate', 'iron_leggings', 'iron_boots'] });
   o.taskCtl.active = 'order';
   assert.strictEqual(await run(o, 'lumberjackTick()'), 'claim');
   assert.strictEqual(o.world.objective.type, 'iron_armor', 'claim prise mais pas de bascule pendant un ordre');
   assert.ok(!o.calls.includes('startAutonomous'));
+});
+
+test('élection (21/10) : personne à 4/4 portées → aucun bûcheron, aucune claim (chacun suit iron_armor)', async () => {
+  const sb = sandbox({ name: 'NethBot1', worn: ['iron_helmet', 'iron_chestplate', 'iron_boots'],
+    items: [{ name: 'iron_leggings', type: 9, count: 1 }],           // 4 ACQUISES, 3 portées
+    mates: [{ name: 'NethBot2', role: 'worker', at: T0 - 1000, armor: 4, worn: 3 },
+      { name: 'NethBot3', role: 'worker', at: T0 - 1000, armor: 0, worn: 0 }] });
+  assert.strictEqual(await run(sb, 'lumberjackTick()'), 'follower');
+  assert.ok(!sb._teamClaims.map.lumberjack, 'pas de claim');
+  assert.strictEqual(sb.world.objective.type, 'iron_armor');
+  assert.ok(!sb.events.some((e) => e.type === 'lumberjack_elected'));
+});
+
+test('élection (21/10) : le bûcheron qui perd une pièce rend le rôle et REFORGE (iron_armor), pas son objectif d\'avant', async () => {
+  const sb = sandbox({ name: 'NethBot1', objective: { type: 'lumberjack' }, base: { lumberjackPrev: 'mapper_armor', keep: 1 },
+    worn: ['iron_helmet', 'iron_chestplate', 'iron_boots'],          // jambières usées → absentes de _wornArmor
+    mates: [{ name: 'NethBot3', role: 'worker', at: T0 - 1000, armor: 4, worn: 4 }] });
+  sb._teamClaims.map.lumberjack = { by: 'NethBot1', at: T0 - 5000 };
+  assert.strictEqual(await run(sb, 'lumberjackTick()'), 'release');
+  assert.ok(!sb._teamClaims.map.lumberjack, 'claim libérée : un autre ouvrier 4/4 peut être élu');
+  assert.strictEqual(sb.world.objective.type, 'iron_armor');
+  assert.ok(sb.events.some((e) => e.type === 'lumberjack_resigned' && e.why === 'unarmored' && e.to === 'iron_armor'));
+  assert.ok(!('lumberjackPrev' in sb.base));
+  assert.strictEqual(sb.base.keep, 1, 'mémo fusionné');
+  // et l'ouvrier 4/4 (NethBot3) est élu au tick suivant
+  const s3 = sandbox({ name: 'NethBot3', worn: ['iron_helmet', 'iron_chestplate', 'iron_leggings', 'iron_boots'],
+    mates: [{ name: 'NethBot1', role: 'worker', at: T0 - 1000, armor: 4, worn: 3 }] });
+  assert.strictEqual(await run(s3, 'lumberjackTick()'), 'claim');
+  assert.strictEqual(s3.world.objective.type, 'lumberjack');
+});
+
+test('heartbeat : publie `worn` (pièces PORTÉES), lu par l\'élection des coéquipiers', () => {
+  assert.match(SRC, /if \(st\) st\.worn = wornIronCount\(\[\.\.\._wornArmor\(\)\]\);/);
+  assert.match(fnSrc('lumberjackTick'), /preferredLumberjack\(\{ selfName: bot\.username, selfArmor, selfWorn, mates, now \}\)/);
 });
 
 test('bûcheron au repos : rend la main dès qu\'une demande arrive', async () => {

@@ -154,6 +154,70 @@ function caveCooldownUntil(fails, now) {
   return until > t ? until : 0;
 }
 
+// ── ACCÈS PLAUSIBLE (21/10) ───────────────────────────────────────────────────────────────────
+// Mesure 3 h (21/10 20:14→23:14, 32 cibles) : 25 `cave_failed unreachable`, dont 11 visaient une grappe
+// à plus de 24 blocs en VERTICAL du bot (jusqu'à 62) — une paroi vue par un cartographe depuis une
+// autre grotte, sans chemin connu depuis le tunnel du mineur. On ne vise donc une grappe que si elle
+// est à ≤ 24 blocs en vertical, OU s'il existe près d'elle une ENTRÉE DE GROTTE ouverte connue
+// (`worlds.<w>.caves` {x,y,z,at,flooded}, notée par les cartographes — caves.js) au-dessus d'elle.
+const CAVE_ACCESS_DY = 24;
+const CAVE_ENTRANCE_NEAR = 32;           // blocs en XZ entre l'entrée connue et le centre de la grappe
+const CAVE_ENTRANCE_BELOW_TOL = 4;       // une entrée plus BASSE que la grappe ne mène pas à elle
+
+/** PUR — la grappe `c` est-elle plausiblement atteignable depuis `from` ? */
+function caveAccessible(c, from, caves) {
+  if (!_valid(c) || !_valid(from)) return false;
+  if (Math.abs(from.y - c.y) <= CAVE_ACCESS_DY) return true;
+  for (const e of Array.isArray(caves) ? caves : []) {
+    if (!_valid(e) || e.flooded) continue;
+    if (e.y < c.y - CAVE_ENTRANCE_BELOW_TOL) continue;
+    if (Math.hypot(e.x - c.x, e.z - c.z) <= CAVE_ENTRANCE_NEAR) return true;
+  }
+  return false;
+}
+
+// ── ESCALADE DU DISJONCTEUR (21/10) ─────────────────────────────────────────────────────────────
+// Le repos de 20 min ne suffisait pas : 12 `unreachable` par bot en 3 h, les MÊMES grappes reprises
+// dès que leur échec sortait des 30 min de TTL. Au 2e déclenchement en 2 h, `iron_cave` est coupé 2 h
+// (branch-mine habituel). Les déclenchements sont persistés dans le mémo base (`caveBreaks`) : un
+// process neuf après une mort ne repart pas de zéro.
+const CAVE_ESCALATE_WINDOW_MS = 2 * 3600 * 1000;
+const CAVE_DISABLE_MS = 2 * 3600 * 1000;
+const CAVE_BREAKS_CAP = 10;
+
+function _validTrips(trips, now) {
+  return (Array.isArray(trips) ? trips : []).filter((b) => b && Number.isFinite(b.at) && Number.isFinite(b.until)
+    && b.at <= now && b.until >= b.at);
+}
+
+/**
+ * PUR — enregistre un repos du disjoncteur (`until` = caveCooldownUntil). Un repos revu (même série,
+ * ou prolongé par un échec de plus) n'est PAS un nouveau déclenchement : il n'en devient un que s'il
+ * commence après la fin du précédent. Élague au-delà de fenêtre + désactivation, plafonné.
+ */
+function caveBreakerNote(trips, until, now) {
+  const t = Number.isFinite(now) ? now : Date.now();
+  const keep = _validTrips(trips, t).filter((b) => t - b.at <= CAVE_ESCALATE_WINDOW_MS + CAVE_DISABLE_MS)
+    .map((b) => ({ at: b.at, until: b.until })).sort((a, b) => a.at - b.at);
+  if (!Number.isFinite(until) || until <= t) return keep.slice(-CAVE_BREAKS_CAP);
+  const at = Math.min(t, until - CAVE_COOLDOWN_MS);
+  const last = keep[keep.length - 1];
+  if (last && at <= last.until) last.until = Math.max(last.until, until);
+  else keep.push({ at, until });
+  return keep.slice(-CAVE_BREAKS_CAP);
+}
+
+/** PUR — instant jusqu'auquel `iron_cave` est désactivé (2 déclenchements en ≤ 2 h → +2 h), ou 0. */
+function caveDisabledUntil(trips, now) {
+  const t = Number.isFinite(now) ? now : Date.now();
+  const v = _validTrips(trips, t).sort((a, b) => a.at - b.at);
+  let off = 0;
+  for (let i = 1; i < v.length; i++) {
+    if (v[i].at - v[i - 1].at <= CAVE_ESCALATE_WINDOW_MS) off = Math.max(off, v[i].at + CAVE_DISABLE_MS);
+  }
+  return off > t ? off : 0;
+}
+
 function _nearFail(center, fails) {
   const n2 = CAVE_FAIL_NEAR * CAVE_FAIL_NEAR;
   return fails.some((f) => (f.x - center.x) ** 2 + (f.y - center.y) ** 2 + (f.z - center.z) ** 2 <= n2);
@@ -189,6 +253,7 @@ function rankIronCaves(ores, from, o = {}) {
     const dist = Math.hypot(c.x - from.x, c.y - from.y, c.z - from.z);
     if (dist > maxDist) continue;
     if (conf && Math.hypot(c.x - conf.x, c.z - conf.z) > conf.radius - CONFINE_MARGIN) continue;
+    if (!caveAccessible(c, from, o.caves)) continue;
     const key = caveKey(c);
     if (_nearFail(c, fails)) continue;
     let claimed = false;
@@ -215,4 +280,6 @@ module.exports = {
   isIronOre, exposedIronOres, clusterOres, centroid, caveKey, orderOres,
   CAVE_UNREACH_STREAK, CAVE_UNREACH_WINDOW_MS, CAVE_COOLDOWN_MS, caveCooldownUntil,
   caveFailsPrune, caveFailsAdd, rankIronCaves, pickIronCave,
+  CAVE_ACCESS_DY, CAVE_ENTRANCE_NEAR, caveAccessible,
+  CAVE_ESCALATE_WINDOW_MS, CAVE_DISABLE_MS, caveBreakerNote, caveDisabledUntil,
 };
