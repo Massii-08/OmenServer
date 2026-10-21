@@ -154,6 +154,7 @@ from backend.bots.stockscan_router import router as stockscan_router
 from backend.bots.paper_router import router as paper_router
 from backend.bots.paper_tv_router import router as paper_tv_router
 from backend.bots.paper_ws import router as paper_ws_router
+from backend.muscu.router import router as muscu_router
 from backend.bots.whales_router import router as whales_router
 from backend.webserver.router import router as webserver_router
 from backend.network.router import router as network_router
@@ -193,6 +194,7 @@ app.include_router(stockscan_router)
 app.include_router(paper_router)
 app.include_router(paper_tv_router)
 app.include_router(paper_ws_router)
+app.include_router(muscu_router)
 app.include_router(whales_router)
 app.include_router(webserver_router)
 app.include_router(network_router)
