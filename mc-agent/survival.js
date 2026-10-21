@@ -265,6 +265,13 @@ async function eatAny(bot) {
  */
 const FIGHT_CHOSEN_EVERY_MS = 10000;   // event `fight_chosen` : au plus 1 / 10 s
 let _lastFightChosenAt = -Infinity;
+// Anti-thrash fuite (mesuré en prod 22/10, NethBot1 : goal_trace 15 appels/60s dont 14 interrompus) :
+// le tick de survie tourne toutes les ~1,5 s, et rappelait fleeFrom à CHAQUE fois que la décision
+// restait 'flee' — annulant le but de fuite posé au tick précédent avant qu'il n'ait eu le temps
+// d'aboutir (bot immobile sous le tir d'un squelette). On ne recalcule que si le trajet précédent est
+// terminé (`!isMoving`) ou si FLEE_RECALL_MS s'est écoulé (la menace a eu le temps de se déplacer).
+const FLEE_RECALL_MS = 5000;
+let _lastFleeAt = -Infinity;
 async function survivalTick(bot, deps = {}) {
   const emit = deps.emit || (() => {});
   const now = typeof deps.now === 'function' ? deps.now : Date.now;
@@ -297,7 +304,13 @@ async function survivalTick(bot, deps = {}) {
   const night = _isNightTod(bot.time && bot.time.timeOfDay);
   const decision = combatDecision({ health: bot.health, hostileCount: hostiles.length, armored: isArmored(bot), hasCreeper, lavaNear, preferFlee: !!deps.preferFlee, nearestDist, fleeOnly, capability, food: bot.food, canDealWith: cdw, fightCount: fighters.length, night });
   if (decision === 'flee') {
-    try { deps.fleeFrom && deps.fleeFrom(bot); } catch (e) {}
+    const t = now();
+    const stillFleeing = !!(bot.pathfinder && bot.pathfinder.isMoving && bot.pathfinder.isMoving());
+    const ready = t < _lastFleeAt || (t - _lastFleeAt) >= FLEE_RECALL_MS || !stillFleeing;   // horloge reculée → prêt
+    if (ready) {
+      _lastFleeAt = t;
+      try { deps.fleeFrom && deps.fleeFrom(bot); } catch (e) {}
+    }
     const ev = { type: 'survival', action: 'flee', hostiles: hostiles.length };
     if (lavaNear) ev.reason = 'lava_near';
     else if (fleeOnly) ev.reason = 'flee_only';

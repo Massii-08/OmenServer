@@ -429,6 +429,29 @@ test('survivalTick : creeper calme à ≤ 4 blocs → s éloigne (flee), jamais 
   assert.strictEqual(act, 'flee');
   assert.deepStrictEqual(calls.attack, []);
 });
+// Mesuré en prod (NethBot1, 22/10) : goal_trace a compté 15 appels à fleeFrom en 60 s dont 14
+// INTERROMPUS — chaque tick de survie (~1,5 s) rappelait fleeFrom même pendant que le trajet de
+// fuite précédent était toujours en cours, annulant le but juste posé avant qu'il n'aboutisse.
+// Le bot restait sur place à se faire tirer par un squelette au lieu de s'éloigner (puis déconnexion/
+// mort). Même parachute que `_lastFightChosenAt` (horloge reculée → prêt, cf. lignes 266-267).
+test('survivalTick flee : ne rappelle pas fleeFrom tant que le trajet de fuite précédent est en cours (anti-thrash)', async () => {
+  const { bot } = fakeBot({ items: [['iron_sword', 1]], entities: [fakeEntity('creeper', 'Hostile mobs', { x: 3, y: 64, z: 0 })] });
+  bot.pathfinder.isMoving = () => true;   // le trajet de fuite posé au tick précédent tourne encore
+  let fleeCalls = 0;
+  let t = 2e12;
+  const deps = { fleeFrom: () => { fleeCalls++; return true; }, now: () => t };
+
+  assert.strictEqual(await survivalTick(bot, deps), 'flee');
+  assert.strictEqual(fleeCalls, 1, '1er tick : fleeFrom déclenché');
+
+  t += 1500;   // tick de survie suivant, 1,5 s plus tard, toujours en train de fuir
+  assert.strictEqual(await survivalTick(bot, deps), 'flee');
+  assert.strictEqual(fleeCalls, 1, '2e tick rapproché pendant la fuite en cours : pas de ré-appel');
+
+  bot.pathfinder.isMoving = () => false;   // le trajet est arrivé/a échoué : on peut reconsidérer tout de suite
+  assert.strictEqual(await survivalTick(bot, deps), 'flee');
+  assert.strictEqual(fleeCalls, 2, 'trajet terminé (isMoving=false) : nouvel appel même sous le délai');
+});
 test('survivalTick : zombie + creeper calme lointain → on combat le ZOMBIE (le creeper ne compte pas)', async () => {
   const { bot, calls } = fakeBot({
     items: [['stone_sword', 1]],
