@@ -111,3 +111,36 @@ test('wrapLook : allow() vrai (combat volontaire) → visée intacte ; une erreu
   await bot2.look(1, 0);
   assert.deepStrictEqual(calls[1], [1, 0]);
 });
+
+// ── Live 21/10 : 3 cartographes nus tués par des endermen qu'ILS avaient frappés ──
+test('angerReason : métadonnée lue sans « creepy » = calme, même collé (le repli proximité ne vaut que sans métadonnée)', () => {
+  const self = { x: 0, y: 70, z: 0 };
+  assert.strictEqual(E.angerReason(ender(0, 70, -2, { metadata: [] }), { creepyIdx: 17, selfPos: self }), null);
+  const calm = []; calm[17] = false;
+  assert.strictEqual(E.angerReason(ender(0, 70, -2, { metadata: calm }), { creepyIdx: 17, selfPos: self }), null);
+  const md = []; md[17] = true;
+  assert.strictEqual(E.angerReason(ender(0, 70, -10, { metadata: md }), { creepyIdx: 17 }), 'creepy');
+  assert.strictEqual(E.angerReason(ender(0, 70, -10, { metadata: [] }), { creepyIdx: 17, hurtBy: true }), 'hurt');
+  assert.strictEqual(E.angerReason(ender(0, 70, -2), { selfPos: self }), 'close');   // aucune métadonnée connue
+  assert.strictEqual(E.isAngryEnderman(ender(0, 70, -2, { metadata: [] }), { creepyIdx: 17, selfPos: self }), false);
+});
+
+test('hurtCulprit : source connue tranche ; sans source, un autre hostile collé disculpe l\'enderman', () => {
+  const self = { x: 0, y: 70, z: 0 };
+  const en = ender(0, 70, -3, { id: 7 });
+  const zo = { id: 8, name: 'zombie', kind: 'Hostile mobs', position: { x: 1, y: 70, z: 0 } };
+  assert.strictEqual(E.hurtCulprit(zo, [en, zo], self), null);          // frappé par le zombie
+  assert.strictEqual(E.hurtCulprit(en, [en, zo], self), en);            // frappé par l'enderman
+  assert.strictEqual(E.hurtCulprit(null, [en, zo], self), null);        // inconnu + zombie collé → pas lui
+  assert.strictEqual(E.hurtCulprit(undefined, [en], self), en);         // inconnu, seul collé → lui
+  assert.strictEqual(E.hurtCulprit(null, [ender(0, 70, -9)], self), null);   // trop loin
+});
+
+test('endermanResponse : cartographe (preferFlee) ne combat JAMAIS ; nu non plus', () => {
+  const bold = () => true;
+  assert.strictEqual(E.endermanResponse({ health: 20, canDealWith: 9, boldFightAdvised: bold, preferFlee: true, hasBlock: true }), 'hide');
+  assert.strictEqual(E.endermanResponse({ health: 20, canDealWith: 9, boldFightAdvised: bold, preferFlee: true, hasBlock: false }), 'flee');
+  assert.strictEqual(E.endermanResponse({ waterDist: 3, health: 20, canDealWith: 9, boldFightAdvised: bold, preferFlee: true, hasBlock: true }), 'water');
+  assert.strictEqual(E.endermanResponse({ health: 20, canDealWith: 9, boldFightAdvised: bold, naked: true }), 'flee');
+  assert.strictEqual(E.endermanResponse({ health: 20, canDealWith: 9, boldFightAdvised: bold }), 'fight');
+});

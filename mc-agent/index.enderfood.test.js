@@ -64,6 +64,9 @@ function sandbox(o = {}) {
     // modules purs réels
     lookIsUnsafe: E.lookIsUnsafe, safeLook: E.safeLook, wrapLook: E.wrapLook, creepyIndex: E.creepyIndex,
     isAngryEnderman: E.isAngryEnderman, endermanResponse: E.endermanResponse,
+    angerReason: E.angerReason, hurtCulprit: E.hurtCulprit,
+    IS_MAPPER: !!o.mapper, SCAFFOLD: ['dirt', 'cobblestone'], setTimeout,
+    secureSpot: async (b, tactic) => { sb.calls.push('seal:' + tactic); return o.sealResult || { ok: true, tactic, placed: 4 }; },
     canDealWith: S.canDealWith, attackDamage: S.attackDamage, boldFightAdvised: S.boldFightAdvised,
     armorPoints: () => (o.armor || 0), fleeTarget,
     descentFoodGate: G.descentFoodGate, foodGateLoad: G.foodGateLoad,
@@ -71,10 +74,10 @@ function sandbox(o = {}) {
     _imminentBusy: false, panicInFlight: false,
   };
   vm.createContext(sb);
-  for (const c of ['ENDER_EVENT_EVERY_MS', 'ENDER_SCAN_RADIUS', 'ENDER_ACT_MS', 'DESCEND_HEADING_TTL_MS']) run(sb, constSrc(c));
-  for (const l of ['_enderBusy', '_enderBusyUntil', '_enderEvAt', '_enderCreepyIdx', '_enderHurtAt', '_enderHurtId',
+  for (const c of ['ENDER_EVENT_EVERY_MS', 'ENDER_SCAN_RADIUS', 'ENDER_ACT_MS', 'ENDER_HOLD_MS', 'DESCEND_HEADING_TTL_MS']) run(sb, constSrc(c));
+  for (const l of ['_enderBusy', '_enderBusyUntil', '_enderEvAt', '_enderCreepyIdx', '_enderHurtAt', '_enderHurtId', '_enderHoldUntil',
     '_dropSites', '_dropShiftSeed', '_descendHeading', '_foodGateEvAt']) run(sb, letSrc(l));
-  for (const f of ['_enderEmit', 'enderEye', 'installEndermanGuard', 'endermanTick', 'noteEndermanHurt',
+  for (const f of ['_enderEmit', 'enderEye', 'installEndermanGuard', 'endermanTick', 'noteEndermanHurt', 'endermanHoldWait',
     'descentFoodGateCheck', 'onDropAhead', 'applyDescendHeading']) run(sb, fnSrc(f));
   return sb;
 }
@@ -129,6 +132,49 @@ test('endermanTick : calme et loin → rien ; puis noteEndermanHurt (il nous fra
   run(sb, 'noteEndermanHurt()');
   await run(sb, 'endermanTick()');
   assert.ok(sb.events.some((e) => e.type === 'enderman_flee'));
+});
+
+// ── Live 21/10 : 3 cartographes nus tués par un enderman qu'ils avaient frappé ──
+test('endermanTick : enderman CALME collé (métadonnée lue, pas creepy) → aucune réaction, aucun coup', async () => {
+  const sb = sandbox({ entities: [ender(1.5, 1, { metadata: [] })], armor: 15, items: ['iron_sword'] });
+  await run(sb, 'endermanTick()');
+  assert.ok(!sb.calls.includes('attack:enderman'));
+  assert.ok(!sb.events.some((e) => /^enderman_(flee|fight|hide)$/.test(e.type)));
+});
+
+test('noteEndermanHurt : frappé par un ZOMBIE (source) avec un enderman à côté → l\'enderman reste calme', async () => {
+  const zo = { id: 9, name: 'zombie', kind: 'Hostile mobs', position: { x: 1, y: 70, z: 0 } };
+  const sb = sandbox({ entities: [ender(2, 2, { metadata: [] }), zo], armor: 15, items: ['iron_sword'] });
+  sb.zo = zo;
+  run(sb, 'noteEndermanHurt(zo)');
+  await run(sb, 'endermanTick()');
+  assert.ok(!sb.calls.includes('attack:enderman'));
+  assert.ok(!sb.events.some((e) => /^enderman_(flee|fight|hide)$/.test(e.type)));
+});
+
+test('endermanTick : CARTOGRAPHE face à un enderman en colère → se mure (jamais de coup) + hold, la boucle attend', async () => {
+  const sb = sandbox({ mapper: true, entities: [ender(3, 3, { metadata: md(true) })], armor: 0, items: ['stone_sword', 'dirt'] });
+  await run(sb, 'endermanTick()');
+  assert.ok(!sb.calls.includes('attack:enderman'));
+  assert.ok(sb.calls.includes('seal:seal'));
+  const ev = sb.events.find((e) => e.type === 'enderman_hide');
+  assert.ok(ev && ev.ok && ev.why === 'creepy');
+  assert.ok(run(sb, '_enderHoldUntil') > sb.clock.t);
+  // l'enderman s'est calmé → le hold rend la main tout de suite
+  sb.bot.entities = {};
+  await run(sb, 'endermanHoldWait()');
+  assert.strictEqual(run(sb, '_enderHoldUntil'), 0);
+});
+
+test('endermanTick : CARTOGRAPHE sans blocs, ou murage raté → fuite, jamais de combat', async () => {
+  const a = sandbox({ mapper: true, entities: [ender(3, 3, { metadata: md(true) })], armor: 15, items: ['iron_sword'] });
+  await run(a, 'endermanTick()');
+  assert.ok(!a.calls.includes('attack:enderman'));
+  assert.strictEqual(a.events.find((e) => e.type === 'enderman_flee').to, 'away');
+  const b = sandbox({ mapper: true, entities: [ender(3, 3, { metadata: md(true) })], items: ['dirt'], sealResult: { ok: false, placed: 0 } });
+  await run(b, 'endermanTick()');
+  assert.ok(b.calls.some((c) => c[0] === 'goal' && c[1] === 'xz'));
+  assert.strictEqual(run(b, '_enderHoldUntil'), 0);
 });
 
 // ── 2. FAIM ──────────────────────────────────────────────────────────────────────────────────

@@ -166,6 +166,7 @@ function surfaceYAt(bot, x, z, fromY) {
  *  opts.getSector : () => {index,count}|null — lu à chaque jambe (re-balance live via stdin)
  *  opts.emit      : hook events ; opts.goto : injectable (défaut pathfinder.goto), reçoit un waypoint
  *                   `{x, z}` (y ABSENT = altitude libre → but XZ) ou `{x, y, z}` (y RÉEL → but 3D)
+ *  opts.hold      : async, appelé en tête de boucle (bot muré face à un enderman → on attend) ;
  *  opts.fleeFrom  : injecté dans survivalTick ; opts.sleep/rng/now : injectables (tests)
  *  opts.onPeriodic/periodicEvery : hook toutes les N arrivées (ex. re-tentative kit)
  *  opts.teleport  : watcher TP (teleport.js, #10) — pending consommé en tête de boucle → RÉ-ANCRAGE
@@ -359,6 +360,9 @@ async function runMapper(bot, opts = {}, token = { cancelled: false }) {
   record(); // la cellule de départ compte
 
   while (!token.cancelled) {
+    // MURÉ (enderman en colère, 21/10) : tant que le hook tient, on ne repart pas à travers le mur.
+    if (opts.hold) { try { await opts.hold(); } catch (e) { /* le mapping continue */ } }
+    if (token.cancelled) break;
     // NUIT AVANT DE PARTIR (fix fable1 bis) : l'abri à l'ARRIVÉE (onArrive) laissait le bot
     // marcher toute une jambe de nuit → snipé en route (MapperBot1/ResBot3 shot by Skeleton au
     // crépuscule). On se terre AVANT de se mettre en route ; no-op le jour (cooldown 1/nuit côté hook).

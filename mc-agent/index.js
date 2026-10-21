@@ -113,7 +113,7 @@ const { createDeathSpots } = require('./deathspots');
 const deathSpots = createDeathSpots();
 const { recordWorkStuck } = require('./workStuck'); // chantier menant à une impasse SÈCHE (drop_ahead/max_depth) → abandon+relocate (live 27/07 world_mn9)
 // Run 20/10 : regard d'enderman, faim sous terre, drop_ahead en boucle (cf. les trois modules purs).
-const { lookIsUnsafe, wrapLook, creepyIndex, isAngryEnderman, endermanResponse } = require('./enderman');
+const { lookIsUnsafe, wrapLook, creepyIndex, angerReason, hurtCulprit, endermanResponse } = require('./enderman');
 const { descentFoodGate, undergroundFoodTripDue, foodGateLoad } = require('./foodGate');
 const { noteDropAhead, turnYaw, shiftTarget } = require('./dropAhead');
 const { canDealWith, attackDamage, boldFightAdvised } = require('./survival');
@@ -126,8 +126,9 @@ const { HOME_SAFE, HOME_WORK, HOME_DEATH, LEGACY_HOMES, canBookmarkDeath, openDe
 // spawn). Décisions PURES ; la glue (veto, re-pose, mémo) est plus bas, section « HOME safe CAMPÉ ».
 const {
   homeCamped, spawnpointVeto, rescueWarpVeto, safeHomeMove, spawnSafeHomeAction, deathPosPrune, deathPosLoad, deathPosMemoWith,
-  safeHomeLoad, safeHomeMemoWith, nearestHostile, hostileNearHome, CAMPED_EVENT_EVERY_MS,
+  safeHomeLoad, safeHomeMemoWith, nearestHostile, hostileNearHome, CAMPED_EVENT_EVERY_MS, deathsNear, hostileSeenRecently,
 } = require('./homeSafety');
+const { mapperNightPlan } = require('./mapperNight');   // nuit du cartographe : rentrer au home ou se terrer ICI (21/10)
 const { recordJam, jamLoopMemoWith, jamLoopAtStart, jamLoopCleared } = require('./jamEscalate'); // JAM persistant au MÊME endroit → relocate forcé (live 22/06 SOIR ResBot2) ; jam_loop répété → escalier (20/10)
 const { digOut: digOutSkill, isOutside: digOutIsOutside, DIG_OUT_MAX_MS } = require('./skills/digOut'); // escalier vers la surface quand aucun home ne sort le bot (20/10)
 const { runResource } = require('./skills/resource');
@@ -3176,6 +3177,7 @@ let lastShelterT = 0; // anti re-trigger : 1 abri par nuit max (heure de DÉBUT 
 // trajet bois (woodTripWanted), le /tpa vers un cartographe (tryTpToMapper), la chasse au démarrage
 // du cartographe. Le squad/regroupement passe déjà par regroupCaution (plus large : test-pinné).
 // ⚠️ NIVEAU MODULE (piège #56) : tout ceci est lu par des timers ET par le planner.
+let _mapperHomeShelterFailedAt = 0;   // abri RATÉ au home safe (mapperNight) — l'état du process suffit : il survit aux respawns
 let _shelterInFlight = null;   // promesse de l'abri EN COURS — un seul trou à la fois, les autres appelants le rejoignent
 // Un COMPTEUR et pas un booléen (même raison que _skillInFlight/_autoRunners) : un vieux planner qui finit
 // sa retenue (jeton annulé au respawn) ne doit pas déclarer « plus retenu » pendant que le nouveau l'est encore.
@@ -3261,13 +3263,30 @@ async function maybeNightShelter(proactive = false, opts = {}) {
       // ⚠️ HOME CAMPÉ (live 19/10) : c'était le 1ᵉʳ maillon de la boucle mortelle de MapBot2
       // (mapper_home_return > safe_warp > fight > dig_in > flee > mort, 8 fois en 3 min). goHome passe par
       // le veto : campé la nuit, le /home ne part pas et on se terre LÀ où la nuit nous a surpris.
-      if (IS_MAPPER && _safeHomeSet) {
+      // NUIT DU CARTOGRAPHE (21/10, mapperNight) : home douteux (1 mort récente, hostile vu, abri déjà
+      // raté là-bas) → on se terre ICI au lieu d'être renvoyé dans le même trou raté.
+      let wentHome = false;
+      if (IS_MAPPER) {
+        let plan = { go: false, why: 'no_home' };
         try {
-          if (homewarp.goHome(bot, HOME_SAFE, { ctx: 'mapper_night' })) {
-            emit({ type: 'mapper_home_return', home: 'safe' });
-            await sleep(4000);
-          }
-        } catch (e) {}
+          const now = Date.now();
+          plan = mapperNightPlan({
+            homeSet: !!_safeHomeSet,
+            deathsNearHome: _safeHomePos ? deathsNear(_safeHomePos, _recentDeathPositions(), now) : 0,
+            hostileNearHome: hostileSeenRecently(noteHostileNearSafeHome(now), now),
+            homeShelterFailedAt: _mapperHomeShelterFailedAt, now,
+          });
+        } catch (e) { /* lecture ratée → chemin historique ci-dessous */ plan = { go: !!_safeHomeSet, why: 'home' }; }
+        emit({ type: 'mapper_night', phase: 'dusk', where: plan.go ? 'home' : 'here', why: plan.why });
+        if (plan.go) {
+          try {
+            if (homewarp.goHome(bot, HOME_SAFE, { ctx: 'mapper_night' })) {
+              wentHome = true;
+              emit({ type: 'mapper_home_return', home: 'safe' });
+              await sleep(4000);
+            }
+          } catch (e) {}
+        }
       }
       _stillBusy = true;    // terré jusqu'à l'aube (≤13 min immobile) : immobilité légitime, pas un desync
       try {
@@ -3282,12 +3301,19 @@ async function maybeNightShelter(proactive = false, opts = {}) {
         // termine l'abri au lieu d'« attendre l'aube » debout dehors — la discipline le ré-abrite 20 s plus
         // tard. Relu AU MOMENT du délogement (un abri ouvert au crépuscule, avant que `isNight` ne bascule,
         // est couvert aussi). Armé : toujours faux, l'abri attend l'aube comme avant.
-        await withTimeout(shelterUntilDawn(bot, taskToken, {
+        const sres = await withTimeout(shelterUntilDawn(bot, taskToken, {
           emit, hostilesNear: hostilesNearNow, worn: () => _wornArmor().size,
           exitThreats: dawnExitThreatsNow, onExit: exitAwayFromThreats,   // sortie sûre (fix 20/10)
           endWhenDisplaced: () => nightLockdownNow(),
         }), 13 * 60 * 1000 + Math.max(DAWN_WAIT_MAX_MS, DAWN_SAFE_EXIT_MAX_MS),
         () => { try { stopMotion(); } catch (e) {} });
+        if (IS_MAPPER) {
+          const reason = (sres && sres.reason) || null;
+          // borne de 13 min atteinte = nuit passée terré ; tâche annulée (mort, ordre) ≠ trou raté
+          const ok = !!(sres && sres.ok) || reason === 'timeout';
+          if (!ok && wentHome && reason !== 'cancelled') _mapperHomeShelterFailedAt = Date.now();   // ce home ne vaut rien cette nuit
+          emit({ type: 'mapper_night', phase: ok ? 'dawn' : 'shelter_failed', where: wentHome ? 'home' : 'here', reason });
+        }
       } finally { _stillBusy = false; }
     })();
     // Posé SANS await intermédiaire depuis la décision : un appelant concurrent voit l'abri en cours.
@@ -4799,6 +4825,7 @@ async function startMapper() {
     // COÛTE QUE COÛTE tant que le cartographe est nu (mapperNightGuard, verdict pur ci-dessus).
     // Le hook est appelé en TÊTE de boucle : quand il s'abrite, aucune jambe ne part.
     nightShelter: () => mapperNightGuard(),
+    hold: () => endermanHoldWait(),   // muré face à un enderman en colère (21/10) : la boucle attend
 
     // kit incomplet (stall terrain au départ) → re-tenté discrètement toutes les ~10 arrivées :
     // le terrain a changé (le bot a bougé), la pose de table a souvent une 2e chance ailleurs.
@@ -9646,6 +9673,8 @@ let _enderEvAt = {};
 let _enderCreepyIdx = null;           // index de la métadonnée « creepy » (lu une fois dans minecraft-data)
 let _enderHurtAt = 0;                 // dernier coup reçu avec un enderman collé (repli sans métadonnée)
 let _enderHurtId = null;
+let _enderHoldUntil = 0;              // cartographe muré face à un enderman en colère : la boucle de mapping attend
+const ENDER_HOLD_MS = 25000;          // la colère vanilla dure 20-39 s ; muré, on laisse passer le gros de l'orage
 let _dropSites = [];                  // derniers drop_ahead {x,z,t} (dropAhead.noteDropAhead)
 let _dropShiftSeed = 0;               // fait tourner le cap du décalage 30-50 blocs
 let _descendHeading = null;           // { yaw, at } : cap imposé à la prochaine descente
@@ -9684,16 +9713,38 @@ function installEndermanGuard() {
   });
 }
 
-/** Le bot vient d'encaisser un coup : un enderman collé (≤ 4 blocs) est le coupable probable. */
-function noteEndermanHurt() {
+/**
+ * Le bot vient d'encaisser un coup : `source` = l'entité responsable (damage_event 1.20+). Seul un
+ * enderman SOURCE est coupable ; sans source, un enderman collé l'est s'il est le seul hostile collé
+ * (enderman.hurtCulprit — live 21/10 : un coup de zombie mis sur le dos d'un enderman → provoqué → mort).
+ */
+function noteEndermanHurt(source) {
   const me = bot.entity && bot.entity.position;
   if (!me) return;
-  for (const e of Object.values(bot.entities || {})) {
-    if (!e || e.name !== 'enderman' || !e.position) continue;
-    if (Math.hypot(e.position.x - me.x, e.position.y - me.y, e.position.z - me.z) <= 4) {
-      _enderHurtAt = Date.now(); _enderHurtId = e.id; return;
-    }
+  const e = hurtCulprit(source || null, Object.values(bot.entities || {}), { x: me.x, y: me.y, z: me.z });
+  if (e) { _enderHurtAt = Date.now(); _enderHurtId = e.id; }
+}
+
+/**
+ * Cartographe muré face à un enderman en colère (réaction 'hide') : la boucle de mapping ATTEND ici
+ * au lieu de repartir à pied à travers le mur. Borné par ENDER_HOLD_MS ; fin anticipée dès qu'aucun
+ * enderman en colère n'est à ≤ 16 blocs.
+ */
+async function endermanHoldWait() {
+  let n = 0;
+  while (Date.now() < _enderHoldUntil && n++ < 80) {
+    const ent = bot.entity;
+    if (!ent || !ent.position) break;
+    const self = { x: ent.position.x, y: ent.position.y, z: ent.position.z };
+    if (_enderCreepyIdx == null) _enderCreepyIdx = creepyIndex(bot.registry);
+    const hurt = Date.now() - _enderHurtAt < 5000;
+    const angry = Object.values(bot.entities || {}).some((e) => e && e.name === 'enderman' && e.position
+      && Math.hypot(e.position.x - self.x, e.position.y - self.y, e.position.z - self.z) <= ENDER_SCAN_RADIUS
+      && angerReason(e, { creepyIdx: _enderCreepyIdx, selfPos: self, hurtBy: hurt && e.id === _enderHurtId }));
+    if (!angry) break;
+    await new Promise((r) => setTimeout(r, 500));
   }
+  _enderHoldUntil = 0;
 }
 
 /**
@@ -9717,13 +9768,15 @@ async function endermanTick() {
     if (_enderCreepyIdx == null) _enderCreepyIdx = creepyIndex(bot.registry);
     const hurt = Date.now() - _enderHurtAt < 5000;
     let target = null;
+    let why = null;
     let best = Infinity;
     for (const e of Object.values(bot.entities || {})) {
       if (!e || e.name !== 'enderman' || !e.position) continue;
       const d = Math.hypot(e.position.x - self.x, e.position.y - self.y, e.position.z - self.z);
       if (d > ENDER_SCAN_RADIUS) continue;
-      if (!isAngryEnderman(e, { creepyIdx: _enderCreepyIdx, selfPos: self, hurtBy: hurt && e.id === _enderHurtId })) continue;
-      if (d < best) { best = d; target = e; }
+      const r = angerReason(e, { creepyIdx: _enderCreepyIdx, selfPos: self, hurtBy: hurt && e.id === _enderHurtId });
+      if (!r) continue;
+      if (d < best) { best = d; target = e; why = r; }
     }
     if (!target) return;
     let water = null;
@@ -9732,32 +9785,52 @@ async function endermanTick() {
       water = ids.length ? bot.findBlock({ matching: ids, maxDistance: 6 }) : null;
     } catch (e) { water = null; }
     const wd = (water && water.position) ? Math.hypot(water.position.x - self.x, water.position.y - self.y, water.position.z - self.z) : null;
+    let hasBlock = false;
+    try { hasBlock = bot.inventory.items().some((i) => SCAFFOLD.includes(i.name)); } catch (e) { hasBlock = false; }
+    // Un cartographe (preferFlee) ne frappe JAMAIS un enderman, un bot nu non plus (live 21/10 : 3/3
+    // cartographes nus morts juste après un `enderman_fight` qu'ils avaient choisi).
     const act = endermanResponse({
       waterDist: wd, health: bot.health, food: bot.food,
       canDealWith: canDealWith(armorPoints(bot), attackDamage(bot)), boldFightAdvised,
+      preferFlee: IS_MAPPER, naked: armorPoints(bot) <= 0, hasBlock,
     });
     _enderBusyUntil = Date.now() + ENDER_ACT_MS;
     const dist = Math.round(best * 10) / 10;
-    if (act === 'water') {
+    if (act === 'hide') {
+      // Se murer SUR PLACE (2 de haut, 4 côtés) : l'enderman (2,9 de haut) ne peut ni entrer ni frapper.
+      // Le hold est posé AVANT l'arrêt : la boucle de mapping, interrompue, attend au lieu de repartir.
+      _enderHoldUntil = Date.now() + ENDER_HOLD_MS;
+      _enderBusyUntil = _enderHoldUntil;
+      try { stopMotion(); } catch (e) {}
+      let r = null;
+      try { r = await withTimeout(secureSpot(bot, 'seal', {}), 5000, () => { try { stopMotion(); } catch (e) {} }); } catch (e) { r = null; }
+      _enderEmit('enderman_hide', { dist, why, ok: !!(r && r.ok), placed: (r && r.placed) || 0 });
+      if (!r || !r.ok) {
+        _enderHoldUntil = 0; _enderBusyUntil = Date.now() + ENDER_ACT_MS;
+        const dest = fleeTarget(self, target.position);
+        if (dest) bot.pathfinder.setGoal(new pfGoals.GoalNearXZ(dest.x, dest.z, 3), false);
+        _enderEmit('enderman_flee', { to: 'away', dist, why });
+      }
+    } else if (act === 'water') {
       const w = water.position;
       bot.pathfinder.setGoal(new pfGoals.GoalNear(w.x, w.y, w.z, 0));
-      _enderEmit('enderman_flee', { to: 'water', dist });
+      _enderEmit('enderman_flee', { to: 'water', dist, why });
     } else if (act === 'fight') {
       const w = bestWeapon(bot);
       if (w) { try { await bot.equip(w, 'hand'); } catch (e) {} }
       try { bot.pvp.attack(target); } catch (e) {}
-      _enderEmit('enderman_fight', { dist, health: bot.health });
+      _enderEmit('enderman_fight', { dist, health: bot.health, why });
     } else {
       const dest = fleeTarget(self, target.position);
       if (dest) bot.pathfinder.setGoal(new pfGoals.GoalNearXZ(dest.x, dest.z, 3), false);
-      _enderEmit('enderman_flee', { to: 'away', dist });
+      _enderEmit('enderman_flee', { to: 'away', dist, why });
     }
   } catch (e) { /* watchdog : ne crash jamais */ }
   finally { _enderBusy = false; }
 }
 bot.once('inject_allowed', () => { try { installEndermanGuard(); } catch (e) {} });
 bot.on('spawn', () => { try { installEndermanGuard(); } catch (e) {} });
-bot.on('entityHurt', (e) => { try { if (e && bot.entity && e === bot.entity) noteEndermanHurt(); } catch (err) {} });
+bot.on('entityHurt', (e, source) => { try { if (e && bot.entity && e === bot.entity) noteEndermanHurt(source); } catch (err) {} });
 setInterval(() => { endermanTick().catch(() => {}); }, 500);
 
 /**

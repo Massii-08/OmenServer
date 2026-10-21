@@ -96,31 +96,69 @@ function creepyIndex(registry) {
 }
 
 /**
- * PUR — cet enderman est-il EN COLÈRE contre nous ?
- * Source sûre : la métadonnée « creepy » (posée par le serveur quand il prend une cible). Repli si la
- * métadonnée manque : il vient de nous frapper (`hurtBy`) ou il est collé (≤ 2,5 blocs).
+ * PUR — POURQUOI cet enderman serait-il en colère contre nous ? 'creepy' | 'hurt' | 'close' | null.
+ * Source sûre : la métadonnée « creepy » (posée par le serveur quand il prend une cible).
+ * ⚠️ Live 21/10 (3 morts « slain by Enderman » de cartographes nus en 37 min, toutes précédées d'un
+ * `enderman_fight` à 2,2-3,7 blocs, PV 15-20) : le repli « collé = menace » traitait en colère un
+ * enderman CALME qui passait à 2 blocs — et le frapper le provoquait. Or le serveur n'envoie que les
+ * métadonnées non par défaut : « creepy » ABSENT d'une métadonnée connue = jamais énervé depuis qu'on
+ * le voit = calme. Le repli de proximité ne vaut donc QUE si la métadonnée manque entièrement.
  */
-function isAngryEnderman(e, { creepyIdx = 17, selfPos = null, hurtBy = false } = {}) {
-  if (!_isEnderman(e)) return false;
+function angerReason(e, { creepyIdx = 17, selfPos = null, hurtBy = false } = {}) {
+  if (!_isEnderman(e)) return null;
   const md = e.metadata;
-  if (Array.isArray(md) && md[creepyIdx] === true) return true;
-  if (md && !Array.isArray(md) && typeof md === 'object' && md[creepyIdx] === true) return true;
-  if (hurtBy) return true;
+  const known = !!(md && typeof md === 'object');
+  const flag = known ? md[creepyIdx] : undefined;
+  if (flag === true) return 'creepy';
+  if (hurtBy) return 'hurt';
+  if (known) return null;                       // métadonnée lue : pas « creepy » → calme, même collé
   if (selfPos) {
     const d = Math.hypot(e.position.x - selfPos.x, e.position.y - selfPos.y, e.position.z - selfPos.z);
-    if (d <= ANGRY_DIST) return true;
+    if (d <= ANGRY_DIST) return 'close';
   }
-  return false;
+  return null;
+}
+
+/** PUR — cet enderman est-il EN COLÈRE contre nous ? (cf. angerReason) */
+function isAngryEnderman(e, opts = {}) {
+  return angerReason(e, opts) != null;
+}
+
+/**
+ * PUR — quel enderman nous a frappés ? Rend l'enderman coupable, ou null.
+ * `source` = l'entité responsable rapportée par le serveur (damage_event 1.20+, 2e argument de
+ * `entityHurt`). Live 21/10 (MapBot1, 14:45) : un coup de ZOMBIE pendant un combat a été mis sur le dos
+ * d'un enderman à 4 blocs → `enderman_fight` → enderman provoqué → mort. Avec une source connue, seul
+ * un enderman source est coupable ; sans source, un enderman collé ne l'est que si aucun AUTRE hostile
+ * n'est aussi près (sinon c'est lui le suspect évident).
+ */
+function hurtCulprit(source, entities, selfPos, radius = 4) {
+  if (source) return _isEnderman(source) ? source : null;
+  if (!selfPos) return null;
+  let culprit = null;
+  let best = Infinity;
+  for (const e of _list(entities)) {
+    if (!e || !e.position) continue;
+    const d = Math.hypot(e.position.x - selfPos.x, e.position.y - selfPos.y, e.position.z - selfPos.z);
+    if (d > radius) continue;
+    if (_isEnderman(e)) { if (d < best) { best = d; culprit = e; } } else if (e.kind === 'Hostile mobs') return null;
+  }
+  return culprit;
 }
 
 /**
  * PUR — que faire face à un enderman énervé ?
  *   'water' : de l'eau à ≤ 6 blocs → y entrer (il fuit l'eau, qui le blesse) ;
- *   'fight' : la règle canDealWith le permet (boldFightAdvised injecté, l'enderman compte double) ;
- *   'flee'  : sinon.
+ *   'hide'  : bot qui ne combat pas (cartographe, `preferFlee`) avec des blocs en poche → se murer sur
+ *             place (2 de haut, 4 côtés : un enderman de 2,9 ne peut ni y entrer ni frapper par-dessus) ;
+ *   'flee'  : bot qui ne combat pas sans blocs, ou NU (40 PV, ~10 de dégâts en Hard : un bot nu ne gagne
+ *             pas ce duel — live 21/10, 3/3 cartographes morts en le combattant) ;
+ *   'fight' : sinon, si canDealWith le permet (boldFightAdvised injecté, l'enderman compte double).
  */
-function endermanResponse({ waterDist = null, health, canDealWith, food, boldFightAdvised } = {}) {
+function endermanResponse({ waterDist = null, health, canDealWith, food, boldFightAdvised, preferFlee = false, naked = false, hasBlock = false } = {}) {
   if (Number.isFinite(waterDist) && waterDist <= WATER_RADIUS) return 'water';
+  if (preferFlee) return hasBlock ? 'hide' : 'flee';
+  if (naked) return 'flee';
   if (typeof boldFightAdvised === 'function'
       && boldFightAdvised({ health, fightCount: ENDERMAN_FIGHT_WEIGHT, canDealWith, food })) return 'fight';
   return 'flee';
@@ -156,7 +194,7 @@ function wrapLook(bot, opts = {}) {
 }
 
 module.exports = {
-  viewVector, lookIsUnsafe, safeLook, creepyIndex, isAngryEnderman, endermanResponse, wrapLook,
+  viewVector, lookIsUnsafe, safeLook, creepyIndex, angerReason, isAngryEnderman, hurtCulprit, endermanResponse, wrapLook,
   LOOK_RANGE, EYE_HEIGHT, VANILLA_K, MARGIN, MIN_CONE_RAD, SAFE_PITCHES, ANGRY_DIST, WATER_RADIUS,
   ENDERMAN_FIGHT_WEIGHT,
 };

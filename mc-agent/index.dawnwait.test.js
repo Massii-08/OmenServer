@@ -19,6 +19,8 @@ const CR = require('./creeper');
 const SRC = fs.readFileSync(path.join(__dirname, 'index.js'), 'utf8');
 const U = require('./unstuck');
 const SH = require('./skills/shelter');
+const MN = require('./mapperNight');
+const HS = require('./homeSafety');
 const C = require('./caution');
 const { isFleeHostile } = require('./skills/fleeFrom');
 const { NEUTRAL_NO_PROVOKE } = require('./survival');
@@ -106,7 +108,7 @@ test('hostilesNearNow : relu à CHAQUE appel (le monde bouge pendant l\'attente)
 });
 
 // ═════════════════════ 3. maybeNightShelter : ce qui est VRAIMENT passé à shelterUntilDawn ══════════
-function shelterSandbox({ worn = 0, entities = [zombie(6), zombie(8, 2, 'skeleton')] } = {}) {
+function shelterSandbox({ worn = 0, entities = [zombie(6), zombie(8, 2, 'skeleton')], mapper = null } = {}) {
   const captured = { calls: [], timeouts: [] };
   const bot = Object.assign(botAt(entities), {
     health: 20,
@@ -138,7 +140,17 @@ function shelterSandbox({ worn = 0, entities = [zombie(6), zombie(8, 2, 'skeleto
     trySleepInBedTonight: async () => false,
     nightLockdown: C.nightLockdown, lockdownShelterNote: C.lockdownShelterNote,
     NIGHT_SHELTER_GAP_MS: C.NIGHT_SHELTER_GAP_MS, NIGHT_UNDERGROUND_Y: C.NIGHT_UNDERGROUND_Y,
+    // NUIT DU CARTOGRAPHE (21/10) : rentrer au home ou se terrer ici (mapperNight)
+    mapperNightPlan: MN.mapperNightPlan, deathsNear: HS.deathsNear, hostileSeenRecently: HS.hostileSeenRecently,
+    HOME_SAFE: 'safe', _safeHomePos: null, _mapperHomeShelterFailedAt: 0,
+    _recentDeathPositions: () => (mapper && mapper.deaths) || [],
+    noteHostileNearSafeHome: () => (mapper && mapper.hostileAt) || 0,
   });
+  if (mapper) {
+    sb.IS_MAPPER = true; sb._safeHomeSet = true; sb._safeHomePos = { x: 100, y: 64, z: 100 };
+    sb.homewarp = { goHome: (b, name) => { captured.warps = (captured.warps || 0) + 1; return true; } };
+    if (mapper.shelter) sb.shelterUntilDawn = async (b, tok, deps) => { captured.calls.push({ deps }); return mapper.shelter; };
+  }
   run(sb, fnSrc('isThreatHostile'));
   run(sb, fnSrc('hostilesNearNow'));
   run(sb, fnSrc('nightLockdownNow'));
@@ -187,6 +199,38 @@ test('maybeNightShelter : pas de nuit, équipé, rien à craindre → ne s abrit
   sb.bot.blockAt = () => ({ light: 15 });
   assert.strictEqual(await sb.maybeNightShelter(false), false);
   assert.strictEqual(sb.captured.calls.length, 0);
+});
+
+// ═════════════════════ 3bis. NUIT DU CARTOGRAPHE (live 21/10) ══════════════════════════════════════
+test('maybeNightShelter (cartographe) : home sain → /home safe puis abri, mapper_night dusk/home puis dawn', async () => {
+  const sb = shelterSandbox({ worn: 0, mapper: {} });
+  assert.strictEqual(await sb.maybeNightShelter(true), true);
+  assert.strictEqual(sb.captured.warps, 1);
+  const n = sb.events.filter((e) => e.type === 'mapper_night');
+  assert.deepStrictEqual(n.map((e) => [e.phase, e.where]), [['dusk', 'home'], ['dawn', 'home']]);
+});
+
+test('maybeNightShelter (cartographe) : une mort récente au home → se terre ICI, aucun /home', async () => {
+  const now = 1_700_000_000_000;
+  const sb = shelterSandbox({ worn: 0, mapper: { deaths: [{ x: 104, y: 64, z: 98, at: now - 60000 }] } });
+  await sb.maybeNightShelter(true);
+  assert.strictEqual(sb.captured.warps || 0, 0);
+  const dusk = sb.events.find((e) => e.type === 'mapper_night' && e.phase === 'dusk');
+  assert.deepStrictEqual([dusk.where, dusk.why], ['here', 'deaths_near_home']);
+  assert.strictEqual(sb.captured.calls.length, 1, 'il s abrite quand même');
+});
+
+test('maybeNightShelter (cartographe) : abri RATÉ au home → le ré-abri suivant se fait ICI', async () => {
+  const sb = shelterSandbox({ worn: 0, mapper: { shelter: { ok: false, reason: 'displaced' } } });
+  await sb.maybeNightShelter(true);
+  assert.strictEqual(sb.captured.warps, 1);
+  assert.ok(sb.events.some((e) => e.type === 'mapper_night' && e.phase === 'shelter_failed' && e.where === 'home'));
+  assert.ok(sb._mapperHomeShelterFailedAt > 0);
+  sb.lastShelterT = 0;
+  await sb.maybeNightShelter(true);
+  assert.strictEqual(sb.captured.warps, 1, 'pas de 2e /home vers le trou raté');
+  const dusks = sb.events.filter((e) => e.type === 'mapper_night' && e.phase === 'dusk');
+  assert.strictEqual(dusks[1].why, 'home_shelter_failed');
 });
 
 // ═════════════════════ 4. câblage (imports, niveau module) ══════════════════════════════════════════
