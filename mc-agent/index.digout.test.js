@@ -236,6 +236,19 @@ test('runSkillWithTelemetry : un échec appelle la demande de bois ; woodWaitSte
   assert.match(fnSrc('_recoverPickaxeInner'), /woodWaitStep\(\{ name: 'pick_recovery', skill: 'gatherLog'/);
 });
 
+// ─── 4. Pick recovery sans garde-fou danger (NethBot2 + MapBot2, 21/10) ─────────────────────────
+// Mesuré en live : le gather de bois de la récupération de pioche n'avait AUCUN prédicat `danger`,
+// contrairement à gatherWoodSafely (le chemin normal de `logs`/gatherLog). Sans lui, explore() ne
+// peut jamais couper tôt quand un hostile menace — les réflexes de survie (fleeFrom/creeperTick)
+// coupaient le pathfinder d'explore() en boucle, rejet « The goal was changed before it could be
+// completed! » sur LES 6 waypoints du 1er anneau en <100ms (`explore_summary reached:0 failedFast:6
+// stuck:true`), skill bloqué 240s pour rien, et le bot a frôlé la mort (hp 0.5, NethBot2) pendant le
+// thrash au lieu de se cacher comme gatherWoodSafely sait le faire.
+test('_recoverPickaxeInner : le gather de bois passe un `danger` — sinon explore() ne coupe jamais face à un hostile', () => {
+  assert.match(fnSrc('_recoverPickaxeInner'),
+    /gather\(bot, \{ name: logNames, count: 4, explore: true, danger: \(\) => !!woodThreatNow\(\) \}, taskToken\)/);
+});
+
 test('recoverPickaxe : un 2e appel ATTEND l’expédition en vol et rend SA raison (plus de `unknown` instantané)', async () => {
   const sb = base();
   let release;

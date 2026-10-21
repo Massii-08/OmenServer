@@ -6559,7 +6559,11 @@ async function _recoverPickaxeInner() {
   }
   if (taskToken.cancelled) return { ok: false };
   const logNames = Object.keys((bot.registry && bot.registry.blocksByName) || {}).filter((n) => n.endsWith('_log'));
-  try { await withTimeout(gather(bot, { name: logNames, count: 4, explore: true }, taskToken), 240000, () => { try { stopMotion(); } catch (e) {} }); } catch (e) {}
+  // `danger` (21/10, NethBot2+MapBot2) : sans lui explore() ne peut jamais couper tôt — les réflexes
+  // de survie (fleeFrom/creeperTick) coupent son pathfinder en boucle ("goal was changed before it
+  // could be completed!" sur les 6 waypoints en <100ms, explore_summary stuck:true) au lieu de laisser
+  // le bot se cacher, comme gatherWoodSafely le fait déjà pour le chemin gatherLog normal.
+  try { await withTimeout(gather(bot, { name: logNames, count: 4, explore: true, danger: () => !!woodThreatNow() }, taskToken), 240000, () => { try { stopMotion(); } catch (e) {} }); } catch (e) {}
   try {
     const log = ((bot.inventory && bot.inventory.items()) || []).find((i) => i.name.endsWith('_log'));
     if (log) await craftItem(bot, { name: log.name.replace('_log', '_planks'), count: 3 });
