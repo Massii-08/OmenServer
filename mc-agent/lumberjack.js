@@ -18,6 +18,7 @@
 //   - RÉSERVATION d'une livraison : claim `wood:<demandeur>` (anti double-service).
 
 const WOOD_REQUEST_TTL_MS = 240000;       // 4 min sans livraison → le demandeur va chercher lui-même
+const WOOD_UNDERGROUND_Y = 50;           // sous cette altitude l'ouvrier est « sous terre » → il attend le bûcheron
 const WOOD_REQUEST_COOLDOWN_MS = 600000;  // après un timeout : 10 min d'autonomie bois (pas d'aller-retour attente/quête)
 const LUMBERJACK_FRESH_MS = 150000;       // présence > 2,5 battements manqués (60 s) = bûcheron mort/déco
 const WOOD_WANT_MIN = 16;
@@ -59,11 +60,13 @@ function activeLumberjack({ mates, selfName, now, freshMs = LUMBERJACK_FRESH_MS 
  *  'timeout' : 4 min écoulées sans livraison → repli sur soi (event wood_request_timeout).
  * request = {want, at} | null ; timedOutAt = instant du dernier timeout (ou null).
  */
-function woodWaitDecision({ isLumberjack, isMapper, lumberjack, request, timedOutAt, now,
+function woodWaitDecision({ isLumberjack, isMapper, lumberjack, request, timedOutAt, now, underground = true,
   ttlMs = WOOD_REQUEST_TTL_MS, cooldownMs = WOOD_REQUEST_COOLDOWN_MS } = {}) {
   const t = now || Date.now();
   if (isLumberjack || isMapper) return { action: 'self', clear: !!request };
   if (!lumberjack) return { action: 'self', clear: !!request };
+  // En SURFACE un joueur coupe son bois lui-même : la livraison n'a de sens que pour un ouvrier sous terre.
+  if (!underground) return { action: 'self', clear: !!request };
   if (!request && timedOutAt && (t - timedOutAt) < cooldownMs) return { action: 'self', clear: false };
   if (!request) return { action: 'request' };
   const age = t - (request.at || 0);
@@ -422,7 +425,7 @@ function ljIronSlicePlan(sig = {}) {
 
 module.exports = {
   ljIronSlicePlan, LJ_MINE_COBBLE, LJ_MINE_DEPTH, ljMineTargetY, LJ_IRON_TARGET, LJ_IRON_SLICE_MS, LJ_IRON_RETRY_MS, LJ_IRON_CHECK_MS,
-  WOOD_REQUEST_TTL_MS, WOOD_REQUEST_COOLDOWN_MS, LUMBERJACK_FRESH_MS, WOOD_WANT_MIN, WOOD_WANT_MAX,
+  WOOD_REQUEST_TTL_MS, WOOD_REQUEST_COOLDOWN_MS, WOOD_UNDERGROUND_Y, LUMBERJACK_FRESH_MS, WOOD_WANT_MIN, WOOD_WANT_MAX,
   LUMBERJACK_STOCK, LUMBERJACK_RESERVE, WOOD_MIN_GIFT,
   isWoodGoal, woodWantFor, logCount, activeLumberjack, woodWaitDecision, preferredLumberjack,
   lumberjackVerdict, pickWoodRequest, tossPlan,

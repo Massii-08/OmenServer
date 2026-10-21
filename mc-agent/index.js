@@ -147,7 +147,7 @@ const { pickRegroupTarget, squadTarget } = require('./regroup');
 // fer ils se séparent »). Décisions PURES ; l'exécution (marche + toss) est ci-dessous.
 const { teamStatus, pickDonation, allArmored, pickMobAssist, pickMapperToEquip, giftSetPlan } = require('./teamwork');
 const {
-  isWoodGoal, woodWantFor, logCount, activeLumberjack, woodWaitDecision, preferredLumberjack,
+  isWoodGoal, woodWantFor, logCount, activeLumberjack, woodWaitDecision, WOOD_UNDERGROUND_Y, preferredLumberjack,
   lumberjackVerdict, pickWoodRequest, tossPlan, WOOD_REQUEST_TTL_MS, WOOD_MIN_GIFT, LUMBERJACK_STOCK,
   missingIronPieces, ownArmorAction, pickMapperForLumberjack, ljGiftReady,
   woodShortForFailure, giftBatchFor,
@@ -1224,6 +1224,7 @@ async function woodWaitStep(g, why) {
   const d = woodWaitDecision({
     isLumberjack: isLumberjackObjective(), isMapper: IS_MAPPER, lumberjack: lj,
     request: _woodReq, timedOutAt: _woodTimedOutAt, now,
+    underground: (bot.entity && bot.entity.position && bot.entity.position.y != null) ? bot.entity.position.y < WOOD_UNDERGROUND_Y : true,
   });
   if (d.action === 'self') { if (d.clear) setWoodRequest(null); return null; }
   if (d.action === 'timeout') {

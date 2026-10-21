@@ -89,7 +89,7 @@ function sandbox(o = {}) {
     woodWaitDecision: L.woodWaitDecision, preferredLumberjack: L.preferredLumberjack, lumberjackVerdict: L.lumberjackVerdict,
     pickWoodRequest: L.pickWoodRequest, tossPlan: L.tossPlan,
     pickJunkToToss: require('./skills/craft').pickJunkToToss,
-    WOOD_REQUEST_TTL_MS: L.WOOD_REQUEST_TTL_MS, WOOD_MIN_GIFT: L.WOOD_MIN_GIFT, LUMBERJACK_STOCK: L.LUMBERJACK_STOCK,
+    WOOD_REQUEST_TTL_MS: L.WOOD_REQUEST_TTL_MS, WOOD_UNDERGROUND_Y: L.WOOD_UNDERGROUND_Y, WOOD_MIN_GIFT: L.WOOD_MIN_GIFT, LUMBERJACK_STOCK: L.LUMBERJACK_STOCK,
     // temps mort → fer (21/10) : testé dans index.ljiron.test.js ; ici « rien d'utile » = attente historique
     ljIronSliceStep: async () => (o.slice ? o.slice() : null), LJ_IRON_CHECK_MS: L.LJ_IRON_CHECK_MS,
   };
@@ -341,4 +341,20 @@ test('câblage : noteZoneFailure compte lj_stock/logs timeout comme manque de bo
   assert.strictEqual(sb._zoneLogsNotFound, 2 * Z.WOOD_TIMEOUT_WEIGHT);
   assert.strictEqual(Z.windowSum(sb._zoneLogsWin, T0), 2 * Z.WOOD_TIMEOUT_WEIGHT);
   assert.strictEqual(sb._needsWoodTrip, true);
+});
+
+test('ouvrier en SURFACE (y>=50) avec bûcheron actif : pas de demande, pas d\'attente, il récolte lui-même', async () => {
+  const sb = sandbox({ mates: [LJ()], pos: { y: 70 } });
+  const r = await run(sb, 'woodWaitStep(' + JSON.stringify(LOGS_GOAL) + ')');
+  assert.strictEqual(r, null);
+  assert.ok(!sb.events.some((e) => e.type === 'wood_request' || e.type === 'wood_wait'));
+  assert.strictEqual(sb.__get('_woodReq'), null);
+});
+
+test('ouvrier SOUS TERRE (y<50) avec bûcheron actif : demande publiée comme avant', async () => {
+  const sb = sandbox({ mates: [LJ()], pos: { y: 20 } });
+  sb.onSleep = (t) => { if (t >= T0 + 5000 && !sb.items.length) sb.items.push({ name: 'oak_log', type: 7, count: 16 }); };
+  const r = await run(sb, 'woodWaitStep(' + JSON.stringify(LOGS_GOAL) + ')');
+  assert.deepStrictEqual(JSON.parse(JSON.stringify(r)), { ok: true });
+  assert.ok(sb.events.some((e) => e.type === 'wood_request'));
 });

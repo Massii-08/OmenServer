@@ -325,3 +325,12 @@ test('ljMineTargetY : 28 blocs sous les pieds, jamais sous Y16', () => {
   assert.strictEqual(L.ljMineTargetY(40.6), 16);
   assert.strictEqual(L.ljMineTargetY(10), 16);
 });
+
+test('woodWaitDecision : en surface → self (retire une demande héritée), sous terre → request', () => {
+  assert.strictEqual(L.woodWaitDecision({ lumberjack: 'B', request: null, underground: false, now: NOW }).action, 'self');
+  const d = L.woodWaitDecision({ lumberjack: 'B', request: { want: 16, at: NOW - 1000 }, underground: false, now: NOW });
+  assert.strictEqual(d.action, 'self');
+  assert.strictEqual(d.clear, true);
+  assert.strictEqual(L.woodWaitDecision({ lumberjack: 'B', request: null, underground: true, now: NOW }).action, 'request');
+  assert.strictEqual(L.WOOD_UNDERGROUND_Y, 50);
+});
