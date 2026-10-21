@@ -16,20 +16,22 @@ const SCAFFOLD = [
 /**
  * Attend l'APEX du saut : velocity.y monte (>0.1) puis retombe sous epsilon (≤0.05). Borné.
  * Injectables : sleep (tests). Retourne true à l'apex, false au timeout.
+ * `opts.minDy` (déf 0.9) : seuil du critère HAUTEUR — réduit par pillarUp quand on nage (#21/10).
  */
 async function waitForApex(bot, opts = {}) {
   const timeoutMs = opts.timeoutMs || 1500;
   const pollMs = opts.pollMs || 20;
   const sleep = opts.sleep || ((ms) => new Promise((r) => setTimeout(r, ms)));
   const startY = opts.startY;
+  const minDy = opts.minDy != null ? opts.minDy : 0.9;
   const t0 = Date.now();
   let rising = false;
   while (Date.now() - t0 < timeoutMs) {
     const vy = (bot.entity && bot.entity.velocity && bot.entity.velocity.y) || 0;
     // Critère HAUTEUR (retour live Massii 2026-07-15) : poser au POINT LE PLUS HAUT — dès que le
-    // bot a gagné ~1 bloc (dy ≥ 0.9), on est à l'apex utile même si la vélocité est bruitée.
+    // bot a gagné ~1 bloc (dy ≥ minDy), on est à l'apex utile même si la vélocité est bruitée.
     const y = (bot.entity && bot.entity.position && bot.entity.position.y);
-    if (startY != null && y != null && y - startY >= 0.9) return true;
+    if (startY != null && y != null && y - startY >= minDy) return true;
     if (vy > 0.1) rising = true;
     else if (rising && vy <= 0.05) return true;   // sommet du saut : c'est MAINTENANT qu'on pose
     await sleep(pollMs);
@@ -71,11 +73,21 @@ async function pillarUp(bot, { height = 1 } = {}, token = null, opts = {}) {
     try { if (bot.lookAt && below.position) await bot.lookAt(below.position, true); } catch (e) {} // regarder en bas
     try { await bot.equip(item, 'hand'); } catch (e) { return { ok: placed > 0, placed, reason: 'equip_failed' }; }
 
+    // Sous l'eau, tenir jump ne donne PAS un saut parabolique (impulsion puis chute) mais une
+    // ascension LENTE et CONTINUE : vy ne dépasse jamais 0.1 (le critère vélocité ne s'arme jamais)
+    // et le seuil hauteur par défaut (0.9) n'est atteint qu'après plusieurs secondes — mesuré live
+    // (21/10, NethBot3) : 8 `water_climb` sur 11 en `placed:0,reason:place_failed`, deux cycles de
+    // 64s perdus. Seuil réduit + fenêtre allongée QUE si réellement immergé (la pose sur terre ferme
+    // n'est pas touchée : `bot.entity.isInWater` est faux par construction hors de l'eau).
+    const underwater = !!(bot.entity && bot.entity.isInWater);
+    const apexMinDy = opts.apexMinDy != null ? opts.apexMinDy : (underwater ? 0.35 : 0.9);
+    const apexTimeoutMs = opts.apexTimeoutMs || (underwater ? 2500 : 1500);
+
     let success = false;
     for (let attempt = 0; attempt < 2 && !success; attempt++) {
       const startY = bot.entity && bot.entity.position ? bot.entity.position.y : null;
       try { bot.setControlState('jump', true); } catch (e) {}
-      const apex = await waitForApex(bot, { sleep, timeoutMs: opts.apexTimeoutMs || 1500, pollMs: opts.pollMs, startY });
+      const apex = await waitForApex(bot, { sleep, timeoutMs: apexTimeoutMs, pollMs: opts.pollMs, startY, minDy: apexMinDy });
       if (!apex) { try { bot.setControlState('jump', false); } catch (e) {} continue; } // saut raté → retente
       try {
         // ⚠️ Le JUMP reste TENU pendant la pose (retour live Massii 2026-07-15) : le couper avant
