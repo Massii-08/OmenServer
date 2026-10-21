@@ -18,6 +18,7 @@
 //   - quête de nourriture, trajet bois, /tpa vers un cartographe : retenus.
 // …et que RIEN ne change pour un bot armé (≥ 2 pièces) ou de jour.
 
+const NW = require('./nightWork');
 const test = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');
@@ -77,9 +78,17 @@ function sandbox({ worn = 0, timeOfDay = NIGHT, day = 4, pos = { x: 0, y: 70, z:
     NIGHT_SHELTER_GAP_MS: C.NIGHT_SHELTER_GAP_MS, NIGHT_UNDERGROUND_Y: C.NIGHT_UNDERGROUND_Y,
     regroupCaution: C.regroupCaution,
     _nightGateAt: {},
+    // NUIT AU TRAVAIL (21/10) : le VRAI relevé « sous terre » ; la descente elle-même est testée dans
+    // index.nightwork.test.js — ici elle échoue (false) pour garder le comportement historique de l'abri.
+    nightUnderground: NW.nightUnderground, nightDeferGoal: NW.nightDeferGoal, _nightWork: null,
+    _nightDeferReturnAt: {}, NIGHT_DEFER_RETURN_MS: 30000,
+    tryNightWork: async () => false,
+    _furnaceJob: null, FURNACE_JOB_KEEP_SKILLS: new Set(), finishFurnaceJob: async () => {},
     ...extra,
   };
   vm.createContext(sb);
+  run(sb, fnSrc('_nightId'));
+  run(sb, fnSrc('nightUndergroundNow'));
   run(sb, fnSrc('nightLockdownNow'));
   run(sb, fnSrc('nightGateNote'));
   return sb;
@@ -316,17 +325,22 @@ test('PLANNER : SOUS TERRE la nuit ne change rien — un but de minage part', as
   assert.strictEqual(forced(sb.log).length, 0, 'pas d abri sous terre (shouldShelter le refuse)');
 });
 
-test('PLANNER : sous terre, un but qui REMONTE (bois) attend l aube sur place — ni skill, ni abri, ni sortie', async () => {
+test('PLANNER : sous terre, un but qui REMONTE (bois) rend d abord la main (différé, 21/10), puis attend l aube sur place — ni skill, ni abri, ni sortie', async () => {
   const sb = plannerSandbox({
     worn: 0, pos: { x: 0, y: 16, z: 0 },
     onSleep: (s, log) => { if (log.sleeps.length === 5) s.bot.time.timeOfDay = DAY; },
   });
+  // 1er passage : main rendue tout de suite → le planner passe à un but faisable sous terre (nightSkipGoal).
+  const r0 = await sb.runSkillWithTelemetry({ name: 'logs', skill: 'gatherLog' });
+  assert.deepStrictEqual(plain(r0), { held: 'night' });
+  assert.strictEqual(sb.log.sleeps.length, 0);
+  // Revenu dans les 30 s (tout le reste est différé aussi) : on attend l'aube sur place, comme avant.
   const r = await sb.runSkillWithTelemetry({ name: 'logs', skill: 'gatherLog' });
   assert.deepStrictEqual(plain(r), { held: 'night' });
   assert.deepStrictEqual(sb.log.skills, []);
   assert.strictEqual(forced(sb.log).length, 0);
   assert.strictEqual(sb.log.sleeps.length, 5);
-  assert.strictEqual(sb.log.settles, 1 + 5, 'la survie du kit tourne pendant l attente (1 avant le skill, 1 par pas)');
+  assert.strictEqual(sb.log.settles, 2 + 5, 'la survie du kit tourne pendant l attente (1 avant chaque skill, 1 par pas)');
 });
 
 test('PLANNER : un abri DÉJÀ en cours (lancé par le timer de squad) → le planner l ATTEND, il ne repart pas couper du bois à côté (NethBot3)', async () => {

@@ -123,6 +123,9 @@ const NIGHT_SHELTER_GAP_MS = 20000;
  */
 function nightPlannerStep(sig = {}) {
   if (!sig || !sig.lockdown) return 'run';
+  // `underground: true` (NUIT AU TRAVAIL, 21/10, nightWork.nightUnderground) : descendu en escalier et
+  // scellé à ≥ 8 blocs sous la surface, même au-dessus de y 45 — même règle que le sous-sol historique.
+  if (sig.underground === true) return NIGHT_SURFACE_SKILLS.has(sig.skill) ? 'wait' : 'run';
   const y = sig.y;
   if (!(typeof y === 'number' && Number.isFinite(y))) return 'wait';
   if (y < NIGHT_UNDERGROUND_Y) return NIGHT_SURFACE_SKILLS.has(sig.skill) ? 'wait' : 'run';

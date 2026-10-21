@@ -32,7 +32,19 @@ function sandbox(o = {}) {
     _wornArmor: () => new Set(o.worn || []),
     isNight: () => !!o.night,
     ironCaveCtx: () => (o.cave === false ? null : { key: 'c1' }),
-    ljIronSlicePlan: L.ljIronSlicePlan, LJ_IRON_SLICE_MS: L.LJ_IRON_SLICE_MS,
+    ljIronSlicePlan: L.ljIronSlicePlan, LJ_IRON_SLICE_MS: L.LJ_IRON_SLICE_MS, LJ_MINE_COBBLE: L.LJ_MINE_COBBLE,
+    isInWater: () => false, ljMineReturn: async () => { sb.calls.push('mine_return'); },
+    // tranche 'mine' (21/10) : mine 1 fer toutes les 15 s tant que le jeton CAPTURÉ n'est pas annulé
+    ljMineSlice: async () => {
+      const tok = sb.taskToken;
+      sb.calls.push('mine');
+      while (!tok.cancelled) {
+        await sb.sleep(15000);
+        if (!tok.cancelled) { const r = sb.items.find((i) => i.name === 'raw_iron'); if (r) r.count++; else sb.items.push({ name: 'raw_iron', count: 1 }); }
+        if (clock.t - T0 > 3600000) throw new Error('jamais annulé');
+      }
+      return { ok: true };
+    },
     // grotte : mine 1 fer toutes les 10 s tant que le jeton CAPTURÉ n'est pas annulé
     runCaveIron: async () => {
       const tok = sb.taskToken;
@@ -113,4 +125,22 @@ test('câblage : lumberjackIdleSkill consulte ljIronSliceStep pendant l\'attente
   const src = fnSrc('lumberjackIdleSkill');
   assert.match(src, /await ljIronSliceStep\(\)/);
   assert.match(SRC, /^let _ljIronSliceAt = 0;/m);
+});
+
+test('aucune grappe connue mais pioche + 8 cobble → tranche de branch-mine, coupée par la demande de bois, retour au coin', async () => {
+  const sb = sandbox({ items: [PICK, { name: 'cobblestone', count: 8 }], cave: false, requestAt: T0 + 90000 });
+  const parent = sb.taskToken;
+  const r = await run(sb, 'ljIronSliceStep()');
+  assert.deepStrictEqual(JSON.parse(JSON.stringify(r)), { ok: true });
+  assert.strictEqual(sb.taskToken, parent);
+  assert.ok(sb.calls.includes('mine'));
+  assert.ok(sb.calls.indexOf('mine_return') > sb.calls.indexOf('mine'), 'retour /home work APRÈS la tranche');
+  const end = sb.events.find((e) => e.type === 'lj_iron_slice' && e.phase === 'end');
+  assert.strictEqual(end.act, 'mine');
+  assert.strictEqual(end.reason, 'wood_request');
+  assert.ok(end.raw >= 4);
+});
+
+test('aucune grappe, pioche mais < 8 cobble → pas de tranche mine (attente historique)', async () => {
+  assert.strictEqual(await run(sandbox({ items: [PICK, { name: 'cobblestone', count: 7 }], cave: false }), 'ljIronSliceStep()'), null);
 });

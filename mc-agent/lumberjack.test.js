@@ -307,3 +307,21 @@ test('giftBatchFor : rien d’abordable → null ; pièce déjà en poche = grat
     assert.strictEqual(L.ljIronSlicePlan({ ...base, lastSliceAt: base.now - 25000 }), 'cave');
   });
 }
+
+test('ljIronSlicePlan : aucune grappe connue mais de quoi miner → tranche de branch-mine', () => {
+  const base = { rawIron: 0, ingots: 0, cobble: 0, hasFurnace: false, hasStonePick: true, caveAvailable: false,
+    nightLock: false, now: 1e6, lastSliceAt: 0 };
+  assert.strictEqual(L.ljIronSlicePlan({ ...base, canMine: true }), 'mine');
+  assert.strictEqual(L.ljIronSlicePlan({ ...base, canMine: true, caveAvailable: true }), 'cave', 'la grotte d abord');
+  assert.strictEqual(L.ljIronSlicePlan({ ...base, canMine: true, nightLock: true }), null);
+  assert.strictEqual(L.ljIronSlicePlan({ ...base, canMine: true, hasStonePick: false }), null);
+  assert.strictEqual(L.ljIronSlicePlan({ ...base, canMine: true, ingots: 24 }), null);
+  assert.strictEqual(L.ljIronSlicePlan({ ...base, canMine: false }), null);
+  assert.strictEqual(L.LJ_MINE_COBBLE, 8);
+});
+
+test('ljMineTargetY : 28 blocs sous les pieds, jamais sous Y16', () => {
+  assert.strictEqual(L.ljMineTargetY(70), 42);
+  assert.strictEqual(L.ljMineTargetY(40.6), 16);
+  assert.strictEqual(L.ljMineTargetY(10), 16);
+});

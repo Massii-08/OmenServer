@@ -204,7 +204,7 @@ test('applyDescendHeading : cap périmé (> 10 min) → ignoré', async () => {
 
 test('runGoalSkill : la descente applique le cap mémorisé et traite drop_ahead', () => {
   const body = fnSrc('runGoalSkill');
-  assert.match(body, /await applyDescendHeading\(\);\s*\n\s*const r = await descendDiagonal/);
+  assert.match(body, /await applyDescendHeading\(\);\s*\n\s*(?:const|let) r = await descendDiagonal/);
   assert.match(body, /onDropAhead\(\)/);
 });
 

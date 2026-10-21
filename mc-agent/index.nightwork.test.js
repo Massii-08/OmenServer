@@ -1,0 +1,228 @@
+'use strict';
+// CÂBLAGE (21/10) : nuit au travail, pioche refaite sur place, fondre en minant, bûcheron qui mine.
+// Le VRAI texte des fonctions de index.js tourne dans un bac à sable `vm` strict : un identifiant lu hors
+// niveau module (piège #56) → ReferenceError ici, pas en prod.
+const test = require('node:test');
+const assert = require('node:assert');
+const fs = require('node:fs');
+const path = require('node:path');
+const vm = require('node:vm');
+const NW = require('./nightWork');
+const FJ = require('./furnaceJob');
+
+const SRC = fs.readFileSync(path.join(__dirname, 'index.js'), 'utf8');
+function grab(re, label) {
+  const m = SRC.match(re);
+  assert.ok(m, `${label} introuvable dans index.js`);
+  return m[0];
+}
+const fnSrc = (name) => grab(new RegExp(`^(?:async )?function ${name}\\([^)]*\\) \\{[\\s\\S]*?^\\}$`, 'm'), `function ${name}`);
+const constSrc = (name) => grab(new RegExp(`^const ${name} = [^;]+;`, 'm'), `const ${name}`);
+const letSrc = (name) => grab(new RegExp(`^let ${name} = [^;]+;`, 'm'), `let ${name}`);
+const run = (sb, code) => vm.runInContext("'use strict';\n" + code, sb);
+
+const T0 = 1_800_000_000_000;
+
+function sandbox(o = {}) {
+  const clock = { t: T0 };
+  const world = o.world || {};   // "x,y,z" → nom de bloc ; absent = pierre
+  const sb = {
+    events: [], clock, items: o.items || [{ name: 'stone_pickaxe', count: 1 }, { name: 'cobblestone', count: 20 }],
+    emit(e) { sb.events.push(e); },
+    Date: { now: () => clock.t },
+    Object, Math, Number, Array, JSON, Promise, Set, Map, String, RegExp, Error,
+    nightWorkPlan: NW.nightWorkPlan, nightUnderground: NW.nightUnderground, nightDeferGoal: NW.nightDeferGoal,
+    nightSealCells: NW.nightSealCells,
+    furnaceJobPlan: FJ.furnaceJobPlan, fuelLoadPlan: FJ.fuelLoadPlan, jobReadyAt: FJ.jobReadyAt,
+    SMELT_JOB_ABANDON_DIST: FJ.SMELT_JOB_ABANDON_DIST,
+    IS_MAPPER: false, isLumberjackObjective: () => false,
+    nightLockdownNow: () => o.lockdown !== false,
+    isInWater: () => false,
+    taskToken: { cancelled: false },
+    vec3Lib: (x, y, z) => ({ x, y, z }),
+    respawnThreatsNow: () => o.threats || [],
+    fleeBeforeHide: async () => { sb.fled = (sb.fled || 0) + 1; return true; },
+    descentSurvivalTick: async () => {},
+    withTimeout: (p) => p,
+    stopMotion: () => {},
+    sleep: async (ms) => { clock.t += ms; },
+    require: (m) => { if (m === './skills/shelter') return { cellBlockItem: () => sb.items.find((i) => i.name === 'cobblestone') }; throw new Error(m); },
+    descendDiagonal: async (bot, a) => {
+      sb.descended = a;
+      if (o.descentFails) return { ok: false, reason: 'water_ahead' };
+      bot.entity.position.y = a.targetY; return { ok: true };
+    },
+    craftSmart: async (a) => { sb.crafted = (sb.crafted || []).concat(a.name); if (a.name === 'stone_pickaxe' && !o.craftFails) sb.items.push({ name: 'stone_pickaxe', count: 1 }); return { ok: !o.craftFails }; },
+    placeBlockNear: async () => ({ ok: true, pos: { x: 1, y: 16, z: 0 } }),
+    waitForBlock: async () => true,
+    reclaimBlock: async () => { sb.reclaimed = true; },
+    pfGoals: { GoalNear: function (x, y, z) { this.x = x; this.y = y; this.z = z; } },
+    bot: {
+      time: { day: 7, timeOfDay: 14000 },
+      entity: { position: Object.assign({ x: 0.5, y: 70, z: 0.5, floored() { return { offset: (a, b, c) => ({ x: Math.floor(this.x) + a, y: Math.floor(this.y) + b, z: Math.floor(this.z) + c }) }; } }, o.pos || {}), onGround: true },
+      inventory: { items: () => sb.items },
+      registry: { itemsByName: { raw_iron: { id: 1 }, coal: { id: 2 }, oak_planks: { id: 3 } } },
+      blockAt: (v) => {
+        const n = world[`${v.x},${v.y},${v.z}`];
+        if (n === 'furnace') return { name: 'furnace', boundingBox: 'block', position: v };
+        if (n) return { name: n, boundingBox: n === 'air' ? 'empty' : 'block', position: v };
+        return { name: 'stone', boundingBox: 'block', position: v };
+      },
+      equip: async () => {},
+      placeBlock: async (ref, f) => { sb.placed = (sb.placed || []).concat([{ x: ref.position.x + f.x, y: ref.position.y + f.y, z: ref.position.z + f.z }]); },
+      openFurnace: async () => {
+        const f = { put: [], outputItem: () => ({ count: 9 }), inputItem: () => null, fuelItem: () => null,
+          putFuel: async (id, m, q) => { f.put.push(['fuel', id, q]); }, putInput: async (id, m, q) => { f.put.push(['in', id, q]); },
+          takeOutput: async () => { sb.items.push({ name: 'iron_ingot', count: 9 }); return { count: 9 }; },
+          takeInput: async () => {}, takeFuel: async () => {}, close: () => {} };
+        sb.furnace = f; return f;
+      },
+      pathfinder: { goto: async () => {} },
+    },
+  };
+  vm.createContext(sb);
+  run(sb, [letSrc('_nightWork'), letSrc('_nightWorkTriedNight'), constSrc('_nightDeferAt'), constSrc('NIGHT_WORK_DESCENT_MS'),
+    "const { cellBlockItem: _nightCellItem } = require('./skills/shelter');",
+    fnSrc('_nightId'), fnSrc('nightUndergroundNow'), fnSrc('nightSkipGoal'), fnSrc('_nearestThreatDist'),
+    fnSrc('_nightFill'), fnSrc('nightSeal'), fnSrc('nightTorch'), fnSrc('tryNightWork'), fnSrc('rebuildPickHere'),
+    letSrc('_furnaceJob'), letSrc('_furnaceJobBusy'), constSrc('FURNACE_JOB_KEEP_SKILLS'),
+    fnSrc('_furnaceDist'), fnSrc('startFurnaceJob'), fnSrc('collectFurnaceJob'), fnSrc('furnaceJobTick'), fnSrc('finishFurnaceJob'),
+    'this.tryNightWork = tryNightWork; this.nightUndergroundNow = nightUndergroundNow; this.nightSkipGoal = nightSkipGoal;',
+    'this.rebuildPickHere = rebuildPickHere; this.furnaceJobTick = furnaceJobTick; this.finishFurnaceJob = finishFurnaceJob;',
+    'this.job = () => _furnaceJob;'].join('\n'));
+  return sb;
+}
+
+test('nuit au travail : pioche en poche → descente à 12 sous la surface, sceau, puis « sous terre »', async () => {
+  const sb = sandbox({ world: { '-1,59,0': 'air', '0,60,0': 'air' } });
+  assert.strictEqual(sb.nightUndergroundNow(), false);
+  assert.strictEqual(await sb.tryNightWork(), true);
+  assert.strictEqual(sb.descended.targetY, 58);
+  assert.strictEqual(sb.nightUndergroundNow(), true, 'y 58 compte comme sous-sol cette nuit');
+  const sealed = sb.events.find((e) => e.type === 'night_work' && e.phase === 'sealed');
+  assert.ok(sealed, 'event night_work sealed');
+  assert.strictEqual(sealed.sealed, 2, 'la marche d où il vient et le dessus de la tête bouchés');
+  assert.strictEqual(sealed.y, 58);
+  assert.strictEqual(sealed.torch, false, 'pas de torche en poche');
+  // Buts de surface différés, minage pas.
+  assert.strictEqual(sb.nightSkipGoal({ name: 'plank_buffer', skill: 'gatherLog' }), true);
+  assert.strictEqual(sb.nightSkipGoal({ name: 'iron_deep', skill: 'branchMine' }), false);
+  assert.ok(sb.events.some((e) => e.type === 'night_defer' && e.goal === 'plank_buffer'));
+});
+
+test('nuit au travail : sans pioche → false (abri historique), aucune descente', async () => {
+  const sb = sandbox({ items: [{ name: 'cobblestone', count: 5 }] });
+  assert.strictEqual(await sb.tryNightWork(), false);
+  assert.strictEqual(sb.descended, undefined);
+});
+
+test('nuit au travail : descente ratée → false, et une seule tentative par nuit', async () => {
+  const sb = sandbox({ descentFails: true });
+  assert.strictEqual(await sb.tryNightWork(), false);
+  assert.ok(sb.events.some((e) => e.type === 'night_work' && e.phase === 'failed'));
+  sb.descended = undefined;
+  assert.strictEqual(await sb.tryNightWork(), false);
+  assert.strictEqual(sb.descended, undefined, 'pas de 2e essai la même nuit');
+});
+
+test('nuit au travail : hostile à 5 blocs → fuite d abord', async () => {
+  const sb = sandbox({ threats: [{ x: 3, y: 70, z: 4 }] });
+  await sb.tryNightWork();
+  assert.strictEqual(sb.fled, 1);
+});
+
+test('nightSkipGoal : hors lockdown rien n est différé', () => {
+  const sb = sandbox({ lockdown: false, pos: { y: 30 } });
+  assert.strictEqual(sb.nightSkipGoal({ name: 'logs', skill: 'gatherLog' }), false);
+});
+
+test('pioche cassée en bas : 3 cobble + 2 bâtons → pioche pierre refaite, event pick_rebuilt', async () => {
+  const sb = sandbox({ items: [{ name: 'cobblestone', count: 10 }, { name: 'stick', count: 4 }] });
+  assert.strictEqual(await sb.rebuildPickHere('branch'), true);
+  assert.deepStrictEqual(sb.crafted, ['stone_pickaxe']);
+  assert.ok(sb.events.some((e) => e.type === 'pick_rebuilt' && e.where === 'branch'));
+});
+
+test('pioche cassée : planches seulement → bâtons puis pioche ; sans matière → false', async () => {
+  const sb = sandbox({ items: [{ name: 'cobblestone', count: 10 }, { name: 'oak_planks', count: 4 }] });
+  // craftSmart('stick') du bac à sable ne crée pas de bâton → sans bâtons, pas de pioche (et on le dit)
+  assert.strictEqual(await sb.rebuildPickHere('branch'), false);
+  assert.deepStrictEqual(sb.crafted, ['stick']);
+  assert.ok(sb.events.some((e) => e.type === 'pick_rebuild_failed' && e.reason === 'no_matter'));
+});
+
+test('fondre en minant : 9 minerais + charbon au fond → four posé, chargé, le bot repart ; ramassé une fois cuit', async () => {
+  const sb = sandbox({ pos: { y: 16 }, world: { '1,16,0': 'furnace' },
+    items: [{ name: 'stone_pickaxe', count: 1 }, { name: 'raw_iron', count: 9 }, { name: 'furnace', count: 1 }, { name: 'coal', count: 4 }] });
+  await sb.furnaceJobTick();
+  const st = sb.events.find((e) => e.type === 'smelt_while_mining' && e.phase === 'start');
+  assert.ok(st, 'event start');
+  assert.strictEqual(st.raw, 9);
+  assert.strictEqual(st.fuel, 'coalx2');
+  assert.deepStrictEqual(sb.furnace.put, [['fuel', 2, 2], ['in', 1, 9]]);
+  assert.ok(sb.job(), 'four de mine en cours');
+  await sb.furnaceJobTick();                         // pas encore cuit → rien
+  assert.ok(sb.job());
+  sb.clock.t += 95000;
+  await sb.furnaceJobTick();
+  assert.strictEqual(sb.job(), null);
+  const c = sb.events.find((e) => e.type === 'smelt_while_mining' && e.phase === 'collect');
+  assert.strictEqual(c.ingots, 9);
+  assert.strictEqual(sb.reclaimed, true, 'le four revient en poche');
+});
+
+test('fondre en minant : en surface (y > 30) on ne pose pas de four de mine', async () => {
+  const sb = sandbox({ pos: { y: 64 }, items: [{ name: 'raw_iron', count: 9 }, { name: 'furnace', count: 1 }, { name: 'coal', count: 4 }] });
+  await sb.furnaceJobTick();
+  assert.strictEqual(sb.job(), null);
+});
+
+test('finishFurnaceJob : attend la fin de cuisson (bornée) puis ramasse', async () => {
+  const sb = sandbox({ pos: { y: 16 }, world: { '1,16,0': 'furnace' },
+    items: [{ name: 'raw_iron', count: 8 }, { name: 'furnace', count: 1 }, { name: 'coal', count: 1 }] });
+  await sb.furnaceJobTick();
+  assert.ok(sb.job());
+  await sb.finishFurnaceJob('goal');
+  assert.strictEqual(sb.job(), null);
+  assert.ok(sb.clock.t - T0 >= 80000, 'il a attendu la cuisson');
+});
+
+test('câblage : holdForNight tente la nuit au travail et lit nightUndergroundNow ; la chaîne passe skip', () => {
+  const h = fnSrc('holdForNight');
+  assert.match(h, /await tryNightWork\(\)/);
+  assert.match(h, /underground: nightUndergroundNow\(\)/);
+  assert.match(SRC, /skip: nightSkipGoal/);
+  assert.match(fnSrc('maybeNightShelter'), /underground: nightUndergroundNow\(\)/);
+  assert.match(fnSrc('branchSurvivalTick'), /furnaceJobTick\(\)/);
+  assert.match(fnSrc('smeltWithFurnace'), /if \(_furnaceJob\) return \{ ok: false, reason: 'furnace_job_running' \}/);
+  assert.match(fnSrc('runSkillWithTelemetry'), /finishFurnaceJob\('goal'\)/);
+  assert.match(h, /nightDeferGoal\(\{ lockdown: true, underground: nightUndergroundNow\(\), skill: g\.skill \}\)/);
+  assert.match(SRC, /onNoPickaxe: \(\) => rebuildPickHere\('branch'\)/);
+  assert.match(fnSrc('ljIronSlice'), /act === 'mine'/);
+  assert.match(fnSrc('ljIronSliceStep'), /canMine:/);
+});
+
+test('bûcheron, tranche mine : descente de 28 blocs puis branch-mine borné au fer, retour par /home work', async () => {
+  const L = require('./lumberjack');
+  const calls = [];
+  const sb = {
+    emit(e) { calls.push(['emit', e.type, e.ctx]); },
+    taskToken: { cancelled: false }, TORCH_EVERY: 8,
+    ljMineTargetY: L.ljMineTargetY,
+    bot: { entity: { position: { x: 0, y: 70, z: 0 } } },
+    descentSurvivalTick: async () => {}, branchSurvivalTick: async () => {},
+    rebuildPickHere: async () => true,
+    descendDiagonal: async (bot, a) => { calls.push(['descend', a.targetY]); bot.entity.position.y = a.targetY; return { ok: true }; },
+    branchMine: async (bot, a) => { calls.push(['branch', a.targetY, a.stopOre.items[0], typeof a.onNoPickaxe]); return { ok: true }; },
+    finishFurnaceJob: async () => { calls.push(['finish']); },
+    homewarp: { goHome: (bot, name, o) => { calls.push(['home', name, o.ctx]); return true; } },
+    HOME_WORK: 'work', awaitWarp: async () => {}, Math,
+  };
+  vm.createContext(sb);
+  run(sb, fnSrc('ljMineSlice') + '\n' + fnSrc('ljMineReturn') + '\nthis.s = ljMineSlice; this.r = ljMineReturn;');
+  await sb.s();
+  await sb.r();
+  assert.deepStrictEqual(calls.filter((c) => c[0] !== 'emit'), [
+    ['descend', 42], ['branch', 42, 'raw_iron', 'function'], ['finish'], ['home', 'work', 'lj_mine_return']]);
+  assert.ok(calls.some((c) => c[1] === 'work_return'));
+});

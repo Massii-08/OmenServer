@@ -258,3 +258,19 @@ test('index.js : ore_grabbed émis UNE fois, seulement si le bloc a disparu, et 
   const after = _src.slice(at, at + 400);
   assert.strictEqual(/_zoneIron(Mined|Win)/.test(after), false, 'le fer se compte à l inventaire (sampleZoneIron), pas ici');
 });
+
+test('détour sans issue : au 2e détour vers la même case, elle est ignorée 10 min', () => {
+  const G = require('./oregrab');
+  const k = G.detourKey({ x: 10.4, y: 11, z: -3.2 });
+  assert.strictEqual(k, '10,11,-4');
+  let m = {};
+  assert.strictEqual(G.detourAllowed(m, k, 0), true);
+  m = G.noteDetour(m, k, 0);
+  assert.strictEqual(G.detourAllowed(m, k, 1000), true, '1 essai : encore permis');
+  m = G.noteDetour(m, k, 1000);
+  assert.strictEqual(G.detourAllowed(m, k, 2000), false, '2 essais : interdit');
+  assert.strictEqual(G.detourAllowed(m, 'autre', 2000), true);
+  assert.strictEqual(G.detourAllowed(m, k, 1000 + G.DETOUR_BAN_MS + 1), true, 'interdiction expirée');
+  const m2 = G.noteDetour(m, 'x', 1000 + G.DETOUR_BAN_MS + 1);
+  assert.ok(!(k in m2), 'les entrées expirées sont purgées');
+});

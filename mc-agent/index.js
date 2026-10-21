@@ -59,7 +59,10 @@ const homewarp = require('./homewarp'); // couche warp LÉGITIME sans-give (/set
 const { secureSpot } = require('./skills/secureSpot'); // secure-then-warp : pilier/se murer/flotter AVANT le /home
 const { SCAFFOLD } = require('./skills/pillarUp');     // blocs sacrifiables (comptés pour la tactique)
 const basecamp = require('./basecamp');                // base personnelle : s'éloigner du spawn du monde puis /sethome
-const oregrab = require('./oregrab');                  // « ils passent à côté du fer sans le prendre »
+const oregrab = require('./oregrab');
+// NUIT AU TRAVAIL + FONDRE EN MINANT (Massii 21/10 : « fais qu'ils fassent comme les joueurs normaux »).
+const { nightWorkPlan, nightUnderground, nightDeferGoal, nightSealCells } = require('./nightWork');
+const { furnaceJobPlan, fuelLoadPlan, jobReadyAt, SMELT_JOB_ABANDON_DIST } = require('./furnaceJob');                  // « ils passent à côté du fer sans le prendre »
 const { huntPassive } = require('./skills/hunt');
 const { fishCatch } = require('./skills/fish');   // pêche : la nourriture qui ne s'épuise pas
 const { nearestPassive, survivalTick, nearbyHostiles, lavaNearby, armorPoints, weaponDamage } = require('./survival');
@@ -148,7 +151,7 @@ const {
   missingIronPieces, ownArmorAction, pickMapperForLumberjack, ljGiftReady,
   woodShortForFailure, giftBatchFor,
   stockFailsPrune, stockFailsAdd, needsForestTrip, forestTriedAdd, pickForestCell, LJ_FOREST_TRIP_MS,
-  ljIronSlicePlan, LJ_IRON_SLICE_MS, LJ_IRON_CHECK_MS,
+  ljIronSlicePlan, LJ_IRON_SLICE_MS, LJ_IRON_CHECK_MS, LJ_MINE_COBBLE, ljMineTargetY,
 } = require('./lumberjack');
 const { tierRank } = require('./tools');
 const { createTeleportWatcher, wireTeleportDetection } = require('./teleport');
@@ -1412,12 +1415,50 @@ async function ljIronSliceStep() {
       hasFurnace: n('furnace') > 0,
       hasStonePick: items.some((i) => i && /^(stone|iron|diamond|netherite)_pickaxe$/.test(i.name)),
       caveAvailable: _ljCaveAvailable(),
+      // 3e acte 'mine' (21/10) : pioche pierre + de quoi murer la lave, au sec.
+      canMine: items.some((i) => i && /^(stone|iron|diamond|netherite)_pickaxe$/.test(i.name))
+        && n('cobblestone') >= LJ_MINE_COBBLE && !(function () { try { return isInWater(bot); } catch (e) { return false; } })(),
       nightLock: worn < 2 && bot.time && bot.time.timeOfDay != null && isNight(bot),
       now: Date.now(), lastSliceAt: _ljIronSliceAt,
     });
     if (!act) return null;
     return await ljIronSlice(act);
   } catch (e) { return null; }
+}
+
+/**
+ * Tranche 'mine' (21/10) : descente en escalier de LJ_MINE_DEPTH blocs (fenêtre du fer) puis un court
+ * branch-mine. Le jeton de la tranche (taskToken) coupe tout à la demande de bois. Jamais de bookmark
+ * `work` : le bûcheron garde le sien au coin de coupe.
+ */
+async function ljMineSlice() {
+  const p = bot.entity && bot.entity.position;
+  if (!p) return { ok: false, reason: 'no_pos' };
+  const targetY = ljMineTargetY(p.y);
+  if (p.y > targetY + 2) {
+    const d = await descendDiagonal(bot, { targetY, maxDepth: 60, onSurvivalTick: descentSurvivalTick }, taskToken);
+    if (taskToken.cancelled) return { ok: false, reason: 'cancelled' };
+    const q = bot.entity && bot.entity.position;
+    if (!q || q.y > targetY + 6) return { ok: false, reason: (d && d.reason) || 'descent' };
+  }
+  return branchMine(bot, {
+    torchEvery: TORCH_EVERY, onSurvivalTick: branchSurvivalTick, survivalEvery: 4,
+    onNoPickaxe: () => rebuildPickHere('lj_mine'),
+    targetY: Math.floor(bot.entity.position.y), mainLength: 24, branchSpacing: 3, branchLength: 6,
+    serpentine: true, allowDeeper: true, stopOre: { items: ['raw_iron'], count: 8 },
+  }, taskToken);
+}
+
+/** Fin de tranche 'mine' : lingots du four de mine, puis retour au coin de coupe. Jamais de throw. */
+async function ljMineReturn() {
+  try { await finishFurnaceJob('lj_mine', 60000); } catch (e) { /* best-effort */ }
+  try {
+    const p = bot.entity && bot.entity.position;
+    if (p && homewarp.goHome(bot, HOME_WORK, { ctx: 'lj_mine_return' })) {
+      emit({ type: 'work_return', ctx: 'lj_mine', x: Math.round(p.x), y: Math.round(p.y), z: Math.round(p.z) });
+      await awaitWarp({ maxMs: 8000 });
+    }
+  } catch (e) { /* best-effort */ }
 }
 
 /** Grappe de fer exposé connue (même source que le but iron_cave). Jamais de throw. */
@@ -1457,6 +1498,8 @@ async function ljIronSlice(act) {
         if (!(rf && rf.ok)) r = { ok: false, reason: 'no_furnace' };
       }
       if (!r && !slice.cancelled) r = await smeltWithFurnace('raw_iron', 'iron_ingot', count('raw_iron'));
+    } else if (act === 'mine') {
+      r = await ljMineSlice();
     } else {
       r = await runCaveIron();
     }
@@ -1465,6 +1508,7 @@ async function ljIronSlice(act) {
   } finally {
     clearInterval(watch);
     if (taskToken === slice) taskToken = parent;      // une préemption (migration) a pu le remplacer
+    if (act === 'mine') await ljMineReturn();          // four de mine ramassé, puis /home work (coin de coupe)
     _ljIronSliceAt = Date.now();                       // le répit anti boucle chaude part de la FIN
   }
   emit({ type: 'lj_iron_slice', phase: 'end', act, ok: !!(r && r.ok),
@@ -2089,6 +2133,10 @@ function fuelNames() {
 // `opts.maxMs` : plafond du poll du four (défaut de smelt : 3 min). La cuisson de VIANDE le réduit à
 // ce que le budget « nourriture » peut payer (10 s la pièce) — cf. food.cookPlan.
 async function smeltWithFurnace(input, output, count, fuelOverride, opts = {}) {
+  // Un four de mine en cours (fondre en minant) : jamais un 2e four à côté. Le planner le ramasse AVANT
+  // tout but de fonte (runSkillWithTelemetry → finishFurnaceJob) ; un appelant hors planner (timer
+  // d'armure, équipement au ramassage) ne marche pas vers lui en plein branch-mine : il réessaiera.
+  if (_furnaceJob) return { ok: false, reason: 'furnace_job_running' };
   _stillBusy = true;    // immobilité LÉGITIME (poll du four ≤3 min) — le desync-watchdog ne doit pas tirer
   // RAISON TOUJOURS RENSEIGNÉE (vu en session vivante : `armor_smelt ok:false reason:"?"`, un échec
   // à la cause PERDUE sur le chemin qui fabrique l'armure). Le trou est dans `smelt` lui-même
@@ -2817,7 +2865,11 @@ async function runGoalSkill(goal) {
     // Cap imposé par un `drop_ahead` répété (descendDiagonal prend son cap dans le yaw) : appliqué ICI,
     // juste avant l'appel — les pré-hooks (armure, chasse, steering) ont pu tourner la tête entre-temps.
     await applyDescendHeading();
-    const r = await descendDiagonal(bot, goal.args || {}, taskToken);
+    let r = await descendDiagonal(bot, goal.args || {}, taskToken);
+    // Pioche cassée dans l'escalier : la refaire SUR PLACE et reprendre la descente (21/10).
+    if (r && r.ok === false && r.reason === 'no_pickaxe' && !taskToken.cancelled && await rebuildPickHere('descend')) {
+      r = await descendDiagonal(bot, goal.args || {}, taskToken);
+    }
     // `drop_ahead` (vide devant, pont impossible) : relancer du même point avec le même regard = même
     // échec garanti (vécu ×4 en 5 ms). Au 2e au même endroit on tourne, au 4e on se décale (dropAhead.js).
     if (r && r.ok === false && r.reason === 'drop_ahead') await onDropAhead();
@@ -2873,7 +2925,8 @@ async function runGoalSkill(goal) {
     if (rCH && rCH.reason === 'no_cave_target') {
       emit({ type: 'cave_travel', reason: 'no_cave_target' });
       return await branchMine(bot, Object.assign(
-        { torchEvery: TORCH_EVERY, onSurvivalTick: branchSurvivalTick, survivalEvery: 4 },
+        { torchEvery: TORCH_EVERY, onSurvivalTick: branchSurvivalTick, survivalEvery: 4,
+          onNoPickaxe: () => rebuildPickHere('branch') },
         { targetY: (goal.args && goal.args.targetY) || -54, mainLength: 16, branchSpacing: 4, branchLength: 4 }),
       taskToken);
     }
@@ -2906,8 +2959,11 @@ async function runGoalSkill(goal) {
     // branchMine randomise déjà l'intervalle sur [N, 2N[ → une torche tous les 8 à 15 paliers,
     // largement de quoi tenir la lumière d'un tunnel (un humain les espace comme ça).
     const rBM = await branchMine(bot, Object.assign(
-      { torchEvery: TORCH_EVERY, onSurvivalTick: branchSurvivalTick, survivalEvery: 4 },
+      { torchEvery: TORCH_EVERY, onSurvivalTick: branchSurvivalTick, survivalEvery: 4,
+        onNoPickaxe: () => rebuildPickHere('branch') },
       goal.args || {}, stopOre ? { stopOre } : {}), taskToken);
+    // Le four laissé en bas (fondre en minant) : on repasse prendre les lingots avant de quitter la mine.
+    try { await finishFurnaceJob('branch_end'); } catch (e) { /* best-effort */ }
     // Fix n°2 water-wall (NO_GIVE) : aquifère VERROUILLANT (waterlocked = toutes directions
     // mouillées + scellement inopérant) ou stall → se DÉCALER à pied 30-50 blocs À PROFONDEUR
     // (pathfinder creuse son chemin) avant que le planner ne retente iron_deep au même endroit.
@@ -3165,7 +3221,8 @@ async function maybeNightShelter(proactive = false, opts = {}) {
   const hostilesNear = (() => { try { const e = bot.nearestEntity((x) => x && x.kind === 'Hostile mobs'); return !!(e && bot.entity && e.position.distanceTo(bot.entity.position) <= 8); } catch (e) { return false; } })();
   // Sous terre (y<45, seuil historique) : pas d'abri du tout — un mineur s'enterrait en boucle
   // dans sa propre mine (dark permanent + nu en chaîne armure), 10-13 min perdues par cycle.
-  const sig = { night: isNight(bot), lightLevel, naked, lowHp: (bot.health != null && bot.health <= 10), hostilesNear, proactive, underground: !!(_pp && _pp.y < NIGHT_UNDERGROUND_Y) };
+  // `nightUndergroundNow` : y < 45 OU descendu et scellé par la nuit au travail (21/10).
+  const sig = { night: isNight(bot), lightLevel, naked, lowHp: (bot.health != null && bot.health <= 10), hostilesNear, proactive, underground: nightUndergroundNow() };
   let inWater = false;
   try { inWater = isInWater(bot); } catch (e) { inWater = false; }
   const lockdown = !inWater && nightLockdownNow();
@@ -4151,6 +4208,294 @@ function checkZoneVerdict() {
 // Le NOUVEAU planner recevrait alors {ok:false} en rafale instantanée → failStreak 4 → stalled.
 function migrationOwnsBot() { return taskCtl.active === 'migration'; }
 
+// ─── NUIT AU TRAVAIL (21/10, nightWork.js) ───────────────────────────────────────────────────────
+// Mesure (run de zéro du 21/10) : NethBot3 zéro → 4 pièces de fer en 53 min, dont ~17 min de nuit
+// passées dans un trou à attendre l'aube. Un joueur nu, la nuit, descend en escalier, rebouche derrière
+// lui, pose une torche et mine : la nuit ne change rien sous terre. À la place de l'abri (holdForNight,
+// pas 'shelter') : si le bot a une pioche, descente (descendDiagonal) jusqu'à 12 blocs sous la surface ou
+// y < 45, sceau des cases ouvertes autour de lui, torche, puis le planner reprend — les buts de surface
+// (bois, chasse, lit…) sont DIFFÉRÉS à l'aube (nightSkipGoal), le reste (pierre, charbon, fer, crafts,
+// fonte) continue. Sans pioche, ou si la descente échoue : l'abri historique (une tentative par nuit).
+// ⚠️ NIVEAU MODULE (piège #56) : lu par le planner, maybeNightShelter et les timers.
+let _nightWork = null;            // { surfaceY, night, at } — relevé de la descente de cette nuit
+let _nightWorkTriedNight = null;  // nuit (bot.time.day) de la dernière tentative : une seule par nuit
+const _nightDeferAt = {};         // throttle des events `night_defer` : 1×/min par but
+const _nightDeferReturnAt = {};   // holdForNight : dernière main rendue au planner pour un but différé
+const NIGHT_DEFER_RETURN_MS = 30000;
+const NIGHT_WORK_DESCENT_MS = 180000;   // ~12 paliers ≈ 30 s ; le garde-fou couvre une descente lente
+const { cellBlockItem: _nightCellItem } = require('./skills/shelter');
+
+function _nightId() { return (bot && bot.time && bot.time.day != null) ? bot.time.day : null; }
+
+/** Le bot est-il « sous terre » pour la discipline de nuit ? y < 45, ou descendu et scellé cette nuit. */
+function nightUndergroundNow() {
+  const p = bot && bot.entity && bot.entity.position;
+  return nightUnderground(_nightWork, { y: p ? p.y : null, night: _nightId(), now: Date.now() });
+}
+
+/** Planner (opts.skip) : but de surface différé à l'aube quand le bot travaille sous terre de nuit. */
+function nightSkipGoal(g) {
+  let lockdown = false;
+  try { lockdown = nightLockdownNow(); } catch (e) { lockdown = false; }
+  if (!lockdown) return false;
+  const d = nightDeferGoal({ lockdown, underground: nightUndergroundNow(), skill: g && g.skill });
+  if (d) {
+    const now = Date.now();
+    const k = (g && g.name) || '?';
+    if (now - (_nightDeferAt[k] || 0) >= 60000) { _nightDeferAt[k] = now; emit({ type: 'night_defer', goal: k }); }
+  }
+  return d;
+}
+
+/** Distance du plus proche hostile à craindre (null si aucun). Jamais de throw. */
+function _nearestThreatDist() {
+  try {
+    const p = bot.entity && bot.entity.position;
+    if (!p) return null;
+    let best = null;
+    for (const t of respawnThreatsNow()) {
+      const d = Math.hypot(t.x - p.x, t.y - p.y, t.z - p.z);
+      if (best == null || d < best) best = d;
+    }
+    return best;
+  } catch (e) { return null; }
+}
+
+/** Pose un bloc de remblai dans `cell` contre une face pleine voisine. true si posé. Jamais de throw. */
+async function _nightFill(cell) {
+  try {
+    const it = _nightCellItem(bot);
+    if (!it) return false;
+    for (const [dx, dy, dz] of [[0, -1, 0], [1, 0, 0], [-1, 0, 0], [0, 0, 1], [0, 0, -1], [0, 1, 0]]) {
+      const ref = bot.blockAt(vec3Lib(cell.x + dx, cell.y + dy, cell.z + dz));
+      if (!ref || ref.boundingBox !== 'block') continue;
+      try {
+        await bot.equip(it, 'hand');
+        await bot.placeBlock(ref, vec3Lib(-dx, -dy, -dz));
+        return true;
+      } catch (e) { /* autre face */ }
+    }
+  } catch (e) { /* best-effort */ }
+  return false;
+}
+
+/** Bouche les cases ouvertes autour du bot (pieds, tête, dessus). → nb de blocs posés. */
+async function nightSeal() {
+  const p = bot.entity && bot.entity.position;
+  if (!p) return 0;
+  const isOpen = (c) => {
+    const b = bot.blockAt(vec3Lib(c.x, c.y, c.z));
+    return !!b && b.boundingBox === 'empty' && !/water|lava/.test(b.name || '');
+  };
+  let n = 0;
+  for (const c of nightSealCells({ x: p.x, y: p.y, z: p.z }, isOpen)) {
+    if (await _nightFill(c)) n++;
+  }
+  return n;
+}
+
+/** Torche au sol, sous les pieds (même geste que _caveTorch, sans son rationnement). */
+async function nightTorch() {
+  try {
+    const p = bot.entity && bot.entity.position;
+    const torch = ((bot.inventory && bot.inventory.items()) || []).find((i) => i.name === 'torch');
+    if (!p || !torch) return false;
+    const ref = bot.blockAt(p.floored().offset(0, -1, 0));
+    if (!ref || ref.boundingBox !== 'block') return false;
+    await bot.equip(torch, 'hand');
+    await bot.placeBlock(ref, vec3Lib(0, 1, 0));
+    return true;
+  } catch (e) { return false; }
+}
+
+/**
+ * La tombée de la nuit, bot nu en surface : descendre travailler au lieu d'attendre l'aube.
+ * true = le bot est maintenant sous terre et scellé (le planner reprend) ; false = l'abri historique.
+ */
+async function tryNightWork() {
+  const night = _nightId();
+  const p0 = bot.entity && bot.entity.position;
+  if (!p0) return false;
+  let inWater = false;
+  try { inWater = isInWater(bot); } catch (e) { inWater = false; }
+  const items = (bot.inventory && bot.inventory.items()) || [];
+  const sig = () => {
+    const q = bot.entity.position;
+    return {
+      y: q.y, hasPick: items.some((i) => i && /_pickaxe$/.test(i.name)), inWater,
+      hostileDist: _nearestThreatDist(), isMapper: IS_MAPPER, isLumberjack: isLumberjackObjective(),
+      triedThisNight: night != null && _nightWorkTriedNight === night,
+    };
+  };
+  let plan = nightWorkPlan(sig());
+  if (plan.action === 'flee') {
+    try { await fleeBeforeHide('night_work'); } catch (e) { /* best-effort */ }
+    if (taskToken.cancelled) return false;
+    plan = nightWorkPlan(Object.assign(sig(), { hostileDist: _nearestThreatDist() }));
+    if (plan.action === 'flee') return false;           // toujours serré : l'abri (et sa propre fuite)
+  }
+  if (plan.action !== 'descend') return false;
+  _nightWorkTriedNight = night;
+  emit({ type: 'night_work', phase: 'descend', y: Math.round(p0.y), target: plan.targetY });
+  const r = await withTimeout(descendDiagonal(bot, { targetY: plan.targetY, maxDepth: 60, onSurvivalTick: descentSurvivalTick }, taskToken),
+    NIGHT_WORK_DESCENT_MS, () => { try { stopMotion(); } catch (e) {} });
+  if (taskToken.cancelled) return false;
+  const q = bot.entity && bot.entity.position;
+  if (!q || q.y > plan.targetY + 1.5) {
+    emit({ type: 'night_work', phase: 'failed', y: q ? Math.round(q.y) : null, reason: (r && r.reason) || 'unknown' });
+    return false;
+  }
+  _nightWork = { surfaceY: plan.surfaceY, night, at: Date.now() };
+  let sealed = 0;
+  try { sealed = await nightSeal(); } catch (e) { sealed = 0; }
+  const torch = await nightTorch();
+  emit({ type: 'night_work', phase: 'sealed', y: Math.round(q.y), sealed, torch });
+  return true;
+}
+
+// ─── PIOCHE CASSÉE EN BAS (21/10, NethBot2 : 6 `no_pickaxe` en 37 min d'iron_deep) ──────────────
+// Le branch-mine abandonnait à chaque casse ; un timer (pickFixPass) refaisait la pioche à côté, puis le
+// planner relançait un couloir neuf. Un joueur sort sa table et refait une pioche pierre sur place.
+/** Re-crafte une pioche pierre ICI (table portable). true si le bot a une pioche en sortant. */
+async function rebuildPickHere(where) {
+  const items = () => (bot.inventory && bot.inventory.items()) || [];
+  const has = () => items().some((i) => i && /_pickaxe$/.test(i.name));
+  const n = (re) => items().reduce((s, i) => s + (i && re.test(i.name) ? i.count : 0), 0);
+  if (has()) return true;
+  try {
+    if (n(/^stick$/) < 2 && (n(/_planks$/) >= 2 || n(/_log$/) >= 1)) {
+      await withTimeout(craftSmart({ name: 'stick', count: 1 }), 30000, () => {});
+    }
+    if (n(/^(cobblestone|cobbled_deepslate)$/) < 3 || n(/^stick$/) < 2) {
+      emit({ type: 'pick_rebuild_failed', where, reason: 'no_matter', cobble: n(/^(cobblestone|cobbled_deepslate)$/), sticks: n(/^stick$/) });
+      return false;
+    }
+    const r = await withTimeout(craftSmart({ name: 'stone_pickaxe', count: 1 }), 45000, () => {});
+    if (has()) { emit({ type: 'pick_rebuilt', where }); return true; }
+    emit({ type: 'pick_rebuild_failed', where, reason: (r && r.reason) || 'craft_failed' });
+  } catch (e) { /* best-effort */ }
+  return false;
+}
+
+// ─── FONDRE EN MINANT (21/10, furnaceJob.js) ─────────────────────────────────────────────────────
+// Le four portable est POSÉ au fond de la mine, chargé (fer + charbon), et le bot CONTINUE de creuser ;
+// il repasse prendre ses lingots quand c'est cuit (hook de survie du branch-mine), en fin de but, ou
+// avant toute fonte / tout but qui n'est pas du minage. ⚠️ NIVEAU MODULE : lu par le timer de fonte.
+let _furnaceJob = null;           // { pos, count, at, readyAt }
+let _furnaceJobBusy = false;
+const FURNACE_JOB_KEEP_SKILLS = new Set(['branchMine', 'descendDiagonal', 'caveIron', 'gather']);
+
+function _furnaceDist() {
+  const p = bot.entity && bot.entity.position;
+  if (!_furnaceJob || !p) return null;
+  const j = _furnaceJob.pos;
+  return Math.hypot(p.x - j.x, p.y - j.y, p.z - j.z);
+}
+
+async function startFurnaceJob(count) {
+  const items = () => (bot.inventory && bot.inventory.items()) || [];
+  const fuel = fuelLoadPlan(items().map((i) => ({ name: i.name, count: i.count })), count);
+  if (!fuel.loads.length || fuel.smeltable < 1) return false;
+  const place = await placeBlockNear(bot, 'furnace');
+  if (!place || !place.ok || !place.pos) return false;
+  const pos = { x: place.pos.x, y: place.pos.y, z: place.pos.z };
+  await waitForBlock(place.pos, 'furnace');
+  await sleep(300);
+  const fb = bot.blockAt(vec3Lib(pos.x, pos.y, pos.z));
+  let f = null;
+  try { f = fb ? await bot.openFurnace(fb) : null; } catch (e) { f = null; }
+  if (!f) { await reclaimBlock(pos, 'furnace'); return false; }
+  const id = (name) => bot.registry.itemsByName[name] && bot.registry.itemsByName[name].id;
+  let ok = false;
+  try {
+    await f.putFuel(id(fuel.loads[0].name), null, fuel.loads[0].qty);
+    await f.putInput(id('raw_iron'), null, fuel.smeltable);
+    ok = true;
+  } catch (e) { ok = false; }
+  try { f.close(); } catch (e) {}
+  const now = Date.now();
+  _furnaceJob = { pos, count: fuel.smeltable, at: now, readyAt: jobReadyAt(now, fuel.smeltable) };
+  emit({ type: 'smelt_while_mining', phase: 'start', raw: fuel.smeltable, fuel: `${fuel.loads[0].name}x${fuel.loads[0].qty}`, ok });
+  if (!ok) await collectFurnaceJob('load_failed');   // rien ne doit rester coincé dans le four
+  return ok;
+}
+
+async function collectFurnaceJob(why) {
+  const j = _furnaceJob;
+  if (!j) return false;
+  if ((_furnaceDist() || 0) > 3.5) {
+    try {
+      await withTimeout(bot.pathfinder.goto(new pfGoals.GoalNear(j.pos.x, j.pos.y, j.pos.z, 2)), 40000,
+        () => { try { stopMotion(); } catch (e) {} });
+    } catch (e) { /* on essaie quand même d'ouvrir */ }
+  }
+  const fb = bot.blockAt(vec3Lib(j.pos.x, j.pos.y, j.pos.z));
+  if (!fb || fb.name !== 'furnace') {
+    _furnaceJob = null;
+    emit({ type: 'smelt_while_mining', phase: 'lost', why });
+    return false;
+  }
+  const before = ((bot.inventory && bot.inventory.items()) || []).reduce((s, i) => s + (i.name === 'iron_ingot' ? i.count : 0), 0);
+  let f = null;
+  try { f = await bot.openFurnace(fb); } catch (e) { f = null; }
+  if (!f) { emit({ type: 'smelt_while_mining', phase: 'open_failed', why }); return false; }   // job gardé : on repassera
+  try { if (f.outputItem && f.outputItem()) await f.takeOutput(); } catch (e) {}
+  try { if (f.inputItem && f.inputItem()) await f.takeInput(); } catch (e) {}
+  try { if (f.fuelItem && f.fuelItem()) await f.takeFuel(); } catch (e) {}
+  try { f.close(); } catch (e) {}
+  _furnaceJob = null;
+  await sleep(250);
+  await reclaimBlock(j.pos, 'furnace');
+  const after = ((bot.inventory && bot.inventory.items()) || []).reduce((s, i) => s + (i.name === 'iron_ingot' ? i.count : 0), 0);
+  emit({ type: 'smelt_while_mining', phase: 'collect', why, ingots: after - before, waited_s: Math.round((Date.now() - j.at) / 1000) });
+  return true;
+}
+
+/** Hook du branch-mine : lancer / ramasser / abandonner le four de mine. Jamais de throw. */
+async function furnaceJobTick() {
+  if (_furnaceJobBusy) return;
+  _furnaceJobBusy = true;
+  try {
+    const p = bot.entity && bot.entity.position;
+    if (!p || !bot.inventory) return;
+    const items = bot.inventory.items().map((i) => ({ name: i.name, count: i.count }));
+    const cnt = (n) => items.reduce((s, i) => s + (i.name === n ? i.count : 0), 0);
+    const plan = furnaceJobPlan({ job: _furnaceJob, raw: cnt('raw_iron'), hasFurnace: cnt('furnace') > 0,
+      items, now: Date.now(), dist: _furnaceDist() });
+    if (plan.act === 'start') {
+      let wet = false;
+      try { wet = isInWater(bot); } catch (e) { wet = false; }
+      if (p.y > 30 || wet || !(bot.entity && bot.entity.onGround)) return;   // au fond de la mine, au sec
+      await startFurnaceJob(plan.count);
+    } else if (plan.act === 'collect') {
+      await collectFurnaceJob('ready');
+    } else if (plan.act === 'abandon') {
+      emit({ type: 'smelt_while_mining', phase: 'abandon', why: plan.why, count: _furnaceJob && _furnaceJob.count });
+      _furnaceJob = null;
+    }
+  } catch (e) { /* best-effort */ }
+  finally { _furnaceJobBusy = false; }
+}
+
+/** Ramasser le four de mine maintenant (attente bornée de la fin de cuisson). Jamais de throw. */
+async function finishFurnaceJob(why, maxWaitMs = 90000) {
+  const j = _furnaceJob;
+  if (!j || _furnaceJobBusy) return;
+  _furnaceJobBusy = true;
+  try {
+    const d = _furnaceDist();
+    if (d != null && d > SMELT_JOB_ABANDON_DIST) {
+      emit({ type: 'smelt_while_mining', phase: 'abandon', why: 'far', count: j.count });
+      _furnaceJob = null;
+      return;
+    }
+    const wait = Math.min(maxWaitMs, (j.readyAt || 0) - Date.now());
+    if (wait > 0) await sleep(wait);
+    await collectFurnaceJob(why);
+  } catch (e) { /* best-effort */ }
+  finally { _furnaceJobBusy = false; }
+}
+
 // ─── DISCIPLINE DE NUIT — LE PLANNER (19/10 soir) ────────────────────────────────────────────────
 // AVANT chaque skill : nu + nuit connue → le planner NE LANCE RIEN (caution.nightPlannerStep). En
 // surface il s'abrite — ou rejoint l'abri qu'un timer vient d'ouvrir (squad/regroupement), au lieu de
@@ -4177,7 +4522,7 @@ async function holdForNight(g) {
       let inWater = false;
       try { inWater = isInWater(bot); } catch (e) { inWater = false; }
       const step = nightPlannerStep({
-        lockdown: true, y: p ? p.y : null, skill: g && g.skill,
+        lockdown: true, y: p ? p.y : null, skill: g && g.skill, underground: nightUndergroundNow(),
         shelterBusy: !!_shelterInFlight, inWater, sinceShelterMs: Date.now() - lastShelterT,
       });
       if (step === 'run') { reason = 'underground'; break; }
@@ -4186,7 +4531,19 @@ async function holdForNight(g) {
         _nightHold++;
         emit({ type: 'night_hold', goal: g && g.name, skill: g && g.skill, y: p ? Math.round(p.y) : null, step });
       }
+      // NUIT AU TRAVAIL (21/10) : but de surface sous terre → rendre la main au planner, qui le DIFFÈRE
+      // (nightSkipGoal) et passe au suivant faisable. Une fois par but et par 30 s : si tout le reste est
+      // différé aussi, le planner revient ici et on attend l'aube sur place, comme avant (pas de boucle chaude).
+      if (step === 'wait' && g && nightDeferGoal({ lockdown: true, underground: nightUndergroundNow(), skill: g.skill })
+          && Date.now() - (_nightDeferReturnAt[g.name] || 0) > NIGHT_DEFER_RETURN_MS) {
+        _nightDeferReturnAt[g.name] = Date.now();
+        reason = 'defer';
+        break;
+      }
       if (step === 'shelter') {
+        // NUIT AU TRAVAIL (21/10) : avec une pioche, descendre en escalier, sceller et MINER plutôt
+        // qu'attendre l'aube dans un trou. Réussi → le tour suivant voit le bot « sous terre » ('run').
+        if (await tryNightWork()) continue;
         // false = refusé à la marge (écart à la ms près, sous-sol tout juste atteint) : on re-décide.
         if (!(await maybeNightShelter(true, { force: true }))) await sleep(NIGHT_HOLD_POLL_MS);
         continue;
@@ -4222,6 +4579,8 @@ async function runSkillWithTelemetry(g) {
   // de remonter explorer une zone rasée. null = comportement historique (le skill tourne ci-dessous).
   const _wood = await woodWaitStep(g);
   if (_wood) return _wood;
+  // Four de mine en cours et but qui n'est pas du minage : ramasser les lingots d'abord (21/10).
+  if (_furnaceJob && !FURNACE_JOB_KEEP_SKILLS.has(g.skill)) { try { await finishFurnaceJob('goal'); } catch (e) {} }
   if (taskToken.cancelled || migrationOwnsBot()) return { ok: false, reason: 'cancelled' };
   const _t0 = Date.now();
   // `_skillInFlight` encadre l'exécution RÉELLE du skill, à l'intérieur du withTimeout : un skill
@@ -5954,6 +6313,8 @@ async function branchSurvivalTick() {
   // ensureTorches mine du charbon proche (gather/collectBlock) → borné, sinon il pourrait geler
   // la branche (le hook tourne DANS la boucle, hors de la détection de stall en tête de boucle).
   try { await withTimeout(ensureTorches(), 30000, () => { try { stopMotion(); } catch (e) {} }); } catch (e) {}
+  // FONDRE EN MINANT (21/10) : poser le four, le charger, continuer de creuser, repasser au retour.
+  try { await withTimeout(furnaceJobTick(), 60000, () => { try { stopMotion(); } catch (e) {} }); } catch (e) {}
 }
 
 // Survie LÉGÈRE pendant la DESCENTE diagonale (bug review #7) : combat/fuite + manger UNIQUEMENT —
@@ -7350,6 +7711,7 @@ async function runAutonomousBody(sender, objType, myTok) {
   const chain = chainFor(objType);               // pioche pierre (MVP) ou pioche fer (IRON_CHAIN)
   const runChain = () => runPlanner(bot, {
     chain,
+    skip: nightSkipGoal,   // NUIT AU TRAVAIL : les buts de surface attendent l'aube, la chaîne continue
     // Avant chaque but : déposer le kit de secours si c'est le moment (1 relevé/min, jamais de throw).
     runSkill: async (g) => { try { await stashKitIfReady(); } catch (e) { /* best-effort */ } return runSkillWithTelemetry(g); },
     ctxExtra,
@@ -8958,6 +9320,9 @@ let _jamSample = null;
 let _oreGrabBusy = false;
 let _oreGrabIds = null;
 let _oreDetourIds = null;   // ids des minerais RARES qui valent un detour (cf. oregrab)
+// Détours sans issue (21/10, NethBot3 : 112 détours vers le MÊME diamant en 8,7 min d'iron_deep) :
+// { [case]: { tries, at } } — au 2e détour vers une case, elle est ignorée 10 min (oregrab.detourAllowed).
+let _oreDetourMemo = {};
 // Dernier but posé PAR le ramassage : son reliquat (NoPath / chemin vide → la lib ne remet pas
 // `goal` à null) n'est pas « un autre trajet » — sinon un minerai inatteignable une fois mettrait le
 // timer en portée de bras jusqu'au prochain trajet de quelqu'un d'autre. Niveau MODULE : lu par le timer.
@@ -9024,11 +9389,14 @@ setInterval(async () => {
           // un bot passant a cote d'un diamant avec un BOUCLIER en main : la pioche etait dans
           // l'inventaire, mais le test portait sur `bot.heldItem` — donc faux, donc aucun detour.
           const _best = bestToolFor(bot, rb);
-          if (rb && d > 4.2 && oregrab.canHarvest(rb, _best ? _best.type : (bot.heldItem && bot.heldItem.type))) {
+          const _dk = oregrab.detourKey(rp);
+          if (rb && d > 4.2 && oregrab.detourAllowed(_oreDetourMemo, _dk, Date.now())
+              && oregrab.canHarvest(rb, _best ? _best.type : (bot.heldItem && bot.heldItem.type))) {
             if (_best) { try { await bot.equip(_best, 'hand'); } catch (e) { /* best-effort */ } }
             if (!scopeNow().detour) return;    // une migration a démarré pendant l'equip
             _oreGrabBusy = true;
-            emit({ type: 'ore_detour', ore: rb.name, d: Math.round(d) });
+            _oreDetourMemo = oregrab.noteDetour(_oreDetourMemo, _dk, Date.now());
+            emit({ type: 'ore_detour', ore: rb.name, d: Math.round(d), tries: _oreDetourMemo[_dk].tries });
             await oreGrabGoto(new pfGoals.GoalNear(rp.x, rp.y, rp.z, 2), 25000);
             return;   // la passe suivante (800 ms) le minera à portée de bras
           }
@@ -9941,6 +10309,7 @@ setInterval(async () => {
   if (_smeltOppBusy) return;   // HORS du try : même piège que le timer d'armure (fonte ≤200 s, tick 60 s)
   try {
     if (_smeltOppBusy || _armorBusy || _stillBusy || _imminentBusy) return;   // jamais pendant un sauvetage PV
+    if (_furnaceJob || _furnaceJobBusy) return;              // le four de mine cuit déjà (fondre en minant)
     if (_migrating) return;   // fix 18/08 : poser/reprendre le four volerait le pathfinder à la jambe de migration
     const objType = (world.objective && world.objective.type) || '';
     if (!_SMELT_TIMER_OBJ.has(objType)) return;

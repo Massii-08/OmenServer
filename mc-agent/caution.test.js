@@ -520,3 +520,11 @@ test('re-abri : une NOUVELLE nuit repart de zero ; l etat d entree n est jamais 
   const z = lockdownShelterNote(undefined, {});
   assert.strictEqual(z.reenter, false);
 });
+
+test('planner : NUIT AU TRAVAIL — underground:true au-dessus de y 45 = sous-sol (mine, diffère la surface)', () => {
+  assert.strictEqual(nightPlannerStep({ lockdown: true, y: 58, underground: true, skill: 'branchMine', sinceShelterMs: 5 * 60000 }), 'run');
+  assert.strictEqual(nightPlannerStep({ lockdown: true, y: 58, underground: true, skill: 'gatherLog' }), 'wait');
+  assert.strictEqual(nightPlannerStep({ lockdown: true, y: 58, underground: false, skill: 'branchMine', sinceShelterMs: 5 * 60000 }), 'shelter',
+    'sans le relevé, y 58 reste la surface');
+  assert.strictEqual(nightPlannerStep({ lockdown: false, y: 70, underground: true, skill: 'gatherLog' }), 'run', 'hors lockdown rien ne change');
+});

@@ -83,8 +83,9 @@ test('IRON_ARMOR_CHAIN: kit prêt SANS nourriture → la descente n est PAS bloq
 });
 
 test('IRON_ARMOR_CHAIN: fer insuffisant, en surface → descend_y16 ; déjà à Y16 → iron_deep (branch-mine)', () => {
+  // stone_pickaxe:1 = la rechange d'avant-descente (spare_pick, 21/10) : on isole la descente.
   const inv = {
-    iron_pickaxe: 1, crafting_table: 1, stick: 4, furnace: 1, cooked_beef: 6,
+    iron_pickaxe: 1, stone_pickaxe: 1, crafting_table: 1, stick: 4, furnace: 1, cooked_beef: 6,
     iron_ingot: 2, raw_iron: 1, stone_sword: 1, stone_axe: 1, cobblestone: 12, oak_planks: 24,
   };
   assert.strictEqual(firstUnmet(IRON_ARMOR_CHAIN, ctx(inv, [], 64)).name, 'descend_y16');
@@ -93,7 +94,7 @@ test('IRON_ARMOR_CHAIN: fer insuffisant, en surface → descend_y16 ; déjà à 
 
 test('IRON_ARMOR_CHAIN: sous terre SANS food → food_stock ne stalle pas (met via y<45)', () => {
   const inv = {
-    iron_pickaxe: 1, crafting_table: 1, stick: 4, furnace: 1,
+    iron_pickaxe: 1, stone_pickaxe: 1, crafting_table: 1, stick: 4, furnace: 1,
     iron_ingot: 2, stone_sword: 1, stone_axe: 1, cobblestone: 12, oak_planks: 24,
   };
   const g = firstUnmet(IRON_ARMOR_CHAIN, ctx(inv, [], 16));
@@ -182,10 +183,12 @@ test('IRON_ARMOR_CHAIN: surface + 3 pioches pierre → pré-stock satisfait, but
   assert.strictEqual(g.name, 'descend_y16');
 });
 
-test('IRON_ARMOR_CHAIN: SOUS TERRE (y=16) + 1 pioche → PAS de pré-stock (continue de miner : iron_deep)', () => {
+test('IRON_ARMOR_CHAIN: SOUS TERRE (y=16) + 1 pioche → PAS de pré-stock de 3 (pas de remontée bois)', () => {
+  // 21/10 : UNE rechange se fait sur place avec la matière en poche (spare_pick), puis on mine.
   const inv = { stone_pickaxe: 1, crafting_table: 1, stick: 6, furnace: 1, stone_sword: 1, stone_axe: 1, cobblestone: 12, oak_planks: 24 };
-  const g = firstUnmet(IRON_ARMOR_CHAIN, ctx(inv, [], 16));
-  assert.strictEqual(g.name, 'iron_deep');
+  assert.strictEqual(firstUnmet(IRON_ARMOR_CHAIN, ctx(inv, [], 16)).name, 'spare_pick');
+  inv.stone_pickaxe = 2;
+  assert.strictEqual(firstUnmet(IRON_ARMOR_CHAIN, ctx(inv, [], 16)).name, 'iron_deep');
 });
 
 test('IRON_ARMOR_CHAIN: sous terre 0 pioche + matériaux → re-craft en place (stone_pickaxe, a752743)', () => {

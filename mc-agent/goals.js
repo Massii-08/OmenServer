@@ -105,8 +105,12 @@ const I = (c) => invCount(c.inv, 'iron_pickaxe') >= 1;  // objectif final fer �
 const IRON_CHAIN = [
   // Raccourci pioche conditionné à woodSafe (table+sticks en poche) — cf. commentaire MVP_CHAIN
   // (boucle no_table:unknown_item quand la table est perdue ET les planks épuisées).
+  // 12 bûches au PREMIER passage (Massii 21/10 : « fais comme un joueur normal ») : planches + table +
+  // bâtons + pioches + buffer de descente (plank_buffer = 6 bûches) + combustible — tout le début de
+  // partie en un trajet, au lieu de revenir couper 6 bûches de plus avant la descente. `met` inchangé
+  // (≥ 5) : on n'y retourne pas pour autant.
   { name: 'logs',           met: (c) => anyLog(c.inv) >= 5 || anyPlanks(c.inv) >= 8 || I(c) || (W(c) && woodSafe(c)) || canStonePick(c),
-    skill: 'gatherLog',     args: { count: 6 } },
+    skill: 'gatherLog',     args: { count: 12 } },
   { name: 'planks',         met: (c) => anyPlanks(c.inv) >= 8 || I(c) || (W(c) && woodSafe(c)) || canStonePick(c),
     skill: 'craftPlanks',   args: { count: 6 } }, // ~24 planks : table 4 + sticks 4 + pioche bois 3 + combustible + marge
   { name: 'crafting_table', met: (c) => invCount(c.inv, 'crafting_table') >= 1 || I(c),
@@ -223,6 +227,10 @@ const _IRON_PREFIX = IRON_CHAIN.slice(0, IRON_CHAIN.findIndex((g) => g.name === 
 // (y>30) : sous terre, 1 pioche suffit (exiger 3 avec 0 stick forcerait une remontée bois avec 2
 // pioches valides en poche = le churn qu'on tue). Les remontées bois re-stockent au passage (y>30).
 const stonePicks = (c) => invCount(c.inv, 'stone_pickaxe');
+// Pioches « pierre ou mieux » en poche (la rechange d'avant-descente, cf. spare_pick).
+const pickCount = (c) => ['stone_pickaxe', 'iron_pickaxe', 'diamond_pickaxe', 'netherite_pickaxe']
+  .reduce((s, n) => s + invCount(c.inv, n), 0);
+const SPARE_STICKS = 4;
 const picksOK = (c) => stonePicks(c) >= 3 || invCount(c.inv, 'iron_pickaxe') >= 1 ||
   (c.y !== undefined && c.y <= 30 && stonePicks(c) >= 1);
 // Combustible de fonte disponible, en « items fondables » (coal/charcoal = 8, planches/bûches = 1.5),
@@ -311,6 +319,18 @@ const IRON_ARMOR_CHAIN = [
   // partagée (caveIron.pickIronCave, calculée par ctxExtra). SATISFIABLE-OU-SAUTABLE : sans grappe
   // valable (aucune, trop loin, claimée, ratée < 30 min, noyée) le but est atteint d'office et la
   // chaîne retombe sur le branch-mine à Y16 juste en dessous — jamais de blocage.
+  // RECHANGE AVANT DE DESCENDRE (Massii 21/10, NethBot2 : `iron_deep` 37 min dont 6 `no_pickaxe`). Une
+  // pioche pierre fait 131 coups : en branch-mine elle casse toutes les 2-3 min. `spare_picks` n'en
+  // exige qu'UNE sous terre (y ≤ 30, pour ne pas forcer de remontée bois) → à chaque casse, branchMine
+  // s'arrêtait et la pioche était refaite par un timer, à côté. Un joueur descend avec une pioche de
+  // rechange ET de quoi en refaire une en bas (4 bâtons ; le cobble, il le mine en route). Les deux
+  // buts sont SATISFIABLES-OU-SAUTABLES : sans matière ils sont atteints d'office, jamais bloquants.
+  { name: 'spare_sticks', met: (c) => ironOK(c) || IA(c) || invCount(c.inv, 'stick') >= SPARE_STICKS
+                                       || (anyPlanks(c.inv) < 2 && anyLog(c.inv) < 1),
+    skill: 'craft',       args: { name: 'stick', count: 1 } },
+  { name: 'spare_pick',   met: (c) => ironOK(c) || IA(c) || pickCount(c) >= 2
+                                       || invCount(c.inv, 'cobblestone') < 3 || invCount(c.inv, 'stick') < 2,
+    skill: 'craft',       args: { name: 'stone_pickaxe', count: 1 } },
   { name: 'iron_cave',    met: (c) => ironOK(c) || IA(c) || !c.ironCave,
     skill: 'caveIron',    args: {} },
   { name: 'descend_y16',  met: (c) => (c.y !== undefined && c.y <= 18) || ironOK(c) || IA(c),
@@ -775,9 +795,21 @@ function chainFor(objective) {
 }
 
 /** Premier but non satisfait dans l'ordre, ou null si tout est fait. */
-function firstUnmet(chain, ctx) {
-  for (const g of chain) { if (!g.met(ctx)) return g; }
-  return null;
+// `skip(goal)` (optionnel, NUIT AU TRAVAIL 21/10) : un but non satisfait mais DIFFÉRÉ (bois de surface
+// la nuit sous terre…) est sauté au profit du suivant faisable. Si TOUS les buts restants sont différés,
+// on rend le premier quand même : la chaîne n'est jamais déclarée finie parce qu'il fait nuit.
+function firstUnmet(chain, ctx, skip) {
+  let deferred = null;
+  for (const g of chain) {
+    if (g.met(ctx)) continue;
+    if (typeof skip === 'function') {
+      let s = false;
+      try { s = !!skip(g, ctx); } catch (e) { s = false; }
+      if (s) { if (!deferred) deferred = g; continue; }
+    }
+    return g;
+  }
+  return deferred;
 }
 
 module.exports = {

@@ -1023,3 +1023,42 @@ test('MAPPER_ARMOR_CHAIN: lot abordable (NethBot2 20/10, 11 lingots, SANS pioche
   // sans lot (rien d'abordable) : chemin historique, on refait la pioche puis on mine
   assert.strictEqual(firstUnmet(MAC, Object.assign({}, ctx, { giftBatch: false })).name, 'gift_pick');
 });
+
+test('firstUnmet(skip) : saute les buts différés, rend le premier différé si rien d autre', () => {
+  const chain = [
+    { name: 'x', met: () => false },
+    { name: 'y', met: () => true },
+    { name: 'z', met: () => false },
+  ];
+  assert.strictEqual(firstUnmet(chain, {}, (g) => g.name === 'x').name, 'z');
+  assert.strictEqual(firstUnmet(chain, {}, () => true).name, 'x');
+  assert.strictEqual(firstUnmet(chain, {}, () => { throw new Error('x'); }).name, 'x', 'un skip qui lève = pas de saut');
+  assert.strictEqual(firstUnmet([{ name: 'm', met: () => true }], {}, () => true), null);
+});
+
+test('IRON_CHAIN logs : 12 bûches au premier passage (tout le début de partie en un trajet)', () => {
+  const g = IRON_CHAIN.find((x) => x.name === 'logs');
+  assert.strictEqual(g.args.count, 12);
+  assert.strictEqual(chainFor('iron_armor').find((x) => x.name === 'logs').args.count, 12);
+});
+
+test('T1 : pioche de rechange + 4 bâtons AVANT le fer (iron_cave/descend_y16/iron_deep), jamais bloquants', () => {
+  const ch = chainFor('iron_armor');
+  const names = ch.map((g) => g.name);
+  for (const n of ['spare_sticks', 'spare_pick']) {
+    assert.ok(names.indexOf(n) >= 0, n);
+    assert.ok(names.indexOf(n) < names.indexOf('iron_cave'), n + ' avant iron_cave');
+    assert.ok(names.indexOf(n) < names.indexOf('descend_y16'), n + ' avant descend_y16');
+  }
+  const pick = ch.find((g) => g.name === 'spare_pick');
+  const sticks = ch.find((g) => g.name === 'spare_sticks');
+  const ctx = (inv) => ({ inv, y: 16, worn: [] });
+  assert.strictEqual(pick.met(ctx({ stone_pickaxe: 1, cobblestone: 10, stick: 4 })), false, 'une seule pioche → en refaire une');
+  assert.strictEqual(pick.met(ctx({ stone_pickaxe: 2, cobblestone: 10, stick: 4 })), true);
+  assert.strictEqual(pick.met(ctx({ iron_pickaxe: 1, stone_pickaxe: 1 })), true, 'fer + pierre = rechange');
+  assert.strictEqual(pick.met(ctx({ stone_pickaxe: 1, cobblestone: 2, stick: 4 })), true, 'pas de cobble → sauté');
+  assert.strictEqual(pick.met(ctx({ stone_pickaxe: 1, cobblestone: 10, stick: 1 })), true, 'pas de bâtons → sauté');
+  assert.strictEqual(sticks.met(ctx({ stick: 2, oak_planks: 4 })), false);
+  assert.strictEqual(sticks.met(ctx({ stick: 4 })), true);
+  assert.strictEqual(sticks.met(ctx({ stick: 0 })), true, 'ni planches ni bûches → sauté');
+});

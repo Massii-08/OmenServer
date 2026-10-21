@@ -453,6 +453,18 @@ async function branchMine(bot, opts = {}, token = null) {
   const onSurvivalTick = opts.onSurvivalTick || null;    // async, opt-in
   const survivalEvery = opts.survivalEvery || 4;
 
+  // PIOCHE CASSÉE EN BAS (21/10, NethBot2 : 6 `no_pickaxe` en 37 min d'iron_deep). `opts.onNoPickaxe`
+  // (async → bool) re-crafte une pioche SUR PLACE (3 cobble + 2 bâtons, table portable) ; vrai → on
+  // retente le même bloc et le couloir continue, au lieu d'abandonner le branch-mine. Une fois par bloc.
+  const digStep = async (t) => {
+    let r = await safeDigAndOpportunism(bot, t, token, debug, opts);
+    if (r && !r.ok && r.reason === 'no_pickaxe' && typeof opts.onNoPickaxe === 'function') {
+      let fixed = false;
+      try { fixed = !!(await opts.onNoPickaxe()); } catch (e) { fixed = false; }
+      if (fixed && !(token && token.cancelled)) r = await safeDigAndOpportunism(bot, t, token, debug, opts);
+    }
+    return r;
+  };
   const start = bot.entity && bot.entity.position;
   dbg('start', { phase: 'branchMine:enter', y: start ? start.y : null, x: start ? start.x : null, z: start ? start.z : null, targetY, mainLength, wall: countWallable(bot) });
   if (!start) { dbg('start', { phase: 'branchMine:bail', reason: 'no_pos' }); return { ok: false, reason: 'no_pos' }; }
@@ -551,7 +563,7 @@ async function branchMine(bot, opts = {}, token = null) {
       let wetTurn = false;
       for (const t of [footTarget, headTarget]) {
         let r;
-        try { r = await safeDigAndOpportunism(bot, t, token, debug, opts); }
+        try { r = await digStep(t); }
         catch (e) { r = { ok: false, reason: 'threw' }; }
         // Eau devant (survie prime, BUG #1) : on N'ENTRE PAS → on TOURNE vers le sec (serpentin),
         // la branche continue ailleurs au lieu de se noyer. ≠ lave (hardStop) : l'eau est contournable.
@@ -620,7 +632,7 @@ async function branchMine(bot, opts = {}, token = null) {
     let stepWet = false;
     for (const t of [footTarget, headTarget]) {
       let r;
-      try { r = await safeDigAndOpportunism(bot, t, token, debug, opts); }
+      try { r = await digStep(t); }
       catch (e) { if (debug) dbg('iter', { phase: 'branchMine:safeDigThrew', err: String(e).slice(0,150) }); r = { ok: false, reason: 'threw' }; }
       if (!r.ok && r.reason === 'water_ahead') stepWet = true;   // scellé best-effort ; on n'entre pas
       if (!r.ok && r.reason === 'lava_unwallable') { stopReason = 'lava'; break outer; }
@@ -669,7 +681,7 @@ async function branchMine(bot, opts = {}, token = null) {
           if (!floorOk) break;                                         // branche suivante
           let branchWet = false;
           for (const t of [ft, ht]) {
-            const r = await safeDigAndOpportunism(bot, t, token, debug, opts);
+            const r = await digStep(t);
             if (!r.ok && r.reason === 'water_ahead') branchWet = true;  // scellé best-effort
             if (!r.ok && r.reason === 'lava_unwallable') { stopReason = 'lava'; break outer; }
             if (!r.ok && r.reason === 'no_pickaxe') { stopReason = 'no_pickaxe'; break outer; }

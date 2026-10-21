@@ -379,6 +379,7 @@ function giftBatchFor({ target, ingots, pocket, brokenPocket, now } = {}) {
 // cartographes (gift_craft) et la sienne (lj_own_armor), toutes deux en LINGOTS. Un joueur dans sa
 // position irait chercher du fer pendant que les autres n'ont besoin de rien.
 // Tranche BORNÉE (4 min), PRÉEMPTÉE par toute demande de bois (câblage : index.js ljIronSlice) :
+//   'mine'  : (21/10) aucune grappe connue → descente en escalier + branch-mine, retour par /home work ;
 //   'smelt' : du fer brut en poche et de quoi fondre (four en poche, ou 8 cobble pour en faire un) ;
 //   'cave'  : une grappe de fer EXPOSÉ connue (caveIron — le fer des parois de grotte, proche surface) ;
 //   null    : rien d'utile → l'attente historique.
@@ -388,10 +389,16 @@ const LJ_IRON_RETRY_MS = 20000;         // entre deux tranches (anti boucle chau
 const LJ_IRON_CHECK_MS = 30000;         // pendant l'attente, on re-regarde s'il y a du fer à aller chercher
 const FURNACE_COBBLE = 8;
 const SMELT_BATCH = 4;
+const LJ_MINE_COBBLE = 8;               // 'mine' : de quoi murer la lave et sceller en bas
+// 'mine' : une tranche fait 4 min — descendre jusqu'à Y16 depuis y 70 en prendrait la moitié (~55 paliers).
+// Le fer est fréquent dès y < 56 (pic à 16) : on descend de LJ_MINE_DEPTH blocs, jamais sous 16.
+const LJ_MINE_DEPTH = 28;
+/** PUR — altitude du couloir d'une tranche 'mine' depuis l'altitude actuelle. */
+function ljMineTargetY(y) { return Math.max(16, Math.floor(Number(y) || 0) - LJ_MINE_DEPTH); }
 
 /**
  * PUR — que faire du temps mort du bûcheron ? sig = { rawIron, ingots, cobble, hasFurnace, hasStonePick,
- * caveAvailable, nightLock, now, lastSliceAt }. → 'smelt' | 'cave' | null.
+ * caveAvailable, canMine, nightLock, now, lastSliceAt }. → 'smelt' | 'cave' | 'mine' | null.
  */
 function ljIronSlicePlan(sig = {}) {
   const raw = Math.max(0, Number(sig.rawIron) || 0);
@@ -405,12 +412,16 @@ function ljIronSlicePlan(sig = {}) {
   if (raw + ingots >= LJ_IRON_TARGET) return null;
   if (sig.nightLock) return null;           // nu de nuit : la discipline de nuit garde la main
   if (!sig.hasStonePick) return null;       // le fer exige une pioche pierre
-  if (!sig.caveAvailable) return null;
+  // 3e ACTE (21/10, NethBot1 : `lj_wait` 50 min sur 70, 0 tranche — aucune grappe exposée à ≤ 80 blocs).
+  // Sans grappe connue, une tranche de branch-mine (descente à Y16 + couloir), toujours bornée et
+  // préemptée par la demande de bois. `canMine` (câblage) = de quoi miner proprement : pioche pierre et
+  // cobble pour murer la lave ; absent → l'attente historique.
+  if (!sig.caveAvailable) return sig.canMine ? 'mine' : null;
   return 'cave';
 }
 
 module.exports = {
-  ljIronSlicePlan, LJ_IRON_TARGET, LJ_IRON_SLICE_MS, LJ_IRON_RETRY_MS, LJ_IRON_CHECK_MS,
+  ljIronSlicePlan, LJ_MINE_COBBLE, LJ_MINE_DEPTH, ljMineTargetY, LJ_IRON_TARGET, LJ_IRON_SLICE_MS, LJ_IRON_RETRY_MS, LJ_IRON_CHECK_MS,
   WOOD_REQUEST_TTL_MS, WOOD_REQUEST_COOLDOWN_MS, LUMBERJACK_FRESH_MS, WOOD_WANT_MIN, WOOD_WANT_MAX,
   LUMBERJACK_STOCK, LUMBERJACK_RESERVE, WOOD_MIN_GIFT,
   isWoodGoal, woodWantFor, logCount, activeLumberjack, woodWaitDecision, preferredLumberjack,

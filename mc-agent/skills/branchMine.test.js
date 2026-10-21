@@ -584,3 +584,26 @@ test('floodFillVein : equipe le meilleur outil AVANT de miner chaque bloc du fil
   assert.ok(equipped.includes('iron_pickaxe'),
     `une pioche doit etre equipee avant le collect (equipes: ${JSON.stringify(equipped)})`);
 });
+
+test('branchMine (21/10) : pioche cassée → onNoPickaxe re-crafte sur place et le couloir CONTINUE', async () => {
+  const inv = [{ name: 'cobblestone', count: 32, type: 'block' }];
+  const { bot, calls } = makeBot({ y: -54, inv });
+  let rebuilt = 0;
+  const r = await branchMine(bot, {
+    targetY: -54, mainLength: 4, branchSpacing: 999, branchLength: 0,
+    onNoPickaxe: async () => { rebuilt++; inv.push({ name: 'stone_pickaxe', count: 1, type: 'pickaxe' }); return true; },
+  });
+  assert.strictEqual(rebuilt, 1, 'une seule reconstruction');
+  assert.ok(calls.dig.length > 0, 'le minage reprend avec la nouvelle pioche');
+  assert.notStrictEqual(r.reason, 'no_pickaxe');
+});
+
+test('branchMine (21/10) : onNoPickaxe impuissant → no_pickaxe comme avant', async () => {
+  const { bot, calls } = makeBot({ y: -54, inv: [{ name: 'cobblestone', count: 32, type: 'block' }] });
+  let asked = 0;
+  const r = await branchMine(bot, { targetY: -54, mainLength: 4, branchSpacing: 999, branchLength: 0,
+    onNoPickaxe: async () => { asked++; return false; } });
+  assert.strictEqual(calls.dig.length, 0);
+  assert.strictEqual(r.ok, false);
+  assert.ok(asked >= 1);
+});

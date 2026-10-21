@@ -101,6 +101,36 @@ function isDetourWorthy(name) {
   return !!name && DETOUR_ORES.has(String(name));
 }
 
+// ─── DÉTOUR SANS ISSUE (mesure 21/10, NethBot3) ────────────────────────────────────────────────
+// 112 `ore_detour` vers le MÊME diamant (d = 12-14 à chaque fois) en 8,7 min de `iron_deep` — 40 % du
+// but : le diamant était derrière une paroi que le goto (GoalNear, 25 s) ne franchissait pas, et chaque
+// passe (800 ms) relançait le détour, qui volait le pathfinder au branch-mine. Un joueur essaie une
+// fois ou deux, puis passe son chemin. Mémoire par position : au DETOUR_MAX_TRIES-ième détour vers la
+// même case sans l'avoir minée, la case est ignorée DETOUR_BAN_MS.
+const DETOUR_MAX_TRIES = 2;
+const DETOUR_BAN_MS = 10 * 60 * 1000;
+
+/** PUR — clé d'une case. */
+function detourKey(p) { return p ? `${Math.floor(p.x)},${Math.floor(p.y)},${Math.floor(p.z)}` : ''; }
+
+/** PUR — ce détour est-il encore permis ? memo = { [key]: { tries, at } } (jamais muté ici). */
+function detourAllowed(memo, key, now) {
+  const m = memo && memo[key];
+  if (!m) return true;
+  if ((Number(now) || 0) - (Number(m.at) || 0) > DETOUR_BAN_MS) return true;   // l'interdiction a expiré
+  return (Number(m.tries) || 0) < DETOUR_MAX_TRIES;
+}
+
+/** PUR — note un détour vers `key` ; purge les entrées expirées. Rend un NOUVEL objet. */
+function noteDetour(memo, key, now) {
+  const t = Number(now) || 0;
+  const out = {};
+  for (const [k, v] of Object.entries(memo || {})) if (t - (Number(v.at) || 0) <= DETOUR_BAN_MS) out[k] = v;
+  const prev = out[key];
+  out[key] = { tries: (prev ? Number(prev.tries) || 0 : 0) + 1, at: t };
+  return out;
+}
+
 // ─── QUELQUES PAS POUR DU MINERAI VISIBLE (Massii, photo à l'appui, 27/07) ─────────────────────
 // « Il y a clairement 3 veines de fer et on voit le passage des bots, mais ils n'ont rien pris. »
 // Et, correction de Massii : « certains ont encore des pioches mais ils ne creusent pas le fer »
@@ -193,4 +223,5 @@ module.exports = {
   VALUABLE_DROPS, isValuableDrop, DETOUR_ORES, isDetourWorthy,
   oreStepPlan, ORE_STEP_MAX, ORE_REACH,
   grabScope, mayApproach, REACH_SCAN, oreGone,
+  DETOUR_MAX_TRIES, DETOUR_BAN_MS, detourKey, detourAllowed, noteDetour,
 };

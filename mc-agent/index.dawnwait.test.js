@@ -41,6 +41,8 @@ function sandbox(extra = {}) {
     events: [],
     emit(e) { sb.events.push(e); },
     isFleeHostile, NEUTRAL_NO_PROVOKE, hostilesWithin: U.hostilesWithin, creeperIsThreat: CR.creeperIsThreat,
+    // NUIT AU TRAVAIL (21/10) : maybeNightShelter lit nightUndergroundNow (y < 45 sans descente de nuit).
+    nightUndergroundNow() { const p = sb.bot && sb.bot.entity && sb.bot.entity.position; return !!p && p.y < 45; },
     ...extra,
   };
   return vm.createContext(sb);

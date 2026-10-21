@@ -36,6 +36,8 @@ const _realSleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
  *  opts.ctxExtra: () => ({ hasTable })                 (état monde non-inventaire)
  *  opts.maxStalls: nb d'itérations sans progrès avant fallback (défaut 4)
  *  opts.onStep  : (goal) => void                       (hook events, optionnel)
+ *  opts.skip    : (goal, ctx) => bool                  (but DIFFÉRÉ : sauté au profit du suivant faisable,
+ *                                                       cf. goals.firstUnmet — nuit au travail 21/10)
  *  opts.now     : () => ms                             (horloge de la garde anti-boucle-chaude ; défaut Date.now)
  *  opts.sleep   : async (ms) => void                   (attente du back-off ; défaut setTimeout) — les deux
  *                                                       sont injectables pour que les tests n'attendent rien
@@ -63,7 +65,7 @@ async function runPlanner(bot, opts, token) {
   while (true) {
     if (token && token.cancelled) return { cancelled: true };
     const ctx = Object.assign({ inv: buildCtxInv(bot) }, ctxExtra());
-    const goal = firstUnmet(chain, ctx);
+    const goal = firstUnmet(chain, ctx, opts.skip);
     if (!goal) return { done: true, steps };
 
     // Fingerprint étendu : inv + table + position (x,y,z floored). Un dig de deepslate sans pickup
@@ -107,7 +109,7 @@ async function runPlanner(bot, opts, token) {
     if (instant >= HOT_LOOP_BACKOFF_FROM) {
       // Seul le MÊME but relancé compte : si ce tour vient de le satisfaire, il n'y a rien à
       // freiner (et un but qui s'achève en 3 tours rapides n'est pas une boucle).
-      const next = firstUnmet(chain, ctx2);
+      const next = firstUnmet(chain, ctx2, opts.skip);
       if (next && next.name === goal.name) {
         if (instant >= HOT_LOOP_STALL_AT) return { stalled: true, goal: goal.name, reason: 'hot_loop' };
         await sleep(hotLoopBackoffMs(instant));

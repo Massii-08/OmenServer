@@ -280,3 +280,21 @@ test('horloge et sleep PAR DÉFAUT (réels) : une boucle chaude attend vraiment 
   assert.ok(dt >= 240, 'attente réelle attendue ≈ 250 ms, mesuré ' + dt + ' ms');
   assert.ok(dt < 2000, 'mais pas davantage (un seul back-off de 250 ms) : ' + dt + ' ms');
 });
+
+test('runPlanner : opts.skip diffère un but au profit du suivant faisable, puis le reprend', async () => {
+  const h = harness();
+  let night = true;
+  const runSkill = async (goal) => { const r = await h.runSkill(goal); night = false; return r; };
+  const res = await runPlanner(h.bot, { chain: h.chain, runSkill, ctxExtra: h.ctxExtra,
+    skip: (g) => night && g.name === 'a' }, { cancelled: false });
+  assert.deepStrictEqual(h.calls, ['b', 'a'], 'b d abord (a différé), a ensuite');
+  assert.strictEqual(res.done, true);
+});
+
+test('runPlanner : tous les buts restants différés → le premier quand même (jamais « done » de nuit)', async () => {
+  const h = harness();
+  const res = await runPlanner(h.bot, { chain: h.chain, runSkill: h.runSkill, ctxExtra: h.ctxExtra,
+    skip: () => true }, { cancelled: false });
+  assert.deepStrictEqual(h.calls, ['a', 'b']);
+  assert.strictEqual(res.done, true);
+});
