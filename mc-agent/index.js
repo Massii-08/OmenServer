@@ -157,6 +157,7 @@ const {
 const { tierRank } = require('./tools');
 const { createTeleportWatcher, wireTeleportDetection } = require('./teleport');
 const { isNight, shelterUntilDawn, shouldShelter, DAWN_WAIT_MAX_MS, DAWN_SAFE_EXIT_MAX_MS } = require('./skills/shelter');
+const { plannerWatchdogVerdict, deriveToken } = require('./plannerWatchdog');
 // LIT (20/10) : réapparaître dans sa base, pas au spawn du monde campé — cf. bed.js.
 const { bedItemIn, bedRecipeName, woolMissing, sheepKnown, bedMemoWith, bedMemoCleared, bedRetryMemo, bedOf, bedRetryActive,
   bedSpotPlan, parseBedMessage, sleepErrorReason, sleepDecision, isBedName, BED_HUNT_BUDGET_MS } = require('./bed');
@@ -3200,6 +3201,13 @@ let lastShelterT = 0; // anti re-trigger : 1 abri par nuit max (heure de DÉBUT 
 // ⚠️ NIVEAU MODULE (piège #56) : tout ceci est lu par des timers ET par le planner.
 let _mapperHomeShelterFailedAt = 0;   // abri RATÉ au home safe (mapperNight) — l'état du process suffit : il survit aux respawns
 let _shelterInFlight = null;   // promesse de l'abri EN COURS — un seul trou à la fois, les autres appelants le rejoignent
+let _shelterTok = null;        // jeton PROPRE de l'abri en cours (dérivé du jeton de tâche) — annulable par sa borne et le watchdog
+let _shelterStartedAt = 0;     // début de l'abri en cours (watchdog du planner : un abri n'est légitime que borné)
+// Borne DURE d'un abri de nuit (inchangée : 13 min de nuit + l'attente d'aube) — désormais elle ANNULE.
+const SHELTER_HARD_MAX_MS = 13 * 60 * 1000 + Math.max(DAWN_WAIT_MAX_MS, DAWN_SAFE_EXIT_MAX_MS);
+let _lastGoalAt = 0;           // dernier event `goal` du planner (watchdog) — lu par un timer : niveau module
+let _plannerWatchdogAt = 0;    // dernière relance du watchdog (1 / 6 min)
+let _plannerWatchdogBusy = false;
 // Un COMPTEUR et pas un booléen (même raison que _skillInFlight/_autoRunners) : un vieux planner qui finit
 // sa retenue (jeton annulé au respawn) ne doit pas déclarer « plus retenu » pendant que le nouveau l'est encore.
 let _nightHold = 0;            // planners retenus par la discipline de nuit : immobilité LÉGITIME (desync, confine)
@@ -3278,6 +3286,12 @@ async function maybeNightShelter(proactive = false, opts = {}) {
       _lockdownShelters = note.state;
       if (note.emit) emit({ type: 'shelter_reenter', count: note.count });
     }
+    // JETON DÉRIVÉ (21/10) : `withTimeout` n'annule rien — sans jeton propre, un abri dont la borne expire
+    // continuait derrière (creusage gelé compris). Annulé par : le jeton de tâche (mort, ordre), la borne
+    // ci-dessous, le watchdog du planner.
+    const shTok = deriveToken(taskToken);
+    _shelterTok = shTok;
+    _shelterStartedAt = lastShelterT;
     const run = (async () => {
       // MAPPEUR (Massii 2026-07-15) : d'abord REVENIR au home 'safe' de surface (/home safe, visible),
       // puis se terrer là — plutôt que de creuser un trou au hasard là où la nuit l'a surpris.
@@ -3322,12 +3336,12 @@ async function maybeNightShelter(proactive = false, opts = {}) {
         // termine l'abri au lieu d'« attendre l'aube » debout dehors — la discipline le ré-abrite 20 s plus
         // tard. Relu AU MOMENT du délogement (un abri ouvert au crépuscule, avant que `isNight` ne bascule,
         // est couvert aussi). Armé : toujours faux, l'abri attend l'aube comme avant.
-        const sres = await withTimeout(shelterUntilDawn(bot, taskToken, {
+        const sres = await withTimeout(shelterUntilDawn(bot, shTok, {
           emit, hostilesNear: hostilesNearNow, worn: () => _wornArmor().size,
           exitThreats: dawnExitThreatsNow, onExit: exitAwayFromThreats,   // sortie sûre (fix 20/10)
           endWhenDisplaced: () => nightLockdownNow(),
-        }), 13 * 60 * 1000 + Math.max(DAWN_WAIT_MAX_MS, DAWN_SAFE_EXIT_MAX_MS),
-        () => { try { stopMotion(); } catch (e) {} });
+        }), SHELTER_HARD_MAX_MS,
+        () => { shTok.cancelled = true; emit({ type: 'shelter', action: 'hard_timeout' }); try { stopMotion({ arm: true }); } catch (e) {} });
         if (IS_MAPPER) {
           const reason = (sres && sres.reason) || null;
           // borne de 13 min atteinte = nuit passée terré ; tâche annulée (mort, ordre) ≠ trou raté
@@ -3339,7 +3353,10 @@ async function maybeNightShelter(proactive = false, opts = {}) {
     })();
     // Posé SANS await intermédiaire depuis la décision : un appelant concurrent voit l'abri en cours.
     _shelterInFlight = run;
-    try { await run; } finally { if (_shelterInFlight === run) _shelterInFlight = null; }
+    try { await run; } finally {
+      if (_shelterInFlight === run) _shelterInFlight = null;
+      if (_shelterTok === shTok) _shelterTok = null;
+    }
     return true;
   }
   return false;
@@ -3726,6 +3743,56 @@ function currentAnchor() {
  * /home ramenait le bot en arrière. Elle PRÉEMPTE donc le planner (taskCtl), attend qu'il ait rendu
  * la main, marche seule, puis le relance.
  */
+// ─── WATCHDOG DU PLANNER (live 21/10, NethBot3 session 48) ───────────────────────────────────────
+// `shelter dig_in` puis plus UN event pendant 10+ min, jour levé : le planner attendait un abri dont le
+// creusage ne rendait jamais la main. Les bornes locales (digBound, étapes de l'abri) traitent la cause ;
+// ce filet traite le SYMPTÔME, quelle qu'en soit la cause future : plus aucun `goal` depuis 6 min hors
+// immobilité légitime BORNÉE (plannerWatchdogVerdict) → `planner_watchdog`, abri en cours annulé,
+// creusage coupé, puis relance de startAutonomous selon le patron de migrateZone (jeton capturé,
+// attente que le skill / le runner en vol rende la main, ≤ MIGRATION_PREEMPT_WAIT_MS).
+function plannerWatchdogState(at) {
+  const now = Number.isFinite(at) ? at : Date.now();
+  const objType = world.objective && world.objective.type;
+  return {
+    now,
+    // planner à CHAÎNE seulement (mapper/resource n'émettent pas de `goal`)
+    active: taskCtl.active === 'autonomous' && !!(world.objective && world.objective.status === 'in_progress')
+      && objType !== 'mapper' && objType !== 'resource' && _autoRunners > 0,
+    lastGoalAt: _lastGoalAt, lastFireAt: _plannerWatchdogAt,
+    migrating: _migrating || _ljSwitching,
+    shelterSince: _shelterInFlight ? _shelterStartedAt : 0,
+    sleeping: !!bot.isSleeping, nightHold: _nightHold, skillInFlight: _skillInFlight,
+  };
+}
+async function plannerWatchdogTick(at) {
+  if (_plannerWatchdogBusy) return null;
+  const now = Number.isFinite(at) ? at : Date.now();
+  const v = plannerWatchdogVerdict(plannerWatchdogState(now));
+  if (!v.fire) return v;
+  _plannerWatchdogBusy = true;
+  _plannerWatchdogAt = now;
+  try {
+    emit({ type: 'planner_watchdog', why: v.why, idle_s: v.idleS, shelter: !!_shelterInFlight,
+      skills: _skillInFlight, runners: _autoRunners, digging: !!bot.targetDigBlock });
+    if (_shelterTok) _shelterTok.cancelled = true;      // l'abri en cours (jeton propre) s'arrête
+    const tok = taskCtl.begin('planner_watchdog', () => { try { stopMotion({ arm: true }); } catch (e) {} });
+    const w0 = Date.now();
+    while ((_skillInFlight > 0 || _autoRunners > 0) && !tok.cancelled && Date.now() - w0 < MIGRATION_PREEMPT_WAIT_MS) {
+      await sleep(250);
+    }
+    if (tok.cancelled) return v;                        // préempté (mort, ordre) : celui qui a la main gère
+    if (_autoRunners > 0 || _shelterInFlight) {
+      // Le runner gelé n'a pas rendu la main : on ne le REJOINT pas (maybeNightShelter rejoindrait l'abri zombie).
+      emit({ type: 'planner_watchdog_zombie', runners: _autoRunners, shelter: !!_shelterInFlight });
+      _shelterInFlight = null; _shelterTok = null; _stillBusy = false;
+    }
+    taskToken = tok;
+    startAutonomous(null).catch((e) => emit({ type: 'error', message: String((e && e.message) || e) }));
+    return v;
+  } finally { _plannerWatchdogBusy = false; }
+}
+setInterval(() => { plannerWatchdogTick().catch(() => {}); }, 30000);
+
 async function migrateZone(reason) {
   if (_migrating) return;
   // Uniquement par-dessus le planner AUTONOME : jamais par-dessus un ordre joueur (follow/guard/…)
@@ -4741,7 +4808,7 @@ async function startMapper() {
     chain: kitChain,
     runSkill: (g) => runSkillWithTelemetry(g),
     ctxExtra,
-    onStep: (g) => emit({ type: 'goal', name: g.name }),
+    onStep: (g) => { _lastGoalAt = Date.now(); emit({ type: 'goal', name: g.name }); },
   }, mapperToken);
   const res = await runKit();
   if (mapperToken.cancelled) return;
@@ -7185,6 +7252,8 @@ async function hideFromThreat(why, danger, opts = {}) {
   const night = !!(bot.time && bot.time.timeOfDay != null && isNight(bot));
   const t0 = Date.now();
   const tok = { cancelled: false };
+  _shelterTok = tok;              // watchdog du planner : cet abri-là aussi est annulable
+  _shelterStartedAt = t0;
   emit({
     type: 'threat_hide', why, night,
     mob: (danger && danger.mob) || null,
@@ -7204,7 +7273,10 @@ async function hideFromThreat(why, danger, opts = {}) {
     } finally { _stillBusy = false; }
   })();
   _shelterInFlight = run;
-  try { await run; } finally { if (_shelterInFlight === run) _shelterInFlight = null; }
+  try { await run; } finally {
+    if (_shelterInFlight === run) _shelterInFlight = null;
+    if (_shelterTok === tok) _shelterTok = null;
+  }
   const out = res || { ok: false, reason: 'error' };
   emit({ type: 'threat_hide_done', why, ok: !!out.ok, reason: out.reason || null, took_s: Math.round((Date.now() - t0) / 1000) });
   return out;
@@ -7535,7 +7607,7 @@ async function startResource() {
         chain: kitChain,
         runSkill: (g) => runSkillWithTelemetry(g),
         ctxExtra,
-        onStep: (g) => emit({ type: 'goal', name: g.name }),
+        onStep: (g) => { _lastGoalAt = Date.now(); emit({ type: 'goal', name: g.name }); },
       }, kitToken);
       clearInterval(poll);
       if (taskToken.cancelled) return;
@@ -7746,6 +7818,7 @@ async function startAutonomous(sender) {
 /** Corps de startAutonomous, séparé pour que `_autoRunners` l'encadre de bout en bout.
  *  Ne lit JAMAIS le global `taskToken` : uniquement `myTok`, le jeton de CE runner. */
 async function runAutonomousBody(sender, objType, myTok) {
+  _lastGoalAt = Date.now();   // watchdog : le compteur repart à chaque démarrage du planner
   emit({ type: 'autonomous_start', objective: objType });
   // RÉCUPÉRATION POST-MORT (vécu Surv4 : chaque mort = kit perdu = re-kit de zéro = spirale) :
   // les items restent 5 min au sol → on retourne les ramasser AVANT de reprendre (borné, best-effort).
@@ -7796,7 +7869,7 @@ async function runAutonomousBody(sender, objType, myTok) {
     // Avant chaque but : déposer le kit de secours si c'est le moment (1 relevé/min, jamais de throw).
     runSkill: async (g) => { try { await stashKitIfReady(); } catch (e) { /* best-effort */ } return runSkillWithTelemetry(g); },
     ctxExtra,
-    onStep: (g) => emit({ type: 'goal', name: g.name }),
+    onStep: (g) => { _lastGoalAt = Date.now(); emit({ type: 'goal', name: g.name }); },
   }, myTok);
   let res = await runChain();
   // Run nether (mode sans-give uniquement, rétro-compat) : un stall (not_found passager, zone
@@ -8834,7 +8907,13 @@ async function onSpawn() {
       });
       if (act === 'return') {
         // goHome passe par le veto du home campé (19/10) : base campée la nuit → on reste où l'on a respawné.
-        if (homewarp.goHome(bot, HOME_SAFE, { ctx: 'base_return' })) emit({ type: 'base_return' });
+        // ATTENDRE l'atterrissage (live 21/10, NethBot3 session 48) : sans lui le planner partait dans la
+        // milliseconde, l'abri de nuit commençait à creuser AU SPAWN, et le téléport 29 ms plus tard laissait
+        // `bot.dig` attendre pour toujours un bloc resté à 400 blocs (10+ min de gel, cf. digBound).
+        if (homewarp.goHome(bot, HOME_SAFE, { ctx: 'base_return' })) {
+          emit({ type: 'base_return' });
+          try { await awaitWarp({ maxMs: 6000 }); } catch (e) { /* best-effort : l'abri sait aussi sortir d'un téléport */ }
+        }
       } else if (act === 'establish') {
         // AWAIT, pas fire-and-forget (échec live : `too_close` d=1..23 sur les 3 bots). Le planner
         // autonome et le /tpa de regroupement démarrent au même spawn et prennent le pathfinder :

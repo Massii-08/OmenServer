@@ -135,7 +135,7 @@ function shelterSandbox({ worn = 0, entities = [zombie(6), zombie(8, 2, 'skeleto
     // discipline de nuit (19/10 soir) : ce que maybeNightShelter lit en plus — un seul abri à la fois,
     // l'écart de 20 s en lockdown, la comptabilité des ré-abris (cf. index.nightlockdown.test.js).
     // Ce bot n'a pas de `bot.time` : heure inconnue → pas de lockdown → comportement d'avant, à l'identique.
-    _shelterInFlight: null, _lockdownShelters: null, isInWater: () => false,
+    _shelterInFlight: null, _shelterTok: null, _shelterStartedAt: 0, deriveToken: require('./plannerWatchdog').deriveToken, SHELTER_HARD_MAX_MS: 13 * 60 * 1000 + Math.max(require('./skills/shelter').DAWN_WAIT_MAX_MS, require('./skills/shelter').DAWN_SAFE_EXIT_MAX_MS), _lockdownShelters: null, isInWater: () => false,
     // LIT (20/10) : sans lit à portée, trySleepInBedTonight rend false → l'abri historique (testé dans index.bed.test.js)
     trySleepInBedTonight: async () => false,
     nightLockdown: C.nightLockdown, lockdownShelterNote: C.lockdownShelterNote,
@@ -246,4 +246,35 @@ test('index.js : maybeNightShelter appelle shelterUntilDawn avec hostilesNear ET
   const call = body.slice(body.indexOf('shelterUntilDawn(bot'));
   assert.match(call, /hostilesNear: hostilesNearNow/);
   assert.match(call, /worn: \(\) => _wornArmor\(\)\.size/);
+});
+
+// ═════ 4. BORNE DURE QUI ANNULE (live 21/10, NethBot3 session 48 : creusage gelé, 10+ min sans event) ═════
+test('maybeNightShelter : la borne dure ANNULE l abri (jeton dérivé) et coupe le creusage — un abri gelé ne garde pas le planner', async () => {
+  const sb = shelterSandbox({ worn: 0 });
+  let tok = null;
+  const stops = [];
+  sb.stopMotion = (o) => stops.push(o || {});
+  sb.shelterUntilDawn = (b, t) => { tok = t; return new Promise(() => {}); };   // creusage qui ne rend JAMAIS la main
+  sb.withTimeout = (p, ms, onTimeout) => { onTimeout(); return Promise.resolve({ ok: false, reason: 'timeout' }); };
+  assert.strictEqual(await sb.maybeNightShelter(true), true);
+  assert.ok(tok, 'shelterUntilDawn appelé');
+  assert.strictEqual(tok.cancelled, true, 'la borne annule le jeton de l abri');
+  assert.strictEqual(sb.taskToken.cancelled, false, 'le jeton de TÂCHE n est pas touché');
+  assert.ok(stops.some((o) => o.arm === true), 'stopMotion({arm:true}) : le creusage en vol est coupé');
+  assert.ok(sb.events.some((e) => e.type === 'shelter' && e.action === 'hard_timeout'));
+  assert.strictEqual(sb._shelterInFlight, null);
+  assert.strictEqual(sb._shelterTok, null);
+});
+
+test('maybeNightShelter : le jeton de l abri suit le jeton de tâche (mort, ordre) et reste exposé au watchdog pendant l abri', async () => {
+  const sb = shelterSandbox({ worn: 0 });
+  let tok = null;
+  let seen = null;
+  sb.shelterUntilDawn = async (b, t) => { tok = t; seen = { tok: sb._shelterTok, since: sb._shelterStartedAt, inFlight: !!sb._shelterInFlight }; return { ok: true }; };
+  await sb.maybeNightShelter(true);
+  assert.strictEqual(seen.tok, tok, '_shelterTok = le jeton passé à l abri');
+  assert.ok(seen.since > 0, '_shelterStartedAt posé');
+  assert.strictEqual(tok.cancelled, false);
+  sb.taskToken.cancelled = true;
+  assert.strictEqual(tok.cancelled, true, 'annuler la tâche annule l abri');
 });

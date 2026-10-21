@@ -5,6 +5,7 @@
 // Pas avant l'apex (collision), pas après (on retombe). Retry si la pose rate.
 // Garde-fou #6 : JAMAIS de pose sans bloc de référence PLEIN réel (le bloc sous les pieds).
 const { Vec3 } = require('vec3');
+const { boundedDig, boundedEquip } = require('../digBound');
 
 // Blocs sacrifiables pour le pilier (mêmes familles que le remblai de placeBlockNear).
 const SCAFFOLD = [
@@ -61,8 +62,9 @@ async function pillarUp(bot, { height = 1 } = {}, token = null, opts = {}) {
       const head2 = bot.blockAt(feet.offset ? feet.offset(0, 2, 0) : { x: feet.x, y: feet.y + 2, z: feet.z });
       if (head2 && head2.boundingBox === 'block') {
         const tool = opts.bestToolFor ? opts.bestToolFor(bot, head2) : null;
-        if (tool) { try { await bot.equip(tool, 'hand'); } catch (e) {} }
-        await bot.dig(head2);
+        if (tool) await boundedEquip(bot, tool, 'hand');
+        // BORNÉ (21/10) : `bot.dig` nu peut ne jamais rendre la main (téléport, casse refusée) — cf. digBound.
+        await boundedDig(bot, head2, { token });
       }
     } catch (e) { /* best-effort : si on ne peut pas dégager, le retry existant couvre */ }
 

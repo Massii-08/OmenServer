@@ -1,6 +1,7 @@
 'use strict';
 // `mine down <n>` : creuse le bloc sous les pieds n fois, outil auto, garde-fou lave/vide.
 const { bestToolFor } = require('../tools');
+const { boundedDig, boundedEquip } = require('../digBound');
 const DANGER = new Set(['lava', 'flowing_lava', 'water', 'flowing_water']);
 const VOID = new Set(['air', 'cave_air', 'void_air']);
 
@@ -30,7 +31,9 @@ async function waitLanding(bot, y0, opts = {}) {
   return false;
 }
 
-async function mineDown(bot, { count = 1, land = null } = {}, token = null) {
+// `digTimeoutMs` (opt-in, abri nocturne 21/10) : chaque coup est BORNÉ (cf. digBound — `bot.dig` peut ne
+// jamais rendre la main après un téléport) et l'équipement aussi ; un coup qui n'aboutit pas = `dig_failed`.
+async function mineDown(bot, { count = 1, land = null, digTimeoutMs = null } = {}, token = null) {
   let dug = 0;
   for (let i = 0; i < count; i++) {
     if (token && token.cancelled) return { ok: true, dug, cancelled: true };
@@ -44,10 +47,17 @@ async function mineDown(bot, { count = 1, land = null } = {}, token = null) {
     // Avec `land` le bot va RÉELLEMENT tomber dans la case creusée : il faut un fond plein sous elle.
     if (land && (!below2 || VOID.has(below2.name))) return dug > 0 ? { ok: false, dug, reason: 'cave_below' } : { ok: false, reason: 'cave_below' };
     const tool = bestToolFor(bot, below);
-    if (tool) { try { await bot.equip(tool, 'hand'); } catch (e) {} }
+    if (digTimeoutMs) { if (tool) await boundedEquip(bot, tool, 'hand'); }
+    else if (tool) { try { await bot.equip(tool, 'hand'); } catch (e) {} }
     const y0 = pos.y;                                  // un NOMBRE (copie) : la position est mutée en place
-    try { await bot.dig(below); dug++; }
-    catch (e) { return { ok: dug > 0, dug, reason: 'dig_failed' }; }
+    if (digTimeoutMs) {
+      const r = await boundedDig(bot, below, { timeoutMs: digTimeoutMs, token });
+      if (!r.ok) return { ok: dug > 0, dug, reason: r.reason === 'cancelled' ? 'cancelled' : 'dig_failed', why: r.reason };
+      dug++;
+    } else {
+      try { await bot.dig(below); dug++; }
+      catch (e) { return { ok: dug > 0, dug, reason: 'dig_failed' }; }
+    }
     if (land && !(await waitLanding(bot, y0, land))) return { ok: false, dug, reason: 'no_fall' };
   }
   return { ok: true, dug };

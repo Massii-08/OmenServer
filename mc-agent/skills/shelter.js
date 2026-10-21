@@ -9,18 +9,29 @@ const { panicWall } = require('./panicWall');
 const { pillarUp } = require('./pillarUp');
 const { POSABLE } = require('../dirt');
 const { bestToolFor, toolCategoryFor } = require('../tools');
+const { boundedDig, boundedEquip, bounded, DIG_STEP_TIMEOUT_MS } = require('../digBound');
+
+// ─── CHAQUE ÉTAPE EST BORNÉE (live 21/10, NethBot3 session 48) ─────────────────────────────────────
+// `shelter dig_in` puis PLUS RIEN pendant 10+ min, jour levé, planner gelé : un `/home safe` (retour à
+// la base après la mort) téléportait le bot 29 ms APRÈS le début du creusage, et `bot.dig` attend pour
+// toujours la mise à jour d'un bloc resté à 400 blocs de là (cf. digBound). Désormais : un coup ≤ 15 s
+// (et abandonné au téléport), murer / colmater / toit ≤ 30 s, remonter ≤ 60 s. Une étape qui n'aboutit
+// pas compte comme ratée ; l'abri continue (plan B) ou se termine — il ne gèle jamais.
+const SHELTER_STAGE_MS = 30 * 1000;
+const SHELTER_PILLAR_MS = 60 * 1000;
 
 // Creuse en ÉQUIPANT le bon outil (Massii 2026-07-26 : « neth1 casse la pierre avec ses mains »).
 // Ce module appelait `bot.dig` NU trois fois : la pierre à la main c'est ~7,5 s par bloc contre
 // ~1,15 s à la pioche pierre. L'abri nocturne prenait donc des MINUTES, passées à découvert — soit
 // exactement la situation qu'il est censé éviter.
-async function _digWithTool(bot, block) {
+async function _digWithTool(bot, block, token = null, timeoutMs = DIG_STEP_TIMEOUT_MS) {
   if (!block) return false;
   try {
     const tool = bestToolFor(bot, block);
-    if (tool) { try { await bot.equip(tool, 'hand'); } catch (e) { /* on creuse quand même */ } }
+    if (tool) await boundedEquip(bot, tool, 'hand');   // borné ; raté → on creuse quand même
   } catch (e) { /* best-effort */ }
-  try { await bot.dig(block); return true; } catch (e) { return false; }
+  const r = await boundedDig(bot, block, { token, timeoutMs });
+  return r.ok;
 }
 
 /** PUR : est-ce la nuit (hostiles spawnent) ? timeOfDay ∈ [0,24000), nuit ≈ 12800-23200. */
@@ -251,6 +262,12 @@ const _FLUID = new Set(['water', 'lava', 'flowing_water', 'flowing_lava']);
 // ni bloc utile du camp, ni incassable.
 const _NO_DIG = /^(bedrock|barrier|ice|packed_ice|blue_ice|frosted_ice|crafting_table|furnace|blast_furnace|smoker|chest|trapped_chest|barrel|spawner|end_portal_frame|reinforced_deepslate)$|_leaves$|_bed$/;
 
+/** Coupe tout geste en vol (creusage, trajet, touches) — après une étape de l'abri qui n'a pas abouti. */
+function _stopAll(bot) {
+  try { if (bot.targetDigBlock && typeof bot.stopDigging === 'function') bot.stopDigging(); } catch (e) { /* best-effort */ }
+  try { if (bot.pathfinder && typeof bot.pathfinder.setGoal === 'function') bot.pathfinder.setGoal(null); } catch (e) { /* best-effort */ }
+  try { if (typeof bot.clearControlStates === 'function') bot.clearControlStates(); } catch (e) { /* best-effort */ }
+}
 function _solid(b) { return !!b && b.boundingBox === 'block'; }
 function _clear(b) { return !!b && b.boundingBox === 'empty' && !_FLUID.has(b.name); }
 function _xyz(p) { return !!p && Number.isFinite(p.x) && Number.isFinite(p.y) && Number.isFinite(p.z); }
@@ -470,7 +487,14 @@ async function _buildCell(bot, token, deps, sleep, emit) {
   // ── 1) CREUSER ──────────────────────────────────────────────────────────────────────────────────
   let down = null;
   let depth = 0;
-  const dig = async (opts) => { try { return (await digDown(bot, opts, token)) || { ok: false, reason: 'dig_failed' }; } catch (e) { return { ok: false, reason: 'dig_failed' }; } };
+  const digMs = Number.isFinite(deps.digTimeoutMs) && deps.digTimeoutMs > 0 ? deps.digTimeoutMs : DIG_STEP_TIMEOUT_MS;
+  const stageMs = Number.isFinite(deps.stageTimeoutMs) && deps.stageTimeoutMs > 0 ? deps.stageTimeoutMs : SHELTER_STAGE_MS;
+  // Chaque coup du puits est borné (digTimeoutMs → mineDown/boundedDig) ; l'appel entier aussi (stage).
+  const dig = async (opts) => {
+    const r = await bounded(digDown(bot, Object.assign({ digTimeoutMs: digMs }, opts), token), stageMs);
+    if (!r.ok) { _stopAll(bot); return { ok: false, reason: 'dig_failed' }; }
+    return r.value || { ok: false, reason: 'dig_failed' };
+  };
   if (!located) {
     down = await dig({ count: SHELTER_PIT_DEPTH });
     depth = down.ok ? SHELTER_PIT_DEPTH : 0;
@@ -482,9 +506,17 @@ async function _buildCell(bot, token, deps, sleep, emit) {
     const here = () => bot.entity.position.floored();
     const attempt = async () => {
       _centerInBlock(bot);
-      const y0 = bot.entity.position.y;
+      const p0 = bot.entity.position;
+      const x0 = p0.x; const y0 = p0.y; const z0 = p0.z;   // COPIES : la position est mutée en place (#73d)
       const r = await dig({ count: SHELTER_PIT_DEPTH, land: { sleep } });
-      return { r, depth: Math.max(0, Math.round(y0 - bot.entity.position.y)) };
+      const p1 = bot.entity.position;
+      // TÉLÉPORTÉ pendant le creusage (live 21/10 : /home safe parti juste avant l'abri) : l'écart de y
+      // n'est PAS une profondeur creusée (vu : « depth 6 » sur un trou jamais fait, ressorti 58 → 64).
+      if ((r && r.why === 'teleported') || Math.hypot(p1.x - x0, p1.z - z0) > 2) {
+        emit({ type: 'shelter', action: 'teleported', dist: Math.round(Math.hypot(p1.x - x0, p1.z - z0)) });
+        return { r: { ok: false, reason: 'teleported' }, depth: 0 };
+      }
+      return { r, depth: Math.max(0, Math.round(y0 - p1.y)) };
     };
     const f0 = here();
     if (spots.fails(f0.x, f0.z, now()) >= SPOT_MAX_FAILS) {
@@ -521,7 +553,9 @@ async function _buildCell(bot, token, deps, sleep, emit) {
   const pitOk = located ? depth >= SHELTER_MIN_DEPTH : !!(down && down.ok);
   if (!pitOk) {
     const reason = (down && down.reason) || 'shallow';
-    const walled = await wallIn(bot);
+    const wr = await bounded(wallIn(bot), stageMs);
+    if (!wr.ok) _stopAll(bot);
+    const walled = wr.ok ? wr.value : null;
     if (!walled || !walled.ok) {
       emit({ type: 'shelter', action: 'abort', reason });
       line({ sealed: false, why: 'abort:' + reason, mode: 'none', depth });
@@ -550,14 +584,19 @@ async function _buildCell(bot, token, deps, sleep, emit) {
   if (need > 0 && depth > 0) await _waitCellBlocks(bot, sleep, need);
   const hadBlock = cellBlockCount(bot) > 0;
   let roof = { ok: roofed0, placed: 0, how: 'natural' };
-  if (!roof.ok && hadBlock) roof = await _placeRoof(bot, feet);
+  if (!roof.ok && hadBlock) {
+    const rr = await bounded(_placeRoof(bot, feet), stageMs);
+    roof = rr.ok && rr.value ? rr.value : { ok: false, placed: 0, how: null };
+  }
   placed += roof.placed || 0;
   if (roof.ok && roof.how !== 'natural') emit({ type: 'shelter', action: 'roofed', how: roof.how });
   if (!roof.ok && !hadBlock) emit({ type: 'shelter', action: 'no_roof' });
 
   // ── 4) COLMATER ce qui reste ouvert aux pieds ou à la tête (grotte voisine, cellule murée incomplète)
   if (_openSides(bot, feet) > 0 && cellBlockItem(bot)) {
-    try { const n = await seal(bot, feet); placed += Number(n && n.placed != null ? n.placed : n) || 0; } catch (e) { /* best-effort */ }
+    const sr = await bounded(seal(bot, feet), stageMs);
+    const n = sr.ok ? sr.value : 0;
+    placed += Number(n && n.placed != null ? n.placed : n) || 0;
   }
   const open = _openSides(bot, feet);
   const roofed = _solid(bot.blockAt(feet.offset(0, 2, 0)));
@@ -628,7 +667,7 @@ async function shelterUntilDawn(bot, token = null, deps = {}) {
   // 4) ressortir : casser le toit éventuel puis remonter en pilier (#7)
   try {
     const roof = bot.blockAt(bot.entity.position.floored().offset(0, 2, 0));
-    if (roof && roof.boundingBox === 'block') await _digWithTool(bot, roof);
+    if (roof && roof.boundingBox === 'block') await _digWithTool(bot, roof, token);
   } catch (e) {}
   if (!dugIn) {
     // Muré au niveau du sol : on n'est pas dans un trou, donc pas de pilier — on perce une paroi.
@@ -636,7 +675,7 @@ async function shelterUntilDawn(bot, token = null, deps = {}) {
       const feet = bot.entity.position.floored();
       for (const d of [new Vec3(1, 0, 0), new Vec3(-1, 0, 0), new Vec3(0, 0, 1), new Vec3(0, 0, -1)]) {
         const w = bot.blockAt(feet.plus(d));
-        if (w && w.boundingBox === 'block' && w.name !== 'bedrock') { await _digWithTool(bot, w); break; }
+        if (w && w.boundingBox === 'block' && w.name !== 'bedrock') { await _digWithTool(bot, w, token); break; }
       }
     } catch (e) { /* best-effort */ }
     emit({ type: 'shelter', action: 'out', ok: true, mode: 'walled' });
@@ -645,7 +684,10 @@ async function shelterUntilDawn(bot, token = null, deps = {}) {
   }
   // Pilier de la hauteur RÉELLEMENT creusée : il rebouche le puits en remontant (aucun trou laissé dans le
   // monde), et à 3 de profondeur il ramène les pieds au niveau du sol.
-  const up = await pillarUp(bot, { height: Math.max(1, cellRes.depth || 2) }, token, { sleep: deps.pillarSleep || deps.sleep });
+  const pr = await bounded(pillarUp(bot, { height: Math.max(1, cellRes.depth || 2) }, token, { sleep: deps.pillarSleep || deps.sleep }),
+    Number.isFinite(deps.pillarTimeoutMs) && deps.pillarTimeoutMs > 0 ? deps.pillarTimeoutMs : SHELTER_PILLAR_MS);
+  if (!pr.ok) _stopAll(bot);
+  const up = pr.ok && pr.value ? pr.value : { ok: false, reason: 'timeout' };
   emit({ type: 'shelter', action: 'out', ok: up.ok });
   _afterExit(deps);
   return { ok: true };
@@ -693,4 +735,5 @@ module.exports = {
   dawnExitPlan, DAWN_SAFE_EXIT_MAX_MS, DAWN_SAFE_CHECK_MS, DAY_SAFE_END,
   shelterDisplaced, SHELTER_DISPLACED_BLOCKS,
   createSpotMemory, cellBlockItem, SHELTER_PIT_DEPTH, SHELTER_MIN_DEPTH, CELL_BLOCKS,
+  SHELTER_STAGE_MS, SHELTER_PILLAR_MS,
 };
