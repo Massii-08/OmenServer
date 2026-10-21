@@ -44,3 +44,14 @@ test('foodGateLoad : mémo absent ou malformé → état vide bien formé', () =
   assert.deepStrictEqual(G.foodGateLoad(null), { refusals: [], lastUnderTripAt: 0 });
   assert.deepStrictEqual(G.foodGateLoad({ foodGate: { refusals: [1, 'x'], lastUnderTripAt: 5 } }), { refusals: [1], lastUnderTripAt: 5 });
 });
+
+test('descentFoodGate : la chasse d\'avant n\'a vu AUCUNE proie → on descend tout de suite (refuser ne rapporte rien)', () => {
+  const r = G.descentFoodGate({ points: 0, y: 70, refusals: [], now: T, noPrey: true });
+  assert.deepStrictEqual([r.allow, r.reason], [true, 'no_prey']);
+  assert.deepStrictEqual(r.refusals, [], 'aucun refus consommé ni persisté');
+});
+
+test('descentFoodGate : chasse ratée SUR du gibier vu (noPrey faux/absent) → le refus garde son sens', () => {
+  assert.strictEqual(G.descentFoodGate({ points: 0, y: 70, refusals: [], now: T, noPrey: false }).allow, false);
+  assert.strictEqual(G.descentFoodGate({ points: 0, y: 70, refusals: [], now: T }).allow, false);
+});

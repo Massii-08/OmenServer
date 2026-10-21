@@ -201,8 +201,26 @@ test('descentFoodGateCheck : stock suffisant → passe sans rien écrire ; le re
 
 test('le hook de descente consulte la porte nourriture et rend food_gate', () => {
   const body = fnSrc('runGoalSkill');
-  assert.match(body, /descentFoodGateCheck\(\)/);
+  assert.match(body, /descentFoodGateCheck\(\{ noPrey: huntSawNoPrey\(_hunt\) \}\)/);
+  assert.match(body, /_hunt = await withTimeout\(huntCookGoal\(/, 'le résultat de la chasse est capturé');
   assert.match(body, /reason: 'food_gate'/);
+});
+
+test('descentFoodGateCheck({noPrey}) : chasse sans proie en vue → passe aussitôt, rien persisté, food_gate no_prey', () => {
+  const sb = sandbox({ points: 0 });
+  assert.strictEqual(run(sb, 'descentFoodGateCheck({ noPrey: true })'), true);
+  assert.ok(!sb.calls.includes('save'), 'aucun refus persisté');
+  assert.ok(sb.events.some((e) => e.type === 'food_gate' && e.allow && e.reason === 'no_prey'));
+});
+
+test('huntSawNoPrey : seul `no_prey:no_passive` (rien vu) compte — pas une chasse ratée sur du gibier vu', () => {
+  const sb = sandbox();
+  run(sb, fnSrc('huntSawNoPrey'));
+  assert.strictEqual(run(sb, "huntSawNoPrey({ ok: false, reason: 'no_prey:no_passive' })"), true);
+  assert.strictEqual(run(sb, "huntSawNoPrey({ ok: false, reason: 'no_prey:hunt_failed' })"), false);
+  assert.strictEqual(run(sb, "huntSawNoPrey({ ok: true, reason: null })"), false);
+  assert.strictEqual(run(sb, 'huntSawNoPrey(null)'), false);
+  assert.strictEqual(run(sb, "huntSawNoPrey({ ok: false, reason: 'timeout' })"), false);
 });
 
 test('foodRunTick : la remontée sous terre (undergroundFoodTripDue) contourne la sourdine', () => {

@@ -165,6 +165,9 @@ const { bedItemIn, bedRecipeName, woolMissing, sheepKnown, bedMemoWith, bedMemoC
 const { maybeRunKit } = require('./kit');   // survie mappeur : /kit serveur au démarrage/respawn (décision pure)
 const { needDirtBuffer } = require('./dirt');   // survie mappeur : buffer de blocs posables pour sceller l'abri
 const { panicWall } = require('./skills/panicWall');
+// DÉFENSE EN TUNNEL (run 21/10 soir) : sous terre dans un couloir, tenir la position (armé) ou se murer
+// au lieu de fuir dans le noir — cf. tunnelDefense.js. Remplace la fuite des réflexes et des ticks de survie.
+const { tunnelFlee } = require('./skills/tunnelGuard');
 // COUVERT anti-squelette (tueur n°1 des bots nus, preuve live world_ax4 25/07) : couper la
 // ligne de vue d'un tireur au lieu de charger/fuir à découvert. Décision pure dans cover.js.
 const { shouldTakeCover } = require('./cover');
@@ -2761,6 +2764,11 @@ async function runGoalSkill(goal) {
   // avant une descente/branche, tente armure+bouclier (best-effort, borné, idempotent si déjà armé).
   if (goal.skill === 'descendDiagonal' || goal.skill === 'branchMine' || goal.skill === 'caveIron') {
     try { await withTimeout(armorUp(), 120000, () => { try { stopMotion(); } catch (e) {} }); } catch (e) {}
+    // TORCHES AVANT DE DESCENDRE : sans charbon, une bûche au four (cf. ensureTorches). En surface seulement.
+    if (goal.skill === 'descendDiagonal') {
+      const _yT = bot.entity && bot.entity.position ? bot.entity.position.y : 0;
+      if (_yT >= 45) { try { await withTimeout(ensureTorches({ charcoal: true }), 45000, () => { try { stopMotion(); } catch (e) {} }); } catch (e) {} }
+    }
     // Sans-give : chasse best-effort AVANT la descente (bornée à 70 s, jamais bloquante — cf. goals.js,
     // le but food_stock bloquant stallait à vie sur no_prey). Surface seulement. Compté en POINTS
     // (cru et chair putréfiée comprises) : 12 points en poche, on descend sans chasser. Et sans proie
@@ -2769,13 +2777,16 @@ async function runGoalSkill(goal) {
     // d'où `+ FOOD_TRIP_MS` : sous terre il n'y a plus un seul animal, c'est ICI ou jamais).
     if (NO_GIVE && goal.skill === 'descendDiagonal') {
       const _y = bot.entity && bot.entity.position ? bot.entity.position.y : 0;
+      let _hunt = null;
       if (_y >= 45 && foodPoints(buildCtxInv(bot)) < STOCK_POINTS) {
-        try { await withTimeout(huntCookGoal(4), HUNT_COOK_TIMEOUT_MS + FOOD_TRIP_MS, () => { try { stopMotion(); } catch (e) {} }); } catch (e) {}
+        try { _hunt = await withTimeout(huntCookGoal(4), HUNT_COOK_TIMEOUT_MS + FOOD_TRIP_MS, () => { try { stopMotion(); } catch (e) {} }); } catch (e) {}
       }
       // PORTE NOURRITURE (run 20/10 : 4 « starved to death », toujours `hunt_cook_done before:0`) :
       // la chasse ci-dessus a eu sa chance ; sans DESCENT_MIN_POINTS en poche on ne descend pas
       // encore — au plus 2 refus / 10 min (persistés), ensuite on descend quand même (cf. foodGate.js).
-      if (!descentFoodGateCheck()) return { ok: false, reason: 'food_gate' };
+      // Chasse qui n'a vu AUCUNE proie (`no_prey:no_passive`, run 21/10 : 12 refus sur 17) → refuser ne
+      // rapporterait rien, on descend tout de suite.
+      if (!descentFoodGateCheck({ noPrey: huntSawNoPrey(_hunt) })) return { ok: false, reason: 'food_gate' };
       // ⭐ Steering STRATÉGIQUE vers le SEC (mur de l'eau, run water-wall) : descendre « où on
       // est » en zone aquifère = fuite permanente = 0 minage (vécu homedeath : smelt:0 après des
       // heures à Y16 — l'évitement TACTIQUE de l'eau ne suffit pas). La carte du groupe (mappers)
@@ -6269,7 +6280,7 @@ async function ensureArmor(opts = {}) {
 // ── Phase B : stock de torches (mob-aware) PROACTIF (hole B — éclairer = moins de mobs = moins de
 // morts). Manque de charbon → mine le charbon EXPOSÉ tout proche (≤24, JAMAIS de roaming en plein
 // tunnel) ; manque de sticks → en craft depuis les planches du kit. Best-effort, jamais bloquant.
-async function ensureTorches() {
+async function ensureTorches(opts = {}) {
   const inv = () => (bot.inventory && bot.inventory.items()) || [];
   const count = (n) => inv().filter((i) => i.name === n).reduce((a, i) => a + i.count, 0);
   if (count('torch') >= 8) return;
@@ -6277,6 +6288,22 @@ async function ensureTorches() {
     const coalDefs = ['coal_ore', 'deepslate_coal_ore'].map((n) => bot.registry.blocksByName[n]).filter(Boolean);
     if (coalDefs.length && bot.findBlock({ matching: coalDefs.map((b) => b.id), maxDistance: 24 })) {
       try { await gather(bot, { name: ['coal_ore', 'deepslate_coal_ore'], count: 3, explore: false }, taskToken); } catch (e) { /* best-effort */ }
+    }
+  }
+  // CHARBON DE BOIS (run 21/10 soir : 36 poses de torche ratées sur 82 dans le branch-mine, et des tunnels
+  // à `light: 0`). Un joueur sans charbon fond UNE bûche avant de descendre : 1 bûche = 1 charbon de bois
+  // = 4 torches. Seulement à la demande de l'appelant (hook de descente, en surface) — jamais pendant le
+  // tunnel (la fonte immobilise ~10 s) —, avec un four DÉJÀ en poche (on n'en fabrique pas pour ça) et
+  // en gardant une bûche pour les planches de combustible.
+  if (opts.charcoal && (count('coal') + count('charcoal')) < 1 && count('torch') < 4 && count('furnace') > 0) {
+    const logs = {};
+    for (const i of inv()) if (i && logBase(i.name)) logs[i.name] = (logs[i.name] || 0) + i.count;
+    const top = Object.entries(logs).sort((a, b) => b[1] - a[1])[0];
+    if (top && top[1] >= 2) {
+      try {
+        const r = await smeltWithFurnace(top[0], 'charcoal', 1, undefined, { maxMs: 30000 });
+        emit({ type: 'torch_charcoal', log: top[0], ok: !!(r && r.ok), reason: (r && r.reason) || null });
+      } catch (e) { /* best-effort */ }
     }
   }
   if (count('stick') < 1) {
@@ -6512,8 +6539,16 @@ async function provisionStartKit() {
 // Tick de survie COURT exécuté PENDANT le branch-mining (hole E — la survie ne tournait qu'ENTRE
 // les appels branchMine ; une branche de plusieurs minutes laissait le bot sans défense). Une action
 // de survie (combat/fuite) + manger + re-stocker des torches. Borné par nature (1 action/appel).
+/**
+ * Fuite « tunnel-aware » (module, piège #56 : lue par les réflexes ET les ticks de survie). Dans un couloir
+ * souterrain : tenir (armé) ou se murer (tunnelGuard) ; partout ailleurs : fleeFrom, inchangé.
+ */
+function tunnelAwareFlee(b) {
+  return tunnelFlee(b || bot, { fleeFrom, emit, stopMotion: () => stopMotion(), eat, withTimeout });
+}
+
 async function branchSurvivalTick() {
-  try { await survivalTick(bot, { fleeFrom, emit }); } catch (e) {}
+  try { await survivalTick(bot, { fleeFrom: tunnelAwareFlee, emit }); } catch (e) {}
   try { await eat(bot); } catch (e) {}
   // Ancre profonde SÈCHE : on est dans le branch-mine (y≈-58). Si l'OXYGÈNE est plein (= hors de
   // l'eau, sur la terre ferme du tunnel) ET on est profond, on mémorise la position comme refuge sec.
@@ -6551,7 +6586,7 @@ async function branchSurvivalTick() {
 // l'escalier 1×2 → digs hors range au palier suivant). La descente Y64→-58 dure plusieurs minutes
 // pendant lesquelles seuls les réflexes event-driven protégeaient le bot.
 async function descentSurvivalTick() {
-  try { await survivalTick(bot, { fleeFrom, emit }); } catch (e) {}
+  try { await survivalTick(bot, { fleeFrom: tunnelAwareFlee, emit }); } catch (e) {}
   try { await eat(bot); } catch (e) {}
 }
 
@@ -8530,7 +8565,9 @@ async function onSpawn() {
     _workDrownTimes = []; // fresh par session (les strikes de noyade ne traversent pas un respawn)
     _workStuckTimes = []; // idem : les strikes d'impasse sèche ne traversent pas un respawn
     installReflexes(bot, {
-      emit, fleeFrom,
+      emit,
+      // Sous terre dans un couloir : tenir/murer au lieu de courir dans le noir (tunnelAwareFlee).
+      fleeFrom: tunnelAwareFlee,
       // COUVERT au lieu de la FUITE quand c'est un TIREUR qui nous met à PV bas (autopsie live
       // world_ax4 25/07 : chaque mort précédée d'un `flee`, squelette = 52 morts sur 103). Repli
       // sur la fuite si rien à poser — mieux vaut courir que rester planté sous les flèches.
@@ -10046,19 +10083,24 @@ setInterval(() => { endermanTick().catch(() => {}); }, 500);
  * Refus PERSISTÉS dans le mémo de base (le self-healing relance souvent : un compteur de process
  * repartirait à zéro et la porte ne se « dépenserait » jamais en zone sans gibier).
  */
-function descentFoodGateCheck() {
+function descentFoodGateCheck(opts = {}) {
   const st = loadBaseState() || {};
   const p = bot.entity && bot.entity.position;
   const points = foodPoints(buildCtxInv(bot));
-  const r = descentFoodGate({ points, y: p ? p.y : NaN, refusals: foodGateLoad(st).refusals, now: Date.now() });
+  const r = descentFoodGate({ points, y: p ? p.y : NaN, refusals: foodGateLoad(st).refusals, now: Date.now(), noPrey: !!opts.noPrey });
   if (!r.allow) {
     saveBaseState(Object.assign({}, st, { foodGate: Object.assign({}, st.foodGate || {}, { refusals: r.refusals }) }));
     emit({ type: 'food_gate', need: r.need, points, allow: false, refusals: r.refusals.length });
-  } else if (r.reason === 'gate_spent' && Date.now() - _foodGateEvAt >= 60000) {
+  } else if ((r.reason === 'gate_spent' || r.reason === 'no_prey') && Date.now() - _foodGateEvAt >= 60000) {
     _foodGateEvAt = Date.now();
-    emit({ type: 'food_gate', need: r.need, points, allow: true, reason: 'gate_spent' });
+    emit({ type: 'food_gate', need: r.need, points, allow: true, reason: r.reason });
   }
   return r.allow;
+}
+
+/** La chasse du hook de descente n'a vu AUCUNE proie (rien en vue, expédition stérile comprise). Pur. */
+function huntSawNoPrey(res) {
+  return !!(res && res.ok === false && typeof res.reason === 'string' && /^no_prey:no_passive/.test(res.reason));
 }
 
 /** Échecs de descente POSITIONNELS : relancer du même point dans le même cap = même échec garanti. */

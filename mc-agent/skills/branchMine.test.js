@@ -637,3 +637,97 @@ test('branchMine (21/10) : onNoPickaxe impuissant → no_pickaxe comme avant', a
   assert.strictEqual(r.ok, false);
   assert.ok(asked >= 1);
 });
+
+// --- Run 21/10 soir : grottes bouchées, torches tous les ~8 blocs, torche murale --------------------
+const { placeTorchAt, sealCaveOpenings } = require('./branchMine');
+
+function caveBox(world, xs, zs, ys) {
+  for (const x of xs) for (const z of zs) for (const y of ys) world[`${x},${y},${z}`] = 'air';
+}
+
+test('branchMine : grotte sur le CÔTÉ du couloir → ouverture bouchée (pieds + tête), le couloir continue', async () => {
+  const world = {};
+  caveBox(world, [2], [1, 2, 3], [-55, -54, -53, -52]);     // grotte au nord de la case x=2
+  const { bot } = makeBot({ y: -54, world });
+  const r = await branchMine(bot, { targetY: -54, mainLength: 5, branchSpacing: 999, branchLength: 0 });
+  assert.strictEqual(r.ok, true);
+  assert.strictEqual(world['2,-54,1'], 'cobblestone', 'ouverture côté pieds bouchée');
+  assert.strictEqual(world['2,-53,1'], 'cobblestone', 'ouverture côté tête bouchée');
+});
+
+test('branchMine : simple poche d\'air (filon vidé) → PAS bouchée (pas une grotte)', async () => {
+  const world = { '2,-54,1': 'air' };
+  const { bot } = makeBot({ y: -54, world });
+  await branchMine(bot, { targetY: -54, mainLength: 5, branchSpacing: 999, branchLength: 0 });
+  assert.strictEqual(world['2,-54,1'], 'air');
+});
+
+test('branchMine : sealCaves:false → comportement d\'avant (rien de bouché)', async () => {
+  const world = {};
+  caveBox(world, [2], [1, 2, 3], [-55, -54, -53, -52]);
+  const { bot } = makeBot({ y: -54, world });
+  await branchMine(bot, { targetY: -54, mainLength: 5, branchSpacing: 999, branchLength: 0, sealCaves: false });
+  assert.strictEqual(world['2,-54,1'], 'air');
+});
+
+test('sealCaveOpenings : grotte devant → front:true et ouverture bouchée', async () => {
+  const world = {};
+  caveBox(world, [2, 3, 4], [-1, 0, 1], [15, 16, 17, 18]);
+  world['1,16,0'] = 'air'; world['1,17,0'] = 'air';        // la case qu'on vient de creuser
+  const { bot } = makeBot({ y: 16, world });
+  const r = await sealCaveOpenings(bot, { x: 1, y: 16, z: 0 }, { dx: 1, dz: 0 }, { front: true });
+  assert.strictEqual(r.front, true);
+  assert.strictEqual(world['2,16,0'], 'cobblestone');
+  assert.strictEqual(world['2,17,0'], 'cobblestone');
+});
+
+test('sealCaveOpenings : réserve anti-lave préservée (≤ 10 cobble → on ne bouche pas)', async () => {
+  const world = {};
+  caveBox(world, [1], [1, 2, 3], [15, 16, 17, 18]);
+  const { bot } = makeBot({ y: 16, world, inv: [{ name: 'iron_pickaxe', count: 1 }, { name: 'cobblestone', count: 9 }] });
+  const r = await sealCaveOpenings(bot, { x: 1, y: 16, z: 0 }, { dx: 1, dz: 0 });
+  assert.strictEqual(r.sealed, 0);
+});
+
+test('branchMine serpentin : grotte devant au 1er pas → bouchée, aucune case creusée DANS la grotte', async () => {
+  const world = {};
+  caveBox(world, [2, 3, 4], [-1, 0, 1], [15, 16, 17, 18]);
+  const { bot, calls } = makeBot({ y: 16, world });
+  await branchMine(bot, { targetY: 16, mainLength: 6, serpentine: true, allowDeeper: true, rng: () => 0 });
+  assert.strictEqual(world['2,16,0'], 'cobblestone', 'ouverture devant bouchée');
+  const intoCave = calls.dig.filter((b) => b.position.x >= 3 && b.position.z === 0);
+  assert.strictEqual(intoCave.length, 0, 'le couloir ne traverse pas la grotte');
+});
+
+test('branchMine : torches tous les ~8 blocs (écart ≤ torchEvery + 2, plus [N, 2N[)', async () => {
+  const { bot, calls } = makeBot({ y: -54, inv: [
+    { name: 'iron_pickaxe', count: 1, type: 'pickaxe' },
+    { name: 'cobblestone', count: 32, type: 'block' },
+    { name: 'torch', count: 16, type: 'block' },
+  ] });
+  await branchMine(bot, { targetY: -54, mainLength: 30, branchSpacing: 999, branchLength: 0, torchEvery: 8, rng: () => 0.99 });
+  const up = calls.placeBlock.filter((c) => c.face && c.face.y === 1);
+  assert.ok(up.length >= 3, `≥ 3 torches sur 30 blocs (got ${up.length}) — l'ancien jitter n'en posait que 2`);
+});
+
+test('branchMine serpentin : torche au COUDE quand la dernière est loin', async () => {
+  const { bot, calls } = makeBot({ y: 16, inv: [
+    { name: 'iron_pickaxe', count: 1, type: 'pickaxe' },
+    { name: 'cobblestone', count: 32, type: 'block' },
+    { name: 'torch', count: 16, type: 'block' },
+  ] });
+  // rng 0 : virages à n = 4, 8, 12 ; cadence 20 jamais atteinte → seules les torches de coude
+  await branchMine(bot, { targetY: 16, mainLength: 12, serpentine: true, allowDeeper: true, torchEvery: 20, rng: () => 0 });
+  const up = calls.placeBlock.filter((c) => c.face && c.face.y === 1);
+  assert.ok(up.length >= 1, `au moins une torche de coude (got ${up.length})`);
+});
+
+test('placeTorchAt : sol impossible → torche MURALE ; sans torche → raison nommée', async () => {
+  const world = { '0,16,0': 'air', '0,15,0': 'air' };     // case vide, pas de sol
+  const { bot, calls } = makeBot({ y: 16, world, inv: [{ name: 'torch', count: 4 }] });
+  const r = await placeTorchAt(bot, { x: 0, y: 16, z: 0 });
+  assert.deepStrictEqual([r.placed, r.why], [true, 'wall']);
+  assert.strictEqual(calls.placeBlock[0].face.y, 0, 'face latérale');
+  const { bot: b2 } = makeBot({ y: 16, world: { '0,16,0': 'air' }, inv: [] });
+  assert.deepStrictEqual(await placeTorchAt(b2, { x: 0, y: 16, z: 0 }), { placed: false, why: 'no_torch' });
+});

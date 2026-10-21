@@ -30,10 +30,18 @@ function _times(arr, now, windowMs) {
   return (Array.isArray(arr) ? arr : []).filter((t) => Number.isFinite(t) && t <= now && now - t < windowMs);
 }
 
+// RUN 21/10 soir (world_oct9, 20:14 → 23:14) : NethBot2 7 refus, NethBot3 10. Sur les 17, 12 suivaient une
+// chasse qui venait de répondre `no_prey:no_passive` (rien en vue : zone vidée, nuit, abri) — refuser ne
+// pouvait RIEN rapporter : le planner relançait aussitôt la même descente, re-jouait le hook (armure,
+// chasse) pour un 2e refus tout aussi vide, ou partait sur un autre but (bois de nuit → `night_hold`).
+// Une chasse SANS proie en vue n'est pas une chance de plus : on descend tout de suite (`no_prey`) avec ce
+// qu'on a — la chair de zombie tuée en bas compte (food.foodPoints), et la porte 2 remonte à faim ≤ 8.
+// Le refus ne garde son sens qu'après une chasse qui a VU du gibier sans le tuer (`hunt_failed`).
+
 /**
  * PUR — peut-on descendre ?
- * s = { points, y, refusals: number[] (horodatages persistés), now }
- * → { allow, reason: 'stocked'|'underground'|'gate'|'gate_spent', refusals: number[] (à persister), need }
+ * s = { points, y, refusals: number[] (horodatages persistés), now, noPrey: bool (la chasse d'avant n'a vu aucune proie) }
+ * → { allow, reason: 'stocked'|'underground'|'no_prey'|'gate'|'gate_spent', refusals: number[] (à persister), need }
  * Sous la surface on ne bloque jamais (il n'y a plus rien à chasser : c'est la porte 2 qui s'en occupe).
  */
 function descentFoodGate(s = {}) {
@@ -43,6 +51,7 @@ function descentFoodGate(s = {}) {
   const points = Number(s.points) || 0;
   if (points >= need) return { allow: true, reason: 'stocked', refusals, need };
   if (!(Number.isFinite(s.y) && s.y >= SURFACE_Y)) return { allow: true, reason: 'underground', refusals, need };
+  if (s.noPrey === true) return { allow: true, reason: 'no_prey', refusals, need };
   if (refusals.length >= GATE_MAX_REFUSALS) return { allow: true, reason: 'gate_spent', refusals, need };
   return { allow: false, reason: 'gate', refusals: refusals.concat([now]), need };
 }

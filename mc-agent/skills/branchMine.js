@@ -181,18 +181,93 @@ async function wallLava(bot, where) {
   return false;
 }
 
-// Pose une torche au sol près de `floorTarget` (le bloc des pieds du tunnel). Best-effort :
-// pas de torche / pas de face → on continue sans (phase B mob-aware, jamais bloquant).
-async function placeTorch(bot, floorTarget) {
+// ── GROTTE SUR LE CÔTÉ : BOUCHER au lieu de traverser (run 21/10 soir) ─────────────────────────────
+// Sur 14 morts en tunnel (NethBot2/3, iron_deep), plusieurs à 4-6 hostiles qui arrivaient « de nulle
+// part » dans un couloir 1×2 : le serpentin avait percé une grotte (air sur le côté ou devant) et la
+// grotte, noire, déversait ses mobs dans le couloir. Un joueur qui débouche sur une grotte rebouche le
+// trou (ou la traverse en l'éclairant) ; il ne laisse pas une porte ouverte derrière lui.
+// Une case d'air isolée (poche de filon qu'on vient de vider) n'est PAS une grotte : on exige
+// CAVE_MIN_AIR cases d'air dans la sonde au-delà de l'ouverture.
+const CAVE_MIN_AIR = 4;
+const TORCH_JITTER = 3;          // écart entre deux torches : [torchEvery, torchEvery + 2]
+const TORCH_CORNER_MIN = 5;      // torche au coude du serpentin si la dernière est à ≥ 5 pas
+const CAVE_SEAL_RESERVE = COBBLE_RESERVE_MIN + 2;   // la réserve anti-lave passe avant
+const _AIR = new Set(['air', 'cave_air', 'void_air']);
+function isAirBlock(b) { return !!(b && _AIR.has(b.name)); }
+
+/** Nombre de cases d'air au-delà de l'ouverture `side` de la case (x,y,z) : 3 blocs de profondeur × pieds/tête + dessous/dessus. */
+function caveAirBeyond(bot, cell, side) {
+  let n = 0;
+  for (let k = 1; k <= 3; k++) {
+    for (let dy = -1; dy <= 2; dy++) {
+      const b = bot.blockAt(p(cell.x + side.dx * k, cell.y + dy, cell.z + side.dz * k));
+      if (isAirBlock(b)) n++;
+    }
+  }
+  return n;
+}
+
+/**
+ * Après avoir creusé la case `cell` (pieds) du couloir de cap `heading` : bouche les ouvertures de GROTTE
+ * sur les deux côtés (pieds + tête) et, si `front`, devant. Rend { sealed, front } — `front` = vrai si
+ * une grotte s'ouvre DEVANT (l'appelant tourne au lieu de la traverser). Best-effort, jamais bloquant.
+ */
+async function sealCaveOpenings(bot, cell, heading, opts = {}) {
+  const out = { sealed: 0, front: false };
+  const sides = [leftOf(heading), { dx: -leftOf(heading).dx, dz: -leftOf(heading).dz }];
+  if (opts.front) sides.push({ dx: heading.dx, dz: heading.dz });
+  for (const side of sides) {
+    const isFront = side.dx === heading.dx && side.dz === heading.dz;
+    const feet = p(cell.x + side.dx, cell.y, cell.z + side.dz);
+    const head = p(feet.x, feet.y + 1, feet.z);
+    const openings = [feet, head].filter((q) => isAirBlock(bot.blockAt(q)));
+    if (!openings.length || caveAirBeyond(bot, cell, side) < CAVE_MIN_AIR) continue;
+    if (isFront) out.front = true;
+    for (const q of openings) {
+      if (countWallable(bot) < CAVE_SEAL_RESERVE) break;
+      try {
+        let ok = await wallLava(bot, q);
+        // Ouverture en plein vide (grande grotte : aucune face pleine autour) → on pose d'abord un appui
+        // SOUS l'ouverture, accroché au sol de notre propre case, puis on bouche par-dessus.
+        if (!ok && q.y === cell.y && isAirBlock(bot.blockAt(p(q.x, q.y - 1, q.z)))) {
+          if (await wallLava(bot, p(q.x, q.y - 1, q.z))) ok = await wallLava(bot, q);
+        }
+        if (ok) out.sealed++;
+      } catch (e) { /* best-effort */ }
+    }
+  }
+  if (out.sealed || out.front) {
+    try { _emit({ type: 'cave_sealed', sealed: out.sealed, front: out.front, x: cell.x, y: cell.y, z: cell.z }); } catch (e) {}
+  }
+  return out;
+}
+
+// Pose une torche près de `floorTarget` (la case des pieds du tunnel). Best-effort : pas de torche / pas
+// de face → on continue sans (phase B mob-aware, jamais bloquant).
+// Run 21/10 soir : 36 poses ratées sur 82 (`placed: false`) dans le branch-mine, ALTERNÉES avec des
+// réussites — la torche était en poche, c'est la SURFACE qui manquait : seul le sol était essayé (sol de
+// minerai miné, `placeBlock` qui refuse pendant un pas…). On essaie maintenant le sol PUIS les quatre murs
+// de la case (torche murale), comme un joueur. Rend { placed, why } (why : floor | wall | no_torch |
+// cell_full | no_face | message de l'exception) — la raison d'un échec ne se perd plus.
+async function placeTorchAt(bot, floorTarget) {
   const torch = bot.inventory.items().find((i) => i.name === 'torch');
-  if (!torch) return false;
-  const ref = bot.blockAt(p(floorTarget.x, floorTarget.y - 1, floorTarget.z));
-  if (!ref || ref.boundingBox !== 'block') return false;
-  try {
-    await bot.equip(torch, 'hand');
-    await bot.placeBlock(ref, { x: 0, y: 1, z: 0 });
-    return true;
-  } catch (e) { return false; }
+  if (!torch) return { placed: false, why: 'no_torch' };
+  const cell = bot.blockAt(p(floorTarget.x, floorTarget.y, floorTarget.z));
+  if (cell && cell.boundingBox === 'block') return { placed: false, why: 'cell_full' };
+  const refs = [[0, -1, 0, { x: 0, y: 1, z: 0 }],
+    [1, 0, 0, { x: -1, y: 0, z: 0 }], [-1, 0, 0, { x: 1, y: 0, z: 0 }],
+    [0, 0, 1, { x: 0, y: 0, z: -1 }], [0, 0, -1, { x: 0, y: 0, z: 1 }]];
+  let why = 'no_face';
+  for (const [dx, dy, dz, face] of refs) {
+    const ref = bot.blockAt(p(floorTarget.x + dx, floorTarget.y + dy, floorTarget.z + dz));
+    if (!ref || ref.boundingBox !== 'block') continue;
+    try {
+      await bot.equip(torch, 'hand');
+      await bot.placeBlock(ref, face);
+      return { placed: true, why: dy === -1 ? 'floor' : 'wall' };
+    } catch (e) { why = String((e && e.message) || e).slice(0, 60); }
+  }
+  return { placed: false, why };
 }
 
 // INSTRUMENTATION (Massii 26/07 : « ils placent des torches dans des zones déjà illuminées »).
@@ -206,10 +281,11 @@ async function placeTorch(bot, floorTarget) {
 async function placeTorchLogged(bot, floorTarget, light) {
   let skyLight = null;
   try { const c = bot.blockAt(floorTarget); if (c && c.skyLight != null) skyLight = c.skyLight; } catch (e) {}
-  const placed = await placeTorch(bot, floorTarget);
+  const r = await placeTorchAt(bot, floorTarget);
+  const placed = r.placed;
   try {
     _emit({
-      type: 'torch_placed', from: 'branchMine', placed: !!placed,
+      type: 'torch_placed', from: 'branchMine', placed: !!placed, why: r.why,
       light, skyLight,
       x: Math.round(floorTarget.x), y: Math.round(floorTarget.y), z: Math.round(floorTarget.z),
     });
@@ -446,6 +522,11 @@ async function branchMine(bot, opts = {}, token = null) {
   const stopOre = opts.stopOre || null;                  // {items:[...], count:n} — delta depuis le départ
   const torchEvery = opts.torchEvery || 0;
   const rng = opts.rng || Math.random;
+  // Cadence des torches (run 21/10 soir) : l'ancien écart [N, 2N[ laissait jusqu'à 15 blocs sans
+  // lumière avec N = 8 — et une torche n'éclaire qu'à ~7 blocs au-dessus du seuil d'apparition. Un
+  // joueur en pose une tous les ~8 blocs : écart [N, N+2], le jitter reste (jamais métronomique).
+  const torchGap = () => torchEvery + Math.floor(rng() * TORCH_JITTER);
+  const sealCaves = opts.sealCaves !== false;            // boucher les grottes percées (déf. oui)
   const debug = !!opts.debug;
   // Hole E — détection de stall interne + hook de survie PENDANT le tunnel (avant, survie/lumière
   // ne tournaient qu'ENTRE les appels branchMine, pas durant les branches de plusieurs minutes).
@@ -565,6 +646,7 @@ async function branchMine(bot, opts = {}, token = null) {
     let stopReasonS = null;
     let wetTurns = 0;                                       // demi-tours eau CONSÉCUTIFS (sans avancer) → waterlocked
     let nextTorchAtS = torchEvery > 0 ? torchEvery : Infinity;
+    let lastTorchS = 0;                                     // pas de la dernière pose (torche au coude)
     for (let n = 1; n <= mainLength; n++) {
       if (token && token.cancelled) return { ok: true, cancelled: true, ores: deltaOres(oresBefore, snapshotOres(bot)), gotDiamond: countItem(bot, 'diamond') > 0, heading };
       if (checkStall()) { stopReasonS = 'stalled'; break; }
@@ -604,16 +686,26 @@ async function branchMine(bot, opts = {}, token = null) {
       }
       wetTurns = 0;                                        // le front a avancé → l'eau n'enferme pas
       cx += heading.dx; cz += heading.dz;                  // le front a avancé (case minée)
-      if (n >= nextTorchAtS) {
-        nextTorchAtS = n + torchEvery + Math.floor(rng() * torchEvery);
+      // Grotte percée sur le côté ou devant : on la BOUCHE ; devant → on tourne au lieu de la traverser.
+      let caveAhead = false;
+      if (sealCaves) {
+        try { caveAhead = !!(await sealCaveOpenings(bot, footTarget, heading, { front: true })).front; } catch (e) { /* best-effort */ }
+      }
+      const torchHere = async () => {
+        lastTorchS = n;
+        nextTorchAtS = n + torchGap();
         let light = 0;
         try { const cell = bot.blockAt(footTarget); if (cell && cell.light != null) light = cell.light; } catch (e) { /* inconnue = sombre */ }
         if (light < 8) { try { await placeTorchLogged(bot, footTarget, light); } catch (e) { /* best-effort */ } }
-      }
-      // VIRAGE à intervalle IRRÉGULIER (jamais métronomique = pas une grille).
-      if (--stepsLeft <= 0) {
+      };
+      if (n >= nextTorchAtS) await torchHere();
+      // VIRAGE à intervalle IRRÉGULIER (jamais métronomique = pas une grille) — ou forcé par une grotte devant.
+      if (--stepsLeft <= 0 || caveAhead) {
         heading = (rng() < 0.5) ? leftOf(heading) : { dx: heading.dz, dz: -heading.dx };
         stepsLeft = 4 + Math.floor(rng() * 5);
+        // TORCHE AU CROISEMENT : un coude non éclairé est l'angle mort où le mob attend. Pas si une
+        // torche a été posée il y a moins de TORCH_CORNER_MIN pas (la lumière porte déjà jusque-là).
+        if (torchEvery > 0 && n - lastTorchS >= TORCH_CORNER_MIN) await torchHere();
       }
     }
     const oresAfterS = snapshotOres(bot);
@@ -663,11 +755,16 @@ async function branchMine(bot, opts = {}, token = null) {
     // le long de la nappe sans jamais creuser → water_rescue → churn). L'appelant se décale.
     if (stepWet) { if (++wetSteps >= 8) { stopReason = 'waterlocked'; break; } }
     else wetSteps = 0;
+    // Grotte percée sur le côté du couloir principal : bouchée (pas aux croisements, où la branche
+    // va de toute façon creuser ce côté-là).
+    if (sealCaves && !(i > 0 && i % branchSpacing === 0)) {
+      try { await sealCaveOpenings(bot, footTarget, dir); } catch (e) { /* best-effort */ }
+    }
     // Torches « joueur réel » (affinage Massii 07/06) : basées sur la LUMIÈRE + jitter — pose
     // SEULEMENT si l'endroit est sombre (< seuil spawn mob, lumière inconnue = sombre) et pas
-    // de cadence métronomique (prochaine pose à torchEvery + 0..torchEvery-1 paliers aléatoires).
+    // de cadence métronomique (prochaine pose à torchEvery + 0..2 paliers aléatoires, cf. torchGap).
     if (i >= nextTorchAt) {
-      nextTorchAt = i + torchEvery + Math.floor(rng() * torchEvery);
+      nextTorchAt = i + torchGap();
       let light = 0;
       try {
         const cell = bot.blockAt(footTarget);
@@ -732,4 +829,4 @@ function deltaOres(a, b) {
   return { diamond: Math.max(0, b.diamond - a.diamond), iron: Math.max(0, b.iron - a.iron), coal: Math.max(0, b.coal - a.coal) };
 }
 
-module.exports = { branchMine, cardinalFromYaw, leftOf, ORE_NAMES, WALL_BLOCKS, floodFillVein, oreFamily };
+module.exports = { branchMine, cardinalFromYaw, leftOf, ORE_NAMES, WALL_BLOCKS, floodFillVein, oreFamily, sealCaveOpenings, placeTorchAt, CAVE_MIN_AIR, TORCH_JITTER, TORCH_CORNER_MIN };
