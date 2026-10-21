@@ -20,7 +20,7 @@ describe('isNightTime (pur)', () => {
 // 40 % des abris échouaient : void_below 19, dig_failed 17, danger_below 9. Or un abri raté =
 // une nuit ENTIÈRE à découvert, tous mobs confondus (squelette 52 morts, zombie 23, creeper 17).
 // Creuser n'est pas la seule mise à l'abri : un vrai joueur se boxe avec ce qu'il a.
-const { shelterUntilDawn } = require('../skills/shelter');
+const { shelterUntilDawn, exitPendingShelter } = require('../skills/shelter');
 const { Vec3 } = require('vec3');
 
 function nightBot() {
@@ -377,5 +377,71 @@ describe('abri : `endWhenDisplaced` en PRÉDICAT (relu au moment du délogement)
     });
     assert.deepEqual(r, { ok: false, reason: 'displaced' });
     assert.equal(sleeps.length, 2);
+  });
+});
+
+// ─── ABRI SCELLÉ ABANDONNÉ PAR UNE PRÉEMPTION (live 21/10, NethBot1) ───────────────────────────
+// `shelterUntilDawn` ne sort jamais du trou sur `cancelled` ({ok:false,reason:'cancelled'}, test plus
+// haut : « le nouveau maître décide »). Mais sans pont, le nouveau maître (migrateZone) ne savait pas
+// qu'il restait scellé : il tentait de marcher, `moved:0` à chaque jambe, jusqu'à ce que le watchdog
+// jam_loop abandonne (plusieurs minutes). `exitPendingShelter` est ce pont.
+describe('abri : marqueur « scellé, pas encore sorti » + exitPendingShelter (le pont du nouveau maître)', () => {
+  it('annulé pendant l\'attente des monstres à l\'aube → scellé ENCORE marqué, exitPendingShelter creuse et sort', async () => {
+    const token = { cancelled: false };
+    const bot = movableBot();
+    bot.time.timeOfDay = 1000;   // jour : la boucle de nuit finit tout de suite, l'attente des monstres s'arme
+    const digs = [];
+    bot.dig = async (b) => { digs.push(b); };
+    const r = await shelterUntilDawn(bot, token, {
+      emit: () => {},
+      sleep: async () => { token.cancelled = true; },
+      mineDown: descend,
+      hostilesNear: () => 2,
+      worn: () => 0,
+    });
+    assert.deepEqual(r, { ok: false, reason: 'cancelled' });
+    assert.ok(bot._mcaShelterPending, 'le marqueur doit survivre à un retour cancelled — c\'est tout son but');
+    assert.equal(bot._mcaShelterPending.mode, 'pit');
+    assert.equal(digs.length, 0, 'shelterUntilDawn ne creuse PAS pour sortir sur cancelled (comportement inchangé)');
+
+    const out = [];
+    const r2 = await exitPendingShelter(bot, { cancelled: false }, { emit: (e) => out.push(e), sleep: async () => {} });
+    assert.deepEqual(r2, { ok: true, pending: true });
+    assert.equal(bot._mcaShelterPending, null, 'le marqueur est effacé une fois la sortie faite');
+    assert.ok(digs.length > 0, 'exitPendingShelter doit réellement creuser pour sortir le bot du trou');
+    assert.ok(out.some((e) => e.action === 'out'), 'la sortie est tracée comme une sortie normale');
+  });
+
+  it('rien en attente (jamais scellé, ou déjà ressorti) → no-op, ne creuse rien', async () => {
+    const bot = movableBot();
+    const digs = [];
+    bot.dig = async (b) => { digs.push(b); };
+    const r = await exitPendingShelter(bot, null, { emit: () => {} });
+    assert.deepEqual(r, { ok: true, pending: false });
+    assert.equal(digs.length, 0);
+  });
+
+  it('un abri qui sort PROPREMENT (aube dégagée) efface le marqueur : exitPendingShelter devient un no-op', async () => {
+    const bot = movableBot();
+    bot.time.timeOfDay = 1000;   // jour : sort tout de suite, aucune attente
+    const r = await shelterUntilDawn(bot, null, { emit: () => {}, sleep: async () => {}, mineDown: descend });
+    assert.equal(r.ok, true);
+    assert.equal(bot._mcaShelterPending, null);
+    const r2 = await exitPendingShelter(bot, null, { emit: () => {} });
+    assert.deepEqual(r2, { ok: true, pending: false });
+  });
+
+  it('délogé (displaced) pendant l\'attente → marqueur effacé aussi : il a déjà quitté le trou de lui-même', async () => {
+    const events = [];
+    const sleeps = [];
+    const bot = movableBot();
+    await shelterUntilDawn(bot, null, {
+      emit: (e) => events.push(e),
+      sleep: async (ms) => { sleeps.push(ms); if (sleeps.length === 2) bot.entity.position.x += 3; },
+      mineDown: descend,
+      endWhenDisplaced: true,
+    });
+    assert.ok(events.some((e) => e.action === 'displaced'));
+    assert.equal(bot._mcaShelterPending, null);
   });
 });

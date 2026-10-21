@@ -625,6 +625,13 @@ async function shelterUntilDawn(bot, token = null, deps = {}) {
   const cellRes = await _buildCell(bot, token, deps, sleep, emit);
   if (!cellRes.ok) return { ok: false, reason: cellRes.reason };
   const dugIn = cellRes.mode === 'pit';
+  // MARQUE « scellé, pas encore sorti » (live 21/10, NethBot1 : une migration préemptée pendant
+  // l'attente de l'aube — `w.cancelled` ci-dessous — ne sort PAS du trou, « le nouveau maître décide »
+  // (test épinglé). Mais le nouveau maître (migrateZone) ne le savait JAMAIS : il tentait de marcher
+  // alors que le bot restait muré, `moved:0` à chaque jambe, jusqu'à ce que le watchdog jam_loop
+  // abandonne — plusieurs minutes perdues. `bot._mcaShelterPending` est le pont : posé ici, lu par
+  // `exitPendingShelter` (export), effacé dès que l'abri sort PROPREMENT (lui-même ou le nouveau maître).
+  _markShelterPending(bot, cellRes, dugIn);
 
   // ANCRE de l'abri, relevée une fois le bot terré et couvert. COPIE des coordonnées : `entity.position`
   // est un Vec3 MUTÉ EN PLACE par le serveur (piège #73d) — une référence gardée « bougerait » avec lui.
@@ -652,7 +659,7 @@ async function shelterUntilDawn(bot, token = null, deps = {}) {
   while (isNight(bot) && Date.now() - t0 < maxWaitMs) {
     if (token && token.cancelled) return { ok: false, reason: 'cancelled' };
     await sleep(5000);
-    if (left()) return { ok: false, reason: 'displaced' };
+    if (left()) { _clearShelterPending(bot); return { ok: false, reason: 'displaced' }; }
   }
   emit({ type: 'shelter', action: 'dawn' });
 
@@ -661,10 +668,19 @@ async function shelterUntilDawn(bot, token = null, deps = {}) {
   if (typeof deps.hostilesNear === 'function' || typeof deps.exitThreats === 'function') {
     const w = await _waitOutDawnMobs(bot, token, deps, emit, sleep, left);
     if (w.cancelled) return { ok: false, reason: 'cancelled' };
-    if (w.displaced) return { ok: false, reason: 'displaced' };
+    if (w.displaced) { _clearShelterPending(bot); return { ok: false, reason: 'displaced' }; }
   }
 
   // 4) ressortir : casser le toit éventuel puis remonter en pilier (#7)
+  const res = await _exitCell(bot, token, deps, cellRes, dugIn);
+  _clearShelterPending(bot);
+  return res;
+}
+
+/** Étape 4 (extraite, réutilisée par `exitPendingShelter`) : casser le toit éventuel, percer une paroi
+ *  (muré) ou remonter en pilier (creusé). Best-effort, bornée comme avant — comportement inchangé. */
+async function _exitCell(bot, token, deps, cellRes, dugIn) {
+  const emit = deps.emit || (() => {});
   try {
     const roof = bot.blockAt(bot.entity.position.floored().offset(0, 2, 0));
     if (roof && roof.boundingBox === 'block') await _digWithTool(bot, roof, token);
@@ -691,6 +707,32 @@ async function shelterUntilDawn(bot, token = null, deps = {}) {
   emit({ type: 'shelter', action: 'out', ok: up.ok });
   _afterExit(deps);
   return { ok: true };
+}
+
+/** Pose/efface le marqueur « abri scellé, sortie différée » (bot._mcaShelterPending). Pur best-effort. */
+function _markShelterPending(bot, cellRes, dugIn) {
+  if (!bot || !cellRes || !cellRes.ok) return;
+  bot._mcaShelterPending = { mode: cellRes.mode, depth: cellRes.depth || 1, dugIn: !!dugIn };
+}
+function _clearShelterPending(bot) {
+  if (bot) bot._mcaShelterPending = null;
+}
+
+/**
+ * Le « nouveau maître » (migration, watchdog…) qui prend la main sur un bot APPELLE CECI avant de le
+ * faire marcher : si `shelterUntilDawn` l'a laissé scellé (cancelled/timeout sans sortie — « le nouveau
+ * maître décide », cf. test), on l'en fait sortir ICI, maintenant, au lieu de laisser une jambe de
+ * migration échouer `moved:0` en boucle jusqu'à ce que le watchdog jam_loop abandonne (minutes perdues,
+ * live NethBot1 21/10). No-op si rien n'est en attente (bot jamais scellé, ou déjà ressorti proprement).
+ * `token` est volontairement celui du NOUVEAU maître (peut être non annulé même si l'ancien l'était) :
+ * creuser pour sortir n'est jamais refusé à cause d'une annulation qui nous appartient déjà.
+ */
+async function exitPendingShelter(bot, token = null, deps = {}) {
+  const pending = bot && bot._mcaShelterPending;
+  if (!pending) return { ok: true, pending: false };
+  _clearShelterPending(bot);
+  await _exitCell(bot, token, deps, { ok: true, mode: pending.mode, depth: pending.depth }, pending.dugIn);
+  return { ok: true, pending: true };
 }
 
 /** Sorti : `deps.onExit` (s'éloigner des hostiles en vue, index.js). Best-effort, jamais de throw. */
@@ -730,7 +772,7 @@ function shouldShelter(sig = {}) {
 }
 
 module.exports = {
-  isNightTime, isNight, shelterUntilDawn, roofPlan, shouldShelter,
+  isNightTime, isNight, shelterUntilDawn, exitPendingShelter, roofPlan, shouldShelter,
   dawnExitDecision, DAWN_WAIT_MAX_MS, DAWN_WAIT_CHECK_MS, DAWN_WAIT_MIN_WORN,
   dawnExitPlan, DAWN_SAFE_EXIT_MAX_MS, DAWN_SAFE_CHECK_MS, DAY_SAFE_END,
   shelterDisplaced, SHELTER_DISPLACED_BLOCKS,

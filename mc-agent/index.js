@@ -156,7 +156,7 @@ const {
 } = require('./lumberjack');
 const { tierRank } = require('./tools');
 const { createTeleportWatcher, wireTeleportDetection } = require('./teleport');
-const { isNight, shelterUntilDawn, shouldShelter, DAWN_WAIT_MAX_MS, DAWN_SAFE_EXIT_MAX_MS } = require('./skills/shelter');
+const { isNight, shelterUntilDawn, exitPendingShelter, shouldShelter, DAWN_WAIT_MAX_MS, DAWN_SAFE_EXIT_MAX_MS } = require('./skills/shelter');
 const { plannerWatchdogVerdict, deriveToken } = require('./plannerWatchdog');
 // LIT (20/10) : réapparaître dans sa base, pas au spawn du monde campé — cf. bed.js.
 const { bedItemIn, bedRecipeName, woolMissing, sheepKnown, bedMemoWith, bedMemoCleared, bedRetryMemo, bedOf, bedRetryActive,
@@ -3845,6 +3845,12 @@ async function migrateZone(reason) {
     const waitTimeout = _skillInFlight > 0 || _autoRunners > 0;   // un skill zombie traîne encore
     // La migration possède le bot : le global la suit (watchdog PV, secureSpot de safeWarpHome…).
     taskToken = tok;
+    // SCELLÉ PAR UN ABRI ENCORE EN ATTENTE (live 21/10, NethBot1) : shelterUntilDawn a pu laisser le
+    // bot muré après une annulation précédente (« le nouveau maître décide », cf. skills/shelter.js) —
+    // sans ça, les jambes ci-dessous rendent `moved:0` en boucle (canDig:false sur les jambes de
+    // migration) jusqu'à ce que le watchdog jam_loop abandonne, plusieurs minutes plus tard. On l'en
+    // fait sortir ICI, avant le premier pas. No-op si rien n'est en attente.
+    try { await exitPendingShelter(bot, tok, { emit, sleep }); } catch (e) { /* best-effort */ }
     const cells = loadWorldCells();
     // « Si une zone a été vidée de ses minerais, il s'éloigne de BEAUCOUP » (Massii) : pour un
     // épuisement, la cellule d'à côté est le même sous-sol déjà fouillé → plancher bien plus haut.
