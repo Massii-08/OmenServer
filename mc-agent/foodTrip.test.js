@@ -900,7 +900,41 @@ test('index.js : le confine ET le squad comptent l expédition comme « occupé 
   const lines = SRC.split('\n').filter((l) => /const busy = !!bot\.targetDigBlock/.test(l));
   assert.strictEqual(lines.length, 2, 'les deux gardes busy historiques (confine + squad)');
   // (le squad ajoute `|| _craftDepth > 0` depuis le 20/10 : un /tpa pendant un craft abandonnait la table)
-  for (const l of lines) assert.match(l, /_migrating \|\| _escaping \|\| _foodTripBusy( \|\| _craftDepth > 0)?;/, l);
+  for (const l of lines) assert.match(l, /_migrating \|\| _escaping \|\| _foodTripBusy \|\| _exploreBusy( \|\| _craftDepth > 0)?;/, l);
+});
+
+// ⚠️ Mesure live (run « zéro → fer » 21/10, 20:44-23:44) : NethBot1 (bûcheron élu) n'a obtenu AUCUNE
+// pièce d'armure en 180 min, alors que NethBot2 a fini les 4 en 110 min avec autant de morts (19
+// chacun). Cause : `bot._mcaExploreBounds` (posé au confine, cf. #54/#72) autorise explore() à viser
+// jusqu'à 2× le rayon confine (280 blocs ici), mais l'enforcement confine (ligne busy ci-dessus) yanke
+// le bot dès 1,25× le rayon (175 blocs) — SANS tenir compte d'une exploration de surface en vol. Un
+// `lj_stock` (gatherLog) qui doit voyager au-delà de 175 blocs pour trouver du bois se faisait donc
+// systématiquement couper en route par `/home`, reset la marche, et recommençait — cf. `confine_enforce
+// dist:212` suivi de `teleport_detected` dans session-109. Même risque pour tout `gather(explore:true)`
+// (minerai/autre ressource), pas seulement le bois. `_exploreBusy` couvre ce trou, même famille que
+// `_foodTripBusy` (l'expédition vers le gibier a le même problème et le même remède).
+test('index.js : _exploreBusy est déclarée AU NIVEAU MODULE (colonne 0), avant tout consommateur', () => {
+  const decl = SRC.search(/^let _exploreBusy\b/m);
+  assert.ok(decl >= 0, '`let _exploreBusy` doit être à la colonne 0, jamais dans onSpawn (piège #56)');
+  const before = SRC.slice(0, decl).split('\n').filter((l) => /_exploreBusy/.test(l) && !/^\s*\/\//.test(l));
+  assert.deepStrictEqual(before, [], 'aucune lecture de _exploreBusy avant sa déclaration');
+  assert.strictEqual((SRC.match(/^let _exploreBusy\b/gm) || []).length, 1, 'déclarée une seule fois');
+});
+
+test('index.js : gatherWoodSafely (lj_stock/logs) tient _exploreBusy pendant tout son trajet', () => {
+  const a = SRC.indexOf('async function gatherWoodSafely(gargs) {');
+  assert.ok(a >= 0, 'gatherWoodSafely introuvable');
+  const b = SRC.indexOf('\nasync function ', a + 10);
+  const body = SRC.slice(a, b > a ? b : a + 2000);
+  assert.match(body, /_exploreBusy = true;/, 'le trajet pose le verrou avant de chercher du bois');
+  assert.match(body, /finally \{ _exploreBusy = false; \}/, 'le verrou est rendu même si le trajet échoue/throw');
+  // le `true` doit précéder la boucle de recherche (sinon un retour anticipé le laisse armé pour rien,
+  // ou pire, la boucle tourne un tour sans lui)
+  assert.ok(body.indexOf('_exploreBusy = true;') < body.indexOf('for (let guard'), 'posé AVANT la boucle de trajet');
+});
+
+test('index.js : le skill `gather` générique (minerai/autre, chaîne autonome) tient aussi _exploreBusy', () => {
+  assert.match(SRC, /if \(goal\.args\.name === 'stone'\) return gatherStone\(goal\);\n\s+_exploreBusy = true;\n\s+try \{ return await gather\(bot, \{ \.\.\.goal\.args, explore: true \}, taskToken\); \}\n\s+finally \{ _exploreBusy = false; \}/);
 });
 
 test('index.js : les garde-fous des appelants laissent la place à l expédition (+ FOOD_TRIP_MS) — sinon ils la couperaient', () => {

@@ -349,6 +349,14 @@ let _escaping = false;
 // le squad et la décision elle-même (une seule expédition à la fois). Sans elle, l'ancre ou le chef
 // ramèneraient le bot en /home ou /tpa au milieu de la marche — et l'expédition n'aboutirait jamais.
 let _foodTripBusy = false;
+// EXPLORATION DE SURFACE EN COURS (gather{explore:true} : lj_stock/logs et la chaîne autonome
+// minerai/bois). Garde de niveau MODULE (piège #56), même famille que `_foodTripBusy` : `explore()`
+// (skills/explore.js) est AUTORISÉ par `bot._mcaExploreBounds` à voyager jusqu'à 2× le rayon confine
+// (280 blocs par défaut), mais l'enforcement confine yanke dès 1,25× (175) — sans elle, tout trajet
+// au-delà de 175 blocs se faisait couper par un `/home` en pleine marche et recommençait pour rien
+// (mesuré 21/10 : NethBot1 bûcheron, `confine_enforce dist:212` en pleine recherche de bois, 0 pièce
+// d'armure en 180 min pendant que NethBot2 en avait 4 sans ce rôle).
+let _exploreBusy = false;
 // Génération de fuite : le bot peut MOURIR pendant sa course (c'est même le cas nominal quand le
 // camp est tenace) → un nouveau onSpawn relance une évasion pendant que l'ancienne attend encore
 // son `goto`. Sans ce jeton, la vieille invocation reprendrait la main après coup et poserait un
@@ -613,7 +621,7 @@ setInterval(() => {
     // 160 blocs) ; l'enforcement la ramènerait en /home au milieu de la marche ou de la chasse.
     // `_nightHold` idem (discipline de nuit, 19/10 soir) : un /home de rappel arracherait le bot nu à
     // l'abri qu'il est en train de reprendre — la nuit, c'est la discipline qui possède le bot.
-    const busy = !!bot.targetDigBlock || _stillBusy || _imminentBusy || _smeltOppBusy || _armorBusy || _nightHold || _migrating || _escaping || _foodTripBusy;
+    const busy = !!bot.targetDigBlock || _stillBusy || _imminentBusy || _smeltOppBusy || _armorBusy || _nightHold || _migrating || _escaping || _foodTripBusy || _exploreBusy;
     // `_confineGraceUntil` (fix run10) : un trek lointain arrivé noyé/sous terre n'a pas posé sa base ;
     // le rappeler à l'ancre le renverrait dans la zone morte qu'il vient de quitter (18 cas mesurés).
     const graceHold = Date.now() < _confineGraceUntil;
@@ -777,7 +785,7 @@ async function trySquad() {
   // ramènerait au chef au milieu de la marche (ou de la chasse sur place) sans qu'il ait mangé.
   // `_craftDepth` (fix 20/10) : un /tpa tiré pendant un craft à la table laissait la table à 100 blocs
   // (`squad_join` → `table_abandoned` → `t1_sword craft_failed`, NethBot2 session 278).
-  const busy = !!bot.targetDigBlock || _stillBusy || _imminentBusy || _smeltOppBusy || _armorBusy || _migrating || _escaping || _foodTripBusy || _craftDepth > 0;
+  const busy = !!bot.targetDigBlock || _stillBusy || _imminentBusy || _smeltOppBusy || _armorBusy || _migrating || _escaping || _foodTripBusy || _exploreBusy || _craftDepth > 0;
   const pick = squadTarget({
     // `y`/`ironZone` de SOI : sans eux un mineur productif se croirait « rien du tout » et
     // remonterait rejoindre un flâneur resté en surface — l'inverse exact du but.
@@ -2873,7 +2881,9 @@ async function runGoalSkill(goal) {
     // PIERRE : inutile de roamer (timeouts ×3 vécus Surv6) — la couche de pierre est à 3-5 blocs
     // sous l'herbe PARTOUT → pas de pierre visible ≤32 ? on creuse 4 blocs et on mine sur place.
     if (goal.args.name === 'stone') return gatherStone(goal);
-    return gather(bot, { ...goal.args, explore: true }, taskToken);
+    _exploreBusy = true;
+    try { return await gather(bot, { ...goal.args, explore: true }, taskToken); }
+    finally { _exploreBusy = false; }
   }
   if (goal.skill === 'craftPlanks') {
     const log = bot.inventory.items().find((i) => i.name.endsWith('_log'));
@@ -7437,19 +7447,22 @@ async function gatherWoodSafely(gargs) {
     return true;
   };
   let r = null;
-  for (let guard = 0; guard < 12; guard++) {
-    if (taskToken.cancelled) return { ok: false, reason: 'cancelled' };
-    const d = threat();
-    if (d && night()) return r || { ok: false, got: 0, reason: 'danger' };
-    if (d) { await react(d); continue; }   // caché OU ignorée : re-lire (la suivante est peut-être réelle)
-    r = await gather(bot, Object.assign({}, gargs, shape ? { exploreShape: shape } : {},
-      { danger: () => !!threat() }), taskToken);
-    if (r && r.ok && r.got > 0) _woodHide = null;   // séquence réussie : compteur remis à zéro
-    if (!(r && r.reason === 'danger')) return r;
-    if (r.ok) return r;                    // lot partiel déjà en poche : le planner re-dérive
-    if (night()) return r;
-  }
-  return r || { ok: false, got: 0, reason: 'danger' };
+  _exploreBusy = true;
+  try {
+    for (let guard = 0; guard < 12; guard++) {
+      if (taskToken.cancelled) return { ok: false, reason: 'cancelled' };
+      const d = threat();
+      if (d && night()) return r || { ok: false, got: 0, reason: 'danger' };
+      if (d) { await react(d); continue; }   // caché OU ignorée : re-lire (la suivante est peut-être réelle)
+      r = await gather(bot, Object.assign({}, gargs, shape ? { exploreShape: shape } : {},
+        { danger: () => !!threat() }), taskToken);
+      if (r && r.ok && r.got > 0) _woodHide = null;   // séquence réussie : compteur remis à zéro
+      if (!(r && r.reason === 'danger')) return r;
+      if (r.ok) return r;                    // lot partiel déjà en poche : le planner re-dérive
+      if (night()) return r;
+    }
+    return r || { ok: false, got: 0, reason: 'danger' };
+  } finally { _exploreBusy = false; }
 }
 
 // ─── KIT DE SECOURS EN COFFRE (run 10, 20/10) ─────────────────────────────────────────────────────

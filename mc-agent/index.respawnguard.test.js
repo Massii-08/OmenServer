@@ -264,6 +264,7 @@ function woodSandbox({ worn = 0, dangerSeq = [], gatherSeq = [], night = false, 
     woodExploreShape: G.woodExploreShape,
     woodHidePlan: TG.woodHidePlan, woodHideStateAt: TG.woodHideStateAt,
     _woodHide: state,
+    _exploreBusy: false,
     _wornArmor: () => new Set(['a', 'b', 'c', 'd'].slice(0, worn)),
     // La menace « réelle » : la séquence, MOINS les entrées ignorées (même règle que realThreat).
     woodThreatNow: (ignore) => {
