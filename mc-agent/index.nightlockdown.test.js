@@ -199,7 +199,7 @@ test('SQUAD / REGROUPEMENT : armé (2 pièces) de nuit, ou nu de JOUR → le /tp
 
 // 22/10 (chrono world_oct22) : le regroupement PÉRIODIQUE (timer d'équipe) arrachait les bots en plein
 // trajet de grotte (→ faux `unreachable` → disjoncteur iron_cave 2 h) et en pleine migration.
-test('REGROUPEMENT périodique : trajet de grotte / migration / but de minage → aucun /tpa ; après mort → inchangé', async () => {
+test('REGROUPEMENT périodique : trajet de grotte / migration / but de minage → aucun /tpa ; après mort : seul le trajet de grotte bloque', async () => {
   const cave = squadSandbox({ worn: 0, timeOfDay: DAY, _caveTripBusy: true });
   assert.deepStrictEqual(plain(await cave.tryRegroup({ periodic: true })), { ok: false, reason: 'busy' });
   const mig = squadSandbox({ worn: 0, timeOfDay: DAY, _migrating: true });
@@ -208,10 +208,14 @@ test('REGROUPEMENT périodique : trajet de grotte / migration / but de minage �
   run(mine, "_curGoal = { name: 'iron_cave', skill: 'caveIron', at: 0 }");
   assert.deepStrictEqual(plain(await mine.tryRegroup({ periodic: true })), { ok: false, reason: 'busy' });
   assert.deepStrictEqual(cave.chat.concat(mig.chat, mine.chat), []);
-  // Le regroupement APRÈS MORT (handler spawn, sans opts) garde son comportement.
-  const dead = squadSandbox({ worn: 0, timeOfDay: DAY, _caveTripBusy: true });
+  // Après mort (handler spawn, sans opts) : le /tpa part toujours… sauf si un trajet de grotte a déjà
+  // repris (NethBot1 22/10 : téléporté à 593 blocs en plein escalier).
+  const dead = squadSandbox({ worn: 0, timeOfDay: DAY, _migrating: true });
   await dead.tryRegroup();
   assert.deepStrictEqual(dead.chat, ['/tpa NethBot1']);
+  const deadCave = squadSandbox({ worn: 0, timeOfDay: DAY, _caveTripBusy: true });
+  assert.deepStrictEqual(plain(await deadCave.tryRegroup()), { ok: false, reason: 'busy' });
+  assert.deepStrictEqual(deadCave.chat, []);
   // Libre, de jour, but hors minage → le /tpa périodique part comme avant.
   const free = squadSandbox({ worn: 0, timeOfDay: DAY });
   await free.tryRegroup({ periodic: true });

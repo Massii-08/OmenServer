@@ -783,6 +783,10 @@ async function tryRegroup(opts = {}) {
   // migration (`regroup_tpa` 140/254/474 → migration annulée après 25 jambes). Un `unreachable` causé
   // par un TP compte dans le disjoncteur des grottes, qui finissait par couper `iron_cave` 2 h.
   // Le regroupement APRÈS MORT (handler spawn) garde son comportement : c'est lui qui évite la marche.
+  // Trajet de grotte en cours (y compris juste après une mort, quand le planner a relancé la grotte avant
+  // le regroupement d'après-mort) : jamais de /tpa — mesuré 22/10, NethBot1 téléporté à 593 blocs en
+  // plein escalier (`cave_stair_done y:15 dropped:45` : ce n'était pas l'escalier qui descendait trop).
+  if (_caveTripBusy) return { ok: false, reason: 'busy' };
   if (opts && opts.periodic) {
     const longTask = _stillBusy || _imminentBusy || _smeltOppBusy || _armorBusy || _migrating || !!bot.targetDigBlock
       || _escaping || _foodTripBusy || _exploreBusy || _caveTripBusy || _craftDepth > 0;
@@ -5850,13 +5854,17 @@ async function _caveGotoOre(t, tok, errs = null) {
   if (near()) return true;
   const air = openNeighborOf(t);
   const goal = air ? new pfGoals.GoalNear(air.x, air.y, air.z, 1) : new pfGoals.GoalNear(t.x, t.y, t.z, 2);
-  const stop = () => { try { stopMotion(); } catch (e) {} };
+  // ⚠️ withTimeout AVALE les rejets (il résout {ok:false}) : sans ce .catch, l'erreur du pathfinder
+  // (GoalChanged / PathStopped / NoPath) n'arrivait jamais au verdict (22/10). Notre propre échéance est
+  // marquée `OwnTimeout` : le PathStopped qu'elle provoque n'est pas une coupure venue d'ailleurs.
+  const go = (g) => withTimeout(Promise.resolve(bot.pathfinder.goto(g)).catch((e) => { note(e); throw e; }), 60000,
+    () => { note({ name: 'OwnTimeout' }); try { stopMotion(); } catch (e) {} });
   await withTempMovements(bot, Movements, { canDig: false }, async () => {
-    try { await withTimeout(bot.pathfinder.goto(goal), 60000, stop); } catch (e) { note(e); /* NoPath → phase 2 */ }
+    try { await go(goal); } catch (e) { /* NoPath → phase 2 */ }
   });
   if (near() || tok.cancelled) return near();
   await withTempMovements(bot, Movements, { canDig: true }, async () => {
-    try { await withTimeout(bot.pathfinder.goto(goal), 60000, stop); } catch (e) { note(e); /* inatteignable */ }
+    try { await go(goal); } catch (e) { /* inatteignable */ }
   });
   return near();
 }
@@ -5864,46 +5872,59 @@ async function _caveGotoOre(t, tok, errs = null) {
 /**
  * ESCALIER DIRIGÉ vers un minerai de grotte plus bas que le bot (22/10). Plan PUR (caveIron.stairPlan) :
  * marcher jusqu'au point de départ (sans creuser, borné), se tourner vers la grappe, descendre l'escalier
- * de descendDiagonal (1 bloc en avant par bloc descendu : eau/lave/vide devant → il s'arrête net) jusqu'à
- * la couche du minerai ou à portée. Eau/lave/vide/surplace → on change de cap (axe vers la cible d'abord,
- * puis les deux autres) et on reprend d'où l'on est. true si on a descendu au moins d'un bloc.
+ * de descendDiagonal (1 bloc en avant par bloc descendu : eau/lave/vide devant → il s'arrête net).
+ * ARRÊT relu à CHAQUE marche (caveIron.stairArrived) : pieds à la couche de la grappe (± 1) ou à ≤ 4 blocs
+ * d'elle — et sur toute téléportation (mort, /home, /tpa : l'escalier ne continue pas ailleurs).
+ * Eau/lave/vide/surplace → autre cap, on reprend d'où l'on est. Trop bas (dépassement) → on remonte vers
+ * la grappe en creusant (GoalNear canDig:true).
+ * @returns {{tried:boolean, reached?:boolean, overshot?:boolean, teleported?:boolean}}
  */
 async function _caveStairTo(t, tok) {
   const p0 = bot.entity && bot.entity.position;
   const plan = p0 ? caveIronPick.stairPlan(p0, t) : null;
-  if (!plan) return false;
+  if (!plan) return { tried: false };
+  const tp0 = _tpCount;
+  const teleported = () => _tpCount !== tp0;
+  const pos = () => bot.entity && bot.entity.position;
+  const arrived = () => caveIronPick.stairArrived(pos(), t);
   const stop = () => { try { stopMotion(); } catch (e) {} };
-  const near = () => {
-    const p = bot.entity && bot.entity.position;
-    return !!(p && Math.hypot(p.x - (t.x + 0.5), p.y - t.y, p.z - (t.z + 0.5)) <= 4.5);
-  };
   emit({ type: 'cave_stair', x: t.x, y: t.y, z: t.z, drop: plan.drop, dx: plan.dir.dx, dz: plan.dir.dz });
   if (Math.hypot(p0.x - plan.start.x, p0.z - plan.start.z) > 3) {
     await withTempMovements(bot, Movements, { canDig: false }, async () => {
       try { await withTimeout(bot.pathfinder.goto(new pfGoals.GoalNearXZ(plan.start.x, plan.start.z, 2)), 90000, stop); } catch (e) { /* on descend d'où l'on est */ }
     });
-    if (tok.cancelled) return false;
   }
-  const yStart = (bot.entity && bot.entity.position) ? bot.entity.position.y : p0.y;
+  const yStart = pos() ? pos().y : p0.y;
   const perp = { dx: plan.dir.dz, dz: plan.dir.dx };
   const dirs = [plan.dir, perp, { dx: -perp.dx, dz: -perp.dz }];
   let last = null;
-  for (let i = 0; i < dirs.length && !tok.cancelled && !near(); i++) {
-    const p = bot.entity && bot.entity.position;
-    if (!p || p.y <= t.y + 1) break;
+  for (let i = 0; i < dirs.length && !tok.cancelled && !teleported() && !arrived(); i++) {
+    const p = pos();
+    if (!p || caveIronPick.stairOvershot(p, t)) break;
     try { await bot.look(caveIronPick.yawOf(dirs[i]), 0, true); } catch (e) { /* le cap reste celui du regard */ }
     // Jeton DÉRIVÉ : withTimeout n'annule rien — sans lui l'escalier continuerait de creuser après l'échéance.
     const sub = { cut: false };
     const subTok = { get cancelled() { return !!(tok.cancelled || sub.cut); } };
     last = await withTimeout(descendDiagonal(bot, {
-      targetY: t.y, maxDepth: Math.ceil(p.y - t.y) + 12, onSurvivalTick: descentSurvivalTick, stopWhen: near,
+      targetY: t.y - 1, maxDepth: Math.ceil(p.y - t.y) + 12, onSurvivalTick: descentSurvivalTick,
+      stopWhen: () => teleported() || arrived(),
     }, subTok), 240000, () => { sub.cut = true; stop(); });
     if (last && last.ok) break;
     if (!(last && /water|lava|drop|no_progress|air_at|dig_failed|timeout/.test(String(last.reason || 'timeout')))) break;
   }
-  const yEnd = (bot.entity && bot.entity.position) ? bot.entity.position.y : yStart;
-  emit({ type: 'cave_stair_done', reached: near(), y: Math.round(yEnd), dropped: Math.round(yStart - yEnd), reason: (last && last.reason) || null });
-  return yEnd < yStart - 1;
+  const tpd = teleported();
+  let overshot = !tpd && !tok.cancelled && caveIronPick.stairOvershot(pos(), t);
+  if (overshot) {
+    // Descendu sous la grappe : on REMONTE vers elle en creusant (pas d'échec sec en 1 s).
+    await withTempMovements(bot, Movements, { canDig: true }, async () => {
+      try { await withTimeout(bot.pathfinder.goto(new pfGoals.GoalNear(t.x, t.y, t.z, 2)), 60000, stop); } catch (e) { /* l'approche fine prend le relais */ }
+    });
+  }
+  const yEnd = pos() ? pos().y : yStart;
+  const reached = !tpd && !!arrived();
+  emit({ type: 'cave_stair_done', reached, overshot, teleported: tpd, y: Math.round(yEnd),
+    dropped: Math.round(yStart - yEnd), reason: (last && last.reason) || null });
+  return { tried: true, reached, overshot, teleported: tpd };
 }
 
 async function runCaveIron() {
@@ -5944,13 +5965,15 @@ async function runCaveIron() {
         }
         // Grappe plus BASSE de > 4 blocs : on y descend en ESCALIER dirigé (un pathfinder générique
         // rend NoPath dans la roche pleine), puis l'approche fine ci-dessous finit le trajet.
-        if (!tok.cancelled) { try { await _caveStairTo(e, tok); } catch (err) { errs.push(err); } }
+        let stair = { tried: false };
+        if (!tok.cancelled) { try { stair = await _caveStairTo(e, tok); } catch (err) { errs.push(err); } }
         if (tok.cancelled) return false;
+        if (stair && stair.teleported) return 'interrupted';   // mort / TP en plein escalier : pas de verdict
         const ok = await _caveGotoOre(e, tok, errs);
         if (ok) return true;
         const p1 = bot.entity && bot.entity.position;
         const d1 = p1 ? Math.hypot(p1.x - e.x, p1.y - e.y, p1.z - e.z) : null;
-        return caveTravelVerdict({ teleported: _tpCount > tp0, errs, d0, d1 });
+        return caveTravelVerdict({ teleported: _tpCount > tp0, errs, d0, d1, stairMissed: !!(stair && stair.tried && !stair.reached) });
       },
       oreState: (o) => {
         const b = bot.blockAt(vec3Lib(o.x, o.y, o.z));
@@ -6003,14 +6026,22 @@ async function runCaveIron() {
  * teleported : un TP a eu lieu pendant le trajet · errs : erreurs du pathfinder (GoalChanged = un autre
  * a posé son but) · d0/d1 : distance à la cible au départ / à l'arrêt (fuite, /tpa, poussée).
  */
-function caveTravelVerdict({ teleported, errs, d0, d1 } = {}) {
+function caveTravelVerdict({ teleported, errs, d0, d1, stairMissed } = {}) {
   if (teleported) return 'interrupted';
-  for (const e of Array.isArray(errs) ? errs : []) {
+  const list = Array.isArray(errs) ? errs : [];
+  const own = list.some((e) => e && e.name === 'OwnTimeout');
+  for (const e of list) {
     const name = String((e && e.name) || '');
     const msg = String((e && e.message) || e || '');
     if (name === 'GoalChanged' || /goal was changed/i.test(msg)) return 'interrupted';
+    // PathStopped SANS notre échéance = quelqu'un d'autre a coupé le pathfinder (réflexe de combat,
+    // couvert, fuite) — mesuré 22/10 : 2 grappes « unreachable » en 1-2 s pendant un take_cover.
+    if (!own && (name === 'PathStopped' || /path was stopped/i.test(msg))) return 'interrupted';
   }
   if (Number.isFinite(d0) && Number.isFinite(d1) && d1 >= d0 + CAVE_PULLED_AWAY) return 'interrupted';
+  // L'escalier n'a pas atteint la couche : c'est l'ESCALIER qui a raté, pas la grotte qui est hors
+  // d'atteinte → raison propre, mise de côté 30 min, hors disjoncteur `unreachable`.
+  if (stairMissed) return 'stair_missed';
   return false;
 }
 

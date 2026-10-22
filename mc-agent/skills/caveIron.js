@@ -50,9 +50,9 @@ async function caveIron(o = {}, token = null) {
   emit({ type: 'cave_target', x: cave.x, y: cave.y, z: cave.z, ores: cave.count || cave.ores.length, dist: cave.dist });
   const reached = await safe(() => o.travel(cave), false);
   if (cancelled()) return fail('cancelled');
-  // `travel` peut rendre 'interrupted' (TP, but pathfinder volé, bot emmené ailleurs) : pas un verdict
-  // sur la grotte — l'appelant ne le compte pas dans le disjoncteur `unreachable` (22/10).
-  if (reached === 'interrupted') return fail('interrupted');
+  // `travel` peut rendre une RAISON (22/10) : 'interrupted' (TP, but pathfinder volé, bot emmené ailleurs)
+  // ou 'stair_missed' (l'escalier dirigé n'a pas atteint la couche) — jamais dans le disjoncteur `unreachable`.
+  if (typeof reached === 'string') return fail(reached);   // 'interrupted' | 'stair_missed'
   if (!reached) return fail(now() >= deadline ? 'timeout' : 'unreachable');
   await safe(() => o.markWork(), false);
   await safe(() => o.placeTorch(), null);

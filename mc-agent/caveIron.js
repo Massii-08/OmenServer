@@ -251,6 +251,22 @@ function stairPlan(from, t) {
   return { dir, start, drop, targetY: Math.floor(t.y), yaw: yawOf(dir) };
 }
 
+const STAIR_ARRIVE_DY = 1;               // pieds à la couche de la grappe ± 1…
+const STAIR_ARRIVE_NEAR = 4;             // …ou à ≤ 4 blocs d'elle en 3D
+
+/** PUR — l'escalier est-il arrivé ? Relu à CHAQUE marche (22/10 : il descendait 17 blocs trop bas). */
+function stairArrived(pos, t) {
+  if (!_valid(pos) || !_valid(t)) return false;
+  if (Math.abs(Math.floor(pos.y) - Math.floor(t.y)) <= STAIR_ARRIVE_DY) return true;
+  return Math.hypot(pos.x - (t.x + 0.5), pos.y - t.y, pos.z - (t.z + 0.5)) <= STAIR_ARRIVE_NEAR;
+}
+
+/** PUR — pieds plus bas que la couche de la grappe (au-delà de la tolérance) ? */
+function stairOvershot(pos, t) {
+  if (!_valid(pos) || !_valid(t)) return false;
+  return Math.floor(pos.y) < Math.floor(t.y) - STAIR_ARRIVE_DY;
+}
+
 function _nearFail(center, fails) {
   const n2 = CAVE_FAIL_NEAR * CAVE_FAIL_NEAR;
   return fails.some((f) => (f.x - center.x) ** 2 + (f.y - center.y) ** 2 + (f.z - center.z) ** 2 <= n2);
@@ -323,6 +339,6 @@ module.exports = {
   CAVE_UNREACH_STREAK, CAVE_UNREACH_WINDOW_MS, CAVE_COOLDOWN_MS, caveCooldownUntil,
   caveFailsPrune, caveFailsAdd, rankIronCaves, pickIronCave,
   CAVE_ACCESS_DY, CAVE_ENTRANCE_NEAR, caveAccessible,
-  STAIR_MIN_DROP, yawOf, stairPlan,
+  STAIR_MIN_DROP, yawOf, stairPlan, STAIR_ARRIVE_DY, STAIR_ARRIVE_NEAR, stairArrived, stairOvershot,
   CAVE_ESCALATE_WINDOW_MS, CAVE_DISABLE_MS, caveBreakerNote, caveDisabledUntil,
 };

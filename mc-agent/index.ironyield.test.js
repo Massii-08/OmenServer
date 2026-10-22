@@ -46,6 +46,29 @@ test('caveTravelVerdict : TP, but volé (GoalChanged), bot emmené plus loin →
   const np = new Error('No path to the goal!'); np.name = 'NoPath';
   assert.strictEqual(v({ errs: [np], d0: 20, d1: 18 }), false);
   assert.strictEqual(v({}), false);
+  // PathStopped venu d'ailleurs (réflexe de combat, couvert) = coupure ; provoqué par NOTRE échéance = non
+  const ps = new Error('Path was stopped before it could be completed! Thus, the desired goal was not reached.'); ps.name = 'PathStopped';
+  assert.strictEqual(v({ errs: [ps], d0: 12, d1: 12 }), 'interrupted');
+  assert.strictEqual(v({ errs: [{ name: 'OwnTimeout' }, ps], d0: 12, d1: 12 }), false);
+  // l'escalier n'a pas atteint la couche → stair_missed (hors disjoncteur), pas unreachable
+  assert.strictEqual(v({ errs: [np], d0: 20, d1: 18, stairMissed: true }), 'stair_missed');
+});
+
+test('_caveGotoOre : l\'erreur du pathfinder ARRIVE au verdict malgré withTimeout (qui avale les rejets)', async () => {
+  const errs = [];
+  const sb = {
+    Math, Promise, setTimeout, clearTimeout,
+    bot: { entity: { position: { x: 0, y: 30, z: 0 } }, pathfinder: { goto: async () => { const e = new Error('Path was stopped'); e.name = 'PathStopped'; throw e; } } },
+    openNeighborOf: () => null,
+    pfGoals: { GoalNear: function () {} },
+    Movements: function () {},
+    withTempMovements: async (b, M, c, fn) => fn(),
+    stopMotion() {},
+  };
+  vm.createContext(sb);
+  run(sb, [fnSrc('withTimeout'), fnSrc('_caveGotoOre'), 'this.go = _caveGotoOre;'].join('\n'));
+  assert.strictEqual(await sb.go({ x: 40, y: 30, z: 0 }, { cancelled: false }, errs), false);
+  assert.deepStrictEqual(errs.map((e) => e.name), ['PathStopped', 'PathStopped']);
 });
 
 // ═════════════════════ 2. runCaveIron : coupure ≠ verdict ══════════════════════════════════════════
@@ -114,6 +137,14 @@ test('runCaveIron : drapeau _caveTripBusy levé PENDANT le trajet (lu par trySqu
   assert.strictEqual(sb.busy(), false);
 });
 
+test('runCaveIron : stair_missed noté (mise de côté 30 min) mais n\'arme jamais le disjoncteur', async () => {
+  const sb = caveSandbox({ results: [{ ok: false, reason: 'stair_missed' }] });
+  await sb.runCaveIron();
+  assert.strictEqual(sb.base.caveFails[0].why, 'stair_missed');
+  const fails = [0, 1, 2].map((i) => ({ x: i * 20, y: 50, z: 0, key: 'k' + i, why: 'stair_missed', at: T0 - i * 60_000 }));
+  assert.strictEqual(caveIronPick.caveCooldownUntil(fails, T0), 0);
+});
+
 test('runCaveIron : un vrai unreachable reste noté comme avant (le disjoncteur est gardé)', async () => {
   const sb = caveSandbox({ results: [{ ok: false, reason: 'unreachable' }] });
   await sb.runCaveIron();
@@ -122,9 +153,10 @@ test('runCaveIron : un vrai unreachable reste noté comme avant (le disjoncteur 
 
 test('index.js : le trajet de grotte passe par l\'escalier dirigé puis l\'approche fine, et rend le verdict', () => {
   const body = fnSrc('runCaveIron');
-  assert.match(body, /await _caveStairTo\(e, tok\)/);
-  assert.match(body, /return caveTravelVerdict\(\{ teleported: _tpCount > tp0, errs, d0, d1 \}\);/);
-  assert.ok(body.indexOf('_caveStairTo(e, tok)') < body.indexOf('_caveGotoOre(e, tok, errs)'));
+  assert.match(body, /stair = await _caveStairTo\(e, tok\)/);
+  assert.match(body, /return caveTravelVerdict\(\{ teleported: _tpCount > tp0, errs, d0, d1, stairMissed: !!\(stair && stair\.tried && !stair\.reached\) \}\);/);
+  assert.match(body, /if \(stair && stair\.teleported\) return 'interrupted';/);
+  assert.ok(body.indexOf('await _caveStairTo(e, tok)') < body.indexOf('_caveGotoOre(e, tok, errs)'));
   assert.match(SRC, /_floatSettleUntil = Date\.now\(\) \+ 15000; _tpCount\+\+; \}/, 'onTeleport compte les TP');
   assert.match(SRC, /_caveTripBusy \|\| _craftDepth > 0;\n  const pick = squadTarget\(/, 'trySquad respecte le trajet de grotte');
 });
@@ -142,7 +174,10 @@ function stairSandbox(o = {}) {
       pathfinder: { goto: async (g) => { sb.gotos.push(g); if (o.walk) Object.assign(sb.bot.entity.position, o.walk); } },
     },
     Movements: function M() {},
-    pfGoals: { GoalNearXZ: function (x, z, r) { this.x = x; this.z = z; this.r = r; } },
+    pfGoals: {
+      GoalNearXZ: function (x, z, r) { this.x = x; this.z = z; this.r = r; },
+      GoalNear: function (x, y, z, r) { this.x = x; this.y = y; this.z = z; this.r = r; this.near3d = true; },
+    },
     withTempMovements: async (b, M, cfg, fn) => fn(),
     withTimeout: async (p) => p,
     stopMotion() {},
@@ -150,24 +185,50 @@ function stairSandbox(o = {}) {
     descendDiagonal: async (b, opts) => {
       sb.descends.push(plain(opts));
       const r = (o.descend || []).shift() || { ok: true };
-      if (r.toY !== undefined) b.entity.position.y = r.toY;
+      // Simule l'escalier marche par marche : stopWhen relu à chaque marche (comme descendDiagonal).
+      if (r.toY !== undefined) {
+        while (b.entity.position.y > r.toY) {
+          if (opts.stopWhen && opts.stopWhen()) return { ok: true, stopped: true };
+          if (r.tpAtY !== undefined && b.entity.position.y <= r.tpAtY) { sb.bump(); Object.assign(b.entity.position, r.tpTo); delete r.tpAtY; continue; }
+          b.entity.position.y -= 1; b.entity.position.x += 1;
+        }
+      }
       return r;
     },
   };
   vm.createContext(sb);
-  run(sb, [fnSrc('_caveStairTo'), 'this.stair = _caveStairTo;'].join('\n'));
+  run(sb, [letSrc('_tpCount'), fnSrc('_caveStairTo'), 'this.stair = _caveStairTo; this.bump = () => { _tpCount++; };'].join('\n'));
   return sb;
 }
 
-test('_caveStairTo : marche au départ du plan, se tourne VERS la grappe, descend jusqu\'à sa couche', async () => {
-  const sb = stairSandbox({ walk: { x: 0, z: 10 }, descend: [{ ok: true, toY: 20 }] });
-  const ok = await sb.stair({ x: 50, y: 20, z: 10 }, { cancelled: false });
-  assert.strictEqual(ok, true);
+test('_caveStairTo : marche au départ du plan, se tourne VERS la grappe, S\'ARRÊTE à sa couche (± 1)', async () => {
+  const sb = stairSandbox({ walk: { x: 0, z: 10 }, descend: [{ ok: false, toY: -20 }] });   // l'escalier irait à -20 si on le laissait
+  const r = await sb.stair({ x: 50, y: 32, z: 10 }, { cancelled: false });
+  assert.deepStrictEqual(plain(r), { tried: true, reached: true, overshot: false, teleported: false });
+  assert.ok(Math.abs(sb.bot.entity.position.y - 32) <= 1, `arrêté à y=${sb.bot.entity.position.y}`);
   assert.strictEqual(sb.gotos.length, 1);
-  assert.deepStrictEqual([sb.gotos[0].x, sb.gotos[0].z], [0, 10]);
+  assert.deepStrictEqual([sb.gotos[0].x, sb.gotos[0].z], [12, 10], "départ 38 blocs avant la grappe (drop 70→32)");
   assert.strictEqual(sb.looks[0], caveIronPick.yawOf({ dx: 1, dz: 0 }));
-  assert.strictEqual(sb.descends[0].targetY, 20);
-  assert.ok(sb.events.some((e) => e.type === 'cave_stair') && sb.events.some((e) => e.type === 'cave_stair_done'));
+  assert.ok(sb.events.some((e) => e.type === 'cave_stair') && sb.events.some((e) => e.type === 'cave_stair_done' && e.reached));
+});
+
+test('_caveStairTo : TÉLÉPORTÉ en plein escalier (mort, /tpa) → arrêt net, teleported, pas de remontée', async () => {
+  const sb = stairSandbox({ descend: [{ ok: false, toY: -20, tpAtY: 50, tpTo: { x: -478, y: 15, z: -64 } }] });
+  const r = await sb.stair({ x: 50, y: 32, z: 10 }, { cancelled: false });
+  assert.strictEqual(r.teleported, true);
+  assert.strictEqual(r.reached, false);
+  assert.strictEqual(sb.bot.entity.position.y, 15, 'plus aucune marche après le TP');
+  assert.strictEqual(sb.descends.length, 1, 'pas de nouveau cap après un TP');
+  assert.ok(!sb.gotos.some((g) => g.near3d), 'pas de remontée vers la grappe depuis l\'autre bout de la carte');
+});
+
+test('_caveStairTo : DÉPASSÉ (sous la couche) → remonte vers la grappe en GoalNear 3D, canDig', async () => {
+  const sb = stairSandbox();
+  sb.descendDiagonal = async (b) => { b.entity.position.y = 20; return { ok: true }; };   // tombe sous la grappe d'un coup
+  const r = await sb.stair({ x: 50, y: 32, z: 10 }, { cancelled: false });
+  assert.strictEqual(r.overshot, true);
+  const up = sb.gotos.find((g) => g.near3d);
+  assert.ok(up && up.y === 32, 'remontée vers la couche de la grappe');
 });
 
 test('_caveStairTo : eau devant → change de cap et reprend ; grappe proche en hauteur → pas d\'escalier', async () => {
@@ -176,7 +237,7 @@ test('_caveStairTo : eau devant → change de cap et reprend ; grappe proche en 
   assert.strictEqual(sb.descends.length, 2);
   assert.notStrictEqual(sb.looks[1], sb.looks[0], 'nouveau cap après l\'eau');
   const flat = stairSandbox();
-  assert.strictEqual(await flat.stair({ x: 10, y: 67, z: 0 }, { cancelled: false }), false);
+  assert.deepStrictEqual(plain(await flat.stair({ x: 10, y: 67, z: 0 }, { cancelled: false })), { tried: false });
   assert.strictEqual(flat.descends.length, 0);
 });
 

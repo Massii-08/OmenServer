@@ -187,6 +187,18 @@ test('portée : 80 à plat ET 80 de dénivelé (pas 80 en 3D — le fer profond 
   assert.strictEqual(C.CAVE_MAX_DROP, 80);
 });
 
+test('stairArrived / stairOvershot : couche ± 1 ou ≤ 4 blocs ; plus bas que la couche = dépassé', () => {
+  const t = { x: 150, y: 32, z: -135 };
+  assert.strictEqual(C.stairArrived({ x: 130, y: 33, z: -135 }, t), true, 'couche + 1, même loin à plat');
+  assert.strictEqual(C.stairArrived({ x: 130, y: 31.2, z: -135 }, t), true);
+  assert.strictEqual(C.stairArrived({ x: 150.5, y: 35, z: -134.5 }, t), true, '3 blocs au-dessus, à l\'aplomb');
+  assert.strictEqual(C.stairArrived({ x: 130, y: 40, z: -135 }, t), false);
+  assert.strictEqual(C.stairArrived({ x: 130, y: 15, z: -135 }, t), false, '17 blocs trop bas : PAS arrivé');
+  assert.strictEqual(C.stairOvershot({ x: 130, y: 15, z: -135 }, t), true);
+  assert.strictEqual(C.stairOvershot({ x: 130, y: 31, z: -135 }, t), false);
+  assert.strictEqual(C.stairArrived(null, t), false);
+});
+
 test('yawOf : inverse exact de descendDiagonal.cardinalFromYaw', () => {
   const { cardinalFromYaw } = require('./skills/descendDiagonal');
   for (const d of [{ dx: 1, dz: 0 }, { dx: -1, dz: 0 }, { dx: 0, dz: 1 }, { dx: 0, dz: -1 }]) {
