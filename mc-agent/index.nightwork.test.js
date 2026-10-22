@@ -32,7 +32,8 @@ function sandbox(o = {}) {
     Date: { now: () => clock.t },
     Object, Math, Number, Array, JSON, Promise, Set, Map, String, RegExp, Error,
     nightWorkPlan: NW.nightWorkPlan, nightUnderground: NW.nightUnderground, nightDeferGoal: NW.nightDeferGoal,
-    nightSealCells: NW.nightSealCells,
+    nightSealCells: NW.nightSealCells, shelterCraftNext: NW.shelterCraftNext,
+    migrationOwnsBot: () => false,
     furnaceJobPlan: FJ.furnaceJobPlan, fuelLoadPlan: FJ.fuelLoadPlan, jobReadyAt: FJ.jobReadyAt,
     SMELT_JOB_ABANDON_DIST: FJ.SMELT_JOB_ABANDON_DIST,
     IS_MAPPER: false, isLumberjackObjective: () => false,
@@ -56,7 +57,7 @@ function sandbox(o = {}) {
     placeBlockNear: async () => ({ ok: true, pos: { x: 1, y: 16, z: 0 } }),
     waitForBlock: async () => true,
     reclaimBlock: async () => { sb.reclaimed = true; },
-    pfGoals: { GoalNear: function (x, y, z) { this.x = x; this.y = y; this.z = z; } },
+    pfGoals: { GoalNear: function (x, y, z) { this.x = x; this.y = y; this.z = z; }, GoalBlock: function (x, y, z) { this.x = x; this.y = y; this.z = z; } },
     bot: {
       time: { day: 7, timeOfDay: 14000 },
       entity: { position: Object.assign({ x: 0.5, y: 70, z: 0.5, floored() { return { offset: (a, b, c) => ({ x: Math.floor(this.x) + a, y: Math.floor(this.y) + b, z: Math.floor(this.z) + c }) }; } }, o.pos || {}), onGround: true },
@@ -85,6 +86,8 @@ function sandbox(o = {}) {
     "const { cellBlockItem: _nightCellItem } = require('./skills/shelter');",
     fnSrc('_nightId'), fnSrc('nightUndergroundNow'), fnSrc('nightSkipGoal'), fnSrc('_nearestThreatDist'),
     fnSrc('_nightFill'), fnSrc('nightSeal'), fnSrc('nightTorch'), fnSrc('tryNightWork'), fnSrc('rebuildPickHere'),
+    letSrc('_shelterCraft'), constSrc('SHELTER_CRAFT_MS'), fnSrc('_shelterRecenter'), fnSrc('shelterWhileSealed'),
+    'this.shelterWhileSealed = shelterWhileSealed; this.shelterCraft = () => _shelterCraft;',
     letSrc('_furnaceJob'), letSrc('_furnaceJobBusy'), constSrc('FURNACE_JOB_KEEP_SKILLS'),
     fnSrc('_furnaceDist'), fnSrc('startFurnaceJob'), fnSrc('collectFurnaceJob'), fnSrc('furnaceJobTick'), fnSrc('finishFurnaceJob'),
     'this.tryNightWork = tryNightWork; this.nightUndergroundNow = nightUndergroundNow; this.nightSkipGoal = nightSkipGoal;',
@@ -225,4 +228,64 @@ test('bûcheron, tranche mine : descente de 28 blocs puis branch-mine borné au 
   assert.deepStrictEqual(calls.filter((c) => c[0] !== 'emit'), [
     ['descend', 42], ['branch', 42, 'raw_iron', 'function'], ['finish'], ['home', 'work', 'lj_mine_return']]);
   assert.ok(calls.some((c) => c[1] === 'work_return'));
+});
+
+// ─── CRAFTER DANS LE TROU (22/10) ───────────────────────────────────────────────────────────────
+const PIT = (y) => ({ mode: 'pit', depth: 3, anchor: { x: 0.5, y, z: 0.5 } });
+
+test('trou de nuit : bûches en poche, pas de pioche → un craft par pas, SUR PLACE (_inPlace), event night_craft', async () => {
+  const sb = sandbox({ items: [{ name: 'oak_log', count: 3 }], pos: { y: 67 } });
+  const asked = [];
+  sb.craftSmart = async (a) => { asked.push(a); return { ok: true }; };
+  assert.strictEqual(await sb.shelterWhileSealed(PIT(67)), null, 'pas encore de pioche : on reste');
+  assert.deepStrictEqual(JSON.parse(JSON.stringify(asked)), [{ name: 'oak_planks', count: 3, _inPlace: true }]);
+  const ev = sb.events.find((e) => e.type === 'night_craft');
+  assert.strictEqual(ev.goal, 'oak_planks');
+  assert.strictEqual(ev.ok, true);
+});
+
+test('trou de nuit : craft raté → pas retenté cette nuit ; PV critiques → retenté', async () => {
+  const sb = sandbox({ items: [{ name: 'oak_planks', count: 12 }], pos: { y: 67 } });
+  const asked = [];
+  sb.craftSmart = async (a) => { asked.push(a.name); return { ok: false, reason: asked.length === 1 ? 'low_hp_skip' : 'no_table:no_space' }; };
+  await sb.shelterWhileSealed(PIT(67));
+  await sb.shelterWhileSealed(PIT(67));
+  await sb.shelterWhileSealed(PIT(67));
+  assert.deepStrictEqual(asked, ['crafting_table', 'crafting_table'], 'low_hp_skip retenté, no_space non');
+  assert.ok(sb.events.some((e) => e.type === 'night_craft' && e.ok === false && e.reason === 'no_table:no_space'));
+});
+
+test('trou de nuit : pioche en main → leave_down, surface = fond + profondeur, puis tryNightWork depuis l abri (hostile ignoré)', async () => {
+  const sb = sandbox({ items: [{ name: 'wooden_pickaxe', count: 1 }], pos: { y: 67 }, threats: [{ x: 1, y: 70, z: 1 }] });
+  assert.strictEqual(await sb.shelterWhileSealed(PIT(67)), 'leave_down');
+  const ho = sb.shelterCraft().handoff;
+  assert.deepStrictEqual(JSON.parse(JSON.stringify(ho)), { surfaceY: 70, cellMode: 'pit' });
+  assert.strictEqual(await sb.tryNightWork({ fromShelter: ho }), true);
+  assert.strictEqual(sb.fled, undefined, 'pas de fuite : l hostile est au-dessus du toit');
+  assert.strictEqual(sb.descended.targetY, 58, '12 sous la SURFACE');
+  assert.ok(sb.events.some((e) => e.type === 'night_work' && e.phase === 'from_shelter' && e.target === 58));
+  assert.ok(sb.events.some((e) => e.type === 'night_work' && e.phase === 'sealed'));
+});
+
+test('trou de nuit : cellule murée, cartographe, hors lockdown → jamais de descente', async () => {
+  const a = sandbox({ items: [{ name: 'wooden_pickaxe', count: 1 }], pos: { y: 67 } });
+  assert.strictEqual(await a.shelterWhileSealed({ mode: 'walled', depth: 0, anchor: { x: 0.5, y: 67, z: 0.5 } }), null);
+  const b = sandbox({ items: [{ name: 'wooden_pickaxe', count: 1 }], pos: { y: 67 } });
+  b.IS_MAPPER = true;
+  assert.strictEqual(await b.shelterWhileSealed(PIT(67)), null);
+  const c = sandbox({ lockdown: false, items: [{ name: 'oak_log', count: 3 }], pos: { y: 67 } });
+  c.craftSmart = async () => { throw new Error('ne doit pas crafter'); };
+  assert.strictEqual(await c.shelterWhileSealed(PIT(67)), null);
+});
+
+test('câblage : l abri reçoit whileSealed, maybeNightShelter enchaîne tryNightWork({ fromShelter }), les crafts ne marchent pas', () => {
+  const m = fnSrc('maybeNightShelter');
+  assert.match(m, /whileSealed: shelterWhileSealed/);
+  assert.match(m, /sres\.handoff === 'night_work'/);
+  assert.match(m, /await tryNightWork\(\{ fromShelter: ho \}\)/);
+  const w = fnSrc('withCraftingTable');
+  assert.match(w, /inPlace \? TABLE_REACH : TABLE_SEEK/);
+  assert.match(w, /const spot = inPlace \? null : findLandTarget/);
+  assert.match(w, /tableSeen: !inPlace &&/);
+  assert.match(fnSrc('_craftSmartRaw'), /withCraftingTable\(\(\) => craftItem\(bot, args\), \{ inPlace \}\)/);
 });

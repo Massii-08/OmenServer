@@ -46,13 +46,116 @@ function nightWorkPlan(sig = {}) {
   if (!s.hasPick) return { action: 'shelter', why: 'no_pick' };           // tout début : trou + attente
   if (s.triedThisNight) return { action: 'shelter', why: 'tried' };       // une descente ratée par nuit, pas plus
   if (s.inWater) return { action: 'shelter', why: 'water' };
+  // DEPUIS L'ABRI (22/10, `fromShelter`) : le bot est au fond de son puits, toit posé. Seul un PUITS
+  // creusé ('pit') se quitte par le bas sans rien ouvrir ; une cellule MURÉE au sol (l'escalier
+  // percerait la paroi posée, en pleine nuit) garde l'abri. Les hostiles de surface ne comptent plus :
+  // ils sont au-dessus du toit, l'escalier s'en ÉLOIGNE (fuir = ressortir dehors, le contraire du but).
+  if (s.fromShelter && s.cellMode !== 'pit') return { action: 'shelter', why: 'walled' };
   const y = s.y;
   if (!(typeof y === 'number' && Number.isFinite(y))) return { action: 'shelter', why: 'no_y' };
   const d = Number(s.hostileDist);
-  if (s.hostileDist != null && Number.isFinite(d) && d <= NIGHT_WORK_FLEE_DIST) return { action: 'flee' };
-  const targetY = nightWorkTargetY(y);
+  if (!s.fromShelter && s.hostileDist != null && Number.isFinite(d) && d <= NIGHT_WORK_FLEE_DIST) return { action: 'flee' };
+  // La SURFACE de référence : relevée au-dessus du puits (`surfaceY`) quand on part du fond de l'abri,
+  // sinon l'altitude du bot (il est en surface).
+  const sy = Number(s.surfaceY);
+  const surface = (s.surfaceY != null && Number.isFinite(sy)) ? sy : y;
+  const targetY = nightWorkTargetY(surface);
   if (y < NIGHT_UNDERGROUND_Y || !(targetY < y - 1)) return { action: 'shelter', why: 'already_low' };
-  return { action: 'descend', targetY, surfaceY: Math.floor(y) };
+  return { action: 'descend', targetY, surfaceY: Math.floor(surface) };
+}
+
+// ─── CRAFTER DANS LE TROU (22/10) ────────────────────────────────────────────────────────────────
+// Chrono « zéro → armure de fer » (3 ouvriers) : la nuit tombe ~5 min après le départ, les bots ont des
+// bûches mais pas encore de pioche → `night_hold` de la minute 5 à 14, puis les outils en 5 min. Un
+// joueur, dans son trou fermé, FABRIQUE avec ce qu'il a : planches, bâtons, table (posée dans la paroi),
+// pioche en bois — puis il creuse vers le bas. Ici : le prochain craft, une étape à la fois.
+// Recettes 3×3 (table posée nécessaire) : seulement dans un PUITS creusé — la table s'y pose dans la
+// paroi de terre (placeBlockNear pass 2) ; dans une cellule murée au sol, creuser la paroi l'ouvrirait.
+const SHELTER_CRAFT_3X3 = new Set(['wooden_pickaxe', 'stone_pickaxe', 'stone_sword', 'furnace']);
+const SHELTER_TORCH_TARGET = 16;
+
+function _cnt(inv, re) {
+  let n = 0;
+  for (const i of inv || []) if (i && typeof i.name === 'string' && re.test(i.name)) n += Number(i.count) || 0;
+  return n;
+}
+
+/**
+ * PUR — le prochain craft à faire DANS l'abri, avec la seule poche. → { name, count } | null.
+ * inv = [{name,count}] ; ctx = { cellMode: 'pit'|'walled', skip: Set|Array des noms ratés cet abri }.
+ * Ordre : (sans pioche) planches → table → bâtons → pioche en bois ; (avec pioche) pioche pierre si la
+ * meilleure est en bois, épée pierre, four, torches — chacun seulement si la matière est EN POCHE.
+ * Rien qui demande de sortir : pas de bûche à couper, pas de cobble à miner.
+ */
+function shelterCraftNext(inv, ctx = {}) {
+  const c = ctx || {};
+  const skip = c.skip instanceof Set ? c.skip : new Set(Array.isArray(c.skip) ? c.skip : []);
+  const big = c.cellMode === 'pit';
+  const ok = (name) => !skip.has(name) && (big || !SHELTER_CRAFT_3X3.has(name));
+  const planks = _cnt(inv, /_planks$/);
+  const logs = _cnt(inv, /_log$/);
+  const sticks = _cnt(inv, /^stick$/);
+  const hasTable = _cnt(inv, /^crafting_table$/) > 0;
+  const picks = (inv || []).filter((i) => i && /_pickaxe$/.test(i.name) && (Number(i.count) || 0) > 0);
+  const cobble = _cnt(inv, /^(cobblestone|cobbled_deepslate|blackstone)$/);
+  const logItem = () => {
+    let best = null;
+    for (const i of inv || []) if (i && /_log$/.test(i.name) && (!best || (i.count || 0) > (best.count || 0))) best = i;
+    return best;
+  };
+  // Planches à fabriquer pour couvrir `need` (en crafts de 4), si des bûches sont en poche.
+  const planksFor = (need) => {
+    if (planks >= need || logs <= 0) return null;
+    const lg = logItem();
+    if (!lg) return null;
+    const name = lg.name.replace(/_log$/, '_planks');
+    if (!ok(name)) return null;
+    return { name, count: Math.min(logs, Math.ceil((need - planks) / 4)) };
+  };
+
+  if (!picks.length) {
+    if (!ok('wooden_pickaxe')) return null;
+    const needTable = !hasTable;
+    const needSticks = sticks < 2;
+    const need = (needTable ? 4 : 0) + 3 + (needSticks ? 2 : 0);
+    if (planks + 4 * logs < need) return null;                 // pas de quoi aller au bout : rien d'inutile
+    if (planks < need) return planksFor(need);                 // planches d'abord (null : bûches ratées)
+    if (needTable && ok('crafting_table')) return { name: 'crafting_table', count: 1 };
+    if (needTable) return null;
+    if (needSticks && ok('stick')) return { name: 'stick', count: 1 };
+    if (needSticks) return null;
+    return { name: 'wooden_pickaxe', count: 1 };
+  }
+
+  // Avec une pioche : ce que la poche permet encore, sans rien aller chercher.
+  const onlyWood = picks.every((i) => i.name === 'wooden_pickaxe');
+  const hasSword = (inv || []).some((i) => i && /_sword$/.test(i.name));
+  const hasFurnace = _cnt(inv, /^furnace$/) > 0;
+  const coal = _cnt(inv, /^(coal|charcoal)$/);
+  const torches = _cnt(inv, /^torch$/);
+  const wood = planks + 4 * logs;
+  const tableOk = hasTable;
+  const stickStep = (n) => {
+    if (sticks >= n) return null;
+    if (!ok('stick')) return 'stop';
+    if (planks >= 2) return { name: 'stick', count: 1 };
+    const pl = planksFor(2);
+    return pl || 'stop';
+  };
+  const wants = [];
+  if (onlyWood && cobble >= 3 && tableOk) wants.push({ name: 'stone_pickaxe', sticks: 2, wood: 2 });
+  if (!hasSword && cobble >= (onlyWood && wants.length ? 5 : 2) && tableOk) wants.push({ name: 'stone_sword', sticks: 1, wood: 2 });
+  if (!hasFurnace && cobble >= 8 && tableOk) wants.push({ name: 'furnace', sticks: 0, wood: 0 });
+  if (coal >= 1 && torches < SHELTER_TORCH_TARGET) wants.push({ name: 'torch', sticks: 1, wood: 2 });
+  for (const w of wants) {
+    if (!ok(w.name)) continue;
+    if (w.sticks > 0 && sticks < w.sticks && wood < w.wood) continue;   // pas de bois pour les bâtons
+    const st = stickStep(w.sticks);
+    if (st === 'stop') continue;
+    if (st) return st;
+    return { name: w.name, count: 1 };
+  }
+  return null;
 }
 
 /**
@@ -97,4 +200,5 @@ function nightSealCells(feet, isOpen) {
 module.exports = {
   NIGHT_WORK_DEPTH, NIGHT_WORK_SLACK, NIGHT_WORK_TTL_MS, NIGHT_WORK_FLEE_DIST, NIGHT_DEFER_SKILLS,
   nightWorkTargetY, nightWorkPlan, nightUnderground, nightDeferGoal, nightSealCells,
+  shelterCraftNext, SHELTER_CRAFT_3X3, SHELTER_TORCH_TARGET,
 };

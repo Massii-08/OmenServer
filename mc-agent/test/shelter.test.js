@@ -445,3 +445,72 @@ describe('abri : marqueur « scellé, pas encore sorti » + exitPendingShelter (
     assert.equal(bot._mcaShelterPending, null);
   });
 });
+
+// ─── TRAVAILLER DANS LE TROU (22/10) : `whileSealed` ────────────────────────────────────────────
+describe('abri : `whileSealed` — crafts dans le trou, sortie PAR LE BAS', () => {
+  it('le hook est appelé à chaque pas de la nuit ; null → l\'attente continue jusqu\'à l\'aube, sortie normale', async () => {
+    const events = [];
+    const sleeps = [];
+    const calls = [];
+    const bot = movableBot();
+    const r = await shelterUntilDawn(bot, null, {
+      emit: (e) => events.push(e),
+      sleep: async (ms) => { sleeps.push(ms); if (sleeps.length === 3) bot.time.timeOfDay = 1000; },
+      mineDown: descend,
+      whileSealed: async (info) => { calls.push(info); return null; },
+    });
+    assert.equal(r.ok, true);
+    assert.equal(calls.length, 3);
+    assert.equal(calls[0].mode, 'pit');
+    assert.equal(calls[0].depth, 3);
+    assert.equal(calls[0].anchor.y, 60, 'ancre = le fond du puits');
+    assert.ok(actions(events).includes('out'));
+  });
+
+  it('\'leave_down\' → l\'abri rend la main SANS casser le toit ni remonter, marqueur effacé, event handoff', async () => {
+    const events = [];
+    const digs = [];
+    const bot = movableBot();
+    bot.dig = async (b) => { digs.push(b); };
+    let n = 0;
+    const r = await shelterUntilDawn(bot, null, {
+      emit: (e) => events.push(e),
+      sleep: async () => {},
+      mineDown: descend,
+      whileSealed: async () => (++n === 2 ? 'leave_down' : null),
+    });
+    assert.equal(r.ok, true);
+    assert.equal(r.handoff, 'night_work');
+    assert.equal(r.mode, 'pit');
+    assert.equal(r.depth, 3);
+    assert.equal(digs.length, 0, 'toit intact : aucun bloc cassé pour sortir');
+    assert.equal(actions(events).includes('out'), false);
+    assert.equal(actions(events).includes('dawn'), false);
+    assert.ok(events.some((e) => e.action === 'handoff' && e.to === 'night_work'));
+    assert.equal(bot._mcaShelterPending, null);
+  });
+
+  it('hook qui lève → ignoré, l\'abri attend l\'aube comme avant', async () => {
+    const sleeps = [];
+    const bot = movableBot();
+    const r = await shelterUntilDawn(bot, null, {
+      emit: () => {},
+      sleep: async (ms) => { sleeps.push(ms); if (sleeps.length === 2) bot.time.timeOfDay = 1000; },
+      mineDown: descend,
+      whileSealed: async () => { throw new Error('boom'); },
+    });
+    assert.equal(r.ok, true);
+    assert.equal(r.handoff, undefined);
+  });
+
+  it('jeton annulé PENDANT le hook → cancelled, marqueur gardé (le nouveau maître décide)', async () => {
+    const bot = movableBot();
+    const tok = { cancelled: false };
+    const r = await shelterUntilDawn(bot, tok, {
+      emit: () => {}, sleep: async () => {}, mineDown: descend,
+      whileSealed: async () => { tok.cancelled = true; return 'leave_down'; },
+    });
+    assert.deepEqual(r, { ok: false, reason: 'cancelled' });
+    assert.ok(bot._mcaShelterPending);
+  });
+});

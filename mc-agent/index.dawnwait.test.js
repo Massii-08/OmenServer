@@ -138,6 +138,8 @@ function shelterSandbox({ worn = 0, entities = [zombie(6), zombie(8, 2, 'skeleto
     _shelterInFlight: null, _shelterTok: null, _shelterStartedAt: 0, deriveToken: require('./plannerWatchdog').deriveToken, shelterToken: require('./shelterToken').shelterToken, shelterCancelLoopNote: require('./shelterToken').shelterCancelLoopNote, taskCtl: require('./tasks').createTaskController(), _shelterCancelLoop: null, _shelterFreshNext: false, SHELTER_HARD_MAX_MS: 13 * 60 * 1000 + Math.max(require('./skills/shelter').DAWN_WAIT_MAX_MS, require('./skills/shelter').DAWN_SAFE_EXIT_MAX_MS), _lockdownShelters: null, isInWater: () => false,
     // LIT (20/10) : sans lit à portée, trySleepInBedTonight rend false → l'abri historique (testé dans index.bed.test.js)
     trySleepInBedTonight: async () => false,
+    shelterWhileSealed: async () => null,           // crafts dans le trou (22/10) : testés dans index.nightwork.test.js
+    tryNightWork: async () => false,
     nightLockdown: C.nightLockdown, lockdownShelterNote: C.lockdownShelterNote,
     NIGHT_SHELTER_GAP_MS: C.NIGHT_SHELTER_GAP_MS, NIGHT_UNDERGROUND_Y: C.NIGHT_UNDERGROUND_Y,
     // NUIT DU CARTOGRAPHE (21/10) : rentrer au home ou se terrer ici (mapperNight)

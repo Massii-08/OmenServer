@@ -612,6 +612,8 @@ async function _buildCell(bot, token, deps, sleep, emit) {
  * deps.hostilesNear (() => nb d'hostiles à portée) + deps.worn (() => nb de pièces portées) : l'attente
  * des monstres à l'aube (étape 3bis) — SANS hostilesNear injecté, elle est sautée (comportement d'origine).
  * deps.dawnWaitMaxMs / deps.dawnCheckMs : borne (déf 120 s) et pas (déf 3 s) de cette attente.
+ * deps.whileSealed (async ({mode, depth, anchor}) => null | 'leave_down') : travail DANS le trou pendant
+ * l'attente de nuit (crafts) ; 'leave_down' → {ok:true, reason:'night_work', handoff:'night_work'} SANS sortie.
  * deps.endWhenDisplaced (booléen ou () => booléen, relu au délogement) : un bot DÉLOGÉ de son trou (cf.
  * shelterDisplaced) termine l'abri → {ok:false, reason:'displaced'} (sans lui : comportement d'origine).
  */
@@ -660,6 +662,22 @@ async function shelterUntilDawn(bot, token = null, deps = {}) {
     if (token && token.cancelled) return { ok: false, reason: 'cancelled' };
     await sleep(5000);
     if (left()) { _clearShelterPending(bot); return { ok: false, reason: 'displaced' }; }
+    // TRAVAILLER DANS LE TROU (22/10, chrono « zéro → fer » : 9 min immobiles à la 1re nuit avec des
+    // bûches en poche). `deps.whileSealed(info)` (OPT-IN, index.js) : appelé à chaque pas de l'attente,
+    // il crafte avec ce que le bot a en poche (sans sortir) et peut rendre 'leave_down' : le bot a une
+    // pioche, il quitte l'abri PAR LE BAS (escalier de la nuit au travail) — on ne casse PAS le toit et on
+    // ne remonte pas : aucune ouverture vers la surface la nuit. Hook qui lève = rien (attente normale).
+    if (typeof deps.whileSealed === 'function' && cellRes.ok) {
+      let act = null;
+      try { act = await deps.whileSealed({ mode: cellRes.mode, depth: cellRes.depth || 0, anchor }); }
+      catch (e) { act = null; }
+      if (token && token.cancelled) return { ok: false, reason: 'cancelled' };
+      if (act === 'leave_down') {
+        emit({ type: 'shelter', action: 'handoff', to: 'night_work', mode: cellRes.mode, depth: cellRes.depth || 0 });
+        _clearShelterPending(bot);
+        return { ok: true, reason: 'night_work', handoff: 'night_work', mode: cellRes.mode, depth: cellRes.depth || 0, anchor };
+      }
+    }
   }
   emit({ type: 'shelter', action: 'dawn' });
 

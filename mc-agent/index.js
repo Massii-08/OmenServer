@@ -62,7 +62,7 @@ const { SCAFFOLD } = require('./skills/pillarUp');     // blocs sacrifiables (co
 const basecamp = require('./basecamp');                // base personnelle : s'éloigner du spawn du monde puis /sethome
 const oregrab = require('./oregrab');
 // NUIT AU TRAVAIL + FONDRE EN MINANT (Massii 21/10 : « fais qu'ils fassent comme les joueurs normaux »).
-const { nightWorkPlan, nightUnderground, nightDeferGoal, nightSealCells } = require('./nightWork');
+const { nightWorkPlan, nightUnderground, nightDeferGoal, nightSealCells, shelterCraftNext } = require('./nightWork');
 const { furnaceJobPlan, fuelLoadPlan, jobReadyAt, SMELT_JOB_ABANDON_DIST } = require('./furnaceJob');                  // « ils passent à côté du fer sans le prendre »
 const { huntPassive } = require('./skills/hunt');
 const { fishCatch } = require('./skills/fish');   // pêche : la nourriture qui ne s'épuise pas
@@ -1978,7 +1978,11 @@ function blacklistBadTable(pos, why) {
   } catch (e) { /* best-effort : l'observabilité ne doit jamais casser un craft */ }
 }
 
-async function withCraftingTable(fn) {
+// `opts.inPlace` (22/10, crafts DANS l'abri de nuit) : ne JAMAIS marcher — ni vers une table lointaine,
+// ni pour en reprendre une abandonnée, ni vers un sol dégagé si la pose rate. Seule une table À PORTÉE
+// compte ; sinon la table de poche est posée ICI (paroi du puits) puis reprise.
+async function withCraftingTable(fn, opts = {}) {
+  const inPlace = !!(opts && opts.inPlace);
   // On CHERCHE loin (TABLE_SEEK) puis on marche jusqu'à la table : réutiliser une table déjà
   // posée évite d'en semer une nouvelle à chaque craft. Avec l'ancien rayon de 6, une table à
   // 10 blocs était invisible → une vingtaine de tables accumulées au spawn (signalé par Massii).
@@ -1987,10 +1991,10 @@ async function withCraftingTable(fn) {
                          // la vraie cause était `no_recipe`, run world_mn14)
   // Marque une table INUTILISABLE : liste noire + UN event par table (pas un par tentative).
   const blacklistTable = blacklistBadTable;
-  const t = _nearestTable(bot, TABLE_SEEK, { exclude: _badTables });
+  const t = _nearestTable(bot, inPlace ? TABLE_REACH : TABLE_SEEK, { exclude: _badTables });
   if (t) {
     try {
-      if (bot.entity.position.distanceTo(t.position) > 3) {
+      if (!inPlace && bot.entity.position.distanceTo(t.position) > 3) {
         await withTimeout(
           bot.pathfinder.goto(new pfGoals.GoalNear(t.position.x, t.position.y, t.position.z, 2)),
           30000, () => { try { stopMotion(); } catch (e) {} }
@@ -2014,7 +2018,7 @@ async function withCraftingTable(fn) {
   // conclure `use_existing` (donc ne rien poser) alors qu'on ne pouvait pas s'en servir.
   const plan = tablePlan({
     tableInReach: !!_nearestTable(bot, TABLE_REACH, { exclude: _badTables }),
-    tableSeen: !!_nearestTable(bot, TABLE_SEEK, { exclude: _badTables }),
+    tableSeen: !inPlace && !!_nearestTable(bot, TABLE_SEEK, { exclude: _badTables }),
     hasTableItem,
   });
   // Une table est DÉJÀ à portée de craft : en poser une seconde ne peut RIEN changer (l'échec
@@ -2050,7 +2054,7 @@ async function withCraftingTable(fn) {
   if (!place.ok) {
     // sol encombré (feuillage jungle, pente) → se déplacer vers un sol dégagé proche et re-tenter
     // UNE fois (vu live MapT4 : stall wooden_pickaxe avec table+planks+sticks en poche, pose impossible).
-    const spot = findLandTarget(bot, 24);
+    const spot = inPlace ? null : findLandTarget(bot, 24);
     if (spot) {
       try {
         await withTimeout(bot.pathfinder.goto(new pfGoals.GoalNear(spot.x, spot.y + 1, spot.z, 1)),
@@ -2107,7 +2111,7 @@ async function _craftPrereqs(args) {
   for (let i = 0; i < CRAFT_PLAN_MAX_STEPS; i++) {
     const items = (bot.inventory && typeof bot.inventory.items === 'function') ? bot.inventory.items() : [];
     const tableAvailable = items.some((it) => it && it.name === 'crafting_table')
-      || !!_nearestTable(bot, TABLE_SEEK, { exclude: _badTables });
+      || !!_nearestTable(bot, args._inPlace ? TABLE_REACH : TABLE_SEEK, { exclude: _badTables });
     const plan = planIntermediates(name, items, { count: args.count || 1, tableAvailable });
     if (!plan.known) return null;
     if (!plan.ok) return { ok: false, reason: plan.reason };
@@ -2124,7 +2128,8 @@ async function _craftSmartRaw(args) {
   // TABLE : en reprendre une posée AVANT d'en fabriquer une (21/10, NethBot2 : table du four abandonnée
   // à 1-2 blocs — `reclaim_failed` — puis le but `crafting_table` re-crafte en boucle sans effet). Le
   // but veut une table EN POCHE : une table posée et reprenable la donne sans planche ni craft.
-  if (args && args.name === 'crafting_table'
+  const inPlace = !!(args && args._inPlace);
+  if (args && args.name === 'crafting_table' && !inPlace
       && !((bot.inventory && bot.inventory.items()) || []).some((i) => i.name === 'crafting_table')) {
     const got = await recycleNearbyTable(blacklistBadTable);
     if (got) return { ok: true, recycled: true };
@@ -2133,7 +2138,7 @@ async function _craftSmartRaw(args) {
   if (pre) return pre;
   const r = await craftItem(bot, args);
   if (r.ok) return r;
-  if (r.reason === 'no_recipe' || r.reason === 'craft_failed') return withCraftingTable(() => craftItem(bot, args));
+  if (r.reason === 'no_recipe' || r.reason === 'craft_failed') return withCraftingTable(() => craftItem(bot, args), { inPlace });
   return r;
 }
 
@@ -3530,6 +3535,7 @@ async function maybeNightShelter(proactive = false, opts = {}) {
           emit, hostilesNear: hostilesNearNow, worn: () => _wornArmor().size,
           exitThreats: dawnExitThreatsNow, onExit: exitAwayFromThreats,   // sortie sûre (fix 20/10)
           endWhenDisplaced: () => nightLockdownNow(),
+          whileSealed: shelterWhileSealed,                                  // crafter dans le trou (22/10)
         }), SHELTER_HARD_MAX_MS,
         () => { shTok.cancelled = true; emit({ type: 'shelter', action: 'hard_timeout' }); try { stopMotion({ arm: true }); } catch (e) {} });
         // GARDE (22/10) : 3 abris `cancelled` d'affilée en < 2 min = un jeton qui naît/meurt aussitôt,
@@ -3543,6 +3549,15 @@ async function maybeNightShelter(proactive = false, opts = {}) {
             lastShelterT = 0;
           }
         } catch (e) { /* comptabilité best-effort */ }
+        // PIOCHE FAITE DANS LE TROU (22/10) : l'abri rend la main SANS sortie (toit intact) → la nuit au
+        // travail descend en escalier depuis le fond du puits. Encore dans `_shelterInFlight` : aucun timer
+        // ne vole le bot entre les deux. Ratée → le bot reste au fond de son trou ; la discipline de nuit
+        // le ré-abrite là (20 s plus tard), sans jamais ouvrir vers la surface.
+        if (sres && sres.handoff === 'night_work' && !shTok.cancelled && !taskToken.cancelled) {
+          const ho = (_shelterCraft && _shelterCraft.handoff) || { cellMode: sres.mode };
+          if (_shelterCraft) _shelterCraft.handoff = null;
+          try { await tryNightWork({ fromShelter: ho }); } catch (e) { /* best-effort */ }
+        }
         if (IS_MAPPER) {
           const reason = (sres && sres.reason) || null;
           // borne de 13 min atteinte = nuit passée terré ; tâche annulée (mort, ordre) ≠ trou raté
@@ -4658,7 +4673,8 @@ async function nightTorch() {
  * La tombée de la nuit, bot nu en surface : descendre travailler au lieu d'attendre l'aube.
  * true = le bot est maintenant sous terre et scellé (le planner reprend) ; false = l'abri historique.
  */
-async function tryNightWork() {
+async function tryNightWork(opts = {}) {
+  const fromShelter = (opts && opts.fromShelter) || null;   // { surfaceY, cellMode } : départ du fond de l'abri
   const night = _nightId();
   const p0 = bot.entity && bot.entity.position;
   if (!p0) return false;
@@ -4671,6 +4687,8 @@ async function tryNightWork() {
       y: q.y, hasPick: items.some((i) => i && /_pickaxe$/.test(i.name)), inWater,
       hostileDist: _nearestThreatDist(), isMapper: IS_MAPPER, isLumberjack: isLumberjackObjective(),
       triedThisNight: night != null && _nightWorkTriedNight === night,
+      fromShelter: !!fromShelter, cellMode: fromShelter ? (fromShelter.cellMode || 'pit') : undefined,
+      surfaceY: fromShelter ? fromShelter.surfaceY : undefined,
     };
   };
   let plan = nightWorkPlan(sig());
@@ -4682,7 +4700,7 @@ async function tryNightWork() {
   }
   if (plan.action !== 'descend') return false;
   _nightWorkTriedNight = night;
-  emit({ type: 'night_work', phase: 'descend', y: Math.round(p0.y), target: plan.targetY });
+  emit({ type: 'night_work', phase: fromShelter ? 'from_shelter' : 'descend', y: Math.round(p0.y), target: plan.targetY });
   const r = await withTimeout(descendDiagonal(bot, { targetY: plan.targetY, maxDepth: 60, onSurvivalTick: descentSurvivalTick }, taskToken),
     NIGHT_WORK_DESCENT_MS, () => { try { stopMotion(); } catch (e) {} });
   if (taskToken.cancelled) return false;
@@ -4697,6 +4715,66 @@ async function tryNightWork() {
   const torch = await nightTorch();
   emit({ type: 'night_work', phase: 'sealed', y: Math.round(q.y), sealed, torch });
   return true;
+}
+
+// ─── CRAFTER DANS LE TROU (22/10, nightWork.shelterCraftNext) ────────────────────────────────────
+// Chrono « zéro → armure de fer » : 9 min de `night_hold` à la 1re nuit avec des bûches en poche, sans
+// pioche (la nuit au travail l'exige). Un joueur, dans son trou fermé, fabrique planches, bâtons, table
+// (posée dans la paroi du puits, reprise aussitôt), pioche en bois — puis descend en escalier. Appelé par
+// shelterUntilDawn (`whileSealed`) à chaque pas de l'attente : UN craft par pas, jamais de marche
+// (`_inPlace`), toit jamais touché. Pioche en main → 'leave_down' : l'abri rend la main sans sortir et
+// maybeNightShelter enchaîne tryNightWork({ fromShelter }).
+// ⚠️ NIVEAU MODULE (piège #56) : lu par le hook (appelé depuis l'abri) et par maybeNightShelter.
+let _shelterCraft = null;          // { night, failed: Set, handoff: { surfaceY, cellMode } | null }
+const SHELTER_CRAFT_MS = 45000;    // un craft (file d'attente comprise) ; withTimeout n'annule rien → stopMotion
+
+/** Le craft a pu pousser le bot d'un bloc (ramassage) : le ramener sur sa case d'abri. Jamais de throw. */
+async function _shelterRecenter(anchor) {
+  try {
+    const p = bot.entity && bot.entity.position;
+    if (!anchor || !p || Math.hypot(p.x - anchor.x, p.z - anchor.z) < 0.7) return;
+    await withTimeout(bot.pathfinder.goto(new pfGoals.GoalBlock(Math.floor(anchor.x), Math.floor(anchor.y), Math.floor(anchor.z))),
+      8000, () => { try { stopMotion(); } catch (e) {} });
+  } catch (e) { /* best-effort */ }
+}
+
+/** Hook `whileSealed` de l'abri : → null (rester) | 'leave_down' (pioche en main, descendre). */
+async function shelterWhileSealed(info) {
+  if (IS_MAPPER || !info) return null;
+  try { if (!nightLockdownNow()) return null; } catch (e) { return null; }
+  if (taskToken.cancelled || migrationOwnsBot()) return null;
+  let wet = false;
+  try { wet = isInWater(bot); } catch (e) { wet = false; }
+  if (wet) return null;
+  const night = _nightId();
+  if (!_shelterCraft || _shelterCraft.night !== night) _shelterCraft = { night, failed: new Set(), handoff: null };
+  const st = _shelterCraft;
+  const items = (bot.inventory && bot.inventory.items()) || [];
+  const inv = items.map((i) => ({ name: i.name, count: i.count }));
+  const next = shelterCraftNext(inv, { cellMode: info.mode, skip: st.failed });
+  if (next) {
+    const r = await withTimeout(craftSmart({ name: next.name, count: next.count, _inPlace: true }), SHELTER_CRAFT_MS,
+      () => { try { stopMotion(); } catch (e) {} });
+    const ok = !!(r && r.ok);
+    // PV critiques : refus passager, pas un verdict sur la recette (on retentera au pas suivant).
+    if (!ok && !(r && r.reason === 'low_hp_skip')) st.failed.add(next.name);
+    emit({ type: 'night_craft', goal: next.name, count: next.count, ok, reason: ok ? null : ((r && r.reason) || 'unknown'), mode: info.mode });
+    await _shelterRecenter(info.anchor);
+    return null;
+  }
+  const p = bot.entity && bot.entity.position;
+  if (!p) return null;
+  const a = info.anchor;
+  const plan = nightWorkPlan({
+    y: p.y, hasPick: items.some((i) => i && /_pickaxe$/.test(i.name)), inWater: false,
+    isMapper: IS_MAPPER, isLumberjack: isLumberjackObjective(),
+    triedThisNight: night != null && _nightWorkTriedNight === night,
+    fromShelter: true, cellMode: info.mode,
+    surfaceY: a && Number.isFinite(a.y) ? a.y + (Number(info.depth) || 0) : null,
+  });
+  if (plan.action !== 'descend') return null;
+  st.handoff = { surfaceY: plan.surfaceY, cellMode: info.mode };
+  return 'leave_down';
 }
 
 // ─── PIOCHE CASSÉE EN BAS (21/10, NethBot2 : 6 `no_pickaxe` en 37 min d'iron_deep) ──────────────

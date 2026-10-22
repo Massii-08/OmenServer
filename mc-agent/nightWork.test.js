@@ -63,3 +63,56 @@ test('nightSealCells : bouche la marche d où l on vient et le dessus de la têt
   assert.ok(!all.some((c) => c.y < 0));
   assert.deepStrictEqual(N.nightSealCells(null, () => true), []);
 });
+
+// ─── CRAFTER DANS LE TROU (22/10) ───────────────────────────────────────────────────────────────
+test('shelterCraftNext : 3 bûches, rien d autre → planches, puis table, bâtons, pioche en bois (une étape à la fois)', () => {
+  assert.deepStrictEqual(N.shelterCraftNext([{ name: 'oak_log', count: 3 }], { cellMode: 'pit' }), { name: 'oak_planks', count: 3 });
+  assert.deepStrictEqual(N.shelterCraftNext([{ name: 'oak_planks', count: 12 }], { cellMode: 'pit' }), { name: 'crafting_table', count: 1 });
+  assert.deepStrictEqual(N.shelterCraftNext([{ name: 'oak_planks', count: 8 }, { name: 'crafting_table', count: 1 }], { cellMode: 'pit' }), { name: 'stick', count: 1 });
+  assert.deepStrictEqual(N.shelterCraftNext([{ name: 'oak_planks', count: 6 }, { name: 'crafting_table', count: 1 }, { name: 'stick', count: 4 }], { cellMode: 'pit' }),
+    { name: 'wooden_pickaxe', count: 1 });
+});
+
+test('shelterCraftNext : pas assez de bois pour aller jusqu à la pioche → rien (pas de craft inutile)', () => {
+  assert.strictEqual(N.shelterCraftNext([{ name: 'oak_log', count: 1 }], { cellMode: 'pit' }), null);
+  assert.strictEqual(N.shelterCraftNext([{ name: 'oak_planks', count: 8 }], { cellMode: 'pit' }), null);
+  assert.strictEqual(N.shelterCraftNext([], { cellMode: 'pit' }), null);
+  assert.strictEqual(N.shelterCraftNext(null), null);
+});
+
+test('shelterCraftNext : cellule MURÉE → aucune recette 3×3 (la table ne se pose pas dans un mur posé)', () => {
+  assert.deepStrictEqual(N.shelterCraftNext([{ name: 'oak_log', count: 3 }], { cellMode: 'walled' }), null);
+  const inv = [{ name: 'wooden_pickaxe', count: 1 }, { name: 'coal', count: 2 }, { name: 'stick', count: 4 }];
+  assert.deepStrictEqual(N.shelterCraftNext(inv, { cellMode: 'walled' }), { name: 'torch', count: 1 }, 'torches = 2×2, permises');
+});
+
+test('shelterCraftNext : un craft raté cet abri n est pas retenté', () => {
+  const inv = [{ name: 'oak_planks', count: 12 }];
+  assert.strictEqual(N.shelterCraftNext(inv, { cellMode: 'pit', skip: new Set(['crafting_table']) }), null);
+  assert.strictEqual(N.shelterCraftNext([{ name: 'oak_log', count: 3 }], { cellMode: 'pit', skip: ['oak_planks'] }), null);
+});
+
+test('shelterCraftNext : avec pioche en bois + cobble en poche → pioche pierre, épée, four, torches', () => {
+  const base = [{ name: 'wooden_pickaxe', count: 1 }, { name: 'crafting_table', count: 1 }, { name: 'stick', count: 4 }];
+  assert.deepStrictEqual(N.shelterCraftNext(base.concat([{ name: 'cobblestone', count: 3 }]), { cellMode: 'pit' }), { name: 'stone_pickaxe', count: 1 });
+  const inv2 = [{ name: 'stone_pickaxe', count: 1 }, { name: 'crafting_table', count: 1 }, { name: 'stick', count: 2 }, { name: 'cobblestone', count: 10 }];
+  assert.deepStrictEqual(N.shelterCraftNext(inv2, { cellMode: 'pit' }), { name: 'stone_sword', count: 1 });
+  const inv3 = inv2.concat([{ name: 'stone_sword', count: 1 }]);
+  assert.deepStrictEqual(N.shelterCraftNext(inv3, { cellMode: 'pit' }), { name: 'furnace', count: 1 });
+  // rien en poche qui serve : null → l'appelant passe à la descente
+  assert.strictEqual(N.shelterCraftNext([{ name: 'stone_pickaxe', count: 1 }], { cellMode: 'pit' }), null);
+  // bâtons manquants mais planches : bâtons d'abord
+  const inv4 = [{ name: 'wooden_pickaxe', count: 1 }, { name: 'crafting_table', count: 1 }, { name: 'oak_planks', count: 2 }, { name: 'cobblestone', count: 3 }];
+  assert.deepStrictEqual(N.shelterCraftNext(inv4, { cellMode: 'pit' }), { name: 'stick', count: 1 });
+});
+
+test('nightWorkPlan fromShelter : surface relevée au-dessus du puits, hostiles ignorés, cellule murée refusée', () => {
+  // fond du puits à 67, surface 70 → cible 58 (12 sous la SURFACE, pas sous le fond)
+  assert.deepStrictEqual(N.nightWorkPlan({ y: 67, hasPick: true, fromShelter: true, cellMode: 'pit', surfaceY: 70, hostileDist: 2 }),
+    { action: 'descend', targetY: 58, surfaceY: 70 });
+  assert.strictEqual(N.nightWorkPlan({ y: 67, hasPick: true, fromShelter: true, cellMode: 'walled', surfaceY: 70 }).why, 'walled');
+  assert.strictEqual(N.nightWorkPlan({ y: 67, hasPick: false, fromShelter: true, cellMode: 'pit', surfaceY: 70 }).action, 'shelter');
+  assert.strictEqual(N.nightWorkPlan({ y: 67, hasPick: true, fromShelter: true, cellMode: 'pit', surfaceY: 70, triedThisNight: true }).action, 'shelter');
+  // sans fromShelter, le comportement historique (fuite) est intact
+  assert.strictEqual(N.nightWorkPlan({ y: 70, hasPick: true, hostileDist: 2 }).action, 'flee');
+});
