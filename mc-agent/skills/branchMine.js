@@ -69,14 +69,36 @@ function stopMotion(bot) {
 // no-op silencieux. Si la cible est inaccessible, on ne fait pas échouer : le dig direct prendra
 // le relais et échouera proprement avec dig_failed si vraiment hors range. Le goto est BORNÉ
 // (opts.approachTimeoutMs, déf 20s) : sur timeout on coupe le mouvement et on rend la main.
+// INSTRUMENTATION OOM (23/10) : ~85 sessions mortes « heap out of memory » pendant une approche du
+// serpentin, sans le moindre event. `bm_approach` borne chaque goto (start/end, durée, timeout) et la
+// phase courante est lisible par l'échantillonneur de heap d'index.js (`currentPhase()`).
 async function approach(bot, target, range = 3, opts = null) {
   if (!bot.pathfinder || !bot.pathfinder.goto) return;
   const ms = (opts && opts.approachTimeoutMs) || 20000;
+  const t0 = Date.now();
+  const tgt = { x: target.x, y: target.y, z: target.z };
+  setPhase('approach', { target: tgt, range }, opts);
+  try { _emit({ type: 'bm_approach', phase: 'start', range, target: tgt }); } catch (e) {}
+  let timedOut = false;
+  let rejected = false;
   try {
     const res = await withTimeout(bot.pathfinder.goto(buildNearGoal(target.x, target.y, target.z, range)), ms);
-    if (res && res.timedOut) stopMotion(bot);   // goto trop long → on arrête le mouvement
-  } catch (e) { /* cible bloquée → on tente quand même le dig direct */ }
+    timedOut = !!(res && res.timedOut);
+    rejected = !!(res && res.rejected);
+    if (timedOut) stopMotion(bot);   // goto trop long → on arrête le mouvement
+  } catch (e) { rejected = true; /* cible bloquée → on tente quand même le dig direct */ }
+  try { _emit({ type: 'bm_approach', phase: 'end', timedOut, rejected, ms: Date.now() - t0 }); } catch (e) {}
+  setPhase('approach_done', null, opts);
 }
+
+// Phase courante du branch-mine (NIVEAU MODULE : lue par un timer d'index.js, piège #56). Copie des
+// coordonnées, jamais une référence à `bot.entity.position` (mutée en place).
+let _phase = { name: 'idle', at: 0 };
+function setPhase(name, extra, opts) {
+  _phase = Object.assign({ name, at: Date.now() }, extra || {});
+  if (opts && typeof opts.onPhase === 'function') { try { opts.onPhase(name, extra || null); } catch (e) { /* jamais bloquant */ } }
+}
+function currentPhase() { return _phase; }
 
 const COBBLE_RESERVE_MIN = 8;
 const COBBLE_LOW_STREAK = 12;   // pas sous la réserve SANS gain avant d'abandonner `cobble_low`
@@ -280,6 +302,7 @@ async function placeTorchAt(bot, floorTarget) {
 // lumière. `skyLight` est loggué aussi, mais il vaut 0 en profondeur : il ne peut pas expliquer
 // le symptôme sous terre, seulement en surface.
 async function placeTorchLogged(bot, floorTarget, light) {
+  _phase = { name: 'torch', at: Date.now() };
   let skyLight = null;
   try { const c = bot.blockAt(floorTarget); if (c && c.skyLight != null) skyLight = c.skyLight; } catch (e) {}
   const r = await placeTorchAt(bot, floorTarget);
@@ -330,6 +353,7 @@ const NEIGH_FACES = [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0
 // TOUTE la veine connectée du même type (BFS 6-FACES orthogonales) avant de reprendre la branche — un
 // mineur humain SUIT la veine face par face ; un X-rayer casse à travers les coins. Borné (maxVein).
 async function floodFillVein(bot, start, token, maxVein = 64) {
+  try { _phase = { name: 'vein', at: Date.now(), target: { x: start.x, y: start.y, z: start.z } }; } catch (e) {}
   const b0 = bot.blockAt(p(start.x, start.y, start.z));
   if (!b0 || !ORE_NAMES.has(b0.name)) return 0;
   const fam = oreFamily(b0.name);
@@ -516,6 +540,11 @@ async function safeDigAndOpportunism(bot, target, token, debug, loopOpts) {
  *  - opts.torchEvery (déf 0=off) : torche au sol tous les N paliers du tunnel principal.
  */
 async function branchMine(bot, opts = {}, token = null) {
+  try { return await _branchMine(bot, opts || {}, token); }
+  finally { setPhase('idle', null, null); }
+}
+
+async function _branchMine(bot, opts = {}, token = null) {
   const targetY = opts.targetY !== undefined ? opts.targetY : -54;
   const mainLength = opts.mainLength || 32;
   const branchSpacing = opts.branchSpacing || 3;
@@ -540,6 +569,7 @@ async function branchMine(bot, opts = {}, token = null) {
   // (async → bool) re-crafte une pioche SUR PLACE (3 cobble + 2 bâtons, table portable) ; vrai → on
   // retente le même bloc et le couloir continue, au lieu d'abandonner le branch-mine. Une fois par bloc.
   const digStep = async (t) => {
+    setPhase('dig', { target: { x: t.x, y: t.y, z: t.z } }, opts);
     let r = await safeDigAndOpportunism(bot, t, token, debug, opts);
     if (r && !r.ok && r.reason === 'no_pickaxe' && typeof opts.onNoPickaxe === 'function') {
       let fixed = false;
@@ -549,6 +579,7 @@ async function branchMine(bot, opts = {}, token = null) {
     return r;
   };
   const start = bot.entity && bot.entity.position;
+  setPhase('enter', start ? { x: start.x, y: start.y, z: start.z } : null, opts);
   dbg('start', { phase: 'branchMine:enter', y: start ? start.y : null, x: start ? start.x : null, z: start ? start.z : null, targetY, mainLength, wall: countWallable(bot) });
   if (!start) { dbg('start', { phase: 'branchMine:bail', reason: 'no_pos' }); return { ok: false, reason: 'no_pos' }; }
   // Trop HAUT (au-dessus de la cible) de >2 = mauvaise couche → bail. Trop PROFOND est SANS RISQUE
@@ -669,13 +700,14 @@ async function branchMine(bot, opts = {}, token = null) {
       if (checkStall()) { stopReasonS = 'stalled'; break; }
       if (cobbleLow()) { stopReasonS = 'cobble_low'; break; }
       if (stopReached()) break;                             // quota du type rempli
-      if (onSurvivalTick && n % survivalEvery === 0) { try { await onSurvivalTick(n); } catch (e) { /* best-effort */ } }
+      if (onSurvivalTick && n % survivalEvery === 0) { setPhase('survival', null, opts); try { await onSurvivalTick(n); } catch (e) { /* best-effort */ } }
       const footTarget = p(cx + heading.dx, oy, cz + heading.dz);
       const headTarget = p(footTarget.x, footTarget.y + 1, footTarget.z);
       try { await approach(bot, footTarget, 3, opts); } catch (e) { /* dig direct prendra le relais */ }
       // Anti-chute : trou sous la prochaine case (grotte/ravin) → on ne s'y jette PAS, on TOURNE
       // (le serpentin contourne au lieu de tomber/stopper — plus robuste qu'un break sur 1er trou).
       let floorOk = true;
+      setPhase('floor', null, opts);
       try { floorOk = await ensureFloor(bot, footTarget); } catch (e) { /* best-effort */ }
       if (!floorOk) { turnAway(); continue; }
       let hardStop = false;
@@ -705,6 +737,7 @@ async function branchMine(bot, opts = {}, token = null) {
       // Grotte percée sur le côté ou devant : on la BOUCHE ; devant → on tourne au lieu de la traverser.
       let caveAhead = false;
       if (sealCaves) {
+        setPhase('seal', null, opts);
         try { caveAhead = !!(await sealCaveOpenings(bot, footTarget, heading, { front: true })).front; } catch (e) { /* best-effort */ }
       }
       const torchHere = async () => {
@@ -855,4 +888,4 @@ function deltaOres(a, b) {
   return { diamond: Math.max(0, b.diamond - a.diamond), iron: Math.max(0, b.iron - a.iron), coal: Math.max(0, b.coal - a.coal) };
 }
 
-module.exports = { branchMine, cardinalFromYaw, leftOf, ORE_NAMES, WALL_BLOCKS, floodFillVein, oreFamily, sealCaveOpenings, placeTorchAt, CAVE_MIN_AIR, TORCH_JITTER, TORCH_CORNER_MIN };
+module.exports = { branchMine, currentPhase, approach, cardinalFromYaw, leftOf, ORE_NAMES, WALL_BLOCKS, floodFillVein, oreFamily, sealCaveOpenings, placeTorchAt, CAVE_MIN_AIR, TORCH_JITTER, TORCH_CORNER_MIN };

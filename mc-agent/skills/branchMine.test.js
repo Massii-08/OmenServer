@@ -763,3 +763,50 @@ test('branchMine serpentin SANS lawn : comportement historique (pas de champ law
   const r = await branchMine(bot, { targetY: 16, mainLength: 6, serpentine: true, rng: () => 0 });
   assert.strictEqual(r.lawn, undefined);
 });
+
+// ── INSTRUMENTATION OOM (23/10) : bm_approach + phase courante ────────────────────────────────────
+function captureStdout(fn) {
+  const orig = process.stdout.write.bind(process.stdout);
+  const lines = [];
+  process.stdout.write = (chunk, ...rest) => {
+    const s = String(chunk);
+    if (s.startsWith('{')) { try { lines.push(JSON.parse(s)); return true; } catch (e) { /* pas un event */ } }
+    return orig(chunk, ...rest);
+  };
+  return Promise.resolve().then(fn).finally(() => { process.stdout.write = orig; }).then(() => lines);
+}
+
+test('approach : goto qui ne tranche jamais → bm_approach start puis end timedOut, phase approach_done', async () => {
+  const { approach, currentPhase } = require('./branchMine');
+  const seen = [];
+  const bot = { pathfinder: { goto: () => new Promise(() => {}), setGoal: () => {} }, setControlState() {} };
+  const evs = await captureStdout(() => approach(bot, { x: 1, y: 15, z: 2 }, 3,
+    { approachTimeoutMs: 20, onPhase: (n) => seen.push(n) }));
+  const bm = evs.filter((e) => e.type === 'bm_approach');
+  assert.strictEqual(bm.length, 2);
+  assert.strictEqual(bm[0].phase, 'start');
+  assert.deepStrictEqual(bm[0].target, { x: 1, y: 15, z: 2 });
+  assert.strictEqual(bm[1].phase, 'end');
+  assert.strictEqual(bm[1].timedOut, true);
+  assert.ok(bm[1].ms >= 15);
+  assert.deepStrictEqual(seen, ['approach', 'approach_done']);
+  assert.strictEqual(currentPhase().name, 'approach_done');
+});
+
+test('approach : goto rejeté → end rejected, pas timedOut', async () => {
+  const { approach } = require('./branchMine');
+  const bot = { pathfinder: { goto: () => Promise.reject(new Error('NoPath')) } };
+  const evs = await captureStdout(() => approach(bot, { x: 0, y: 0, z: 0 }, 3, { approachTimeoutMs: 1000 }));
+  const end = evs.find((e) => e.type === 'bm_approach' && e.phase === 'end');
+  assert.strictEqual(end.rejected, true);
+  assert.strictEqual(end.timedOut, false);
+});
+
+test('branchMine : la phase repasse à idle en sortie (même en bail)', async () => {
+  const { currentPhase } = require('./branchMine');
+  const { bot } = makeBot({ y: 10 });
+  const phases = [];
+  await captureStdout(() => branchMine(bot, { targetY: -54, onPhase: (n) => phases.push(n) }));
+  assert.ok(phases.includes('enter'));
+  assert.strictEqual(currentPhase().name, 'idle');
+});

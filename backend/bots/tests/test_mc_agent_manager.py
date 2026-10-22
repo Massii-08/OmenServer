@@ -1970,3 +1970,40 @@ def test_mapper_respawn_conserve_no_give(monkeypatch, no_give):
     assert relances.get("gid") == "g12" and relances.get("bid") == "m1"
     assert relances["objective"] == "mapper"
     assert relances["no_give"] is no_give
+
+
+def _oom_capture_cmd(monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    captured = {}
+    def fake_popen(cmd, **kw):
+        captured["cmd"] = cmd
+        return FakeProc('{"type":"status","state":"spawned"}\n')
+    monkeypatch.setattr(mgr.subprocess, "Popen", fake_popen)
+    sid = mgr.start_session("h", 25565, "B", None, "offline")
+    mgr._sessions[sid]["thread"].join(timeout=2)
+    return captured["cmd"]
+
+
+def test_cmd_capture_oom_options_node_avant_le_script(monkeypatch):
+    """OOM 23/10 : instantané du tas près de la limite, écrit dans le dossier des logs. Les options
+    node doivent précéder index.js (après, elles partiraient au script, pas à node)."""
+    cmd = _oom_capture_cmd(monkeypatch)
+    script = cmd.index(str(mgr.MC_AGENT_DIR / "index.js"))
+    assert "--heapsnapshot-near-heap-limit=1" in cmd
+    assert f"--diagnostic-dir={mgr.LOGS_DIR}" in cmd
+    assert f"--max-old-space-size={mgr.NODE_HEAP_MB}" in cmd
+    for opt in ("--heapsnapshot-near-heap-limit=1", f"--diagnostic-dir={mgr.LOGS_DIR}",
+                f"--max-old-space-size={mgr.NODE_HEAP_MB}"):
+        assert cmd.index(opt) < script
+    assert mgr.LOGS_DIR.is_dir()  # le dossier de diagnostic existe avant le spawn
+
+
+def test_cmd_capture_oom_coupee_au_quota_d_instantanes(monkeypatch):
+    """Un instantané ≈ la taille du tas : au-delà de HEAPSNAP_MAX fichiers, plus de capture."""
+    mgr.LOGS_DIR.mkdir(parents=True, exist_ok=True)
+    for i in range(mgr.HEAPSNAP_MAX):
+        (mgr.LOGS_DIR / f"Heap.{i}.heapsnapshot").write_text("x")
+    cmd = _oom_capture_cmd(monkeypatch)
+    assert not any(c.startswith("--heapsnapshot-near-heap-limit") for c in cmd)
+    assert not any(c.startswith("--diagnostic-dir") for c in cmd)
+    assert f"--max-old-space-size={mgr.NODE_HEAP_MB}" in cmd  # le plafond, lui, reste

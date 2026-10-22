@@ -81,7 +81,8 @@ const { smelt, logsToConvert, fuelUnits } = require('./skills/smelt');
 const { descendDiagonal: _descendDiagonalRaw } = require('./skills/descendDiagonal');   // gardé plus bas (anti-vide)
 const { pickTier, stoneBatchWant, stoneStairPlan } = require('./stoneDig');
 const { pickWornOutToReport } = require('./wornOut');
-const { branchMine, floodFillVein } = require('./skills/branchMine');
+const { branchMine: _branchMineRaw, floodFillVein, currentPhase: bmCurrentPhase } = require('./skills/branchMine');   // gardé plus bas (disjoncteur OOM)
+const heapGuard = require('./heapGuard');   // OOM « au même endroit » du branch-mine (23/10)
 const { caveHunt } = require('./skills/caveHunt');   // cave-first diamant (Massii 26/07)
 const { caveIron: caveIronSkill } = require('./skills/caveIron');   // fer en grotte (Massii 20/10)
 const caveIronPick = require('./caveIron');
@@ -547,6 +548,40 @@ const _fightBreaker = createFightBreaker();
 let _fightBreakerWired = false;
 let _fightRefusedAt = -Infinity;  // event `fight_refused` : au plus 1 / 3 s
 let _fightRefuseFleeAt = -Infinity; // fuite sur refus : au plus 1 / 1,5 s (anti-thrash du but de fuite)
+// ── OOM DU BRANCH-MINE (23/10, heapGuard.js) ─────────────────────────────────────────────────────
+// ≈85 sessions mortes « JavaScript heap out of memory » : heap 150 → 620 Mo en 10-25 s, AUCUN event,
+// pendant une approche du serpentin, et la relance re-crashe AU MÊME ENDROIT. NIVEAU MODULE (piège #56) :
+// l'échantillonneur et le wrapper `branchMine` (plus bas) lisent ces variables hors de onSpawn.
+let _bmPhase = null;              // phase courante du branch-mine (posée par onPhase), null hors branchMine
+let _bmMarkWriteAt = null;        // dernière écriture de la marque de position (throttle 3 s)
+let _bmCrashChecked = false;      // contrôle « crash au même endroit » : une fois par process
+let _bmCrashHits = 0;             // crashs consécutifs au même endroit (repris de la marque)
+let _heapHighAt = null;           // dernier event heap_high (throttle 5 s)
+setInterval(() => {
+  try {
+    const mu = process.memoryUsage();
+    const heapUsedMb = Math.round(mu.heapUsed / 1048576);
+    const now = Date.now();
+    if (!heapGuard.shouldEmitHeapHigh(heapUsedMb, _heapHighAt, now)) return;
+    _heapHighAt = now;
+    let pfGoal = null; let moving = null; let mining = null; let ticks = null; let pos = null;
+    try {
+      pfGoal = heapGuard.goalLabel(bot.pathfinder && bot.pathfinder.goal);
+      moving = !!(bot.pathfinder && bot.pathfinder.isMoving && bot.pathfinder.isMoving());
+      mining = !!(bot.pathfinder && bot.pathfinder.isMining && bot.pathfinder.isMining());
+      ticks = bot.listenerCount ? bot.listenerCount('physicsTick') : null;
+      const p = bot.entity && bot.entity.position;
+      if (p) pos = { x: Math.round(p.x), y: Math.round(p.y), z: Math.round(p.z) };
+    } catch (e) { /* bot pas encore créé (TDZ) : on émet quand même le heap */ }
+    let bmPh = null;
+    try { const ph = bmCurrentPhase(); bmPh = ph && ph.name !== 'idle' ? Object.assign({ ageMs: now - ph.at }, ph) : null; } catch (e) {}
+    emit({ type: 'heap_high', heapUsedMb, heapTotalMb: Math.round(mu.heapTotal / 1048576),
+      rssMb: Math.round(mu.rss / 1048576), externalMb: Math.round(mu.external / 1048576),
+      goal: (_curGoal && _curGoal.name) || null, pfGoal, moving, mining, physicsTickListeners: ticks,
+      phase: _bmPhase, bm: bmPh, pos });
+  } catch (e) { /* diagnostic : ne crash jamais */ }
+}, 2000);
+
 setInterval(() => {
   try {
     const d = _goalTrace.drain();
@@ -3409,7 +3444,7 @@ async function runGoalSkill(goal) {
     // mouillées + scellement inopérant) ou stall → se DÉCALER à pied 30-50 blocs À PROFONDEUR
     // (pathfinder creuse son chemin) avant que le planner ne retente iron_deep au même endroit.
     // Le chantier noyé est oublié / re-marqué au sec (sinon /home work ramènerait dans la nappe).
-    if (NO_GIVE && rBM && rBM.ok === false && (rBM.reason === 'waterlocked' || rBM.reason === 'stalled')
+    if (NO_GIVE && rBM && rBM.ok === false && (rBM.reason === 'waterlocked' || rBM.reason === 'stalled' || rBM.reason === 'crash_spot')
         && bot.entity && bot.entity.position) {
       const _ang = Math.random() * Math.PI * 2;
       const _d = 30 + Math.random() * 20;
@@ -8745,6 +8780,99 @@ async function descendDiagonal(b, opts, token) {
     return { ok: false, reachedY: y, reason: 'near_base' };
   }
   return _descendDiagonalRaw(b, opts, token);
+}
+
+/** Persiste la marque de position du branch-mine (mémo base, FUSION). `force` ignore le throttle. */
+function _bmPersistMark(phase, force) {
+  try {
+    const now = Date.now();
+    if (!force && !heapGuard.shouldPersistMark(_bmMarkWriteAt, now)) return;
+    const m = heapGuard.bmMark(bot.entity && bot.entity.position, now, phase);
+    if (!m) return;
+    if (_bmCrashHits) m.hits = _bmCrashHits;
+    _bmMarkWriteAt = now;
+    saveBaseState(Object.assign({}, loadBaseState() || {}, { [heapGuard.BM_MARK_KEY]: m }));
+  } catch (e) { /* best-effort : sans marque, le disjoncteur ne voit rien, rien ne casse */ }
+}
+function _bmClearMark() {
+  try {
+    const st = loadBaseState();
+    if (!st || !st[heapGuard.BM_MARK_KEY]) return;
+    const next = Object.assign({}, st);
+    delete next[heapGuard.BM_MARK_KEY];
+    saveBaseState(next);
+  } catch (e) { /* best-effort */ }
+}
+
+/**
+ * Contrôle « crash au même endroit » (1re entrée en branch-mine du process). La marque n'est effacée
+ * qu'à la sortie NORMALE de branchMine : si elle est là, récente et à ≤ 4 blocs, le process précédent
+ * est mort en plein branch-mine ici. On décale alors le départ (8-12 blocs perpendiculairement, nouveau
+ * cap, tracé en lacets oublié). Au 3e crash d'affilée au même endroit → on n'y mine plus (`crash_spot`),
+ * l'appelant se décale à pied comme pour un aquifère.
+ * Rend { skip:bool } ; modifie `o` (heading / lawnState) en place.
+ */
+async function _bmCrashGuard(o) {
+  if (_bmCrashChecked) return { skip: false };
+  _bmCrashChecked = true;
+  let saved = null;
+  try { const st = loadBaseState(); saved = st && st[heapGuard.BM_MARK_KEY]; } catch (e) { saved = null; }
+  const p = bot.entity && bot.entity.position;
+  const pos = p ? { x: p.x, y: p.y, z: p.z } : null;
+  if (!heapGuard.isCrashSpot(saved, pos, Date.now())) return { skip: false };
+  _bmCrashHits = ((saved && Number(saved.hits)) || 0) + 1;
+  const t = heapGuard.crashShiftTarget(pos, o.heading || bot._branchHeading || null);
+  emit({ type: 'bm_crash_spot', hits: _bmCrashHits, mark: { x: saved.x, y: saved.y, z: saved.z, phase: saved.phase || null },
+    ageMs: Date.now() - saved.at, x: Math.round(pos.x), y: Math.round(pos.y), z: Math.round(pos.z),
+    shift: t ? { x: t.x, y: t.y, z: t.z, dist: t.dist } : null });
+  // La marque est ré-écrite AVANT le décalage (avec le compteur) : si c'est le déplacement lui-même qui
+  // tue le process, la relance suivante le compte aussi.
+  _bmPersistMark('crash_guard', true);
+  if (_bmCrashHits >= 3) return { skip: true };
+  if (t) {
+    try {
+      await withTimeout(bot.pathfinder.goto(new pfGoals.GoalNear(t.x, t.y, t.z, 2)), 15000,
+        () => { try { stopMotion(); } catch (e) {} });
+    } catch (e) { /* jugé ci-dessous */ }
+    const q = bot.entity && bot.entity.position;
+    emit({ type: 'bm_crash_shift', moved: q ? Math.round(Math.hypot(q.x - pos.x, q.z - pos.z)) : null,
+      heading: t.heading });
+    o.heading = t.heading;
+    bot._branchHeading = t.heading;
+    o.lawnState = null;          // le front en lacets mémorisé EST la case qui a tué le process
+  }
+  return { skip: false };
+}
+
+/**
+ * branchMine gardé (OOM 23/10) : phase courante pour `heap_high`, marque de position persistée pendant
+ * le tunnel, effacée à la sortie normale, et disjoncteur « crash au même endroit » au 1er appel du process.
+ */
+async function branchMine(b, opts, token) {
+  const o = Object.assign({}, opts || {});
+  const userOnPhase = o.onPhase;
+  o.onPhase = (name, extra) => {
+    _bmPhase = name;
+    if (name === 'enter') _bmPersistMark(name, true);
+    else if (name === 'approach' || name === 'dig' || name === 'seal') _bmPersistMark(name, false);
+    if (typeof userOnPhase === 'function') { try { userOnPhase(name, extra); } catch (e) {} }
+  };
+  try {
+    const g = await _bmCrashGuard(o);
+    if (g.skip) {
+      emit({ type: 'bm_crash_skip', hits: _bmCrashHits });
+      _bmCrashHits = 0;
+      _bmClearMark();            // la relance suivante (ailleurs) repart d'un compteur propre
+      return { ok: false, reason: 'crash_spot' };
+    }
+  } catch (e) { emit({ type: 'bm_crash_guard_error', err: String((e && e.message) || e).slice(0, 160) }); }
+  try {
+    return await _branchMineRaw(b, o, token);
+  } finally {
+    _bmPhase = null;
+    _bmCrashHits = 0;
+    _bmClearMark();
+  }
 }
 
 /** mineDown gardé (même règle). */

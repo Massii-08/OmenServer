@@ -46,6 +46,24 @@ API_KEY_PATH = _PROJECT_ROOT / "data" / "secrets" / "anthropic.key"
 # plafond d'origine, anti-co-location.
 NODE_HEAP_MB = 640
 
+# CAPTURE DES OOM (23/10) : ≈85 sessions mortes « heap out of memory » sans aucun event ni pile JS.
+# `--heapsnapshot-near-heap-limit=1` fait écrire par V8 UN instantané du tas juste avant la mort, dans
+# `--diagnostic-dir` (le dossier des logs, à côté du session-*.jsonl). Un instantané pèse à peu près la
+# taille du tas (~0,6-1 Go) : au-delà de HEAPSNAP_MAX fichiers présents, on n'arme plus la capture
+# (85 crashs × 1 Go = disque plein). Supprimer les .heapsnapshot analysés pour la réarmer.
+HEAPSNAP_MAX = 3
+
+
+def _heapsnap_flags(logs_dir):
+    """Options node de capture OOM (à placer AVANT le script). [] si le quota d'instantanés est atteint."""
+    try:
+        n = sum(1 for _ in Path(logs_dir).glob("*.heapsnapshot"))
+    except OSError:
+        n = 0
+    if n >= HEAPSNAP_MAX:
+        return []
+    return ["--heapsnapshot-near-heap-limit=1", f"--diagnostic-dir={logs_dir}"]
+
 _sessions = {}        # session_id (int) -> dict
 _lock = threading.Lock()
 _counter = 0
@@ -596,7 +614,12 @@ def _spawn_bot(host, port, user, model=None, auth="offline", profile=None, comma
     # une machine qui en donne déjà 10 au serveur MC. Plafonné, le fautif meurt VITE (et le
     # self-healing le relance) au lieu d'emporter le serveur avec lui. Le vrai fix est côté bot
     # (movement.applyPathfinderBounds) ; ceci est la ceinture. Régime observé : 200-290 Mo.
-    cmd = [_node_bin(), f"--max-old-space-size={NODE_HEAP_MB}", str(MC_AGENT_DIR / "index.js"),
+    try:
+        LOGS_DIR.mkdir(parents=True, exist_ok=True)  # --diagnostic-dir doit exister AVANT le spawn
+    except OSError:
+        pass
+    cmd = [_node_bin(), f"--max-old-space-size={NODE_HEAP_MB}", *_heapsnap_flags(LOGS_DIR),
+           str(MC_AGENT_DIR / "index.js"),
            "--host", str(host), "--port", str(port), "--user", str(user),
            "--auth", str(auth or "offline")]
     if model:
