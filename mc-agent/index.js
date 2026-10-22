@@ -93,7 +93,7 @@ const { recordAnchor, pickDryAnchor } = require('./anchors'); // ancres profonde
 const { runMapper, createExpiringSet } = require('./mapper');   // createExpiringSet : liste noire des tables inutilisables (withCraftingTable)
 // (LOCATE_KINDS / parseLocateResponse ne sont plus importés : /locate est retiré des bots, cf. plus bas.
 //  structureFoundEvent est émis par mapper.js depuis les signatures VUES.)
-const { isInWater, escapeWater, findLandTarget, isFloatingStuck, recoverFloating, isFrozenDesync,
+const { isInWater, escapeWater: _escapeWaterRaw, findLandTarget, isFloatingStuck, recoverFloating, isFrozenDesync,
   escapePlan, escapeReached, canReanchorSpawn, ESCAPE_SAFE_RADIUS,
   // Fuite dès le spawn + historique de morts persisté (live 19/10, MapBot1) — décisions PURES, cf. unstuck.js.
   spawnDanger, SPAWN_DANGER_MIN_WORN, hostilesWithin, deathTimesPrune, deathTimesLoad, deathMemoWith, escapeArmed, deathLoopTripped,
@@ -127,7 +127,7 @@ const { descentFoodGate, undergroundFoodTripDue, foodGateLoad } = require('./foo
 const { noteDropAhead, turnYaw, shiftTarget } = require('./dropAhead');
 const { canDealWith, attackDamage, boldFightAdvised } = require('./survival');
 const { fleeTarget } = require('./skills/fleeFrom');
-const { decideSkeletonResponse, findCoverCell, zigzagSide } = require('./skeletonResponse');
+const { decideSkeletonResponse, findCoverCell, zigzagSide, shooterSees, rushStopReason, eatDuringRush, callerFromStack } = require('./skeletonResponse');
 const { createFightBreaker } = require('./fightBreaker');
 // SYSTÈME À 3 HOMES (Massii 27/07) : safe = LA BASE, work = le chantier courant, death = la dette
 // de mort. Le serveur n'autorise que 3 homes et le code en posait 4 → un /sethome échouait EN
@@ -368,6 +368,13 @@ let _escapeOnSpawn = false; // anti-camping : 2 morts <60 s → au prochain spaw
 // l'ancre/le chef, donc potentiellement DANS le camp qu'il est en train de quitter — exactement la
 // classe de bug déjà vécue avec `_migrating`.
 let _escaping = false;
+// CHARGE SUR UN SQUELETTE EN COURS (23/10, skeletonResponse.js) : garde de NIVEAU MODULE lue par
+// stopMotion, startAutonomous, l'enforcement confine, le squad, le regroupement, le rappel du home et le
+// verrou de repas. Déclarée ICI (tôt) : ces fonctions la lisent toutes.
+let _skelRushBusy = false;
+let _skelRushBlocked = { stops: 0, by: null };   // stopMotion/pvp.stop refusés pendant la charge (diag)
+let _skelPlannerPending = false;                // un startAutonomous est arrivé pendant la charge
+let _skelRushYieldBy = null;                    // chemin VITAL qui a repris la main (lave, noyade, panique, creeper)
 // EXPÉDITION VERS LE GIBIER EN COURS (marche + chasse sur place, cf. foodTripLock). Garde de niveau
 // MODULE (piège #56), de la même famille que `_migrating`/`_escaping` : lue par l'enforcement confine,
 // le squad et la décision elle-même (une seule expédition à la fois). Sans elle, l'ancre ou le chef
@@ -664,7 +671,7 @@ async function fleeDeathCamp(fromPos) {
 
 /** Fin de fleeDeathCamp (22/10) : attendre (borné) que l'ancien planner ait rendu la main, puis le
  *  rallumer — seulement si la fuite a coupé le PLANNER et que personne ne l'a préemptée depuis. */
-async function restartPlannerAfterFlee(tok, prevTask) {
+async function restartPlannerAfterFlee(tok, prevTask, evType = 'death_camp_flee_done') {
   if (!tok || prevTask !== 'autonomous') return false;
   const w0 = Date.now();
   while ((_skillInFlight > 0 || _autoRunners > 0) && !tok.cancelled && Date.now() - w0 < MIGRATION_PREEMPT_WAIT_MS) {
@@ -672,7 +679,7 @@ async function restartPlannerAfterFlee(tok, prevTask) {
   }
   if (tok.cancelled || _migrating || _ljSwitching) return false;     // un autre maître a la main
   if (!(world.objective && world.objective.status === 'in_progress')) return false;
-  emit({ type: 'death_camp_flee_done', restart: true, waited_ms: Date.now() - w0 });
+  emit({ type: evType, restart: true, waited_ms: Date.now() - w0 });
   try {
     startAutonomous(null).catch((e) => emit({ type: 'error', message: String((e && e.message) || e) }));
   } catch (e) { /* best-effort */ }
@@ -743,7 +750,7 @@ setInterval(() => {
     // 160 blocs) ; l'enforcement la ramènerait en /home au milieu de la marche ou de la chasse.
     // `_nightHold` idem (discipline de nuit, 19/10 soir) : un /home de rappel arracherait le bot nu à
     // l'abri qu'il est en train de reprendre — la nuit, c'est la discipline qui possède le bot.
-    const busy = !!bot.targetDigBlock || _stillBusy || _imminentBusy || _smeltOppBusy || _armorBusy || _nightHold || _migrating || _escaping || _foodTripBusy || _exploreBusy;
+    const busy = !!bot.targetDigBlock || _stillBusy || _imminentBusy || _smeltOppBusy || _armorBusy || _nightHold || _migrating || _escaping || _foodTripBusy || _exploreBusy || _skelRushBusy;
     // `_confineGraceUntil` (fix run10) : un trek lointain arrivé noyé/sous terre n'a pas posé sa base ;
     // le rappeler à l'ancre le renverrait dans la zone morte qu'il vient de quitter (18 cas mesurés).
     const graceHold = Date.now() < _confineGraceUntil;
@@ -862,7 +869,7 @@ async function tryRegroup(opts = {}) {
   // Trajet de grotte en cours (y compris juste après une mort, quand le planner a relancé la grotte avant
   // le regroupement d'après-mort) : jamais de /tpa — mesuré 22/10, NethBot1 téléporté à 593 blocs en
   // plein escalier (`cave_stair_done y:15 dropped:45` : ce n'était pas l'escalier qui descendait trop).
-  if (_caveTripBusy) return { ok: false, reason: 'busy' };
+  if (_caveTripBusy || _skelRushBusy) return { ok: false, reason: 'busy' };
   if (opts && opts.periodic) {
     const longTask = _stillBusy || _imminentBusy || _smeltOppBusy || _armorBusy || _migrating || !!bot.targetDigBlock
       || _escaping || _foodTripBusy || _exploreBusy || _caveTripBusy || _craftDepth > 0;
@@ -928,7 +935,7 @@ async function trySquad() {
   // ramènerait au chef au milieu de la marche (ou de la chasse sur place) sans qu'il ait mangé.
   // `_craftDepth` (fix 20/10) : un /tpa tiré pendant un craft à la table laissait la table à 100 blocs
   // (`squad_join` → `table_abandoned` → `t1_sword craft_failed`, NethBot2 session 278).
-  const busy = !!bot.targetDigBlock || _stillBusy || _imminentBusy || _smeltOppBusy || _armorBusy || _migrating || _escaping || _foodTripBusy || _exploreBusy || _caveTripBusy || _craftDepth > 0;
+  const busy = !!bot.targetDigBlock || _stillBusy || _imminentBusy || _smeltOppBusy || _armorBusy || _migrating || _escaping || _foodTripBusy || _exploreBusy || _caveTripBusy || _craftDepth > 0 || _skelRushBusy;
   const pick = squadTarget({
     // `y`/`ironZone` de SOI : sans eux un mineur productif se croirait « rien du tout » et
     // remonterait rejoindre un flâneur resté en surface — l'inverse exact du but.
@@ -6495,7 +6502,7 @@ function maybeMoveCampedSafeHome() {
     noteHostileNearSafeHome(now);   // un hostile vu près du home est NOTÉ même sans warp en vue
     // Une autre tâche possède le bot ou re-pose `safe` elle-même (migration, installation de base,
     // fuite, sauvetage, abri) : on ne lui coupe pas l'herbe sous le pied.
-    if (_migrating || _escaping || _baseBusy || _imminentBusy || _stillBusy) return null;
+    if (_migrating || _escaping || _baseBusy || _imminentBusy || _stillBusy || _skelRushBusy) return null;
     const foe = nearestHostile({ pos: p, entities: Object.values(bot.entities || {}), isHostile: _isFoe });
     const persisted = safeHomeLoad(loadBaseState());
     const lastMovedAt = Math.max(_safeHomeMovedAt, (persisted && persisted.why === 'camped') ? persisted.at : 0);
@@ -7349,10 +7356,122 @@ const SKEL_RANGE = 16;
 let _skelBusy = false;            // une seule réponse à la fois
 let _skelHoldUntil = 0;           // fin de la tenue derrière le couvert
 let _pvpAttackRaw = null;         // pvp.attack d'origine (avant la porte du disjoncteur)
+let _skelHurtAt = -Infinity;      // dernier PV perdu avec un squelette à portée (démenti d'un « caché »)
+let _skelHurtWired = false;
+let _skelLastHp = null;
+let _skelHpDropAt = -Infinity;    // dernière baisse de PV, quelle qu'en soit la source (verrou de repas)
+let _skelEatDeferredAt = -Infinity;
+const SKEL_HURT_MS = 2500;
+
+/** Un item est-il de la nourriture ? (le verrou de repas ne touche jamais une arme, un bloc, un bouclier) */
+function _skelIsFood(item) {
+  const n = item && item.name;
+  return !!n && (FOODS.has(n) || EMERGENCY_FOODS.has(n));
+}
+
+/**
+ * VERROU DE REPAS PENDANT LA CHARGE (23/10 : 3 `reflex eat` en 3,5 s de rush, épée rengainée, 9 PV
+ * perdus, squelette vivant). Tous les mangeurs (réflexe, filet de faim, survie, low_hp_recover, skills)
+ * passent par `bot.equip(nourriture, 'hand')` : c'est là qu'on diffère, une seule fois pour tous.
+ * Rend true si l'equip est permis.
+ */
+function skeletonEquipAllowed(item, dest) {
+  if (!_skelRushBusy || dest !== 'hand' || !_skelIsFood(item)) return true;
+  const now = Date.now();
+  const hpFalling = now >= _skelHpDropAt && now - _skelHpDropAt < SKEL_HURT_MS;
+  if (eatDuringRush({ rushing: true, food: bot.food, hpFalling })) return true;
+  if (now - _skelEatDeferredAt >= 2000) {
+    _skelEatDeferredAt = now;
+    emit({ type: 'eat_deferred', why: 'skeleton_rush', food: bot.food, hp: Math.round((bot.health || 0) * 10) / 10, hpFalling });
+  }
+  return false;
+}
+
+/** blockAt du monde pour shooterSees/findCoverCell (bloc mineflayer : boundingBox + shapes). */
+function _skelBlockAt(q) { return bot.blockAt(vec3Lib(q.x, q.y, q.z)); }
+
+/** Le tireur voit-il le bot ? Collider précis, depuis SON œil ; erreur → vu (jamais un faux « caché »). */
+function skeletonSees(shooter) {
+  const me = bot.entity && bot.entity.position;
+  if (!me || !shooter || !shooter.position) return true;
+  return shooterSees({ shooter: { x: shooter.position.x, y: shooter.position.y, z: shooter.position.z },
+    target: { x: me.x, y: me.y, z: me.z }, blockAt: _skelBlockAt });
+}
+
+/** Une flèche vient-elle de démentir le couvert ? (PV perdus il y a < 2,5 s, squelette à portée) */
+function skeletonHurtRecently(now) {
+  const t = Number.isFinite(now) ? now : Date.now();
+  return t >= _skelHurtAt && t - _skelHurtAt < SKEL_HURT_MS;
+}
+
+/** Écoute `health` une fois par process : une baisse de PV avec un tireur à ≤ 16 blocs date le « touché ». */
+function wireSkeletonHurt() {
+  if (_skelHurtWired) return false;
+  _skelHurtWired = true;
+  _skelLastHp = bot.health;
+  bot.on('health', () => {
+    try {
+      const hp = bot.health;
+      const dropped = typeof hp === 'number' && typeof _skelLastHp === 'number' && hp < _skelLastHp;
+      _skelLastHp = hp;
+      if (!dropped) return;
+      _skelHpDropAt = Date.now();
+      const me = bot.entity && bot.entity.position;
+      if (!me) return;
+      const near = Object.values(bot.entities || {}).some((e) => e && e.position && RANGED.has(e.name)
+        && Math.hypot(e.position.x - me.x, e.position.y - me.y, e.position.z - me.z) <= SKEL_RANGE);
+      if (near) _skelHurtAt = Date.now();
+    } catch (e) { /* diag : jamais bloquant */ }
+  });
+  if (typeof bot.equip === 'function') {
+    const origEquip = bot.equip;
+    bot.equip = function skeletonGuardedEquip(item, dest) {
+      let ok = true;
+      try { ok = skeletonEquipAllowed(item, dest); } catch (e) { ok = true; }
+      if (!ok) return Promise.reject(new Error('eat_deferred:skeleton_rush'));
+      return origEquip.apply(this, arguments);
+    };
+  }
+  return true;
+}
+
+/**
+ * Un chemin de survie VITAL reprend la main (23/10) : la charge sur squelette est annulée SUR-LE-CHAMP
+ * (garde levée, verrou de but rendu, combat coupé) — sa boucle conclura `preempted` par `by`.
+ * Rend true si une charge courait.
+ */
+function skeletonRushYield(by) {
+  if (!_skelRushBusy) return false;
+  _skelRushYieldBy = by || 'vital';
+  _skelRushBusy = false;
+  try { if (_creeperHold.owner === 'skeleton_rush') releaseGoalHold(_creeperHold); } catch (e) {}
+  try { if (bot.pvp && bot.pvp.target) bot.pvp.stop(); } catch (e) {}
+  return true;
+}
+
+/** Danger vital qui prime sur tout squelette : 'lava' (dedans ou à ≤ 2 blocs) | 'fire' | null. */
+function skeletonVitalHazard() {
+  const ent = bot.entity;
+  if (!ent) return null;
+  if (ent.isInLava) return 'lava';
+  try {
+    const flags = ent.metadata && ent.metadata[0];
+    if (typeof flags === 'number' && (flags & 0x01)) return 'fire';
+  } catch (e) {}
+  try { if (lavaNearby(bot, 2)) return 'lava'; } catch (e) {}
+  return null;
+}
+
+/** escapeWater (noyade, aquifère) : chemin vital — annule une charge sur squelette, puis nage. */
+function escapeWater(b, o) {
+  skeletonRushYield('escape_water');
+  return _escapeWaterRaw(b, o);
+}
 
 /** Situation « squelette » : tireur en portée sans mêlée collée ni creeper proche. null sinon. */
 function skeletonSituation(hint) {
   if (IS_MAPPER) return null;     // les cartographes gardent leur fuite par défaut (preferFlee)
+  if (skeletonVitalHazard()) return null;   // lave / feu : la fuite de survie historique garde la main
   const me = bot.entity && bot.entity.position;
   if (!me) return null;
   const self = { x: me.x, y: me.y, z: me.z };   // position MUTÉE en place : copie
@@ -7375,7 +7494,7 @@ function skeletonSituation(hint) {
   }
   if (hint && hint.position && RANGED.has(hint.name) && d(hint) <= SKEL_RANGE) shooter = hint;
   if (!shooter || creeper) return null;
-  return { shooter, dist: d(shooter), los: canSeeEntityNow(shooter), shooters, meleeOthers, self };
+  return { shooter, dist: d(shooter), los: skeletonSees(shooter), shooters, meleeOthers, self };
 }
 
 function _skelWeapon() {
@@ -7404,43 +7523,113 @@ async function _skelRush(shooter) {
   if (!raw) return false;
   const t0 = Date.now();
   try { _fightBreaker.grant({ t: t0, ms: SKEL_RUSH_MS }); } catch (e) {}
-  const sh = _skelShield();
-  if (sh) { try { const off = bot.inventory.slots[45]; if (!off || off.name !== 'shield') await bot.equip(sh, 'off-hand'); } catch (e) {} }
-  const w = _skelWeapon();
-  if (w) { try { await bot.equip(w, 'hand'); } catch (e) {} }
-  try {
-    Promise.resolve(raw(shooter)).catch((e) => emit({ type: 'skeleton_rush_failed', err: String((e && e.message) || e).slice(0, 120) }));
-  } catch (e) { emit({ type: 'skeleton_rush_failed', err: String((e && e.message) || e).slice(0, 120) }); return false; }
-  // ZIGZAG : un squelette vise la position COURANTE — un pas latéral alterné à l'approche fait rater
-  // la flèche en vol. Seulement tant qu'on n'est pas au contact (au contact, on frappe droit).
+  // PRÉEMPTION PROPRE (23/10) : la charge prend le jeton de tâche — le skill du planner en vol voit
+  // `token.cancelled` et rend la main au lieu de relancer un goto/stopMotion qui coupe le combat ; le
+  // planner est relancé à la fin (même patron que fleeDeathCamp).
+  const prevTask = taskCtl.active;
+  let tok = null;
+  try { tok = taskCtl.begin('skeleton_rush', () => {}); } catch (e) { tok = null; }
+  _skelRushBusy = true;
+  _skelRushYieldBy = null;
+  _skelRushBlocked = { stops: 0, by: null };
+  _skelPlannerPending = false;
+  let lostBy = null;
+  const pvp = bot.pvp;
+  const origStop = pvp && pvp.stop;
+  const origForce = pvp && pvp.forceStop;
+  // Qui coupe le combat ? (diag `by`) — on laisse passer l'appel, on note l'appelant.
+  if (pvp && typeof origStop === 'function') {
+    pvp.stop = function () { if (!lostBy) lostBy = callerFromStack(new Error().stack, ['pvp.stop', 'Object.stop', 'PVP.']) || 'pvp.stop'; return origStop.apply(this, arguments); };
+  }
+  if (pvp && typeof origForce === 'function') {
+    pvp.forceStop = function () { if (!lostBy) lostBy = callerFromStack(new Error().stack, ['forceStop', 'PVP.']) || 'pvp.forceStop'; return origForce.apply(this, arguments); };
+  }
   let side = null;
-  const zz = setInterval(() => {
-    try {
-      const me = bot.entity && bot.entity.position;
-      const alive = shooter && shooter.isValid !== false && bot.entities && bot.entities[shooter.id];
-      if (!alive || !me || Date.now() - t0 > SKEL_RUSH_MS) return;
-      const far = Math.hypot(shooter.position.x - me.x, shooter.position.z - me.z) > 3;
-      const want = far && bot.entity.onGround ? zigzagSide(Date.now() - t0, 400) : null;
-      if (want !== side) {
-        if (side) bot.setControlState(side, false);
-        if (want) bot.setControlState(want, true);
-        side = want;
-      }
-    } catch (e) { /* best-effort */ }
-  }, 100);
+  let zz = null;
+  let endReason = 'timeout';
+  let rearmed = 0;
+  const w = _skelWeapon();
   try {
-    while (Date.now() - t0 < SKEL_RUSH_MS) {
+    const sh = _skelShield();
+    if (sh) { try { const off = bot.inventory.slots[45]; if (!off || off.name !== 'shield') await bot.equip(sh, 'off-hand'); } catch (e) {} }
+    if (w) { try { await bot.equip(w, 'hand'); } catch (e) {} }
+    try { await raw(shooter); }
+    catch (e) { emit({ type: 'skeleton_rush_failed', err: String((e && e.message) || e).slice(0, 120) }); endReason = 'target_lost'; lostBy = 'attack_failed'; return false; }
+    // Le GoalFollow de pvp est posé : verrou de but (le planner, un goto ou un setGoal(null) étranger
+    // sont ignorés jusqu'à la fin de la charge — goalHold, même mécanisme que la fuite creeper).
+    try { holdGoal(_creeperHold, t0 + SKEL_RUSH_MS, 'skeleton_rush'); } catch (e) {}
+    // ZIGZAG : un squelette vise la position COURANTE — un pas latéral alterné à l'approche fait rater
+    // la flèche en vol. Seulement tant qu'on n'est pas au contact (au contact, on frappe droit).
+    zz = setInterval(() => {
+      try {
+        const me = bot.entity && bot.entity.position;
+        const alive = shooter && shooter.isValid !== false && bot.entities && bot.entities[shooter.id];
+        if (!alive || !me || Date.now() - t0 > SKEL_RUSH_MS) return;
+        const far = Math.hypot(shooter.position.x - me.x, shooter.position.z - me.z) > 3;
+        const want = far && bot.entity.onGround ? zigzagSide(Date.now() - t0, 400) : null;
+        if (want !== side) {
+          if (side) bot.setControlState(side, false);
+          if (want) bot.setControlState(want, true);
+          side = want;
+        }
+      } catch (e) { /* best-effort */ }
+    }, 100);
+    for (;;) {
       await sleep(250);
-      const alive = shooter && shooter.isValid !== false && bot.entities && bot.entities[shooter.id];
-      if (!alive) break;
-      if (!bot.pvp || bot.pvp.target !== shooter) break;   // quelqu'un d'autre a repris la main
+      const me = bot.entity && bot.entity.position;
+      const alive = !!(shooter && shooter.isValid !== false && bot.entities && bot.entities[shooter.id]);
+      const dist = (me && shooter && shooter.position)
+        ? Math.hypot(shooter.position.x - me.x, shooter.position.y - me.y, shooter.position.z - me.z) : null;
+      if (_skelRushYieldBy) { endReason = 'preempted'; break; }
+      const hazard = skeletonVitalHazard();
+      if (hazard) { skeletonRushYield(hazard); endReason = 'preempted'; break; }
+      const why = rushStopReason({ elapsedMs: Date.now() - t0, maxMs: SKEL_RUSH_MS, alive,
+        targetOurs: !!(bot.pvp && bot.pvp.target === shooter), cancelled: !!(tok && tok.cancelled),
+        hp: bot.health, dist });
+      if (why) { endReason = why; break; }
+      // Un creeper ou une mêlée arrive pendant la charge : elle cède la main (stopMotion n'est
+      // bloqué que tant qu'elle court — la fuite creeper / la logique de mêlée doivent pouvoir agir).
+      if (alive) {
+        let sit = null;
+        try { sit = skeletonSituation(shooter); } catch (e) { sit = null; }
+        if (!sit || sit.meleeOthers > 0) { endReason = 'preempted'; lostBy = sit ? 'melee_mix' : 'creeper'; break; }
+      }
+      // ÉPÉE EN MAIN : un repas (permis) ou un equip étranger l'a rengainée → on la remet.
+      if (w && !bot.usingHeldItem && (!bot.heldItem || bot.heldItem.name !== w.name)) {
+        try { await bot.equip(w, 'hand'); rearmed++; } catch (e) {}
+      }
     }
   } finally {
-    clearInterval(zz);
+    if (zz) clearInterval(zz);
     try { if (side) bot.setControlState(side, false); } catch (e) {}
-    const killed = !(shooter && bot.entities && bot.entities[shooter.id]);
+    if (pvp) { if (origStop) pvp.stop = origStop; if (origForce) pvp.forceStop = origForce; }
+    try { if (_creeperHold.owner === 'skeleton_rush') releaseGoalHold(_creeperHold); } catch (e) {}
+    _skelRushBusy = false;
     try { if (bot.pvp && bot.pvp.target === shooter) bot.pvp.stop(); } catch (e) {}
-    emit({ type: 'skeleton_rush_done', killed, took_ms: Date.now() - t0, hp: Math.round((bot.health || 0) * 10) / 10 });
+    let by;
+    if (endReason === 'preempted') {
+      by = _skelRushYieldBy || ((lostBy === 'creeper' || lostBy === 'melee_mix') ? lostBy : (taskCtl.active || 'cancel'));
+    }
+    else if (endReason === 'target_lost') by = lostBy || 'pvp_range';
+    _skelRushYieldBy = null;
+    const ev = { type: 'skeleton_rush_done', killed: endReason === 'killed', endReason, took_ms: Date.now() - t0,
+      hp: Math.round((bot.health || 0) * 10) / 10 };
+    if (by) ev.by = by;
+    if (_skelRushBlocked.stops) { ev.blocked_stops = _skelRushBlocked.stops; ev.blocked_by = _skelRushBlocked.by; }
+    if (rearmed) ev.rearmed = rearmed;
+    emit(ev);
+    // Rendre la main : relancer le planner qu'on a préempté (ou qui a voulu repartir pendant la charge).
+    if (tok && !tok.cancelled) {
+      const wasPlanner = prevTask === 'autonomous' || _skelPlannerPending;
+      _skelPlannerPending = false;
+      if (wasPlanner) {
+        restartPlannerAfterFlee(tok, 'autonomous', 'skeleton_rush_planner_restart')
+          .then((ok) => { if (!ok && !tok.cancelled) { try { taskCtl.cancel(); } catch (e) {} } })
+          .catch((e) => emit({ type: 'error', message: String((e && e.message) || e) }));
+      } else {
+        try { taskCtl.cancel(); } catch (e) {}
+      }
+    }
   }
   return true;
 }
@@ -7455,7 +7644,7 @@ async function _skelCover(cell, shooter) {
   }
   _skelHoldUntil = Date.now() + SKEL_HOLD_MS;
   await _skelShieldUp(shooter, 2000);
-  return !canSeeEntityNow(shooter);
+  return !skeletonSees(shooter);
 }
 
 /**
@@ -7472,22 +7661,25 @@ function skeletonRespond(hint, from) {
     return null;
   }
   if (_skelBusy) return { action: 'busy' };
-  if (Date.now() < _skelHoldUntil && !sit.los) return { action: 'hold' };   // déjà caché : on ne bouge pas
+  const hurt = skeletonHurtRecently();
+  // déjà caché : on ne bouge pas — sauf si une flèche vient de prouver le contraire, ou s'il est collé
+  if (Date.now() < _skelHoldUntil && !sit.los && !hurt && sit.dist > 3.5) return { action: 'hold' };
   let inWater = false;
   try { inWater = isInWater(bot); } catch (e) {}
-  const cell = (!inWater && sit.los) ? findCoverCell({
+  const cell = (!inWater && (sit.los || hurt)) ? findCoverCell({
     from: sit.self, shooter: sit.shooter.position,
     isSolid: (x, y, z) => { const b = bot.blockAt(vec3Lib(x, y, z)); return !!(b && b.boundingBox === 'block'); },
+    blockAt: _skelBlockAt,
   }) : null;
   const dec = decideSkeletonResponse({
     dist: sit.dist, los: sit.los, health: bot.health,
     armorPoints: armorPoints(bot), attackDamage: attackDamage(bot), hasShield: !!_skelShield(),
     hasBlock: !!pickCoverBlock(bot), meleeOthers: sit.meleeOthers, shooters: sit.shooters,
-    inWater, coverCell: !!cell,
+    inWater, coverCell: !!cell, hurt,
   });
   emit({ type: 'skeleton_response', action: dec.action, reason: dec.reason, from, mob: sit.shooter.name,
     hp: Math.round((bot.health || 0) * 10) / 10, dist: Math.round(sit.dist * 10) / 10, los: !!sit.los,
-    shooters: sit.shooters });
+    hurt, shooters: sit.shooters });
   if (dec.action === 'flee') {
     try { fleeFrom(bot); } catch (e) { emit({ type: 'skeleton_flee_failed', err: String((e && e.message) || e).slice(0, 120) }); }
     return dec;
@@ -9503,6 +9695,12 @@ function autonomousDupStart({ runners, live, active, objective } = {}) {
 }
 
 async function startAutonomous(sender) {
+  // Charge sur squelette en cours : le planner attend la fin (la charge le relance elle-même).
+  if (_skelRushBusy) {
+    _skelPlannerPending = true;
+    emit({ type: 'autonomous_deferred', why: 'skeleton_rush' });
+    return null;
+  }
   // objectif : depuis le world (seedé par le backend/launch), sinon --objective, sinon pioche pierre.
   let objType = (world.objective && world.objective.type) || args.objective || 'stone_pickaxe';
   // Objectif persisté d'APRÈS l'armure (iron_help, mapper_armor) mais armure disparue (inventaire vidé,
@@ -10251,16 +10449,17 @@ async function onSpawn() {
           let wet = false;
           try { wet = isInWater(bot); } catch (e) {}
           if (wet) {
+            skeletonRushYield('panic_swim');
             emit({ type: 'panic_swim_up' });
             try { bot.setControlState('jump', true); } catch (e) {}   // remonter TOUT DE SUITE
             try { await withTimeout(escapeWater(bot, { emit }), 8000, () => {}); } catch (e) {}
             try { await withTimeout(eat(bot), 2500, () => {}); } catch (e) {}
             return;
           }
-          try { stopMotion(); } catch (e) {}
+          try { stopMotion({ force: true, vital: 'panic_wall' }); } catch (e) {}
           // panicWall (module dédié, hole C) : mur ROBUSTE même en grotte ouverte (pontage sur le
           // bloc-sol du bot) — l'ancien inline échouait en silence là où les mobs essaiment.
-          try { await withTimeout(panicWall(bot), 3000, () => { try { stopMotion(); } catch (e) {} }); } catch (e) { /* best-effort */ }
+          try { await withTimeout(panicWall(bot), 3000, () => { try { stopMotion({ force: true, vital: 'panic_wall' }); } catch (e) {} }); } catch (e) { /* best-effort */ }
           try { await withTimeout(eat(bot), 2500, () => {}); } catch (e) {}
         })().finally(() => { panicInFlight = false; });
       },
@@ -10464,6 +10663,7 @@ async function onSpawn() {
       },
     };
     installReflexes(bot, _reflexHooks);
+    if (!IS_MAPPER) { try { wireSkeletonHurt(); } catch (e) { emit({ type: 'skeleton_hurt_wire_failed', err: String((e && e.message) || e) }); } }
     // TÉLÉPORTATION (#10) : détecte tout TP (admin /tp, /home, portail, respawn) → émet
     // teleport_detected{from,to} + ABANDONNE le goal pathfinder (il visait l'ancienne position —
     // jamais y retourner à pied). Le mapper consomme le pending pour se ré-ancrer (mapper.js).
@@ -10574,12 +10774,12 @@ async function onSpawn() {
             // PUIS /home safe (secure-then-warp : sur serveur à warmup, un TP sous les coups est annulé).
             emit({ type: 'imminent_escape', hp: s.health, inWater: s.inWater, lava: s.lavaNear, hostiles: s.nearbyHostiles,
                    ...(early ? { early: true, armor: s.armorPieces } : {}) });
-            try { stopMotion(); } catch (e) {}
+            try { stopMotion({ force: true, vital: s.lavaNear ? 'lava_escape' : (s.inWater ? 'drown_escape' : 'imminent_escape') }); } catch (e) {}
             safeWarpHome('safe', { ctx: 'imminent' }).catch(() => {});
             setTimeout(() => { _imminentBusy = false; }, 12000); // secure (≤6 s) + warmup (≤9 s), anti-spam
           } else if (verdict === 'escape_no_warp') {
             emit({ type: 'imminent_escape_no_warp', hp: s.health, inWater: s.inWater });
-            try { stopMotion(); } catch (e) {}
+            try { stopMotion({ force: true, vital: s.inWater ? 'drown_escape' : 'imminent_escape' }); } catch (e) {}
             if (s.inWater) { try { escapeWater(bot, { emit }).catch(() => {}); } catch (e) {} }
             const pN = bot.entity && bot.entity.position;
             if (pN && bookmarkDeathHere()) _deathMark = { x: pN.x, y: pN.y, z: pN.z, at: Date.now() };
@@ -10964,6 +11164,15 @@ function ackPrivate(sender, text) { if (sender && text) { try { bot.whisper(send
 // Le lâcher de bras reste disponible pour le seul cas où il a du sens — répondre en chat, où un
 // humain lâche le clic pour taper — via stopMotion({ arm: true }).
 function stopMotion(opts = {}) {
+  // Chemin de survie VITAL (`vital` = son nom) : il annule la charge en cours avant de couper le mouvement.
+  if (opts.vital) skeletonRushYield(opts.vital);
+  // Pendant une charge sur squelette, personne (skill du planner, timer) ne coupe le combat : la
+  // charge est bornée (6 s) et s'arrête elle-même (`force` pour l'arrêt d'urgence explicite).
+  if (_skelRushBusy && !opts.force) {
+    _skelRushBlocked.stops++;
+    if (!_skelRushBlocked.by) _skelRushBlocked.by = callerFromStack(new Error().stack, ['stopMotion']);
+    return;
+  }
   try { bot.pathfinder && bot.pathfinder.setGoal(null); } catch (e) {}
   try { bot.pvp && bot.pvp.stop(); } catch (e) {}
   if (opts.arm) { try { if (bot.targetDigBlock && bot.stopDigging) bot.stopDigging(); } catch (e) {} }
@@ -12046,6 +12255,7 @@ function creeperTick() {
     if (plan === 'ignore') { _auraEmit('creeper_ignored', { dist, fusing }); return; }
     const dest = creeperAwayPoint(self, best.position, CREEPER_FLEE_KEEP);
     if (!dest) return;
+    skeletonRushYield('creeper_flee');
     if (bot.pvp && bot.pvp.target) { try { bot.pvp.stop(); } catch (e) {} }
     if (bot.targetDigBlock && typeof bot.stopDigging === 'function') { try { bot.stopDigging(); } catch (e) {} }
     holdGoal(_creeperHold, now + CREEPER_FLEE_MAX_MS, 'creeper');

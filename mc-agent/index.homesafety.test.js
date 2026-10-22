@@ -70,7 +70,7 @@ function glue({ disk = { memo: null }, clock = { t: T0 }, bot: botOver = {}, ...
     _deathPos: [], _deathPosLoaded: false, _hostileNearHomeAt: 0, _homeCampedEventAt: 0, _safeHomeMovedAt: 0,
     _safeHomeSet: false, _safeHomeSurface: false, _safeHomePos: null,
     _homeMissingAt: {}, SAFE_MISSING_MEMO_KEY: 'safeHomeMissingAt',   // home inexistant côté serveur (20/10)
-    _migrating: false, _escaping: false, _baseBusy: false, _imminentBusy: false, _stillBusy: false,
+    _migrating: false, _escaping: false, _baseBusy: false, _imminentBusy: false, _stillBusy: false, _skelRushBusy: false,
     CONFINE: null, _confineDyn: null, _anchorSet: false, IS_MAPPER: true, NO_GIVE: true,
     world: { objective: { type: 'mapper', status: 'in_progress' } },
     ...extra,

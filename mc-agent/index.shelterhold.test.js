@@ -84,11 +84,20 @@ function autoSandbox() {
     taskToken: { cancelled: true }, _autoRunners: 0,
     runAutonomousBody: (s, o, t) => new Promise((resolve) => { bodies.push({ t, resolve }); }),
   });
-  run(sb, 'var _autoLive = null;');
+  run(sb, 'var _autoLive = null; var _skelRushBusy = false; var _skelPlannerPending = false;');
   run(sb, fnSrc('autonomousDupStart'));
   run(sb, fnSrc('startAutonomous'));
   return sb;
 }
+
+test('startAutonomous : pendant une charge sur squelette → différé (autonomous_deferred), aucun runner', () => {
+  const sb = autoSandbox();
+  run(sb, '_skelRushBusy = true;');
+  run(sb, 'startAutonomous(null);');
+  assert.strictEqual(sb.bodies.length, 0);
+  assert.ok(sb.events.some((e) => e.type === 'autonomous_deferred' && e.why === 'skeleton_rush'));
+  assert.strictEqual(run(sb, '_skelPlannerPending'), true);
+});
 
 test('startAutonomous : un 2e appel pendant qu un runner vit (même objectif) ne lance PAS un 2e planner', () => {
   const sb = autoSandbox();

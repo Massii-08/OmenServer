@@ -31,6 +31,7 @@ function sandbox({ entities = [], held = null, items = [], digging = false, usin
   const sb = {
     events: [], calls: [], clock,
     emit(e) { sb.events.push(e); },
+    skeletonRushYield: () => false,   // fuite creeper = chemin vital : annule une charge sur squelette (23/10)
     Date: { now: () => clock.t },
     bot: {
       health: 20,

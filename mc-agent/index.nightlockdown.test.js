@@ -146,7 +146,7 @@ function squadSandbox(opts = {}) {
     presence: { list: () => [{ name: 'NethBot1', role: 'worker', x: 300, y: 70, z: 0, at: T0 }] },
     armorNeed: () => 1, buildCtxInv: () => ({}),
     _stillBusy: false, _imminentBusy: false, _smeltOppBusy: false, _armorBusy: false,
-    _migrating: false, _escaping: false, _foodTripBusy: false, _exploreBusy: false, _zoneIronMined: 0, _craftDepth: 0,
+    _migrating: false, _escaping: false, _foodTripBusy: false, _exploreBusy: false, _skelRushBusy: false, _zoneIronMined: 0, _craftDepth: 0,
     _caveTripBusy: false, isMiningGoal: R.isMiningGoal,
     _lastSquadAt: 0, _lastRegroupAt: 0, _curGoal: null, _squadSkipWhy: null, _squadSkipAt: 0,
     isLumberjackObjective: () => false,   // bûcheron d'équipe (20/10) : hors sujet ici
