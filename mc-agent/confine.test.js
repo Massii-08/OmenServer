@@ -221,3 +221,11 @@ test('canAnchorHere : sans confine statique → toujours vrai (auto-ancrage sur 
 test('canAnchorHere : distance non numérique → refus (jamais d ancrage à l aveugle)', () => {
   assert.strictEqual(canAnchorHere({ confine: { x: 0, z: 0, radius: 64 }, dist: undefined }), false);
 });
+
+// 22/10 (NethBot1/3) : deux bots aux bases distantes de ~360 blocs se /tpa l'un vers l'autre (squad,
+// regroupement après mort), puis le confine ramène chacun chez lui 45 s plus tard — 7 rappels, 23
+// téléportations > 100 blocs en 70 min, grottes coupées, four de mine laissé derrière.
+test('shouldEnforceConfine : avec la squad (coéquipier à côté) → false, même très loin de l ancre', () => {
+  assert.strictEqual(shouldEnforceConfine({ dist: 362, radius: 140, busy: false, now: 1000000, lastAt: 0, withSquad: true }), false);
+  assert.strictEqual(shouldEnforceConfine({ dist: 362, radius: 140, busy: false, now: 1000000, lastAt: 0, withSquad: false }), true);
+});

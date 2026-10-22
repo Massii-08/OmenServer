@@ -358,6 +358,7 @@ test('handler spawn : relit l historique AVANT onSpawn (sinon _escapeOnSpawn est
     _floatSettleUntil: 0, _zoneAnchoredAt: 0,
     loadZoneState: () => order.push('zone'),
     loadDeathHistory: () => order.push('history'),
+    restoreFurnaceJob: () => order.push('furnace'),
     survivalKitUp: () => { order.push('kit'); return Promise.resolve(); },
     onSpawn: () => { order.push('onSpawn'); return Promise.resolve(); },
   });
@@ -365,6 +366,8 @@ test('handler spawn : relit l historique AVANT onSpawn (sinon _escapeOnSpawn est
   handlers.spawn();
   assert.ok(order.includes('history'), `loadDeathHistory() doit être appelé dans le handler spawn (vu: ${order.join(' ')})`);
   assert.ok(order.indexOf('history') < order.indexOf('onSpawn'));
+  // Four de mine du process précédent (22/10) : relu au spawn, avant que le planner ne relance un but.
+  assert.ok(order.indexOf('furnace') >= 0 && order.indexOf('furnace') < order.indexOf('onSpawn'));
 });
 
 // ═════════════════════════════ 5. câblage (niveau module, ordre, aller-retour du mémo) ════════════

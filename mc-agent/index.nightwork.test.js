@@ -38,7 +38,14 @@ function sandbox(o = {}) {
     craftLowHpBlocked: () => !!sb.lowHpBlocked,
     shelterCraftThrottled: require('./lowhp').shelterCraftThrottled,
     furnaceJobPlan: FJ.furnaceJobPlan, fuelLoadPlan: FJ.fuelLoadPlan, jobReadyAt: FJ.jobReadyAt,
-    SMELT_JOB_ABANDON_DIST: FJ.SMELT_JOB_ABANDON_DIST,
+    SMELT_JOB_ABANDON_DIST: FJ.SMELT_JOB_ABANDON_DIST, SMELT_JOB_COLLECT_DIST: FJ.SMELT_JOB_COLLECT_DIST,
+    furnaceJobRestore: FJ.furnaceJobRestore, furnaceCollectRoute: FJ.furnaceCollectRoute, FURNACE_RETRY_MS: FJ.FURNACE_RETRY_MS,
+    memo: o.memo || {},
+    loadBaseState: () => sb.memo,
+    saveBaseState: (st) => { sb.memo = st; return true; },
+    _workSet: !!o.workPos, _workPos: o.workPos || null,
+    homewarp: { goWork: () => { sb.warps = (sb.warps || 0) + 1; if (o.warpTo) Object.assign(sb.bot.entity.position, o.warpTo); } },
+    awaitWarp: async () => ({ warped: true }),
     IS_MAPPER: false, isLumberjackObjective: () => false,
     nightLockdownNow: () => o.lockdown !== false,
     isInWater: () => false,
@@ -92,10 +99,12 @@ function sandbox(o = {}) {
     letSrc('_shelterCraft'), constSrc('SHELTER_CRAFT_MS'), fnSrc('_shelterRecenter'), fnSrc('shelterWhileSealed'),
     'this.shelterWhileSealed = shelterWhileSealed; this.shelterCraft = () => _shelterCraft;',
     letSrc('_furnaceJob'), letSrc('_furnaceJobBusy'), constSrc('FURNACE_JOB_KEEP_SKILLS'),
-    fnSrc('_furnaceDist'), fnSrc('startFurnaceJob'), fnSrc('collectFurnaceJob'), fnSrc('furnaceJobTick'), fnSrc('finishFurnaceJob'),
+    fnSrc('_furnaceDist'), fnSrc('furnaceJobNear'), fnSrc('setFurnaceJob'), letSrc('_furnaceJobRestored'), fnSrc('restoreFurnaceJob'),
+    fnSrc('deferFurnaceJob'), fnSrc('startFurnaceJob'), fnSrc('collectFurnaceJob'), fnSrc('furnaceJobTick'), fnSrc('finishFurnaceJob'),
     'this.tryNightWork = tryNightWork; this.nightUndergroundNow = nightUndergroundNow; this.nightSkipGoal = nightSkipGoal;',
     'this.rebuildPickHere = rebuildPickHere; this.furnaceJobTick = furnaceJobTick; this.finishFurnaceJob = finishFurnaceJob;',
-    'this.job = () => _furnaceJob;'].join('\n'));
+    'this.job = () => _furnaceJob; this.restoreFurnaceJob = restoreFurnaceJob; this.collectFurnaceJob = collectFurnaceJob;',
+    'this.furnaceJobNear = furnaceJobNear;'].join('\n'));
   return sb;
 }
 
@@ -200,7 +209,7 @@ test('câblage : holdForNight tente la nuit au travail et lit nightUndergroundNo
   assert.match(SRC, /skip: nightSkipGoal/);
   assert.match(fnSrc('maybeNightShelter'), /underground: nightUndergroundNow\(\)/);
   assert.match(fnSrc('branchSurvivalTick'), /furnaceJobTick\(\)/);
-  assert.match(fnSrc('smeltWithFurnace'), /if \(_furnaceJob\) return \{ ok: false, reason: 'furnace_job_running' \}/);
+  assert.match(fnSrc('smeltWithFurnace'), /if \(_furnaceJob && furnaceJobNear\(\)\) return \{ ok: false, reason: 'furnace_job_running' \}/);
   assert.match(fnSrc('runSkillWithTelemetry'), /finishFurnaceJob\('goal'\)/);
   assert.match(h, /nightDeferGoal\(\{ lockdown: true, underground: nightUndergroundNow\(\), skill: g\.skill \}\)/);
   assert.match(SRC, /onNoPickaxe: \(\) => rebuildPickHere\('branch'\)/);
@@ -315,4 +324,63 @@ test('câblage : l abri reçoit whileSealed, maybeNightShelter enchaîne tryNigh
   assert.match(w, /const spot = inPlace \? null : findLandTarget/);
   assert.match(w, /tableSeen: !inPlace &&/);
   assert.match(fnSrc('_craftSmartRaw'), /withCraftingTable\(\(\) => craftItem\(bot, args\), \{ inPlace \}\)/);
+});
+
+// ─── FOUR DE MINE DURABLE (22/10, NethBot1/3 : 44 + 13 minerais de fer laissés dans des fours) ──────────
+test('four de mine : persisté dans le mémo base au lancement, effacé au ramassage', async () => {
+  const sb = sandbox({ pos: { y: 16 }, world: { '1,16,0': 'furnace' },
+    items: [{ name: 'raw_iron', count: 9 }, { name: 'furnace', count: 1 }, { name: 'coal', count: 4 }], memo: { base: { x: 1 } } });
+  await sb.furnaceJobTick();
+  assert.ok(sb.memo.furnaceJob, 'job écrit dans le mémo');
+  assert.strictEqual(sb.memo.furnaceJob.count, 9);
+  assert.deepStrictEqual(sb.memo.base, { x: 1 }, 'fusion : le reste du mémo est gardé');
+  sb.clock.t += 95000;
+  await sb.furnaceJobTick();
+  assert.strictEqual(sb.job(), null);
+  assert.strictEqual(sb.memo.furnaceJob, undefined, 'effacé une fois ramassé');
+});
+
+test('four de mine : relance du process → le job est relu du mémo (une seule fois)', () => {
+  const job = { pos: { x: 1, y: 16, z: 0 }, count: 13, at: T0 - 60000, readyAt: T0 + 70000 };
+  const sb = sandbox({ memo: { furnaceJob: job } });
+  sb.restoreFurnaceJob();
+  assert.deepStrictEqual(sb.job(), job);
+  assert.ok(sb.events.some((e) => e.type === 'smelt_while_mining' && e.phase === 'restored' && e.count === 13));
+});
+
+test('four de mine : chunk pas chargé → PAS perdu, job gardé et re-tenté dans 3 min', async () => {
+  const job = { pos: { x: 1, y: 16, z: 0 }, count: 13, at: T0 - 200000, readyAt: T0 - 60000 };
+  const sb = sandbox({ pos: { y: 16 }, memo: { furnaceJob: job } });
+  sb.restoreFurnaceJob();
+  sb.bot.blockAt = () => null;
+  assert.strictEqual(await sb.collectFurnaceJob('goal'), false);
+  assert.ok(sb.job(), 'job gardé');
+  assert.ok(!sb.events.some((e) => e.phase === 'lost'));
+  assert.ok(sb.events.some((e) => e.phase === 'open_failed' && e.reason === 'unloaded'));
+  assert.ok(sb.job().retryAt > T0);
+  sb.events.length = 0;
+  assert.strictEqual(await sb.collectFurnaceJob('goal'), false);
+  assert.strictEqual(sb.events.length, 0, 'pas de nouvel essai avant 3 min');
+});
+
+test('four de mine 40 blocs plus bas, chantier `work` à côté → /home work puis ramassage', async () => {
+  const job = { pos: { x: 1, y: 26, z: 0 }, count: 14, at: T0 - 200000, readyAt: T0 - 60000 };
+  const sb = sandbox({ pos: { x: 3, y: 66, z: 1 }, world: { '1,26,0': 'furnace' }, memo: { furnaceJob: job },
+    workPos: { x: 3, z: 2 }, warpTo: { x: 2.5, y: 26, z: 1.5 } });
+  sb.restoreFurnaceJob();
+  assert.strictEqual(sb.furnaceJobNear(), true, '40 blocs : à portée');
+  assert.strictEqual(await sb.collectFurnaceJob('goal'), true);
+  assert.strictEqual(sb.warps, 1);
+  assert.strictEqual(sb.job(), null);
+  assert.ok(sb.events.some((e) => e.phase === 'collect' && e.ingots === 9));
+});
+
+test('four de mine loin sans raccourci : ni oublié, ni ouvert à distance ; ne bloque plus les autres fours', async () => {
+  const job = { pos: { x: 1, y: 16, z: 0 }, count: 13, at: T0 - 200000, readyAt: T0 - 60000 };
+  const sb = sandbox({ pos: { x: 300, y: 64, z: 0 }, world: { '1,16,0': 'furnace' }, memo: { furnaceJob: job } });
+  sb.restoreFurnaceJob();
+  await sb.finishFurnaceJob('goal');
+  assert.ok(sb.job(), 'gardé');
+  assert.strictEqual(sb.furnace, undefined, 'aucune ouverture tentée');
+  assert.strictEqual(sb.furnaceJobNear(), false);
 });

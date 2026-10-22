@@ -68,7 +68,7 @@ const basecamp = require('./basecamp');                // base personnelle : s'�
 const oregrab = require('./oregrab');
 // NUIT AU TRAVAIL + FONDRE EN MINANT (Massii 21/10 : « fais qu'ils fassent comme les joueurs normaux »).
 const { nightWorkPlan, nightUnderground, nightDeferGoal, nightSealCells, shelterCraftNext } = require('./nightWork');
-const { furnaceJobPlan, fuelLoadPlan, jobReadyAt, SMELT_JOB_ABANDON_DIST } = require('./furnaceJob');                  // « ils passent à côté du fer sans le prendre »
+const { furnaceJobPlan, fuelLoadPlan, jobReadyAt, SMELT_JOB_ABANDON_DIST, SMELT_JOB_COLLECT_DIST, furnaceJobRestore, furnaceCollectRoute, FURNACE_RETRY_MS } = require('./furnaceJob');                  // « ils passent à côté du fer sans le prendre »
 const { huntPassive } = require('./skills/hunt');
 const { fishCatch } = require('./skills/fish');   // pêche : la nourriture qui ne s'épuise pas
 const { nearestPassive, survivalTick, nearbyHostiles, lavaNearby, armorPoints, weaponDamage } = require('./survival');
@@ -149,7 +149,7 @@ const TORCH_EVERY = 8;
 const { createClaims, createPresence } = require('./claims');
 const { pickMapperTp } = require('./mapperTp'); // TP-au-mappeur : à qui demander le /tpa (décision pure)
 // REGROUPEMENT APRÈS MORT (idée Massii 25/07, flag --regroup, OFF par défaut) : décision pure.
-const { pickRegroupTarget, squadTarget, isMiningGoal } = require('./regroup');
+const { pickRegroupTarget, squadTarget, isMiningGoal, mateNearby } = require('./regroup');
 // Tracé en LACETS du branch-mine fer + reprise au front (22/10, lawnMine.js).
 const lawnMine = require('./lawnMine');
 // ENTRAIDE D'ÉQUIPE (Massii 25/07 : « qu'ils s'aident entre eux, et quand ils ont l'armure
@@ -653,6 +653,19 @@ async function tryEstablishCamp() {
   } catch (e) { /* best-effort */ }
 }
 
+// AVEC LA SQUAD (22/10, NethBot1/3 : bases à ~360 blocs, /tpa de squad puis rappel confine 45 s plus tard,
+// 7 rappels et 23 téléportations > 100 blocs en 70 min) : un coéquipier ouvrier à côté = le bot travaille
+// avec le groupe, on ne le ramène pas chez lui. Niveau module (lu par le timer d'enforcement, piège #56).
+let _lastConfineSquadHoldAt = 0;
+function confineWithSquad() {
+  if (!presence) return false;
+  const p = bot.entity && bot.entity.position;
+  if (!p) return false;
+  try {
+    return mateNearby({ self: { x: p.x, z: p.z }, selfName: bot.username, mates: presence.list(), now: Date.now() });
+  } catch (e) { return false; }
+}
+
 // ENFORCEMENT confine no-give (brique 1) : le bot a dérivé hors de sa poche (> rayon ×1.25) →
 // /home ancre (commande joueur, secure-then-warp inclus). C'est CE retour qui casse le pattern
 // mortel « atteint iron_deep → explore loin → eau → churn » (vécu world_ax2 toute la nuit).
@@ -679,7 +692,13 @@ setInterval(() => {
     // le rappeler à l'ancre le renverrait dans la zone morte qu'il vient de quitter (18 cas mesurés).
     const graceHold = Date.now() < _confineGraceUntil;
     const dist = Math.hypot(p.x - conf.x, p.z - conf.z);
-    if (shouldEnforceConfine({ dist, radius: conf.radius, busy: busy || graceHold, now: Date.now(), lastAt: _lastConfineEnforceAt })) {
+    const withSquad = confineWithSquad();
+    if (withSquad && shouldEnforceConfine({ dist, radius: conf.radius, busy: busy || graceHold, now: Date.now(), lastAt: _lastConfineEnforceAt })
+      && Date.now() - _lastConfineSquadHoldAt > 5 * 60000) {
+      _lastConfineSquadHoldAt = Date.now();
+      emit({ type: 'confine_squad_hold', dist: Math.round(dist), x: conf.x, z: conf.z });
+    }
+    if (shouldEnforceConfine({ dist, radius: conf.radius, busy: busy || graceHold, now: Date.now(), lastAt: _lastConfineEnforceAt, withSquad })) {
       _lastConfineEnforceAt = Date.now();
       emit({ type: 'confine_enforce', dist: Math.round(dist), x: conf.x, z: conf.z });
       safeWarpHome(CONFINE_HOME, { ctx: 'confine_enforce' }).catch(() => {});
@@ -2443,7 +2462,9 @@ async function smeltWithFurnace(input, output, count, fuelOverride, opts = {}) {
   // Un four de mine en cours (fondre en minant) : jamais un 2e four à côté. Le planner le ramasse AVANT
   // tout but de fonte (runSkillWithTelemetry → finishFurnaceJob) ; un appelant hors planner (timer
   // d'armure, équipement au ramassage) ne marche pas vers lui en plein branch-mine : il réessaiera.
-  if (_furnaceJob) return { ok: false, reason: 'furnace_job_running' };
+  // Four de mine LOIN (22/10, NethBot1 : 14 min de `furnace_job_running` avec le four 40 blocs plus bas) :
+  // il ne bloque plus les autres fours — seul un four de mine à portée de retour garde la priorité.
+  if (_furnaceJob && furnaceJobNear()) return { ok: false, reason: 'furnace_job_running' };
   _stillBusy = true;    // immobilité LÉGITIME (poll du four ≤3 min) — le desync-watchdog ne doit pas tirer
   // RAISON TOUJOURS RENSEIGNÉE (vu en session vivante : `armor_smelt ok:false reason:"?"`, un échec
   // à la cause PERDUE sur le chemin qui fabrique l'armure). Le trou est dans `smelt` lui-même
@@ -5028,6 +5049,43 @@ function _furnaceDist() {
   return Math.hypot(p.x - j.x, p.y - j.y, p.z - j.z);
 }
 
+/** Le four de mine est-il à portée de retour (≤ SMELT_JOB_COLLECT_DIST, ou distance inconnue) ? */
+function furnaceJobNear() {
+  const d = _furnaceDist();
+  return d == null || d <= SMELT_JOB_COLLECT_DIST;
+}
+
+// PERSISTÉ (22/10 : NethBot3 a laissé 13 minerais dans un four à la relance du process de 11:11, puis a
+// manqué ses 8 lingots de plastron pendant une heure) — le four et son fer survivent au process, le
+// souvenir du four doit survivre aussi. Mémo base FUSIONNÉ (on n'écrase jamais le reste).
+function setFurnaceJob(j) {
+  _furnaceJob = j || null;
+  try {
+    const next = Object.assign({}, loadBaseState() || {});
+    if (_furnaceJob) next.furnaceJob = _furnaceJob; else delete next.furnaceJob;
+    saveBaseState(next);
+  } catch (e) { /* best-effort */ }
+}
+
+/** Relit le four de mine du process précédent (une fois par process, au spawn). */
+let _furnaceJobRestored = false;
+function restoreFurnaceJob() {
+  if (_furnaceJobRestored) return;
+  _furnaceJobRestored = true;
+  if (_furnaceJob) return;
+  try {
+    const j = furnaceJobRestore(loadBaseState(), Date.now());
+    if (j) { _furnaceJob = j; emit({ type: 'smelt_while_mining', phase: 'restored', count: j.count, x: j.pos.x, y: j.pos.y, z: j.pos.z }); }
+  } catch (e) { /* best-effort */ }
+}
+
+/** Ouverture impossible (four inaccessible, chunk pas chargé, trop loin) : job GARDÉ, nouvel essai dans 3 min. */
+function deferFurnaceJob(reason, why) {
+  if (!_furnaceJob) return;
+  setFurnaceJob(Object.assign({}, _furnaceJob, { retryAt: Date.now() + FURNACE_RETRY_MS }));
+  emit({ type: 'smelt_while_mining', phase: 'open_failed', why, reason });
+}
+
 async function startFurnaceJob(count) {
   const items = () => (bot.inventory && bot.inventory.items()) || [];
   const fuel = fuelLoadPlan(items().map((i) => ({ name: i.name, count: i.count })), count);
@@ -5050,7 +5108,7 @@ async function startFurnaceJob(count) {
   } catch (e) { ok = false; }
   try { f.close(); } catch (e) {}
   const now = Date.now();
-  _furnaceJob = { pos, count: fuel.smeltable, at: now, readyAt: jobReadyAt(now, fuel.smeltable) };
+  setFurnaceJob({ pos, count: fuel.smeltable, at: now, readyAt: jobReadyAt(now, fuel.smeltable) });
   emit({ type: 'smelt_while_mining', phase: 'start', raw: fuel.smeltable, fuel: `${fuel.loads[0].name}x${fuel.loads[0].qty}`, ok });
   if (!ok) await collectFurnaceJob('load_failed');   // rien ne doit rester coincé dans le four
   return ok;
@@ -5059,6 +5117,23 @@ async function startFurnaceJob(count) {
 async function collectFurnaceJob(why) {
   const j = _furnaceJob;
   if (!j) return false;
+  if (j.retryAt && Date.now() < j.retryAt) return false;      // ouverture ratée il y a < 3 min
+  // ROUTE (22/10, furnaceCollectRoute) : un four 40 blocs sous la surface ne se rejoint pas en 40 s de
+  // pathfinder depuis le /home safe ; le chantier `work` posé à côté du four, si.
+  const p0 = bot.entity && bot.entity.position;
+  let inWater = false;
+  try { inWater = isInWater(bot); } catch (e) { inWater = false; }
+  const route = furnaceCollectRoute({
+    dist: _furnaceDist(), dy: p0 ? p0.y - j.pos.y : 0, inWater,
+    workDist: (_workSet && _workPos) ? Math.hypot(_workPos.x - j.pos.x, _workPos.z - j.pos.z) : null,
+  });
+  if (route === 'later') return false;                        // trop loin, pas de raccourci : il attendra
+  if (route === 'warp_work') {
+    emit({ type: 'smelt_while_mining', phase: 'warp_work', why });
+    try { homewarp.goWork(bot); } catch (e) {}
+    await awaitWarp({ maxMs: 12000 });
+    await sleep(1200);                                        // chunks d'arrivée
+  }
   if ((_furnaceDist() || 0) > 3.5) {
     try {
       await withTimeout(bot.pathfinder.goto(new pfGoals.GoalNear(j.pos.x, j.pos.y, j.pos.z, 2)), 40000,
@@ -5066,20 +5141,23 @@ async function collectFurnaceJob(why) {
     } catch (e) { /* on essaie quand même d'ouvrir */ }
   }
   const fb = bot.blockAt(vec3Lib(j.pos.x, j.pos.y, j.pos.z));
-  if (!fb || fb.name !== 'furnace') {
-    _furnaceJob = null;
+  // Chunk pas chargé (TP, mort, loin) : le four n'est PAS perdu — on ne peut juste pas le voir d'ici.
+  if (!fb) { deferFurnaceJob('unloaded', why); return false; }
+  if (fb.name !== 'furnace') {
+    setFurnaceJob(null);
     emit({ type: 'smelt_while_mining', phase: 'lost', why });
     return false;
   }
+  if ((_furnaceDist() || 0) > 5) { deferFurnaceJob('out_of_reach', why); return false; }   // ouvrir d'ici échouerait
   const before = ((bot.inventory && bot.inventory.items()) || []).reduce((s, i) => s + (i.name === 'iron_ingot' ? i.count : 0), 0);
   let f = null;
   try { f = await bot.openFurnace(fb); } catch (e) { f = null; }
-  if (!f) { emit({ type: 'smelt_while_mining', phase: 'open_failed', why }); return false; }   // job gardé : on repassera
+  if (!f) { deferFurnaceJob('open_failed', why); return false; }   // job gardé : on repassera
   try { if (f.outputItem && f.outputItem()) await f.takeOutput(); } catch (e) {}
   try { if (f.inputItem && f.inputItem()) await f.takeInput(); } catch (e) {}
   try { if (f.fuelItem && f.fuelItem()) await f.takeFuel(); } catch (e) {}
   try { f.close(); } catch (e) {}
-  _furnaceJob = null;
+  setFurnaceJob(null);
   await sleep(250);
   await reclaimBlock(j.pos, 'furnace');
   const after = ((bot.inventory && bot.inventory.items()) || []).reduce((s, i) => s + (i.name === 'iron_ingot' ? i.count : 0), 0);
@@ -5107,7 +5185,7 @@ async function furnaceJobTick() {
       await collectFurnaceJob('ready');
     } else if (plan.act === 'abandon') {
       emit({ type: 'smelt_while_mining', phase: 'abandon', why: plan.why, count: _furnaceJob && _furnaceJob.count });
-      _furnaceJob = null;
+      setFurnaceJob(null);
     }
   } catch (e) { /* best-effort */ }
   finally { _furnaceJobBusy = false; }
@@ -5119,13 +5197,12 @@ async function finishFurnaceJob(why, maxWaitMs = 90000) {
   if (!j || _furnaceJobBusy) return;
   _furnaceJobBusy = true;
   try {
+    // Loin, on ne l'OUBLIE plus (22/10 : 44 minerais perdus ainsi par NethBot1) — collectFurnaceJob choisit
+    // la route (/home work à côté du four) ou attend le retour. On n'attend la cuisson que près du four :
+    // loin, il ne cuit pas (hors simulation) et l'on reprend aussi l'entrée.
     const d = _furnaceDist();
-    if (d != null && d > SMELT_JOB_ABANDON_DIST) {
-      emit({ type: 'smelt_while_mining', phase: 'abandon', why: 'far', count: j.count });
-      _furnaceJob = null;
-      return;
-    }
-    const wait = Math.min(maxWaitMs, (j.readyAt || 0) - Date.now());
+    const near = d == null || d <= SMELT_JOB_COLLECT_DIST;
+    const wait = near ? Math.min(maxWaitMs, (j.readyAt || 0) - Date.now()) : 0;
     if (wait > 0) await sleep(wait);
     await collectFurnaceJob(why);
   } catch (e) { /* best-effort */ }
@@ -10161,6 +10238,7 @@ bot.on('spawn', () => {
   // Les morts des process précédents, AVANT onSpawn : s'il y a eu une rafale, l'évasion est déjà
   // armée quand onSpawn teste `_escapeOnSpawn` (UNE fois par process — garde de niveau module).
   loadDeathHistory();
+  restoreFurnaceJob();    // four de mine du process précédent (22/10) : son fer attend au fond
   survivalKitUp().catch(() => {});
   onSpawn().catch((e) => emit({ type: 'error', message: String((e && e.message) || e) }));
 });

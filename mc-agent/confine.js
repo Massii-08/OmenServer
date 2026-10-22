@@ -43,8 +43,10 @@ const DEFAULT_CONFINE_RADIUS = 140;    // poche assez grande pour bois + mine, a
  * - jamais pendant une activité légitime (dig/fonte/abri/sauvetage) ;
  * - cooldown 2 min entre deux enforcement (le /home + re-dérive prend du temps).
  */
-function shouldEnforceConfine({ dist, radius, busy, now, lastAt, cooldownMs = 120000, factor = 1.25 } = {}) {
-  if (busy) return false;
+// `withSquad` (22/10) : un coéquipier ouvrier est à côté → le bot est AVEC la squad (il l'a rejointe par
+// /tpa) : le ramener à SON ancre le séparerait du groupe, et la squad le re-téléporterait ensuite.
+function shouldEnforceConfine({ dist, radius, busy, now, lastAt, cooldownMs = 120000, factor = 1.25, withSquad = false } = {}) {
+  if (busy || withSquad) return false;
   if (!(dist > radius * factor)) return false;
   return (now - (lastAt || 0)) >= cooldownMs;
 }

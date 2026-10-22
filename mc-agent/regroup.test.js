@@ -369,3 +369,22 @@ test('squadTarget : récolteur de bois en surface, chef mineur au fond → pas d
   assert.strictEqual(r, null);
   assert.deepStrictEqual(skips, [['wood_goal', 'NethBot3']]);
 });
+
+// ─── mateNearby (22/10) : le confine ne doit pas ramener chez lui un bot qui travaille AVEC la squad ───
+const { mateNearby, SQUAD_WITH_RADIUS } = require('./regroup');
+
+test('mateNearby : un coéquipier ouvrier frais à ≤ 64 blocs → true', () => {
+  assert.strictEqual(mateNearby({ self: { x: -218, z: 236 }, selfName: 'NethBot3', mates: [mate('NethBot1', -209, 263)], now: NOW }), true);
+  assert.ok(SQUAD_WITH_RADIUS >= 48);
+});
+
+test('mateNearby : soi-même, mappeur, bûcheron, présence périmée ou trop loin → false', () => {
+  const self = { x: 0, z: 0 };
+  const f = (m) => mateNearby({ self, selfName: 'Me', mates: [m], now: NOW });
+  assert.strictEqual(f(mate('Me', 1, 1)), false);
+  assert.strictEqual(f(mate('Map', 1, 1, { role: 'mapper' })), false);
+  assert.strictEqual(f(mate('LJ', 1, 1, { role: 'lumberjack' })), false);
+  assert.strictEqual(f(mate('Old', 1, 1, { at: NOW - 4 * 60000 })), false);
+  assert.strictEqual(f(mate('Far', 300, 0)), false);
+  assert.strictEqual(mateNearby({ self: null, selfName: 'Me', mates: [mate('A', 1, 1)], now: NOW }), false);
+});

@@ -215,7 +215,26 @@ function squadTarget({
   return { name: leader, dist: Math.round(d) };
 }
 
+// ─── AVEC LA SQUAD ? (22/10) ─────────────────────────────────────────────────────────────────────
+// Le confine (rappel /home safe au-delà de 1,25 × rayon) ignorait la squad : NethBot1 et NethBot3,
+// bases à ~360 blocs l'une de l'autre, se /tpa l'un vers l'autre, puis le confine ramène chacun chez
+// lui 45 s plus tard → grotte coupée, four de mine laissé derrière, re-/tpa. Un coéquipier ouvrier
+// frais à ≤ 64 blocs = le bot travaille avec le groupe : pas de rappel.
+const SQUAD_WITH_RADIUS = 64;
+
+/** PUR — un coéquipier ouvrier (ni mappeur, ni bûcheron) frais est-il à ≤ radius blocs (XZ) ? */
+function mateNearby({ self, selfName, mates, now, radius = SQUAD_WITH_RADIUS, freshMs = FRESH_MS } = {}) {
+  if (!self || typeof self.x !== 'number' || typeof self.z !== 'number') return false;
+  const t = now || Date.now();
+  return (mates || []).some((m) => m && m.name && m.name !== selfName
+    && m.role !== 'mapper' && m.role !== 'lumberjack'
+    && typeof m.x === 'number' && typeof m.z === 'number'
+    && (t - (m.at || 0)) <= freshMs
+    && _d(m.x, m.z, self.x, self.z) <= radius);
+}
+
 module.exports = {
+  mateNearby, SQUAD_WITH_RADIUS,
   pickRegroupTarget, FRESH_MS, MIN_FAR, COOLDOWN_MS,
   squadLeader, squadTarget, SQUAD_NEAR, SQUAD_COOLDOWN_MS, UNDERGROUND_Y,
   squadHold, isMiningGoal, SQUAD_HOLD_Y,
