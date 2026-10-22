@@ -216,6 +216,86 @@ function shouldLootAfterCombat(s) {
   return { go: true, reason: 'ok' };
 }
 
+// ─── 4) LA SOURCE DURABLE : LA PÊCHE (22/10) ──────────────────────────────────────────────────────
+// Mesure (chrono de 146 min, 3 mineurs, 44 morts dont 10 « PV bas > 20 s sans régénération ») : les
+// mineurs MANGENT 4, 28 et 181 points de faim par heure (NethBot1/2/3 — le dernier à 65 % de chair
+// putréfiée), quand un joueur qui mine, court et encaisse en Hard en BRÛLE ≈ 90/h (1 point toutes les
+// ~40 s, davantage quand il se soigne : 1,5 point par PV régénéré). La chasse ne peut pas combler : il
+// reste 35 animaux à 160 blocs de la base (4 vaches, 11 cochons, 10 moutons, 10 poules — compte RCON
+// du 22/10) ≈ 140 points, moins d'une heure pour UN mineur, et ils ne réapparaissent pas.
+// Comparé (même échelle, points de faim par heure de travail d'un bot) :
+//   - BLÉ / PAIN : 1 graine pour 8 herbes cassées, 7 stades de pousse ≈ 24-56 min (68 s par tick
+//     aléatoire, 1 chance sur 3 à 7 selon l'arrosage), 3 blés = 5 points. Un champ de 8 cases autour
+//     d'une source rend ≈ 13 points par 40 min : il faudrait 60+ graines (≈ 500 herbes) pour nourrir
+//     trois mineurs. Rentable en jours, pas en heures de run.
+//   - ÉLEVAGE : il faut DÉJÀ du blé (vaches, moutons) ou des graines (poules), un enclos, et 20 min
+//     de croissance par petit. Même mur que le blé, plus le pathfinding des bêtes.
+//   - PÊCHE : une touche toutes les 5-30 s (100-600 ticks, ≈ 3 lancers/min), 85 % de poisson
+//     (2 points cru, 5-6 cuit) → ≈ 300 points/h de pêche, la nuit comme le jour, sans combat ni
+//     épuisement. Canne = 3 bâtons + 2 ficelles, 64 usages ≈ 130 points crus / 330 cuits. Il faut
+//     ≈ 18 min de pêche par heure (cru) ou 7 (cuit) pour un mineur. La ficelle vient des araignées —
+//     27 à 160 blocs de la base au même relevé, et NethBot1 en portait déjà 1.
+// Le trou mesuré : la pêche était câblée MAIS ne partait qu'avec une canne DÉJÀ en poche (jamais :
+// 0 canne dans la flotte), et 40 s à ≤ 16 blocs ne rapportent que ≈ 2 poissons (4 points).
+// D'où, ci-dessous : (a) une canne FABRICABLE compte comme une canne (fishCatch la fabrique), (b) une
+// ficelle prise à une araignée EN VUE si c'est elle qui manque, (c) quand la chasse n'a rien rapporté,
+// une vraie SÉANCE de pêche bornée à 75 s (même plafond que l'expédition vers le gibier, qu'elle
+// remplace : jamais les deux dans la même sortie) avec un rayon qui atteint une rivière voisine.
+const FISH_SESSION_MS = 75000;          // = foodTrip.FOOD_TRIP_MS : les garde-fous des appelants le couvrent déjà
+const FISH_SESSION_RADIUS = 48;         // la portée du cache client (view-distance 6) — de la vraie donnée
+const FISH_SESSION_GOTO_MS = 20000;     // marcher jusqu'à la berge (≤ 48 blocs)
+const FISH_SESSION_CATCH_MS = 32000;    // une touche vanilla arrive au plus tard à 30 s : 20 s en ratait 40 %
+const FISH_SESSION_MISSES = 3;
+const FISH_CATCH_POINTS = 2;            // un poisson CRU (le cuit vaut 5-6 : la sortie suivante le cuira)
+const FISH_SESSION_MAX_CATCH = 10;
+const STRING_HUNT_MS = 30000;           // UNE araignée en vue, pas une battue
+const STRING_HUNT_RADIUS = 24;
+const STRING_HUNT_MIN_HP = 12;          // sous 12 PV on ne provoque personne (cf. combat « décrocher dès 10 PV »)
+const ROD_STRING_NEED = 2;
+
+/**
+ * PUR — combien de prises viser pour combler `deficit` points (cru, 2 points la prise) : 1..10.
+ */
+function fishTargetFor(deficit) {
+  const d = Number(deficit);
+  if (!(d > 0) || !Number.isFinite(d)) return 1;
+  return Math.max(1, Math.min(FISH_SESSION_MAX_CATCH, Math.ceil(d / FISH_CATCH_POINTS)));
+}
+
+/**
+ * PUR — la fenêtre de pêche de cette sortie.
+ * s = { rod: canne prête (en poche OU fabricable), leftMs: budget restant, kills: proies de la sortie,
+ *       trip: une expédition vers le gibier a eu lieu, session: l'appelant sait faire une séance }
+ * Séance (75 s, hors budget) seulement si la chasse n'a RIEN tué et qu'aucune expédition n'est partie :
+ * c'est alors la seule source de la sortie, et les deux plafonds hors-budget ne s'additionnent jamais.
+ * Sinon : l'ancienne pêche d'appoint, rognée par le budget (fishPlan).
+ * @returns {{fish:boolean, ms:number, session:boolean, reason:string}}
+ */
+function fishWindow(s = {}) {
+  if (!s.rod) return { fish: false, ms: 0, session: false, reason: 'no_rod' };
+  if (s.session && !(Number(s.kills) > 0) && !s.trip) {
+    return { fish: true, ms: FISH_SESSION_MS, session: true, reason: 'session' };
+  }
+  return Object.assign(fishPlan({ rod: true, leftMs: s.leftMs }), { session: false });
+}
+
+/**
+ * PUR — prendre une ficelle à l'araignée en vue ? Seulement si c'est ELLE qui manque à la canne.
+ * s = { rodReady, string, spiderInView, hp, leftMs }
+ * @returns {{go:boolean, ms:number, reason:'ok'|'have_rod'|'have_string'|'no_spider'|'low_hp'|'no_time'}}
+ */
+function stringHuntPlan(s = {}) {
+  if (s.rodReady) return { go: false, ms: 0, reason: 'have_rod' };
+  if (Number(s.string) >= ROD_STRING_NEED) return { go: false, ms: 0, reason: 'have_string' };
+  if (!s.spiderInView) return { go: false, ms: 0, reason: 'no_spider' };
+  const hp = Number(s.hp);
+  if (!(Number.isFinite(hp) && hp >= STRING_HUNT_MIN_HP)) return { go: false, ms: 0, reason: 'low_hp' };
+  const left = Number(s.leftMs);
+  const ms = Number.isFinite(left) ? Math.min(STRING_HUNT_MS, Math.max(0, left)) : 0;
+  if (ms < MIN_PHASE_MS) return { go: false, ms: 0, reason: 'no_time' };
+  return { go: true, ms, reason: 'ok' };
+}
+
 module.exports = {
   FOOD_POINTS, foodPoints,
   STOCK_POINTS, ENSURE_SKIP_POINTS, SURFACE_TRIP_POINTS, RAW_PIECE_POINTS, HUNT_SIGHT_RADIUS,
@@ -226,4 +306,7 @@ module.exports = {
   createBudget, boundedToken, cookPlan, fishPlan,
   COMBAT_LOOT_RADIUS, COMBAT_LOOT_ITEMS, COMBAT_LOOT_MS, COMBAT_LOOT_HOSTILE_RADIUS, COMBAT_LOOT_NEAR, COMBAT_LOOT_SETTLE_MS,
   isHostileKill, shouldLootAfterCombat,
+  FISH_SESSION_MS, FISH_SESSION_RADIUS, FISH_SESSION_GOTO_MS, FISH_SESSION_CATCH_MS, FISH_SESSION_MISSES,
+  FISH_CATCH_POINTS, FISH_SESSION_MAX_CATCH, STRING_HUNT_MS, STRING_HUNT_RADIUS, STRING_HUNT_MIN_HP, ROD_STRING_NEED,
+  fishTargetFor, fishWindow, stringHuntPlan,
 };

@@ -605,12 +605,16 @@ test('index.js : le timer « food run » est borné à 70 s (et non plus 240 s) 
   assert.match(done, /gained: after - stock/, 'les champs existants sont conservés');
 });
 
-test('index.js : huntCookGoal — une vague, borné, jeton CAPTURÉ, plus de ficelle ni de trajet vers l eau', () => {
+test('index.js : huntCookGoal — une vague, borné, jeton CAPTURÉ, plus de trajet vers l eau, ficelle BORNÉE', () => {
   const body = slice('async function huntCookGoal(target', '// PÊCHE — plan B nourriture');
   assert.match(body, /runHuntCook\(/);
   assert.match(body, /const tok = taskToken;/, 'jeton capturé à l entrée (fix 18/08 : taskToken est un global relu tard)');
-  assert.strictEqual(/fishAtKnownWater|fishTry|huntSpidersGoal/.test(body), false,
-    'ni trajet vers l eau (jusqu à 300 s) ni chasse à la ficelle (90 s) dans la sortie nourriture');
+  assert.strictEqual(/fishAtKnownWater|fishTry/.test(body), false,
+    'ni trajet vers l eau connue (jusqu à 300 s) dans la sortie nourriture');
+  // 22/10 : la chasse à la ficelle revient, mais BORNÉE par la phase (≤ 30 s, araignée EN VUE à 24 blocs,
+  // décidée par food.stringHuntPlan) — plus jamais les 90 s à l aveugle du 18/08.
+  const calls = body.match(/huntSpidersGoal\([^)]*\)/g) || [];
+  assert.deepStrictEqual(calls, ['huntSpidersGoal({ token, totalMs: ms, maxDistance: STRING_HUNT_RADIUS, count: 2 })']);
   assert.match(body, /maxDistance: FISH_RADIUS|FISH_RADIUS/);
   assert.match(body, /nearestPassive\(bot, HUNT_SIGHT_RADIUS\)/);
 });
@@ -647,4 +651,98 @@ test('index.js : opportunistic_hunt du mappeur compte en points, borné à 45 s,
 test('index.js : la compétence huntCook n a plus 8 minutes (SKILL_TIMEOUTS)', () => {
   assert.strictEqual(/huntCook: 480000/.test(SRC), false);
   assert.match(SRC, /huntCook: 90000/);
+});
+
+// ─── 22/10 : canne fabricable, ficelle à l araignée en vue, séance de pêche ─────────────────────
+function durableWorld(over = {}) {
+  const w = huntWorld({ passive: false, rod: false, ...over });
+  w.craftable = over.craftable || false;
+  w.spider = over.spider || false;
+  w.hp = over.hp != null ? over.hp : 20;
+  w.stringGives = over.stringGives != null ? over.stringGives : 2;
+  w.stringTakes = over.stringTakes || 12000;
+  w.deps.fishSession = over.fishSession !== false;
+  w.deps.canCraftRod = () => w.craftable || ((w.inv.string || 0) >= 2 && (w.inv.stick || 0) >= 3);
+  w.deps.spiderInView = () => w.spider;
+  w.deps.stringCount = () => w.inv.string || 0;
+  w.deps.health = () => w.hp;
+  w.deps.huntString = async (o) => {
+    w.calls.push(['string', { ms: o.ms, token: o.token }]);
+    w.clock.advance(Math.min(w.stringTakes, o.ms));
+    w.inv.string = (w.inv.string || 0) + w.stringGives;
+    return { ok: w.stringGives > 0, strings: w.stringGives, kills: 1, reason: 'target' };
+  };
+  const fish = w.deps.fish;
+  w.deps.fish = async (o) => { w.lastFish = o; return fish(o); };
+  return w;
+}
+
+test('pêche durable : une canne FABRICABLE suffit, et sans proie c est une vraie SÉANCE (75 s, prises visées)', async () => {
+  const w = durableWorld({ craftable: true, inv: { cod: 1 } });     // 2 points en poche, but 12
+  await runHuntCook(w.deps, 4);
+  assert.ok(w.lastFish, 'on pêche alors que la canne n est pas encore en poche');
+  assert.strictEqual(w.lastFish.session, true);
+  assert.strictEqual(w.lastFish.ms, F.FISH_SESSION_MS);
+  assert.strictEqual(w.lastFish.target, 5, '(12 − 2) / 2 points la prise');
+  assert.ok(!names(w).includes('string'), 'canne fabricable : pas de chasse à la ficelle');
+});
+
+test('pêche durable : la ficelle manque + araignée en vue → on la prend, PUIS on pêche', async () => {
+  const w = durableWorld({ spider: true, inv: { string: 1, stick: 6 } });
+  const r = await runHuntCook(w.deps, 4);
+  assert.deepStrictEqual(names(w), ['string', 'fish']);
+  assert.ok(w.calls[0][1].ms <= F.STRING_HUNT_MS);
+  const ev = w.events.find((e) => e.type === 'hunt_cook_done');
+  assert.strictEqual(ev.strings, 2, 'le bilan dit combien de ficelle la sortie a rapporté');
+  assert.strictEqual(r.ok, true);
+});
+
+test('pêche durable : pas d araignée en vue, ou PV < 12 → ni ficelle ni pêche (et la raison le dit)', async () => {
+  const sans = durableWorld({ spider: false, inv: { string: 1, stick: 6 } });
+  const r = await runHuntCook(sans.deps, 4);
+  assert.deepStrictEqual(names(sans), []);
+  assert.strictEqual(r.reason, 'no_prey:no_passive');
+  const bas = durableWorld({ spider: true, hp: 8, inv: { stick: 6 } });
+  await runHuntCook(bas.deps, 4);
+  assert.deepStrictEqual(names(bas), []);
+});
+
+test('pêche durable : une araignée tuée sans ficelle ne débloque rien — pas de pêche fantôme', async () => {
+  const w = durableWorld({ spider: true, stringGives: 0, inv: { stick: 6 } });
+  await runHuntCook(w.deps, 4);
+  assert.deepStrictEqual(names(w), ['string']);
+});
+
+test('pêche durable : la chasse a tué → pêche d appoint rognée (≤ 40 s), jamais de séance', async () => {
+  const w = durableWorld({ craftable: true, passive: true, huntGives: { beef: 1 }, huntTakes: 10000 });
+  await runHuntCook(w.deps, 6);
+  assert.ok(w.lastFish);
+  assert.strictEqual(w.lastFish.session, false);
+  assert.ok(w.lastFish.ms <= 40000);
+});
+
+test('pêche durable : séance JAMAIS après une expédition (les deux plafonds hors budget ne s additionnent pas)', async () => {
+  const w = durableWorld({ craftable: true });
+  w.deps.tripState = () => ({ isDay: true, y: 70 });
+  w.deps.grazingCell = () => ({ x: 100, z: 100, biome: 'plains', dist: 120 });
+  w.deps.tripWalk = async () => { w.clock.advance(50000); return { ok: true, arrived: true, legs: 2 }; };
+  await runHuntCook(w.deps, 4);
+  const went = w.events.find((e) => e.type === 'food_trip');
+  if (went) assert.ok(!w.lastFish || w.lastFish.session === false, 'expédition partie : pas de séance');
+});
+
+test('pêche durable : pire cas (ficelle + séance) — la sortie reste sous le garde-fou des appelants', async () => {
+  const w = durableWorld({ spider: true, inv: { stick: 6 }, stringTakes: 999999, fishTakes: 999999, fishGives: {} });
+  const t0 = w.clock.now();
+  await runHuntCook(w.deps, 8);
+  const el = w.clock.now() - t0;
+  assert.ok(el <= F.HUNT_COOK_BUDGET_MS + F.FISH_SESSION_MS, `consommé ${el} ms`);
+  assert.ok(el <= F.HUNT_COOK_TIMEOUT_MS + require('./foodTrip').FOOD_TRIP_MS, 'sous withTimeout(huntCookGoal, 70 s + 75 s)');
+});
+
+test('pêche durable : appelant sans séance (fishSession absent) → pêche d appoint d avant', async () => {
+  const w = durableWorld({ craftable: true, fishSession: false });
+  await runHuntCook(w.deps, 4);
+  assert.strictEqual(w.lastFish.session, false);
+  assert.ok(w.lastFish.ms <= 40000);
 });

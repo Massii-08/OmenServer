@@ -93,6 +93,12 @@ async function runEnsureFood(d) {
  * opts : { budget?, budgetMs?, waves=1, huntMs=45000, goalPoints? }
  * → { ok:true, got:points } | { ok:false, reason:'cancelled' | 'no_prey:<pourquoi>' }
  *
+ * PÊCHE DURABLE (optionnelle, 22/10) — deps en plus : { canCraftRod():bool, fishSession:true,
+ *          spiderInView():bool, stringCount():nombre, health():nombre,
+ *          huntString({ms,token,cancel}):Promise } ; `fish` reçoit alors aussi {session, target}.
+ * Canne fabricable = canne prête ; ficelle manquante + araignée en vue = ≤ 30 s pour la prendre ;
+ * chasse bredouille sans expédition = SÉANCE de pêche de 75 s (food.fishWindow).
+ *
  * `target` garde son sens historique (« pièces de viande voulues ») et se convertit en points :
  * 4 → 12 (le seuil du kit), 6 → 18 (≈ celui d'ensureFood). Un GAIN de points est un succès, même
  * sous le but : une chasse qui rapporte nourrit, et le planner / le timer re-décident ensuite.
@@ -156,6 +162,7 @@ async function runHuntCook(d, target, opts = {}) {
       kills: stats.kills, cooked: stats.cooked, fished: stats.fished,
       ok: !!res.ok, reason: res.reason || null,
     };
+    if (stats.strings != null) ev.strings = stats.strings;
     if (tripReason) ev.trip = tripReason;   // « pourquoi il n'est pas parti » : sans ça `no_prey:no_passive` reste muet
     emit(ev);
     return res;
@@ -240,13 +247,38 @@ async function runHuntCook(d, target, opts = {}) {
       }
     }
 
-    // 3) PÊCHE — canne en poche, de l'eau à ≤ 16 blocs (vérifié par fishCatch), et le but pas déjà atteint.
+    // 2bis) FICELLE (22/10) — la canne ne manque que de ficelle et une araignée est EN VUE : on la prend
+    //    (≤ 30 s, dans le budget). Sans les deps (appelants anciens) : rien ne change. Cf. food.stringHuntPlan.
+    const rodReady = () => safe(d.hasRod, false) || safe(d.canCraftRod, false);
+    if (!cancelled() && points() < goal && typeof d.huntString === 'function') {
+      const sp = F.stringHuntPlan({
+        rodReady: rodReady(), string: _num(d.stringCount), spiderInView: safe(d.spiderInView, false),
+        hp: _num(d.health), leftMs: budget.left(),
+      });
+      if (sp.go) {
+        const s0 = _num(d.stringCount);
+        const ctl = F.boundedToken(parent);
+        try { await d.huntString({ ms: budget.take(sp.ms), token: ctl.token, cancel: ctl.cancel }); } catch (e) { /* best-effort */ }
+        ctl.cancel();
+        stats.strings = Math.max(0, _num(d.stringCount) - s0);
+        if (cancelled()) return finish({ ok: false, reason: 'cancelled' });
+        if (!rodReady()) why = 'no_string';
+      }
+    }
+
+    // 3) PÊCHE — canne en poche OU fabricable (fishCatch la fabrique), de l'eau à portée (vérifié par
+    //    fishCatch), et le but pas déjà atteint. Sans prise de chasse ni expédition, c'est une SÉANCE de
+    //    75 s à 48 blocs (food.fishWindow) : la seule source qui ne s'épuise pas.
     if (!cancelled() && points() < goal) {
-      const fp = F.fishPlan({ rod: safe(d.hasRod, false), leftMs: budget.left() });
-      if (fp.fish) {
+      const fw = F.fishWindow({
+        rod: rodReady(), leftMs: budget.left(), kills: stats.kills, trip: !!trip, session: d.fishSession === true,
+      });
+      if (fw.fish) {
         const ctl = F.boundedToken(parent, () => points() >= goal);
         let fr = null;
-        try { fr = await d.fish({ ms: fp.ms, token: ctl.token, cancel: ctl.cancel }); } catch (e) { fr = null; }
+        const o = { ms: fw.ms, token: ctl.token, cancel: ctl.cancel, session: fw.session };
+        if (fw.session) o.target = F.fishTargetFor(goal - points());
+        try { fr = await d.fish(o); } catch (e) { fr = null; }
         ctl.cancel();
         if (fr && fr.caught) stats.fished += fr.caught;
         if (fr && fr.reason) why = _zoneNeutral(fr.reason);
@@ -272,6 +304,11 @@ async function runHuntCook(d, target, opts = {}) {
 // « trop humide » qui ne l'est pas. On le renomme donc avant de le mettre dans la raison.
 function _zoneNeutral(reason) {
   return String(reason).replace(/water/gi, 'pond').replace(/flood|drown/gi, 'wet');
+}
+
+// Lecture défensive d'une dépendance numérique : illisible → 0.
+function _num(fn) {
+  try { const n = typeof fn === 'function' ? Number(fn()) : NaN; return Number.isFinite(n) ? n : 0; } catch (e) { return 0; }
 }
 
 // Lecture défensive d'une dépendance booléenne : illisible → valeur de repli (côté prudent).

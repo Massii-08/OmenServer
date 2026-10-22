@@ -502,7 +502,7 @@ function huntGlue(over = {}) {
     captured: null, capturedArgs: null,
     passive: { name: 'cow' },
     passiveThrows: false,
-    hunts: [], smelts: [], fishes: [], timeouts: [], stops: 0,
+    hunts: [], smelts: [], fishes: [], timeouts: [], stops: 0, stringHunts: [],
     ...over,
   };
   const src = slice('async function huntCookGoal(target', '// PÊCHE — plan B nourriture');
@@ -524,6 +524,15 @@ function huntGlue(over = {}) {
     fishGoal: async (t, o) => { w.fishes.push([t, o]); return { ok: true, caught: 1, reason: 'target' }; },
     FISH_TARGET: F.FISH_TARGET,
     FISH_RADIUS: F.FISH_RADIUS,
+    FISH_MIN_MS: F.FISH_MIN_MS,
+    FISH_SESSION_RADIUS: F.FISH_SESSION_RADIUS,
+    FISH_SESSION_GOTO_MS: F.FISH_SESSION_GOTO_MS,
+    FISH_SESSION_CATCH_MS: F.FISH_SESSION_CATCH_MS,
+    FISH_SESSION_MISSES: F.FISH_SESSION_MISSES,
+    STRING_HUNT_RADIUS: F.STRING_HUNT_RADIUS,
+    rodPlan: require('./skills/fish').rodPlan,
+    nearestSpider: (b, r) => { if (w.spiderThrows) throw new Error('monde illisible'); w.spiderRadius = r; return w.spider || null; },
+    huntSpidersGoal: async (o) => { w.stringHunts.push(o); return { ok: true, strings: 1 }; },
     emit: () => {},
   };
   w.bot.inventory = { items: () => Object.keys(w.items).map((name) => ({ name, count: w.items[name] })) };
@@ -929,4 +938,49 @@ test('VRAI fishCatch : le jeton dérivé coupe la pêche entre deux lancers', as
   assert.strictEqual(caught, 1, 'une prise suffit au but : pas de 2e lancer');
   assert.strictEqual(r.reason, 'cancelled');
   assert.strictEqual(r.caught, 1);
+});
+
+
+// ─── 22/10 : pêche durable — canne fabricable, ficelle, séance ─────────────────────────────────
+test('huntCookGoal (câblage) : pêche durable branchée — canne fabricable, araignée à 24 blocs, ficelle, PV', async () => {
+  const w = huntGlue({ items: { stick: 6, string: 1 } });
+  w.bot.health = 17;
+  await w.huntCookGoal(4);
+  const d = w.captured;
+  assert.strictEqual(d.fishSession, true, 'la séance est demandée');
+  assert.strictEqual(d.canCraftRod(), false, '1 ficelle : pas encore');
+  w.items.string = 2;
+  assert.strictEqual(d.canCraftRod(), true, '3 bâtons + 2 ficelles : la canne se fabrique');
+  assert.strictEqual(d.stringCount(), 2);
+  assert.strictEqual(d.health(), 17);
+  assert.strictEqual(d.spiderInView(), false);
+  w.spider = { name: 'spider' };
+  assert.strictEqual(d.spiderInView(), true);
+  assert.strictEqual(w.spiderRadius, F.STRING_HUNT_RADIUS);
+  w.spiderThrows = true;
+  assert.strictEqual(d.spiderInView(), false, 'monde illisible : pas d araignée');
+});
+
+test('huntCookGoal (câblage) : la chasse à la ficelle relaie jeton et durée, et le plafond COUPE le jeton', async () => {
+  const w = huntGlue();
+  await w.huntCookGoal(4);
+  const ctl = F.boundedToken(w.taskToken);
+  await w.captured.huntString({ ms: 30000, token: ctl.token, cancel: ctl.cancel });
+  assert.deepStrictEqual(w.stringHunts[0], { token: ctl.token, totalMs: 30000, maxDistance: F.STRING_HUNT_RADIUS, count: 2 });
+  const t = w.timeouts[w.timeouts.length - 1];
+  assert.strictEqual(t[0], 33000);
+  t[1]();
+  assert.strictEqual(ctl.token.cancelled, true);
+});
+
+test('huntCookGoal (câblage) : en SÉANCE la pêche vise la berge à 48 blocs et laisse 32 s par touche', async () => {
+  const w = huntGlue();
+  await w.huntCookGoal(4);
+  const ctl = F.boundedToken(w.taskToken);
+  await w.captured.fish({ ms: F.FISH_SESSION_MS, token: ctl.token, cancel: ctl.cancel, session: true, target: 7 });
+  assert.deepStrictEqual(w.fishes[0], [7, {
+    token: ctl.token, maxDistance: 48, totalMs: F.FISH_SESSION_MS - F.FISH_SESSION_GOTO_MS,
+    perCatchMs: 32000, gotoMs: 20000, maxMisses: 3,
+  }]);
+  assert.strictEqual(w.timeouts[w.timeouts.length - 1][0], F.FISH_SESSION_MS + 3000);
 });

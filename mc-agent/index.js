@@ -70,7 +70,7 @@ const oregrab = require('./oregrab');
 const { nightWorkPlan, nightUnderground, nightDeferGoal, nightSealCells, shelterCraftNext } = require('./nightWork');
 const { furnaceJobPlan, fuelLoadPlan, jobReadyAt, SMELT_JOB_ABANDON_DIST, SMELT_JOB_COLLECT_DIST, furnaceJobRestore, furnaceCollectRoute, FURNACE_RETRY_MS } = require('./furnaceJob');                  // « ils passent à côté du fer sans le prendre »
 const { huntPassive } = require('./skills/hunt');
-const { fishCatch } = require('./skills/fish');   // pêche : la nourriture qui ne s'épuise pas
+const { fishCatch, rodPlan } = require('./skills/fish');   // pêche : la nourriture qui ne s'épuise pas
 const { nearestPassive, survivalTick, nearbyHostiles, lavaNearby, armorPoints, weaponDamage } = require('./survival');
 const { loadWorld, saveWorld, setObjective, clearObjective } = require('./worldModel');
 const { _nearestTable, tableKey, tablePlan, TABLE_REACH, TABLE_SEEK, pickJunkToToss } = require('./skills/craft'); // craftItem déjà importé plus haut
@@ -204,8 +204,9 @@ const {
 // LA FICELLE — la pêche exige une canne (3 bâtons + 2 ficelles) et `no_rod` sortait 444 fois : la
 // ficelle ne se ramasse pas au sol, elle se prend sur l'araignée (cf. skills/huntSpiders.js). Depuis
 // le 19/10 la chasse dédiée n'est plus appelée (trop longue) ; la ficelle vient du ramassage après
-// combat (wireCombatLoot). `huntSpidersGoal` / `fishAtKnownWater` restent définis, non appelés.
-const { huntSpiders } = require('./skills/huntSpiders');
+// combat (wireCombatLoot). `fishAtKnownWater` reste défini, non appelé. 22/10 : `huntSpidersGoal`
+// revient dans la sortie nourriture, BORNÉ (≤ 30 s, araignée en vue, seulement si la ficelle manque à la canne).
+const { huntSpiders, nearestSpider } = require('./skills/huntSpiders');
 // L'EAU CONNUE — de la carte du groupe (cellules océan/rivière peintes par les cartographes) vers
 // un point où marcher. Cf. waterfind.js (lu par `fishAtKnownWater`, non appelé depuis le 19/10).
 const { nearestWater, WATER_TRIP_MAX } = require('./waterfind');
@@ -216,7 +217,8 @@ const { nearestWater, WATER_TRIP_MAX } = require('./waterfind');
 // seulement » n'existe plus : une seule mesure, `foodPoints`.
 const {
   foodPoints, STOCK_POINTS, ENSURE_SKIP_POINTS, HUNT_SIGHT_RADIUS, HUNT_COOK_TIMEOUT_MS, FOOD_RUN_TIMEOUT_MS, HUNT_WAVE_MS,
-  FISH_RADIUS, FISH_TARGET, boundedToken, shouldLootAfterCombat,
+  FISH_RADIUS, FISH_TARGET, FISH_MIN_MS, boundedToken, shouldLootAfterCombat,
+  FISH_SESSION_RADIUS, FISH_SESSION_GOTO_MS, FISH_SESSION_CATCH_MS, FISH_SESSION_MISSES, STRING_HUNT_RADIUS,
   COMBAT_LOOT_RADIUS, COMBAT_LOOT_ITEMS, COMBAT_LOOT_MS, COMBAT_LOOT_HOSTILE_RADIUS, COMBAT_LOOT_SETTLE_MS,
 } = require('./food');
 const { runEnsureFood, runHuntCook } = require('./foodRun');
@@ -2801,6 +2803,9 @@ async function foodTripWalk({ cell, ms, token }) {
 // (`huntSpidersGoal`, 90 s). Ces fonctions restent définies plus bas, testées, simplement plus appelées
 // d'ici (réutilisables pour un mode « expédition »). La ficelle vient désormais du ramassage
 // opportuniste APRÈS un combat contre une araignée (cf. wireCombatLoot).
+// 22/10 (pêche DURABLE, cf. food.js §4) : la canne FABRICABLE compte, la ficelle se prend à une araignée
+// EN VUE (≤ 30 s dans le budget), et une chasse bredouille ouvre une séance de pêche de 75 s (hors
+// budget, jamais avec l'expédition : même plafond, mêmes garde-fous `+ FOOD_TRIP_MS`).
 //
 // SEUL trajet lointain conservé : l'EXPÉDITION vers le gibier (foodTrip*, juste au-dessus) — à vraie
 // faim (< 6 points), de jour, en surface, quand AUCUN passif n'est à ≤ 32 blocs. Sans elle la chasse ne
@@ -2841,10 +2846,25 @@ async function huntCookGoal(target, opts = {}) {
       return (r && (r.got || (r.ok ? count : 0))) || 0;
     },
     hasRod: () => _invTotal((i) => i.name === 'fishing_rod') > 0,
-    // Pêche LOCALE : eau à ≤ FISH_RADIUS (sinon `no_water` aussitôt, sans voyage), trajet vers la berge
-    // ≤ 12 s, une prise ≤ 20 s, le tout ≤ ms.
-    fish: ({ ms, token, cancel }) => withTimeout(
-      fishGoal(FISH_TARGET, { token, maxDistance: FISH_RADIUS, totalMs: ms, perCatchMs: 20000, gotoMs: 12000 }),
+    // PÊCHE DURABLE (22/10, cf. food.js §4) : une canne FABRICABLE compte (fishCatch la fabrique avec
+    // craftSmart), la ficelle se prend à une araignée EN VUE (≤ 24 blocs, ≤ 30 s), et une chasse
+    // bredouille ouvre une SÉANCE de 75 s jusqu'à 48 blocs de berge.
+    canCraftRod: () => { try { return rodPlan(bot.inventory.items()).craft === true; } catch (e) { return false; } },
+    fishSession: true,
+    spiderInView: () => { try { return !!nearestSpider(bot, STRING_HUNT_RADIUS); } catch (e) { return false; } },
+    stringCount: () => _invTotal((i) => i.name === 'string'),
+    health: () => bot.health,
+    huntString: ({ ms, token, cancel }) => withTimeout(
+      huntSpidersGoal({ token, totalMs: ms, maxDistance: STRING_HUNT_RADIUS, count: 2 }),
+      ms + 3000, () => { try { cancel(); } catch (e) {} try { stopMotion(); } catch (e) {} }),
+    // Pêche d'appoint LOCALE : eau à ≤ FISH_RADIUS (sinon `no_water` aussitôt, sans voyage), trajet vers
+    // la berge ≤ 12 s, une prise ≤ 20 s, le tout ≤ ms. En SÉANCE : berge ≤ 48 blocs (≤ 20 s de marche,
+    // décomptés de la séance), une touche ≤ 32 s (vanilla : 30 s au plus), 3 lancers morts avant d'abandonner.
+    fish: ({ ms, token, cancel, session, target }) => withTimeout(
+      fishGoal(session ? (target || FISH_TARGET) : FISH_TARGET, session
+        ? { token, maxDistance: FISH_SESSION_RADIUS, totalMs: Math.max(FISH_MIN_MS, ms - FISH_SESSION_GOTO_MS),
+          perCatchMs: FISH_SESSION_CATCH_MS, gotoMs: FISH_SESSION_GOTO_MS, maxMisses: FISH_SESSION_MISSES }
+        : { token, maxDistance: FISH_RADIUS, totalMs: ms, perCatchMs: 20000, gotoMs: 12000 }),
       ms + 3000, () => { try { cancel(); } catch (e) {} try { stopMotion(); } catch (e) {} }),
     // EXPÉDITION VERS LE GIBIER (cf. foodTrip* plus haut) : aucun passif à ≤ 32 blocs + vraie faim +
     // jour + surface → une marche vers la cellule à animaux la plus proche connue, puis la chasse

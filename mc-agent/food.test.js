@@ -350,3 +350,45 @@ test('goals.js : n a plus de compteur « cuit seulement » — une seule mesure,
   assert.strictEqual(/cookedCount|COOKED_FOODS/.test(src), false, 'l ancienne mesure ne doit pas survivre (c était le bug)');
   assert.match(src, /require\('\.\/food'\)/);
 });
+
+// ─── 22/10 : la pêche comme source DURABLE ──────────────────────────────────────────────────────
+test('fishTargetFor : le déficit en points devient un nombre de prises crues (1..10)', () => {
+  const F2 = require('./food');
+  assert.strictEqual(F2.fishTargetFor(20), 10);
+  assert.strictEqual(F2.fishTargetFor(7), 4);
+  assert.strictEqual(F2.fishTargetFor(1), 1);
+  assert.strictEqual(F2.fishTargetFor(0), 1);
+  assert.strictEqual(F2.fishTargetFor(NaN), 1);
+  assert.strictEqual(F2.fishTargetFor(500), F2.FISH_SESSION_MAX_CATCH);
+});
+
+test('fishWindow : séance de 75 s seulement si la chasse n a rien tué et sans expédition', () => {
+  const F2 = require('./food');
+  assert.deepStrictEqual(F2.fishWindow({ rod: false, session: true, leftMs: 60000 }),
+    { fish: false, ms: 0, session: false, reason: 'no_rod' });
+  const s = F2.fishWindow({ rod: true, session: true, kills: 0, trip: false, leftMs: 2000 });
+  assert.strictEqual(s.fish, true); assert.strictEqual(s.session, true);
+  assert.strictEqual(s.ms, F2.FISH_SESSION_MS, 'la séance a SON plafond, pas les 2 s de budget restant');
+  assert.strictEqual(F2.FISH_SESSION_MS, require('./foodTrip').FOOD_TRIP_MS, 'même plafond que l expédition, couvert par les mêmes garde-fous');
+  // une proie tuée, ou une expédition partie : pêche d appoint rognée par le budget (comportement d avant)
+  const k = F2.fishWindow({ rod: true, session: true, kills: 2, leftMs: 50000 });
+  assert.deepStrictEqual([k.fish, k.session, k.ms], [true, false, F2.FISH_MS]);
+  const t = F2.fishWindow({ rod: true, session: true, trip: true, kills: 0, leftMs: 5000 });
+  assert.deepStrictEqual([t.fish, t.session], [false, false]);
+  // l appelant qui ne sait pas faire de séance : exactement fishPlan
+  const o = F2.fishWindow({ rod: true, leftMs: 30000 });
+  assert.deepStrictEqual([o.fish, o.session, o.ms], [true, false, 30000]);
+});
+
+test('stringHuntPlan : une araignée EN VUE, seulement si la ficelle manque, jamais sous 12 PV', () => {
+  const F2 = require('./food');
+  const base = { rodReady: false, string: 1, spiderInView: true, hp: 20, leftMs: 60000 };
+  assert.deepStrictEqual(F2.stringHuntPlan(base), { go: true, ms: F2.STRING_HUNT_MS, reason: 'ok' });
+  assert.strictEqual(F2.stringHuntPlan({ ...base, rodReady: true }).reason, 'have_rod');
+  assert.strictEqual(F2.stringHuntPlan({ ...base, string: 2 }).reason, 'have_string');
+  assert.strictEqual(F2.stringHuntPlan({ ...base, spiderInView: false }).reason, 'no_spider');
+  assert.strictEqual(F2.stringHuntPlan({ ...base, hp: 11 }).reason, 'low_hp');
+  assert.strictEqual(F2.stringHuntPlan({ ...base, hp: undefined }).reason, 'low_hp', 'PV illisibles : prudence');
+  assert.strictEqual(F2.stringHuntPlan({ ...base, leftMs: 2000 }).reason, 'no_time');
+  assert.strictEqual(F2.stringHuntPlan({ ...base, leftMs: 10000 }).ms, 10000, 'rognée par le budget');
+});
