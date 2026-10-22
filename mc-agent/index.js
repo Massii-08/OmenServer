@@ -58,7 +58,12 @@ const { chainFor, buildCtxInv, firstUnmet, armorNeed, chainAfterDone, wantsOppor
 const { isForbiddenCheat } = require('./nogive');
 const homewarp = require('./homewarp'); // couche warp LÉGITIME sans-give (/sethome+/home ; goSpawn=/home safe)
 const { secureSpot } = require('./skills/secureSpot'); // secure-then-warp : pilier/se murer/flotter AVANT le /home
-const { SCAFFOLD } = require('./skills/pillarUp');     // blocs sacrifiables (comptés pour la tactique)
+const { SCAFFOLD, pillarUp } = require('./skills/pillarUp');     // blocs sacrifiables (comptés pour la tactique)
+// PILIER ANTI-MÊLÉE + POINT DE RÉAPPARITION CAMPÉ (live 22/10, NethBot3 : 9 morts « slain by Zombie » en
+// 2 min 27 s, en plein jour, au point de réapparition) — cf. meleePillar.js / respawnCamp.js.
+const meleePillar = require('./meleePillar');
+const respawnCamp = require('./respawnCamp');
+const { boundedDig, boundedEquip } = require('./digBound');
 const basecamp = require('./basecamp');                // base personnelle : s'éloigner du spawn du monde puis /sethome
 const oregrab = require('./oregrab');
 // NUIT AU TRAVAIL + FONDRE EN MINANT (Massii 21/10 : « fais qu'ils fassent comme les joueurs normaux »).
@@ -3469,6 +3474,9 @@ function abortShelterOnDeath() {
 
 function shelterHoldNow() {
   try {
+    // Perché sur le pilier anti-mêlée : on TIENT la case comme dans un abri (ni fuite, ni poursuite pvp
+    // qui le feraient sauter dans la grappe) — ce qui est à portée est frappé sur place.
+    if (_meleePillar) return true;
     if (!_shelterInFlight || !bot || !bot.entity) return false;
     return shelterHold(bot._mcaShelterCell, bot.entity.position);
   } catch (e) { return false; }
@@ -3756,6 +3764,11 @@ async function ensureBedGoal() {
       if (homewarp.goHome(bot, HOME_SAFE, { ctx: 'bed' })) { await awaitWarp({ maxMs: 9000 }); await sleep(1200); }
     } catch (e) { /* home campé/refusé : on pose où l'on est — un lit ailleurs vaut mieux que le spawn campé */ }
   }
+  // Pas de lit au milieu d'un point de réapparition campé (respawnCamp) : on y renaîtrait dans le camp.
+  try {
+    const pp = bot.entity && bot.entity.position;
+    if (respawnCamp.campedNear(loadBaseState(), pp ? { x: pp.x, z: pp.z } : null, Date.now())) return bedFail('camped_spot');
+  } catch (e) { /* best-effort */ }
   const placed = await placeBedNear(bedName);
   if (!placed.ok) return bedFail('place:' + placed.reason);
   try { saveBaseState(bedMemoWith(loadBaseState(), placed.pos, Date.now())); } catch (e) { /* best-effort */ }
@@ -7579,6 +7592,7 @@ async function fleeBeforeHide(why) {
   let fled = false;
   try {
     for (let leg = 0; leg < RESPAWN_FLEE_LEGS; leg++) {
+      if (_meleePillar) break;          // le timer du pilier a pris la main (grappe au contact)
       const p = bot.entity && bot.entity.position;
       if (!p) break;
       const plan = respawnFleePlan({ self: { x: p.x, y: p.y, z: p.z }, threats: respawnThreatsNow() });
@@ -7596,6 +7610,7 @@ async function fleeBeforeHide(why) {
         await sleep(300);
         const q = bot.entity && bot.entity.position;
         if (!q || bot.health == null || bot.health <= 0) break;
+        if (_meleePillar) break;
         if (Math.hypot(q.x - plan.dest.x, q.z - plan.dest.z) <= 3) break;
         if (!respawnFleePlan({ self: { x: q.x, y: q.y, z: q.z }, threats: respawnThreatsNow() })) break;
         const now = Date.now();
@@ -7642,6 +7657,16 @@ async function hideFromThreat(why, danger, opts = {}) {
     return { ok: true, joined: true };
   }
   const maxWaitMs = Number.isFinite(opts.maxWaitMs) ? opts.maxWaitMs : THREAT_HIDE_MAX_MS;
+  // GRAPPE DE MÊLÉE AU CONTACT (live 22/10, NethBot3 : 4 zombies à 0,5-1,7 bloc) : ni la fuite (coincé) ni
+  // le puits (pas le temps de le creuser) — le pilier, tout de suite. Raté (pas de bloc, pose ratée) → l'abri d'avant.
+  if (!opts.noPillar) {
+    const pp = meleePillarPlanNow();
+    if (pp.act === 'pillar') {
+      const r = await meleePillarRun(why, pp);
+      if (r.ok) return { ok: true, pillar: true };
+      danger = spawnDangerNow() || danger;
+    }
+  }
   // Un hostile à ≤ 8 blocs : creuser sur place = mourir pendant le creusage. On sprinte d'abord.
   if (!opts.noFlee && await fleeBeforeHide(why)) {
     if (_shelterInFlight) {             // un abri a démarré pendant la fuite → on le rejoint
@@ -7718,6 +7743,195 @@ async function guardSpawn() {
   try { r = await escapeDeathCamp(); } catch (e) { r = null; /* best-effort : jamais bloquer le respawn */ }
   if (r && r.threat) await hideFromThreat('escape', r.threat);
   return plan;
+}
+
+// ─── PILIER ANTI-MÊLÉE (live 22/10, world_oct22) ─────────────────────────────────────────────────
+// NethBot3 : 9 morts « slain by Zombie » en 2 min 27 s, EN PLEIN JOUR, au point de réapparition — lisière
+// de forêt (zombies à l'ombre de la canopée, ils ne brûlent pas), 2-4 zombies à 0,5-1,7 bloc à chaque vie.
+// `spawn_guard hide` → `respawn_flee` → coincé → `reflex fight` (nu) → mort avant que le puits soit creusé.
+// Un joueur saute sur 3 blocs de terre, frappe vers le bas, attend, redescend. Décisions PURES dans
+// meleePillar.js ; ici la glue. Le pilier se déclare COMME un abri (`_shelterInFlight`/`_shelterTok`) :
+// les autres abris le rejoignent, la mort l'annule (abortShelterOnDeath), le tick creeper et le ramassage
+// opportuniste le respectent, le watchdog du planner le voit. Le but pathfinder est VERROUILLÉ (goalHold,
+// propriétaire 'melee_pillar') : le planner, un goto ou mineflayer-pvp ne le font pas redescendre.
+// ⚠️ NIVEAU MODULE (piège #56) : lu par le timer et par hideFromThreat.
+let _meleePillar = null;        // { t0, why, placed } pendant un pilier
+let _meleePillarFailAt = 0;     // dernier pilier raté (cooldown : pas de rafale d'essais sans bloc posable)
+const PILLAR_UP_MAX_MS = 12000;     // montée bornée (withTimeout n'annule rien : l'expiration annule le jeton)
+const PILLAR_POLL_MS = 400;
+const PILLAR_HIT_EVERY_MS = 650;    // ≈ cooldown d'une épée
+const PILLAR_TICK_MS = 500;
+
+/** Entrées de meleePillarPlan relevées sur le vrai bot. Jamais de throw (→ plan 'none'). */
+function meleePillarPlanNow() {
+  try {
+    const p = bot.entity && bot.entity.position;
+    if (!p || bot.health == null || bot.health <= 0) return { act: 'none', reason: 'no_position' };
+    const self = { x: p.x, y: p.y, z: p.z };   // COPIE (Vec3 muté en place)
+    const entities = Object.values(bot.entities || {});
+    const near = meleePillar.meleeNear(self, entities);
+    let fightAdvised = false;
+    try {
+      fightAdvised = boldFightAdvised({
+        health: bot.health, fightCount: near.length,
+        canDealWith: canDealWith(armorPoints(bot), attackDamage(bot)),
+        food: bot.food, night: (bot.time && bot.time.timeOfDay != null) ? isNight(bot) : null,
+      });
+    } catch (e) { fightAdvised = false; }
+    let inWater = false;
+    try { inWater = isInWater(bot); } catch (e) { inWater = false; }
+    let headroom = true;
+    try {
+      const f = p.floored();
+      headroom = meleePillar.headroomOk([2, 3, 4].map((dy) => { const b = bot.blockAt(f.offset(0, dy, 0)); return b ? b.name : null; }));
+    } catch (e) { headroom = true; }
+    return meleePillar.meleePillarPlan({
+      self, entities, fightAdvised, inWater, headroom,
+      blocks: meleePillar.scaffoldCount(bot.inventory.items(), SCAFFOLD),
+      busy: !!_meleePillar || !!bot.vehicle || !!_creeperFlee,   // fuite creeper en cours : elle tient le verrou de but
+      now: Date.now(), lastFailAt: _meleePillarFailAt,
+    });
+  } catch (e) { return { act: 'none', reason: 'error' }; }
+}
+
+/** Redescendre en cassant SES blocs de pilier (au plus `placed`, seulement des blocs sacrifiables). */
+async function pillarDescend(placed, tok) {
+  for (let i = 0; i < placed; i++) {
+    if (tok.cancelled || bot.health == null || bot.health <= 0) return;
+    const p = bot.entity && bot.entity.position;
+    if (!p) return;
+    const below = bot.blockAt(p.floored().offset(0, -1, 0));
+    if (!below || !SCAFFOLD.includes(below.name)) return;   // ce n'est plus notre pilier : on ne creuse pas plus bas
+    try { const tool = bestToolFor(bot, below); if (tool) await boundedEquip(bot, tool, 'hand'); } catch (e) {}
+    try { await boundedDig(bot, below, { token: tok }); } catch (e) { return; }
+    await sleep(450);                                       // retomber sur l'étage suivant
+  }
+}
+
+/**
+ * Monter en pilier, tenir (frapper vers le bas) tant que la grappe de mêlée est là (≤ 90 s), redescendre.
+ * @returns {{ok:boolean, placed:number, why:string|null}}  ok = le pilier a tenu (≥ 2 étages).
+ */
+async function meleePillarRun(why, plan) {
+  if (_meleePillar || _shelterInFlight) return { ok: false, placed: 0, why: 'busy' };
+  const tok = { cancelled: false };
+  const t0 = Date.now();
+  const st = { t0, why, placed: 0 };
+  _meleePillar = st;
+  let res = { ok: false, placed: 0, why: null };
+  const run = (async () => {
+    _stillBusy = true;
+    let placed = 0, endWhy = null, melee = plan.mobs;
+    try {
+      try { if (bot.pvp && bot.pvp.target) bot.pvp.stop(); } catch (e) {}
+      try { if (bot.targetDigBlock && typeof bot.stopDigging === 'function') bot.stopDigging(); } catch (e) {}
+      holdGoal(_creeperHold, t0 + PILLAR_UP_MAX_MS + 5000, 'melee_pillar');
+      try { holdSetGoal(bot.pathfinder, _creeperHold, null, false); } catch (e) {}
+      try { if (typeof bot.clearControlStates === 'function') bot.clearControlStates(); } catch (e) {}
+      emit({ type: 'melee_pillar', phase: 'up', why, mobs: plan.mobs, h: plan.height, nearest: plan.nearest });
+      const up = await withTimeout(pillarUp(bot, { height: plan.height }, tok, { bestToolFor }), PILLAR_UP_MAX_MS,
+        () => { tok.cancelled = true; });
+      placed = (up && up.placed) || 0;
+      st.placed = placed;
+      if (placed < meleePillar.PILLAR_MIN_HEIGHT || tok.cancelled) {
+        _meleePillarFailAt = Date.now();
+        endWhy = tok.cancelled ? 'cancelled' : 'failed';
+        emit({ type: 'melee_pillar', phase: 'failed', why, mobs: plan.mobs, h: placed, reason: (up && up.reason) || endWhy });
+      } else {
+        emit({ type: 'melee_pillar', phase: 'hold', why, mobs: plan.mobs, h: placed });
+        for (;;) {
+          if (tok.cancelled || bot.health == null || bot.health <= 0) { endWhy = 'cancelled'; break; }
+          const q = bot.entity && bot.entity.position;
+          if (!q) { endWhy = 'cancelled'; break; }
+          const self = { x: q.x, y: q.y, z: q.z };
+          const ents = Object.values(bot.entities || {});
+          const now = Date.now();
+          const s = meleePillar.pillarHoldStatus({ self, entities: ents, t0, now });
+          melee = s.melee;
+          if (s.done) { endWhy = s.why; break; }
+          holdGoal(_creeperHold, now + PILLAR_POLL_MS * 4, 'melee_pillar');   // verrou PROLONGÉ, jamais figé
+          const foe = meleePillar.pillarStrikeTarget(self, ents);
+          if (foe && now - _auraLastHitAt >= PILLAR_HIT_EVERY_MS) strikeInPlace(foe);
+          await sleep(PILLAR_POLL_MS);
+        }
+        if (endWhy !== 'cancelled') {
+          holdGoal(_creeperHold, Date.now() + 20000, 'melee_pillar');   // descente : 3 casses à la main au pire
+          await pillarDescend(placed, tok);
+        }
+      }
+    } catch (e) { endWhy = endWhy || 'error'; }
+    finally {
+      _stillBusy = false;
+      if (_creeperHold.owner === 'melee_pillar') releaseGoalHold(_creeperHold);
+      emit({ type: 'melee_pillar', phase: 'down', why: endWhy, mobs: melee, h: placed, took_s: Math.round((Date.now() - t0) / 1000) });
+    }
+    res = { ok: placed >= meleePillar.PILLAR_MIN_HEIGHT && endWhy !== 'failed', placed, why: endWhy };
+  })();
+  _shelterInFlight = run;
+  _shelterTok = tok;
+  _shelterStartedAt = t0;
+  try { await run; } finally {
+    if (_shelterInFlight === run) _shelterInFlight = null;
+    if (_shelterTok === tok) _shelterTok = null;
+    if (_meleePillar === st) _meleePillar = null;
+  }
+  return res;
+}
+
+/** Le timer : partout (travail, fuite, réapparition), sauf déjà terré/perché. Jamais de throw. */
+function meleePillarTick() {
+  try {
+    if (_meleePillar || _shelterInFlight) return;   // terré : une cellule fermée a des zombies sur le toit, à ≤ 4 blocs
+    const plan = meleePillarPlanNow();
+    if (plan.act !== 'pillar') return;
+    meleePillarRun('tick', plan).catch(() => {});
+  } catch (e) { /* best-effort */ }
+}
+
+// ─── POINT DE RÉAPPARITION CAMPÉ (live 22/10) ───────────────────────────────────────────────────
+// L'anti-camping jugeait l'endroit de la MORT (death_spot_banned 94,-59) et la cadence des morts, jamais
+// le point de RÉAPPARITION (93,64,-50) — le vrai camp. Mémoire des vies persistée (respawnCamp.js) ; le
+// verdict ARME l'évasion (fuite à pied puis `/spawnpoint` au calme, escapeDeathCamp), retient le camp
+// (veto du lit) et, si la réapparition se fait à SON lit, l'abandonne. ⚠️ NIVEAU MODULE (piège #56).
+let _respawnCampedLast = null;  // dernier camp signalé { x, z } — un event par camp (± 8 blocs), pas par mort
+
+/** Une vie commence ici. Jamais de throw. */
+function noteRespawnLife(pos) {
+  try {
+    const now = Date.now();
+    const memo = loadBaseState();
+    saveBaseState(respawnCamp.livesMemoWith(memo, respawnCamp.livesNoteSpawn(respawnCamp.livesLoad(memo, now), pos, now), now));
+  } catch (e) { /* best-effort */ }
+}
+
+/**
+ * La vie en cours s'achève. Si le point de réapparition est campé : event, évasion armée, camp retenu,
+ * lit abandonné s'il EST ce point. Rend le camp (ou null). Jamais de throw.
+ */
+function noteRespawnDeath() {
+  try {
+    const now = Date.now();
+    let memo = loadBaseState();
+    const lives = respawnCamp.livesNoteDeath(respawnCamp.livesLoad(memo, now), now);
+    memo = respawnCamp.livesMemoWith(memo, lives, now);
+    const camp = respawnCamp.campedRespawn(lives, now);
+    if (camp) {
+      _escapeOnSpawn = true;
+      memo = respawnCamp.campedMemoWith(memo, camp, now);
+      const last = _respawnCampedLast;
+      if (!last || Math.hypot(last.x - camp.x, last.z - camp.z) > respawnCamp.RESPAWN_CAMP_RADIUS) {
+        _respawnCampedLast = { x: camp.x, z: camp.z };
+        emit({ type: 'respawn_camped', x: camp.x, z: camp.z, deaths: camp.deaths });
+      }
+      const bed = bedOf(memo);
+      if (respawnCamp.bedIsCampedPoint(bed, camp)) {
+        memo = bedRetryMemo(bedMemoCleared(memo), now);
+        emit({ type: 'bed_abandoned', why: 'respawn_camped', x: bed.x, y: bed.y, z: bed.z });
+      }
+    }
+    saveBaseState(memo);
+    return camp;
+  } catch (e) { return null; }
 }
 
 /**
@@ -8912,6 +9126,8 @@ async function onSpawn() {
         // sans garde, des panicWall concurrents s'empilaient (jusqu'à 9 placeBlock × 5 s = ~45 s bloqué).
         // + withTimeout sur chaque étape : un placeBlock peut throw après 5 s en grotte ouverte.
         if (panicInFlight) return;
+        // Sur le pilier anti-mêlée : pas de mur autour d'un perchoir (et pas de stopMotion) — manger seulement.
+        if (_meleePillar) { Promise.resolve().then(() => eat(bot)).catch(() => {}); return; }
         panicInFlight = true;
         (async () => {
           // DANS L'EAU : « si ils sont en train de suffoquer ça sert à rien de se faire un box en
@@ -9593,6 +9809,8 @@ bot.on('spawn', () => {
   _floatSettleUntil = Date.now() + 15000;
   // Là où l'on revient en mourant (COPIE : Vec3 muté en place) — référence du dépôt du kit de secours.
   try { const sp = bot.entity && bot.entity.position; if (sp) _lastRespawnPos = { x: sp.x, y: sp.y, z: sp.z }; } catch (e) {}
+  // Une VIE commence ici (point de réapparition campé : respawnCamp.js) — persistée, survit au death_loop.
+  try { if (_lastRespawnPos) noteRespawnLife(_lastRespawnPos); } catch (e) {}
   // L'état de zone est REPRIS du mémo, jamais réinitialisé : son horloge doit traverser les
   // respawns, sinon l'hystérésis de 15 min n'est jamais atteinte (le bot respawn plus souvent).
   if (!_zoneAnchoredAt) loadZoneState();
@@ -9876,6 +10094,9 @@ bot.on('death', () => {
   // → warp d'évasion aussi (le shelter post-respawn fait le reste).
   // (Le jugement vit dans unstuck.escapeArmed — le MÊME que celui de loadDeathHistory au démarrage.)
   if (escapeArmed(deathTimes, nowD)) _escapeOnSpawn = true;
+  // POINT DE RÉAPPARITION CAMPÉ (live 22/10) : ≥ 2 vies de < 60 s au même point → évasion armée, camp
+  // retenu, lit abandonné s'il EST ce point. Persisté AVANT le garde-fou death_loop (process.exit) ci-dessous.
+  noteRespawnDeath();
   // Garde-fou ultime (relevé 3→5 : le warp anti-camping gère les boucles courtes) :
   // 5 morts / 10 min → on SORT du process (miroir du starved l.1172) pour laisser le self-healing
   // backend respawner avec un world.json FRAIS (status=in_progress) en ~15 s — inventaire + quota
@@ -10575,6 +10796,7 @@ function creeperTick() {
   } catch (e) { /* best-effort */ }
 }
 setInterval(() => { auraTick(); creeperTick(); }, AURA_TICK_MS);
+setInterval(meleePillarTick, PILLAR_TICK_MS);   // pilier anti-mêlée (glue près de guardSpawn)
 
 // ── PLUS DE PIOCHE → EN REFAIRE UNE (Massii 2026-07-26 : « si ils n'ont plus de pioche ils doivent
 // en faire une »). La capacité existait (`recoverPickaxe`, buts wooden_pickaxe/stone_pickaxe) mais

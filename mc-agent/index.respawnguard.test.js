@@ -157,6 +157,8 @@ function hideSandbox({ inFlight = null, night = false, shelter = null, fled = fa
     // fuite d'avant-abri (fix 20/10) : testée dans index.craftplan.test.js ; ici on fixe l'ordre.
     fleeBeforeHide: async (why) => { sb.calls.push('flee:' + why); return fled; },
     spawnDangerNow: () => null,
+    // pilier anti-mêlée (22/10) : testé dans index.meleepillar.test.js ; ici aucune grappe au contact.
+    meleePillarPlanNow: () => ({ act: 'none', reason: 'few_mobs' }), meleePillarRun: async () => ({ ok: false }),
     shelterUntilDawn: shelter || (async (b, tok, deps) => { captured.calls.push({ tok, deps, busy: sb._stillBusy }); return { ok: true }; }),
   });
   vm.createContext(sb);

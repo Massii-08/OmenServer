@@ -20,7 +20,7 @@ const fnSrc = (name) => grab(new RegExp(`^(?:async )?function ${name}\\([^)]*\\)
 const run = (sb, code) => vm.runInContext("'use strict';\n" + code, sb);
 
 function sandbox(extra = {}) {
-  return vm.createContext(Object.assign({ shelterHold, Date, Promise, Number, Object, Math }, extra));
+  return vm.createContext(Object.assign({ shelterHold, Date, Promise, Number, Object, Math, _meleePillar: null }, extra));
 }
 
 test('shelterHoldNow : vrai SEULEMENT abri en cours + bot enterré dans sa case', () => {

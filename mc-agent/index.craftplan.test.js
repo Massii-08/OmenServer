@@ -171,6 +171,7 @@ function fleeSandbox({ zombies, moveTo }) {
   sb.sleep = async (ms) => { clock.t += ms; if (moveTo) moveTo(sb, clock.t); };
   vm.createContext(sb);
   run(sb, letSrc('_respawnFlee'));
+  sb._meleePillar = null;   // pilier anti-mêlée (22/10) : inactif ici
   for (const f of ['respawnThreatsNow', 'fleeBeforeHide']) run(sb, fnSrc(f));
   return sb;
 }

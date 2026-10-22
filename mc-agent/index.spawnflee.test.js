@@ -59,6 +59,7 @@ function sandbox({ disk = { memo: null }, clock = { t: T0 }, ...extra } = {}) {
     deathMemoWith: U.deathMemoWith, escapeArmed: U.escapeArmed, deathLoopTripped: U.deathLoopTripped,
     // état de niveau module
     deathTimes: [], _deathHistoryLoaded: false, _escapeOnSpawn: false, _bootAt: clock.t,
+    noteRespawnDeath: () => null,   // point de réapparition campé (22/10) : testé dans index.meleepillar.test.js
     ...extra,
   };
   return vm.createContext(sb);
