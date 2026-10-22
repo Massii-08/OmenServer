@@ -326,6 +326,19 @@ function rankIronCaves(ores, from, o = {}) {
   return out;
 }
 
+// PV : NE PAS ENTRER EN GROTTE BLESSÉ (chrono 22/10 12:10-14:36). 12 morts de mineurs pendant
+// `iron_cave` contre 5 en branch-mine pour deux fois plus de temps passé : une grotte ouverte, c'est
+// plusieurs mobs à la fois et des squelettes à 15 blocs. 4 de ces morts avaient lancé l'escalier vers
+// la grappe à ≤ 6 PV. Sous 12 PV, le but est sauté : le bot mine en galerie (étroite, éclairée, un
+// seul front) jusqu'à ce que ses PV remontent ou qu'il réapparaisse plein.
+const CAVE_MIN_HP = 12;
+
+/** Assez de PV pour viser une grotte ? PV inconnus → true (ne jamais bloquer sans donnée). (pur) */
+function caveHpOk(health) {
+  if (typeof health !== 'number' || Number.isNaN(health)) return true;
+  return health >= CAVE_MIN_HP;
+}
+
 /** La grappe la plus rentable, ou null (→ le but `iron_cave` est sauté, branch-mine habituel). */
 function pickIronCave(ores, from, o = {}) {
   const r = rankIronCaves(ores, from, o);
@@ -341,4 +354,5 @@ module.exports = {
   CAVE_ACCESS_DY, CAVE_ENTRANCE_NEAR, caveAccessible,
   STAIR_MIN_DROP, yawOf, stairPlan, STAIR_ARRIVE_DY, STAIR_ARRIVE_NEAR, stairArrived, stairOvershot,
   CAVE_ESCALATE_WINDOW_MS, CAVE_DISABLE_MS, caveBreakerNote, caveDisabledUntil,
+  CAVE_MIN_HP, caveHpOk,
 };

@@ -1110,7 +1110,8 @@ function ctxExtra() {
     hasTable: !!_nearestTable(bot), y: pos ? pos.y : undefined, worn: [..._wornArmor()], offhand,
     mapperTarget: gift.target, giftReady: gift.ready, giftBatch: !!gift.batch, noWood, passiveNear,
     // Fer en grotte : la grappe EXPOSÉE la plus rentable (null → but `iron_cave` sauté). Caché 30 s.
-    ironCave: ironCaveCtx(),
+    // …et seulement à ≥ 12 PV (caveIron.caveHpOk, chrono 22/10) : blessé, on mine en galerie.
+    ironCave: ironCaveForPlanner(),
     // Bûcheron : la demande réservée à servir (LUMBERJACK_CHAIN.lj_deliver). Null hors rôle.
     woodRequest: isLumberjackObjective() ? _ljContext() : null,
     ljOwnArmor: ljArmor ? ljArmor.own : null,
@@ -5905,6 +5906,22 @@ function noteCaveTried(cave, why) {
   _ironCaveCache = { at: 0, cave: null };
 }
 
+// PV : pas de grotte blessé (caveIron.caveHpOk). Niveau MODULE : lu par le ctx du planner à chaque pas.
+let _caveLowHpEmitAt = 0;
+/** La grappe visée par le but `iron_cave`, ou null sous CAVE_MIN_HP (event throttlé ≤ 1 / min). */
+function ironCaveForPlanner() {
+  const hp = bot && bot.health;
+  if (!caveIronPick.caveHpOk(hp)) {
+    const now = Date.now();
+    if (now - _caveLowHpEmitAt >= 60000 || now < _caveLowHpEmitAt) {
+      _caveLowHpEmitAt = now;
+      emit({ type: 'cave_skipped_low_hp', hp, food: bot && bot.food });
+    }
+    return null;
+  }
+  return ironCaveCtx();
+}
+
 /** La grappe de fer exposé à viser, ou null. Seulement pour les chaînes armure, pioche pierre+ en poche. */
 function ironCaveCtx() {
   const objT = world && world.objective && world.objective.type;
@@ -6330,6 +6347,34 @@ function noteHostileNearSafeHome(now) {
     })) _hostileNearHomeAt = now;
   } catch (e) { /* best-effort */ }
   return _hostileNearHomeAt;
+}
+
+// ── MORT IMMINENTE : signaux + verdict (niveau MODULE, piège #56 — lus par le watchdog 1 s) ─────
+/** Signaux du watchdog PV, lus sur le bot. Jamais de throw. `armorPieces` = pièces portées non usées. */
+function imminentState() {
+  return {
+    health: bot.health,
+    inWater: (function () { try { return isInWater(bot); } catch (e) { return false; } })(),
+    oxygen: bot.oxygenLevel,
+    lavaNear: (function () { try { return lavaNearby(bot, 2); } catch (e) { return false; } })(),
+    nearbyHostiles: (function () { try { return nearbyHostiles(bot, 6).length; } catch (e) { return 0; } })(),
+    armorPieces: (function () { try { return _wornArmor().size; } catch (e) { return null; } })(),
+  };
+}
+
+/**
+ * Verdict du watchdog PV : classifyImminent, puis dégradation si le /home safe vient d'être refusé
+ * (re-spammer un TP qui ne part pas a zombifié NethBot2 ; keepInventory ON : mieux vaut mourir qu'un
+ * stall à 1,8 PV) ou si le home est campé (live 19/10, MapBot2 renvoyé dans le camp où il venait de
+ * mourir). Bande essaim 6-10 PV (`early`, chrono 22/10) : seul un VRAI départ compte — dégradée, elle
+ * rend null (s'immobiliser à 9 PV entre deux mobs serait pire que de laisser la survie se battre ou fuir).
+ */
+function imminentVerdictNow(s) {
+  const early = !!(s && typeof s.health === 'number' && s.health > homewarp.IMMINENT_HP);
+  let verdict = homewarp.effectiveVerdict(homewarp.classifyImminent(s), _homeRefusedAt.safe, Date.now());
+  if (verdict === 'escape' && safeHomeVeto('imminent')) verdict = 'escape_no_warp';
+  if (early && verdict !== 'escape') verdict = null;
+  return { verdict, early };
 }
 
 /**
@@ -9851,25 +9896,16 @@ async function onSpawn() {
             noteSafeHome(pR, 'reset');   // y ≥ 58 vérifié ci-dessus → safe de surface
             emit({ type: 'safe_home_reset', x: Math.round(pR.x), y: Math.round(pR.y), z: Math.round(pR.z) });
           }
-          const s = {
-            health: bot.health,
-            inWater: (function () { try { return isInWater(bot); } catch (e) { return false; } })(),
-            oxygen: bot.oxygenLevel,
-            lavaNear: (function () { try { return lavaNearby(bot, 2); } catch (e) { return false; } })(),
-            nearbyHostiles: (function () { try { return nearbyHostiles(bot, 6).length; } catch (e) { return 0; } })(),
-          };
-          // Verdict DÉGRADÉ si le /home safe vient d'être refusé : re-spammer un TP qui ne part
-          // pas est le no-op qui a zombifié NethBot2 — on se sauve à pied ou on accepte la mort
-          // (keepInventory ON : mourir/respawner est PLUS SAIN qu'un stall à 1.8 PV).
-          let verdict = homewarp.effectiveVerdict(homewarp.classifyImminent(s), _homeRefusedAt.safe, Date.now());
+          const s = imminentState();
+          // Verdict DÉGRADÉ si le /home safe vient d'être refusé ou si le home est campé : cf.
+          // imminentVerdictNow (niveau module). `early` = bande essaim 6-10 PV (homewarp.swarmEscapeEarly).
+          const { verdict, early } = imminentVerdictNow(s);
           if (!verdict) return;
-          // HOME CAMPÉ (live 19/10, MapBot2 : le /home safe d'urgence le renvoyait DANS le camp où il
-          // venait de mourir — ou sur place, quand il y était déjà) : même dégradation qu'un safe refusé.
-          if (verdict === 'escape' && safeHomeVeto('imminent')) verdict = 'escape_no_warp';
           _imminentBusy = true;
           // CAMP DE MORT (piste n°2) : ≥2 alertes espacées dans la même zone 64 → bannie + FUITE
           // active (vécu Bot2 : 25× imminent au même spot, il RESTAIT sous les coups des mobs armés).
-          {
+          // La bande essaim (early) n'est pas une alerte « à une seconde de mourir » : elle ne compte pas.
+          if (!early) {
             const pZ = bot.entity && bot.entity.position;
             if (pZ) {
               const dz = deathzones.note(_dzones, pZ.x, pZ.z, Date.now());
@@ -9883,7 +9919,8 @@ async function onSpawn() {
           if (verdict === 'escape') {
             // Sortir VIVANT du piège (noyade/lave/essaim) → sécurisation (pilier/mur/flottaison)
             // PUIS /home safe (secure-then-warp : sur serveur à warmup, un TP sous les coups est annulé).
-            emit({ type: 'imminent_escape', hp: s.health, inWater: s.inWater, lava: s.lavaNear, hostiles: s.nearbyHostiles });
+            emit({ type: 'imminent_escape', hp: s.health, inWater: s.inWater, lava: s.lavaNear, hostiles: s.nearbyHostiles,
+                   ...(early ? { early: true, armor: s.armorPieces } : {}) });
             try { stopMotion(); } catch (e) {}
             safeWarpHome('safe', { ctx: 'imminent' }).catch(() => {});
             setTimeout(() => { _imminentBusy = false; }, 12000); // secure (≤6 s) + warmup (≤9 s), anti-spam

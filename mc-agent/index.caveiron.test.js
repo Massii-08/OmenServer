@@ -79,7 +79,9 @@ function sandbox(o = {}) {
 const GRAPPE = [ore(20, 50, 0), ore(22, 50, 0), ore(24, 51, 1, { material: 'deepslate_iron_ore' })];
 
 test('ctxExtra expose ironCave (sinon le but est mort-né)', () => {
-  assert.match(fnSrc('ctxExtra'), /ironCave: ironCaveCtx\(\)/);
+  // 22/10 : via ironCaveForPlanner (garde PV, caveIron.caveHpOk), qui rend ironCaveCtx() au-dessus de 12 PV.
+  assert.match(fnSrc('ctxExtra'), /ironCave: ironCaveForPlanner\(\)/);
+  assert.match(fnSrc('ironCaveForPlanner'), /return ironCaveCtx\(\);/);
 });
 
 test('ironCaveCtx : lit worlds.<w>.ores du backend, rend la grappe', () => {

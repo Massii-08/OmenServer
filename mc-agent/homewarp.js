@@ -218,8 +218,31 @@ function isCriticalHealth(health, threshold = IMMINENT_HP) {
   return typeof health === 'number' && !Number.isNaN(health) && health <= threshold;
 }
 
+// ESSAIM, PEU ARMÉ : PARTIR AVANT LE SEUIL CRITIQUE (chrono 22/10 12:10-14:36, NethBot1-3). Sur 15
+// `imminent_escape` déclenchés à ≥ 2 hostiles, 11 ont été suivis de la mort en 0 à 3 s — presque toujours
+// AVANT le /home, parce que la mise en sécurité (mur + toit) prend elle-même jusqu'à 6 s sous les coups.
+// En hard, deux zombies ou un zombie + un squelette retirent 6 PV en une seconde à un bot nu. Un joueur
+// prudent à 5 cœurs contre deux mobs décroche tout de suite ; on fait pareil quand l'armure est
+// incomplète (< 4 pièces). Fer complet : rien ne change (il tient la bande 6-10 PV).
+const SWARM_ESCAPE_HP = 10;
+const SWARM_ESCAPE_MIN_HOSTILES = 2;
+const SWARM_ESCAPE_FULL_ARMOR = 4;
+
+/** Bande (IMMINENT_HP, SWARM_ESCAPE_HP] : essaim collé, armure incomplète, à sec → partir (pur).
+ *  `armorPieces` absent → false (rétro-compat : sans donnée, la règle historique seule décide). */
+function swarmEscapeEarly(s) {
+  if (!s) return false;
+  const h = s.health;
+  if (typeof h !== 'number' || Number.isNaN(h)) return false;
+  if (h <= IMMINENT_HP || h > SWARM_ESCAPE_HP) return false;
+  if (s.inWater) return false;
+  if (!(Number.isFinite(s.armorPieces) && s.armorPieces < SWARM_ESCAPE_FULL_ARMOR)) return false;
+  return (s.nearbyHostiles || 0) >= SWARM_ESCAPE_MIN_HOSTILES;
+}
+
 function classifyImminent(s) {
   const h = s && s.health;
+  if (typeof h === 'number' && h > IMMINENT_HP) return swarmEscapeEarly(s) ? 'escape' : null;
   if (typeof h !== 'number' || h > IMMINENT_HP) return null;
   if (s.inWater) return 'escape';                       // noyade / suffocation dans l'eau
   if (s.lavaNear) return 'escape';                      // lave à ≤2 blocs
@@ -256,7 +279,7 @@ function dropsWithin(entities, center, radius) {
 module.exports = {
   bookmark, goHome, goSpawn, goSafe: goSpawn, goWork, delhome,
   sanitizeName, RESERVED, classifyImminent, dropsWithin,
-  IMMINENT_HP, isCriticalHealth, isTpRefusal, refusedHome, effectiveVerdict, REFUSAL_DEGRADE_MS,
+  IMMINENT_HP, SWARM_ESCAPE_HP, swarmEscapeEarly, isCriticalHealth, isTpRefusal, refusedHome, effectiveVerdict, REFUSAL_DEGRADE_MS,
   isNoHomeSet, missingHome,
   isTpWarmup, isTpCancelled, isTpAlreadyPending, secureTactic,
 };

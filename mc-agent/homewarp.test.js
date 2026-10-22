@@ -112,6 +112,30 @@ test('classifyImminent : chute/générique (1 seul mob, à sec) → bookmark dea
   assert.strictEqual(classifyImminent({ health: 3, nearbyHostiles: 1 }), 'bookmark');
 });
 
+// ─── ESSAIM : S'ÉCHAPPER AVANT LE SEUIL CRITIQUE (chrono 22/10 12:10-14:36) ──────────────────────
+// 15 `imminent_escape` à ≥ 2 hostiles pour les 3 mineurs, 11 suivis de la mort en 0-3 s (le plus
+// souvent AVANT le /home : la mise en sécurité seule prend jusqu'à 6 s). À ≤ 6 PV contre deux mobs en
+// hard, il reste une seconde. Peu armé (< 4 pièces), on part dès 10 PV.
+const { swarmEscapeEarly, SWARM_ESCAPE_HP } = require('./homewarp');
+
+test('swarmEscapeEarly : ≤ 10 PV, ≥ 2 hostiles collés, < 4 pièces → escape avant le seuil critique', () => {
+  assert.strictEqual(SWARM_ESCAPE_HP, 10);
+  assert.strictEqual(classifyImminent({ health: 9, nearbyHostiles: 2, armorPieces: 0 }), 'escape');
+  assert.strictEqual(classifyImminent({ health: 10, nearbyHostiles: 3, armorPieces: 3 }), 'escape');
+  assert.strictEqual(swarmEscapeEarly({ health: 7.5, nearbyHostiles: 2, armorPieces: 2 }), true);
+});
+
+test('swarmEscapeEarly : rien ne change hors de la bande (1 mob, armure complète, > 10 PV, eau, donnée absente)', () => {
+  assert.strictEqual(classifyImminent({ health: 9, nearbyHostiles: 1, armorPieces: 0 }), null);
+  assert.strictEqual(classifyImminent({ health: 9, nearbyHostiles: 4, armorPieces: 4 }), null, 'fer complet : il tient');
+  assert.strictEqual(classifyImminent({ health: 10.5, nearbyHostiles: 3, armorPieces: 0 }), null);
+  assert.strictEqual(classifyImminent({ health: 8, nearbyHostiles: 2 }), null, 'armure inconnue → rétro-compat');
+  assert.strictEqual(classifyImminent({ health: 8, nearbyHostiles: 2, armorPieces: 0, inWater: true }), null);
+  assert.strictEqual(swarmEscapeEarly({ health: 5, nearbyHostiles: 2, armorPieces: 0 }), false, '≤ 6 : la règle historique décide');
+  assert.strictEqual(swarmEscapeEarly(null), false);
+  assert.strictEqual(swarmEscapeEarly({ health: NaN, nearbyHostiles: 2, armorPieces: 0 }), false);
+});
+
 // ─── Refus TP Essentials (RC3 water-wall) : « The teleport destination is unsafe… » ─────────────
 // Un /home refusé par la teleport-safety NE téléporte PAS → le filet de secours croyait avoir
 // sauvé le bot (fire-and-forget) → zombie à 1.8 PV (vécu NethBot2 world_ax1, monde noyé).

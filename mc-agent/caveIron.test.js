@@ -238,3 +238,19 @@ test('escalade : 2e déclenchement du disjoncteur en 2 h → grottes désactivé
   assert.deepStrictEqual(C.caveBreakerNote(null, 0, t0), []);
   assert.strictEqual(C.caveDisabledUntil([{ at: t0 + H, until: 0 }, { at: 'x' }], t0), 0);
 });
+
+// ─── PV : NE PAS ENTRER EN GROTTE BLESSÉ (chrono 22/10 12:10-14:36) ──────────────────────────────
+// 12 morts de mineurs pendant `iron_cave` (contre 5 en branch-mine pour plus de temps passé) ; 4
+// d'entre elles avaient lancé l'escalier vers la grappe à ≤ 6 PV (NethBot3 13:47 à 4,95, NethBot1
+// 13:25 à 5,8, 14:11 à ~5, 12:29 PENDANT une fuite à 5,8). Blessé, on mine en galerie.
+test('caveHpOk : grotte seulement à ≥ 12 PV ; PV inconnus → on ne bloque pas', () => {
+  assert.strictEqual(C.CAVE_MIN_HP, 12);
+  assert.strictEqual(C.caveHpOk(20), true);
+  assert.strictEqual(C.caveHpOk(12), true);
+  assert.strictEqual(C.caveHpOk(11.9), false);
+  assert.strictEqual(C.caveHpOk(4.95), false);
+  assert.strictEqual(C.caveHpOk(0), false);
+  assert.strictEqual(C.caveHpOk(undefined), true);
+  assert.strictEqual(C.caveHpOk(null), true);
+  assert.strictEqual(C.caveHpOk(NaN), true);
+});
