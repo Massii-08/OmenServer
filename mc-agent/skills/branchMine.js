@@ -26,6 +26,7 @@ const { bestToolFor, canHarvestWith } = require('../tools');
 const { cheapestPickFor } = require('../gear');
 const { assessDrop, safeToDrop } = require('./fallCheck');
 const { gather } = require('./gather');
+const lawnMine = require('../lawnMine');
 const { Vec3 } = require('vec3');
 let _emit; try { _emit = require('../io').emit; } catch (e) { _emit = () => {}; }
 function dbg(_label, payload) { try { _emit({ type: 'dbg', from: 'branchMine', ...payload }); } catch (e) {} }
@@ -643,12 +644,28 @@ async function branchMine(bot, opts = {}, token = null) {
     let cx = ox, cz = oz;                                   // front de taille (cumulatif : la galerie tourne)
     let heading = { dx: dir.dx, dz: dir.dz };
     let stepsLeft = 4 + Math.floor(rng() * 5);              // longueur du 1er segment (4..8, irrégulier)
+    // LACETS (22/10, lawnMine.js) : opts.lawn → les virages suivent des galeries PARALLÈLES espacées
+    // de 3 au lieu du hasard. opts.lawnState (état rendu par l'appel précédent) reprend le tracé là
+    // où il s'était arrêté — sinon on repart du cap courant. Sans opts.lawn : serpentin d'avant.
+    const lawnO = opts.lawn ? Object.assign({ rng }, typeof opts.lawn === 'object' ? opts.lawn : {}) : null;
+    let lawn = null;
+    if (lawnO) {
+      lawn = lawnMine.lawnValid(opts.lawnState) ? opts.lawnState : lawnMine.lawnInit(heading, lawnO);
+      heading = { dx: lawn.heading.dx, dz: lawn.heading.dz };
+    }
+    // Virage : lacets (obstacle → décalage tout de suite) ou serpentin aléatoire historique.
+    const turnAway = () => {
+      if (lawn) { lawn = lawnMine.lawnObstacle(lawn, lawnO); heading = { dx: lawn.heading.dx, dz: lawn.heading.dz }; return; }
+      heading = (rng() < 0.5) ? leftOf(heading) : { dx: heading.dz, dz: -heading.dx };
+      stepsLeft = 4 + Math.floor(rng() * 5);
+    };
+    const lawnOut = () => (lawn ? { lawn } : {});
     let stopReasonS = null;
     let wetTurns = 0;                                       // demi-tours eau CONSÉCUTIFS (sans avancer) → waterlocked
     let nextTorchAtS = torchEvery > 0 ? torchEvery : Infinity;
     let lastTorchS = 0;                                     // pas de la dernière pose (torche au coude)
     for (let n = 1; n <= mainLength; n++) {
-      if (token && token.cancelled) return { ok: true, cancelled: true, ores: deltaOres(oresBefore, snapshotOres(bot)), gotDiamond: countItem(bot, 'diamond') > 0, heading };
+      if (token && token.cancelled) return Object.assign({ ok: true, cancelled: true, ores: deltaOres(oresBefore, snapshotOres(bot)), gotDiamond: countItem(bot, 'diamond') > 0, heading }, lawnOut());
       if (checkStall()) { stopReasonS = 'stalled'; break; }
       if (cobbleLow()) { stopReasonS = 'cobble_low'; break; }
       if (stopReached()) break;                             // quota du type rempli
@@ -660,7 +677,7 @@ async function branchMine(bot, opts = {}, token = null) {
       // (le serpentin contourne au lieu de tomber/stopper — plus robuste qu'un break sur 1er trou).
       let floorOk = true;
       try { floorOk = await ensureFloor(bot, footTarget); } catch (e) { /* best-effort */ }
-      if (!floorOk) { heading = (rng() < 0.5) ? leftOf(heading) : { dx: heading.dz, dz: -heading.dx }; stepsLeft = 4 + Math.floor(rng() * 5); continue; }
+      if (!floorOk) { turnAway(); continue; }
       let hardStop = false;
       let wetTurn = false;
       for (const t of [footTarget, headTarget]) {
@@ -680,8 +697,7 @@ async function branchMine(bot, opts = {}, token = null) {
         // toutes les directions mouillées et scellement inopérant → échec RAPIDE et NOMMÉ (l'ancien
         // comportement tournait en boucle jusqu'au stall 30s ; l'appelant se décale sur waterlocked).
         if (++wetTurns >= 6) { stopReasonS = 'waterlocked'; break; }
-        heading = (rng() < 0.5) ? leftOf(heading) : { dx: heading.dz, dz: -heading.dx };
-        stepsLeft = 4 + Math.floor(rng() * 5);
+        turnAway();
         continue;
       }
       wetTurns = 0;                                        // le front a avancé → l'eau n'enferme pas
@@ -700,9 +716,18 @@ async function branchMine(bot, opts = {}, token = null) {
       };
       if (n >= nextTorchAtS) await torchHere();
       // VIRAGE à intervalle IRRÉGULIER (jamais métronomique = pas une grille) — ou forcé par une grotte devant.
-      if (--stepsLeft <= 0 || caveAhead) {
+      let turned = false;
+      if (lawn) {
+        const before = lawn.heading;
+        lawn = caveAhead ? lawnMine.lawnObstacle(lawn, lawnO) : lawnMine.lawnAfterStep(lawn, lawnO);
+        heading = { dx: lawn.heading.dx, dz: lawn.heading.dz };
+        turned = before.dx !== heading.dx || before.dz !== heading.dz;
+      } else if (--stepsLeft <= 0 || caveAhead) {
         heading = (rng() < 0.5) ? leftOf(heading) : { dx: heading.dz, dz: -heading.dx };
         stepsLeft = 4 + Math.floor(rng() * 5);
+        turned = true;
+      }
+      if (turned) {
         // TORCHE AU CROISEMENT : un coude non éclairé est l'angle mort où le mob attend. Pas si une
         // torche a été posée il y a moins de TORCH_CORNER_MIN pas (la lumière porte déjà jusque-là).
         if (torchEvery > 0 && n - lastTorchS >= TORCH_CORNER_MIN) await torchHere();
@@ -715,6 +740,7 @@ async function branchMine(bot, opts = {}, token = null) {
       ores: deltaOres(oresBefore, oresAfterS),
       reason: stopReasonS || undefined,
       heading,
+      ...lawnOut(),
     };
   }
 

@@ -154,21 +154,44 @@ test('disjoncteur unreachable : 2 échecs → cible, 3 → null, repos écoulé 
 
 // ── ACCÈS PLAUSIBLE + ESCALADE (21/10, mesure 3 h : 25 `unreachable` sur 32 cibles, 11 à > 24 blocs
 // en vertical du bot ; mêmes grappes reprises toutes les 30 min — (79,11,-44) ×4).
-test('accès plausible : grappe à > 24 blocs en vertical exclue, sauf entrée de grotte ouverte connue près d\'elle', () => {
+test('grappe PROFONDE ciblable sans entrée de grotte connue (22/10 : l\'escalier dirigé y mène)', () => {
   const deep = wall(20, 30, 0, 4);                       // 34 blocs sous le bot (y 64)
-  assert.strictEqual(C.pickIronCave(deep, FROM), null);
-  assert.ok(C.pickIronCave(wall(20, 40, 0, 4), FROM), '24 blocs : accepté');
-  const above = wall(20, 90, 0, 4);                      // 26 au-dessus : même règle
-  assert.strictEqual(C.pickIronCave(above, FROM), null);
-  // entrée connue (worlds.<w>.caves {x,y,z,at,flooded}) à ≤ 32 blocs en XZ, au-dessus de la grappe
-  const caves = [{ x: 30, y: 62, z: 10, at: 't', flooded: false }];
-  assert.ok(C.pickIronCave(deep, FROM, { caves }));
-  // inondée, trop loin, ou SOUS la grappe : ne compte pas
-  assert.strictEqual(C.pickIronCave(deep, FROM, { caves: [{ x: 30, y: 62, z: 10, flooded: true }] }), null);
-  assert.strictEqual(C.pickIronCave(deep, FROM, { caves: [{ x: 90, y: 62, z: 10, flooded: false }] }), null);
-  assert.strictEqual(C.pickIronCave(deep, FROM, { caves: [{ x: 30, y: 10, z: 10, flooded: false }] }), null);
-  assert.strictEqual(C.pickIronCave(deep, FROM, { caves: [null, { x: 'a' }] }), null);
-  assert.strictEqual(C.CAVE_ACCESS_DY, 24);
+  assert.ok(C.pickIronCave(deep, FROM), 'plus de filtre « accès plausible »');
+  assert.ok(C.pickIronCave(wall(20, 90, 0, 4), FROM), 'au-dessus : idem');
+  // la profondeur reste payée : à nombre égal, la grappe la moins profonde passe devant
+  const both = wall(20, 30, 0, 4).concat(wall(-20, 60, 0, 4));
+  assert.strictEqual(C.pickIronCave(both, FROM).y, 60);
+  // une grappe noyée reste exclue
+  const wet = wall(20, 30, 0, 4).map((o, i) => (i < 2 ? Object.assign({}, o, { wet: true }) : o));
+  assert.strictEqual(C.pickIronCave(wet, FROM), null);
+});
+
+test('stairPlan : départ `drop` blocs avant la grappe sur l\'axe principal, cap tourné vers elle', () => {
+  const pl = C.stairPlan({ x: 0, y: 70, z: 0 }, { x: 50, y: 20, z: 10 });
+  assert.deepStrictEqual(pl.dir, { dx: 1, dz: 0 });
+  assert.strictEqual(pl.drop, 50);
+  assert.deepStrictEqual(pl.start, { x: 0, z: 10 });
+  assert.strictEqual(pl.targetY, 20);
+  const pz = C.stairPlan({ x: 0, y: 70, z: 0 }, { x: 3, y: 40, z: -60 });
+  assert.deepStrictEqual(pz.dir, { dx: 0, dz: -1 });
+  assert.deepStrictEqual(pz.start, { x: 3, z: -30 });
+  assert.strictEqual(C.stairPlan({ x: 0, y: 70, z: 0 }, { x: 10, y: 67, z: 0 }), null, 'à ≤ 4 blocs : pas d\'escalier');
+  assert.strictEqual(C.stairPlan({ x: 0, y: 70, z: 0 }, { x: 10, y: 90, z: 0 }), null, 'au-dessus : pas d\'escalier');
+  assert.strictEqual(C.stairPlan(null, { x: 0, y: 0, z: 0 }), null);
+});
+
+test('portée : 80 à plat ET 80 de dénivelé (pas 80 en 3D — le fer profond sous la surface restait hors de portée)', () => {
+  assert.ok(C.pickIronCave(wall(60, -6, 0, 4), FROM), '63 à plat, 70 de dénivelé (3D ≈ 95) : ciblable');
+  assert.strictEqual(C.pickIronCave(wall(84, 60, 0, 4), FROM), null, '> 80 à plat');
+  assert.strictEqual(C.pickIronCave(wall(10, -20, 0, 4), FROM), null, '84 de dénivelé');
+  assert.strictEqual(C.CAVE_MAX_DROP, 80);
+});
+
+test('yawOf : inverse exact de descendDiagonal.cardinalFromYaw', () => {
+  const { cardinalFromYaw } = require('./skills/descendDiagonal');
+  for (const d of [{ dx: 1, dz: 0 }, { dx: -1, dz: 0 }, { dx: 0, dz: 1 }, { dx: 0, dz: -1 }]) {
+    assert.deepStrictEqual(cardinalFromYaw(C.yawOf(d)), d);
+  }
 });
 
 test('caveAccessible : PUR, entrées absurdes → false', () => {

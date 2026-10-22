@@ -902,8 +902,9 @@ test('index.js : _foodTripBusy est déclarée AU NIVEAU MODULE (colonne 0), avan
 test('index.js : le confine ET le squad comptent l expédition comme « occupé » (sinon /home ou /tpa la coupent en route)', () => {
   const lines = SRC.split('\n').filter((l) => /const busy = !!bot\.targetDigBlock/.test(l));
   assert.strictEqual(lines.length, 2, 'les deux gardes busy historiques (confine + squad)');
-  // (le squad ajoute `|| _craftDepth > 0` depuis le 20/10 : un /tpa pendant un craft abandonnait la table)
-  for (const l of lines) assert.match(l, /_migrating \|\| _escaping \|\| _foodTripBusy \|\| _exploreBusy( \|\| _craftDepth > 0)?;/, l);
+  // (le squad ajoute `|| _craftDepth > 0` depuis le 20/10 : un /tpa pendant un craft abandonnait la table,
+  //  et `|| _caveTripBusy` depuis le 22/10 : un /tpa en plein trajet de grotte = faux `unreachable`)
+  for (const l of lines) assert.match(l, /_migrating \|\| _escaping \|\| _foodTripBusy \|\| _exploreBusy( \|\| _caveTripBusy)?( \|\| _craftDepth > 0)?;/, l);
 });
 
 // ⚠️ Mesure live (run « zéro → fer » 21/10, 20:44-23:44) : NethBot1 (bûcheron élu) n'a obtenu AUCUNE

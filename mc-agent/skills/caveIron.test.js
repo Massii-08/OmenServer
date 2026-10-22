@@ -87,6 +87,14 @@ test('grappe inatteignable → cave_failed unreachable, rien miné', async () =>
   assert.ok(!d.calls.includes('work'));
 });
 
+test('trajet COUPÉ (travel → interrupted) → cave_failed interrupted, pas unreachable (22/10)', async () => {
+  const d = deps({ over: { travel: async () => 'interrupted' } });
+  const r = await caveIron(Object.assign({ cave: cave(3) }, d));
+  assert.deepStrictEqual([r.ok, r.reason], [false, 'interrupted']);
+  assert.strictEqual(d.events[1].why, 'interrupted');
+  assert.ok(!d.calls.includes('work'));
+});
+
 test('toute la grappe disparue → all_gone', async () => {
   const st = { '20,40,2': 'gone', '22,40,2': 'gone', '24,40,2': 'gone' };
   const d = deps({ state: st });
@@ -103,6 +111,13 @@ test('borné en temps : au-delà de maxMs on s\'arrête (succès partiel si déj
   const d2 = deps({ step: 400_000, unreach: [20] });
   const r2 = await caveIron(Object.assign({ cave: cave(5), maxMs: 360_000 }, d2));
   assert.deepStrictEqual([r2.ok, r2.reason], [false, 'timeout']);
+});
+
+test('long trajet (escalier dirigé) : le temps de minage reste garanti après l\'arrivée (22/10)', async () => {
+  const d = deps();
+  d.travel = async () => { d.clock.t += 340_000; return true; };   // 5 min 40 de trajet sur 6 min
+  const r = await caveIron(Object.assign({ cave: cave(3), maxMs: 360_000 }, d));
+  assert.deepStrictEqual([r.ok, r.mined], [true, 3]);
 });
 
 test('annulation (jeton) : on rend la main', async () => {

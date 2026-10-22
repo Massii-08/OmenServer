@@ -148,7 +148,9 @@ const TORCH_EVERY = 8;
 const { createClaims, createPresence } = require('./claims');
 const { pickMapperTp } = require('./mapperTp'); // TP-au-mappeur : à qui demander le /tpa (décision pure)
 // REGROUPEMENT APRÈS MORT (idée Massii 25/07, flag --regroup, OFF par défaut) : décision pure.
-const { pickRegroupTarget, squadTarget } = require('./regroup');
+const { pickRegroupTarget, squadTarget, isMiningGoal } = require('./regroup');
+// Tracé en LACETS du branch-mine fer + reprise au front (22/10, lawnMine.js).
+const lawnMine = require('./lawnMine');
 // ENTRAIDE D'ÉQUIPE (Massii 25/07 : « qu'ils s'aident entre eux, et quand ils ont l'armure
 // fer ils se séparent »). Décisions PURES ; l'exécution (marche + toss) est ci-dessous.
 const { teamStatus, pickDonation, allArmored, pickMobAssist, pickMapperToEquip, giftSetPlan } = require('./teamwork');
@@ -769,12 +771,23 @@ async function regroupNightGuard() {
 // passe le filtre sans-give (≠ /tp<espace>). S'éteint tout seul dès que l'armure fer est portée
 // (règle Massii : le groupe ne sert que jusque-là). Décision pure : regroup.pickRegroupTarget.
 let _lastRegroupAt = 0;
-async function tryRegroup() {
+async function tryRegroup(opts = {}) {
   if (!REGROUP) return { ok: false, reason: 'disabled' };
   if (isLumberjackObjective()) return { ok: false, reason: 'lumberjack' };   // il vit en surface par métier
   if (!presence) return { ok: false, reason: 'no_presence' };
   const p = bot.entity && bot.entity.position;
   if (!p) return { ok: false, reason: 'no_pos' };
+  // APPEL PÉRIODIQUE (timer d'équipe, 90 s) : mêmes gardes que trySquad (22/10, chrono world_oct22).
+  // Ce /tpa était le SEUL sans garde « tâche longue » : NethBot2 arraché en plein trajet vers une grappe
+  // de fer (`regroup_tpa` 191 blocs → `cave_failed unreachable`), NethBot3 arraché 3× en pleine
+  // migration (`regroup_tpa` 140/254/474 → migration annulée après 25 jambes). Un `unreachable` causé
+  // par un TP compte dans le disjoncteur des grottes, qui finissait par couper `iron_cave` 2 h.
+  // Le regroupement APRÈS MORT (handler spawn) garde son comportement : c'est lui qui évite la marche.
+  if (opts && opts.periodic) {
+    const longTask = _stillBusy || _imminentBusy || _smeltOppBusy || _armorBusy || _migrating || !!bot.targetDigBlock
+      || _escaping || _foodTripBusy || _exploreBusy || _caveTripBusy || _craftDepth > 0;
+    if (longTask || isMiningGoal(_curGoal)) return { ok: false, reason: 'busy' };
+  }
   if (await regroupNightGuard()) return { ok: false, reason: 'night_shelter' };
   let armorComplete = false;
   try { armorComplete = armorNeed({ inv: buildCtxInv(bot), worn: [..._wornArmor()] }, 3) === 0; } catch (e) {}
@@ -835,7 +848,7 @@ async function trySquad() {
   // ramènerait au chef au milieu de la marche (ou de la chasse sur place) sans qu'il ait mangé.
   // `_craftDepth` (fix 20/10) : un /tpa tiré pendant un craft à la table laissait la table à 100 blocs
   // (`squad_join` → `table_abandoned` → `t1_sword craft_failed`, NethBot2 session 278).
-  const busy = !!bot.targetDigBlock || _stillBusy || _imminentBusy || _smeltOppBusy || _armorBusy || _migrating || _escaping || _foodTripBusy || _exploreBusy || _craftDepth > 0;
+  const busy = !!bot.targetDigBlock || _stillBusy || _imminentBusy || _smeltOppBusy || _armorBusy || _migrating || _escaping || _foodTripBusy || _exploreBusy || _caveTripBusy || _craftDepth > 0;
   const pick = squadTarget({
     // `y`/`ironZone` de SOI : sans eux un mineur productif se croirait « rien du tout » et
     // remonterait rejoindre un flâneur resté en surface — l'inverse exact du but.
@@ -3236,10 +3249,13 @@ async function runGoalSkill(goal) {
     // est aussi le COMBUSTIBLE de la fonte (piège #54f) : chaque torche de trop retarde l'armure.
     // branchMine randomise déjà l'intervalle sur [N, 2N[ → une torche tous les 8 à 15 paliers,
     // largement de quoi tenir la lumière d'un tunnel (un humain les espace comme ça).
+    // LACETS (22/10) : le tracé reprend au FRONT mémorisé (même cap, même phase), cf. ironLawnStart.
+    const _lawnState = (goal.args && goal.args.lawn) ? ironLawnStart() : null;
     const rBM = await branchMine(bot, Object.assign(
       { torchEvery: TORCH_EVERY, onSurvivalTick: branchSurvivalTick, survivalEvery: 4,
         onNoPickaxe: () => rebuildPickHere('branch') },
-      goal.args || {}, stopOre ? { stopOre } : {}), taskToken);
+      goal.args || {}, stopOre ? { stopOre } : {}, _lawnState ? { lawnState: _lawnState } : {}), taskToken);
+    if (goal.args && goal.args.lawn) { try { ironLawnEnd(rBM); } catch (e) { /* best-effort */ } }
     // Le four laissé en bas (fondre en minant) : on repasse prendre les lingots avant de quitter la mine.
     try { await finishFurnaceJob('branch_end'); } catch (e) { /* best-effort */ }
     // Fix n°2 water-wall (NO_GIVE) : aquifère VERROUILLANT (waterlocked = toutes directions
@@ -5474,6 +5490,26 @@ async function tossJunk(b) {
   }
 }
 
+// JETER DERRIÈRE SOI (22/10, chrono world_oct22). `toss` lance l'objet dans le REGARD du bot ; au fond
+// de la mine, le regard est sur le front de taille → le junk tombait sur les cases que le bot allait
+// fouler au pas suivant, et il le RAMASSAIT : NethBot3 = 35 `branch_cleanup` en 64 min, dont 11 d'affilée
+// en une minute avec exactement le même nombre de cases libres après chaque tri (22) — il retriait
+// sans fin la même pile. Un joueur jette son cobble derrière lui. On se retourne, on jette, on remet
+// le regard (le coup de pioche suivant le refixe de toute façon).
+async function tossJunkBehind(b) {
+  const e = b && b.entity;
+  const yaw = (e && Number.isFinite(e.yaw)) ? e.yaw : 0;
+  const pitch = (e && Number.isFinite(e.pitch)) ? e.pitch : 0;
+  let turned = false;
+  if (typeof b.look === 'function') {
+    try { await b.look(yaw + Math.PI, 0, true); turned = true; } catch (err) { /* on jette quand même */ }
+  }
+  try { await tossJunk(b); }
+  finally {
+    if (turned) { try { await b.look(yaw, pitch, true); } catch (err) { /* best-effort */ } }
+  }
+}
+
 // H4 : libérer un slot SUR PLACE (JAMAIS remonter en surface sur inventaire plein). tossJunk d'abord
 // (garde quota/outils/bouffe, jamais le quota, jamais re-ramassé) ; si toujours plein → creuser DEVANT
 // (idiome du watchdog anti-jam) pour ouvrir de l'espace, puis re-toss. Branché comme `cleanup` du
@@ -5656,6 +5692,18 @@ let _caveCooldownEmitted = 0;        // `until` déjà annoncé : un event par e
 let _caveDisabledEmitted = 0;        // idem pour la désactivation 2 h (escalade, 21/10)
 let _caveTorchAt = 0;
 let _caveTorchPos = null;
+// INTERRUPTIONS (22/10, chrono world_oct22) : sur 9 `cave_failed unreachable` de NethBot2/3, la plupart
+// n'étaient PAS des grappes inatteignables mais des trajets coupés — /tpa de regroupement en route,
+// fuite d'un squelette, exploration fantôme qui changeait le but du pathfinder (« The goal was changed »,
+// échec en 0 s à 6 blocs de la grappe). Chaque faux `unreachable` nourrissait le disjoncteur, qui a
+// coupé `iron_cave` 2 h à NethBot3 à la 22e minute — pendant que NethBot1 vidait des grappes à 20 blocs
+// de lui. Un trajet coupé rend `interrupted` : ce n'est pas un verdict sur la grotte (pas de disjoncteur),
+// et la grappe n'est mise de côté qu'à la 2e coupure en 10 min (sinon le planner la reprendrait en boucle).
+let _tpCount = 0;                    // téléportations vues (onTeleport) — lu pendant le trajet (niveau module, piège #56)
+let _caveTripBusy = false;           // trajet/minage de grotte en cours — lu par trySquad / tryRegroup (timers)
+let _caveInterrupts = {};            // key de grappe → [instants des coupures]
+const CAVE_INTERRUPT_WINDOW_MS = 10 * 60 * 1000;
+const CAVE_PULLED_AWAY = 8;          // le bot finit ≥ 8 blocs PLUS LOIN qu'au départ = on l'a emmené ailleurs
 const IRON_CAVE_OBJECTIVES = new Set(['iron_armor', 'diamond_armor']);
 
 function _caveInvTier() {
@@ -5772,7 +5820,8 @@ async function _caveTorch() {
  * Déplacement vers un minerai de grotte : par l'OUVERTURE d'abord (canDig:false, le chemin d'un
  * joueur), en creusant ensuite (canDig:true) si la grotte n'est pas reliée. y RÉEL connu → 3D.
  */
-async function _caveGotoOre(t, tok) {
+async function _caveGotoOre(t, tok, errs = null) {
+  const note = (e) => { if (errs) errs.push(e); };
   const near = () => {
     const p = bot.entity && bot.entity.position;
     return !!(p && Math.hypot(p.x - (t.x + 0.5), p.y - t.y, p.z - (t.z + 0.5)) <= 4.5);
@@ -5782,13 +5831,58 @@ async function _caveGotoOre(t, tok) {
   const goal = air ? new pfGoals.GoalNear(air.x, air.y, air.z, 1) : new pfGoals.GoalNear(t.x, t.y, t.z, 2);
   const stop = () => { try { stopMotion(); } catch (e) {} };
   await withTempMovements(bot, Movements, { canDig: false }, async () => {
-    try { await withTimeout(bot.pathfinder.goto(goal), 60000, stop); } catch (e) { /* NoPath → phase 2 */ }
+    try { await withTimeout(bot.pathfinder.goto(goal), 60000, stop); } catch (e) { note(e); /* NoPath → phase 2 */ }
   });
   if (near() || tok.cancelled) return near();
   await withTempMovements(bot, Movements, { canDig: true }, async () => {
-    try { await withTimeout(bot.pathfinder.goto(goal), 60000, stop); } catch (e) { /* inatteignable */ }
+    try { await withTimeout(bot.pathfinder.goto(goal), 60000, stop); } catch (e) { note(e); /* inatteignable */ }
   });
   return near();
+}
+
+/**
+ * ESCALIER DIRIGÉ vers un minerai de grotte plus bas que le bot (22/10). Plan PUR (caveIron.stairPlan) :
+ * marcher jusqu'au point de départ (sans creuser, borné), se tourner vers la grappe, descendre l'escalier
+ * de descendDiagonal (1 bloc en avant par bloc descendu : eau/lave/vide devant → il s'arrête net) jusqu'à
+ * la couche du minerai ou à portée. Eau/lave/vide/surplace → on change de cap (axe vers la cible d'abord,
+ * puis les deux autres) et on reprend d'où l'on est. true si on a descendu au moins d'un bloc.
+ */
+async function _caveStairTo(t, tok) {
+  const p0 = bot.entity && bot.entity.position;
+  const plan = p0 ? caveIronPick.stairPlan(p0, t) : null;
+  if (!plan) return false;
+  const stop = () => { try { stopMotion(); } catch (e) {} };
+  const near = () => {
+    const p = bot.entity && bot.entity.position;
+    return !!(p && Math.hypot(p.x - (t.x + 0.5), p.y - t.y, p.z - (t.z + 0.5)) <= 4.5);
+  };
+  emit({ type: 'cave_stair', x: t.x, y: t.y, z: t.z, drop: plan.drop, dx: plan.dir.dx, dz: plan.dir.dz });
+  if (Math.hypot(p0.x - plan.start.x, p0.z - plan.start.z) > 3) {
+    await withTempMovements(bot, Movements, { canDig: false }, async () => {
+      try { await withTimeout(bot.pathfinder.goto(new pfGoals.GoalNearXZ(plan.start.x, plan.start.z, 2)), 90000, stop); } catch (e) { /* on descend d'où l'on est */ }
+    });
+    if (tok.cancelled) return false;
+  }
+  const yStart = (bot.entity && bot.entity.position) ? bot.entity.position.y : p0.y;
+  const perp = { dx: plan.dir.dz, dz: plan.dir.dx };
+  const dirs = [plan.dir, perp, { dx: -perp.dx, dz: -perp.dz }];
+  let last = null;
+  for (let i = 0; i < dirs.length && !tok.cancelled && !near(); i++) {
+    const p = bot.entity && bot.entity.position;
+    if (!p || p.y <= t.y + 1) break;
+    try { await bot.look(caveIronPick.yawOf(dirs[i]), 0, true); } catch (e) { /* le cap reste celui du regard */ }
+    // Jeton DÉRIVÉ : withTimeout n'annule rien — sans lui l'escalier continuerait de creuser après l'échéance.
+    const sub = { cut: false };
+    const subTok = { get cancelled() { return !!(tok.cancelled || sub.cut); } };
+    last = await withTimeout(descendDiagonal(bot, {
+      targetY: t.y, maxDepth: Math.ceil(p.y - t.y) + 12, onSurvivalTick: descentSurvivalTick, stopWhen: near,
+    }, subTok), 240000, () => { sub.cut = true; stop(); });
+    if (last && last.ok) break;
+    if (!(last && /water|lava|drop|no_progress|air_at|dig_failed|timeout/.test(String(last.reason || 'timeout')))) break;
+  }
+  const yEnd = (bot.entity && bot.entity.position) ? bot.entity.position.y : yStart;
+  emit({ type: 'cave_stair_done', reached: near(), y: Math.round(yEnd), dropped: Math.round(yStart - yEnd), reason: (last && last.reason) || null });
+  return yEnd < yStart - 1;
 }
 
 async function runCaveIron() {
@@ -5806,20 +5900,36 @@ async function runCaveIron() {
   const rawIron = () => ((bot.inventory && bot.inventory.items()) || [])
     .reduce((s, i) => s + (i.name === 'raw_iron' ? i.count : 0), 0);
   let r = null;
+  _caveTripBusy = true;
   try {
     r = await caveIronSkill({
       cave, world: wkey, emit,
       // y du minerai deviné-par-carte mais réel : approche XZ d'abord (sans creuser), puis 3D.
+      // Échec du trajet : `interrupted` si on nous a coupés (TP, but pathfinder changé par un autre,
+      // bot emmené plus loin qu'au départ), `false` (= unreachable) sinon — cf. caveTravelVerdict.
       travel: async (c) => {
         const e = c.ores[0];
-        const p = bot.entity && bot.entity.position;
-        if (p && Math.hypot(p.x - e.x, p.z - e.z) > 24) {
+        const errs = [];
+        const tp0 = _tpCount;
+        const p0 = bot.entity && bot.entity.position;
+        const d0 = p0 ? Math.hypot(p0.x - e.x, p0.y - e.y, p0.z - e.z) : null;
+        // Grappe plus basse de > 4 blocs : pas de marche XZ jusqu'au-dessus d'elle — l'escalier part
+        // `drop` blocs AVANT elle (stairPlan) et y marche lui-même.
+        if (p0 && Math.hypot(p0.x - e.x, p0.z - e.z) > 24 && !caveIronPick.stairPlan(p0, e)) {
           await withTempMovements(bot, Movements, { canDig: false }, async () => {
-            try { await withTimeout(bot.pathfinder.goto(new pfGoals.GoalNearXZ(e.x, e.z, 8)), 150000, stop); } catch (err) {}
+            try { await withTimeout(bot.pathfinder.goto(new pfGoals.GoalNearXZ(e.x, e.z, 8)), 150000, stop); } catch (err) { errs.push(err); }
           });
           if (tok.cancelled) return false;
         }
-        return await _caveGotoOre(e, tok);
+        // Grappe plus BASSE de > 4 blocs : on y descend en ESCALIER dirigé (un pathfinder générique
+        // rend NoPath dans la roche pleine), puis l'approche fine ci-dessous finit le trajet.
+        if (!tok.cancelled) { try { await _caveStairTo(e, tok); } catch (err) { errs.push(err); } }
+        if (tok.cancelled) return false;
+        const ok = await _caveGotoOre(e, tok, errs);
+        if (ok) return true;
+        const p1 = bot.entity && bot.entity.position;
+        const d1 = p1 ? Math.hypot(p1.x - e.x, p1.y - e.y, p1.z - e.z) : null;
+        return caveTravelVerdict({ teleported: _tpCount > tp0, errs, d0, d1 });
       },
       oreState: (o) => {
         const b = bot.blockAt(vec3Lib(o.x, o.y, o.z));
@@ -5854,11 +5964,33 @@ async function runCaveIron() {
       refreshClaim: () => { if (_teamClaims) _teamClaims.refresh(cave.key); },
     }, tok);
   } finally {
+    _caveTripBusy = false;
     try { if (_teamClaims) _teamClaims.release(cave.key); } catch (e) {}
   }
   // Une préemption (migration, combat, nuit) n'est pas un verdict sur la grotte.
-  if (r && r.reason !== 'cancelled') noteCaveTried(cave, r.ok ? 'done' : r.reason);
+  if (r && r.reason === 'interrupted') {
+    const now = Date.now();
+    const recent = (_caveInterrupts[cave.key] || []).filter((t) => now - t < CAVE_INTERRUPT_WINDOW_MS).concat([now]);
+    _caveInterrupts[cave.key] = recent;
+    if (recent.length >= 2) noteCaveTried(cave, 'interrupted');   // mise de côté 30 min, hors disjoncteur
+  } else if (r && r.reason !== 'cancelled') noteCaveTried(cave, r.ok ? 'done' : r.reason);
   return r;
+}
+
+/**
+ * PUR — verdict d'un trajet de grotte RATÉ : 'interrupted' (on nous a coupés) ou false (= unreachable).
+ * teleported : un TP a eu lieu pendant le trajet · errs : erreurs du pathfinder (GoalChanged = un autre
+ * a posé son but) · d0/d1 : distance à la cible au départ / à l'arrêt (fuite, /tpa, poussée).
+ */
+function caveTravelVerdict({ teleported, errs, d0, d1 } = {}) {
+  if (teleported) return 'interrupted';
+  for (const e of Array.isArray(errs) ? errs : []) {
+    const name = String((e && e.name) || '');
+    const msg = String((e && e.message) || e || '');
+    if (name === 'GoalChanged' || /goal was changed/i.test(msg)) return 'interrupted';
+  }
+  if (Number.isFinite(d0) && Number.isFinite(d1) && d1 >= d0 + CAVE_PULLED_AWAY) return 'interrupted';
+  return false;
 }
 
 /** Lit la dette persistée (ou null). */
@@ -6889,6 +7021,42 @@ function tunnelAwareFlee(b) {
   return tunnelFlee(b || bot, { fleeFrom, emit, stopMotion: () => stopMotion(), eat, withTimeout });
 }
 
+// ─── BRANCH-MINE FER EN LACETS : reprise au FRONT (22/10, chrono world_oct22) ──────────────────────
+// Mesure : NethBot3, 10 appels d'iron_deep en 29 min, TOUS repartis à < 25 blocs du même point (le
+// home work posé en bas de l'escalier) avec un cap tiré du regard → il re-creusait sa propre zone.
+// Un joueur revient au BOUT de sa mine. À la fin de chaque appel qui a avancé : l'état des lacets et
+// la position du front vont dans le mémo base (fusion, survit aux morts/process neufs), et le home
+// work est re-posé AU FRONT (sec, profond, déplacé de ≥ 8 blocs). Au départ suivant, si le bot est au
+// front (lawnResume : ≤ 8 blocs, même couche, < 6 h), le tracé reprend là où il s'était arrêté.
+const IRON_LAWN_WORK_MOVE = 8;
+
+/** État des lacets à reprendre (ou null = nouveau tracé depuis le regard). */
+function ironLawnStart() {
+  try {
+    const p = bot.entity && bot.entity.position;
+    if (!p) return null;
+    const st = loadBaseState() || {};
+    return lawnMine.lawnResume(st.ironLawn, { x: p.x, y: p.y, z: p.z }, Date.now());
+  } catch (e) { return null; }
+}
+
+/** Fin d'un appel : mémorise front + état ; re-pose `work` au front s'il a bougé. */
+function ironLawnEnd(r) {
+  const p = bot.entity && bot.entity.position;
+  if (!p || !r || !r.lawn) return false;
+  const front = { x: Math.floor(p.x), y: Math.floor(p.y), z: Math.floor(p.z) };
+  const st = loadBaseState() || {};
+  saveBaseState(Object.assign({}, st, { ironLawn: { state: r.lawn, x: front.x, y: front.y, z: front.z, at: Date.now() } }));
+  if (!NO_GIVE || !r.ok || isLumberjackObjective() || front.y > 20) return true;
+  try { if (isInWater(bot)) return true; } catch (e) { return true; }
+  const moved = !_workPos || Math.hypot(front.x - _workPos.x, front.z - _workPos.z) >= IRON_LAWN_WORK_MOVE;
+  if (moved && homewarp.bookmark(bot, HOME_WORK)) {
+    _workSet = true; _workPos = _botXZ();
+    emit({ type: 'work_bookmarked', ctx: 'lawn_front', x: front.x, y: front.y, z: front.z });
+  }
+  return true;
+}
+
 async function branchSurvivalTick() {
   try { await survivalTick(bot, { fleeFrom: tunnelAwareFlee, emit }); } catch (e) {}
   try { await eat(bot); } catch (e) {}
@@ -6912,7 +7080,7 @@ async function branchSurvivalTick() {
   try {
     if (bot.inventory && typeof bot.inventory.emptySlotCount === 'function'
         && bot.inventory.emptySlotCount() <= 6) {
-      await tossJunk(bot);
+      await tossJunkBehind(bot);
       emit({ type: 'branch_cleanup', empty: bot.inventory.emptySlotCount() });
     }
   } catch (e) { /* best-effort : jamais bloquer la branche */ }
@@ -8839,7 +9007,7 @@ async function onSpawn() {
 
           // 2) COHÉSION : rester à portée du groupe tant que l'armure n'est pas faite. Le /tpa
           //    intra-groupe est auto-accepté (policy) — même raccourci que le TP-au-mappeur.
-          await tryRegroup();
+          await tryRegroup({ periodic: true });
         } catch (e) { /* best-effort : jamais throw depuis un timer */ }
         finally { _teamBusy = false; }
       }, 90000);
@@ -9405,7 +9573,7 @@ async function onSpawn() {
     tpWatch.anchor(bot.entity && bot.entity.position);
     wireTeleportDetection(bot, tpWatch, {
       emit,
-      onTeleport: () => { try { stopMotion(); } catch (e) {} _floatSettleUntil = Date.now() + 15000; },
+      onTeleport: () => { try { stopMotion(); } catch (e) {} _floatSettleUntil = Date.now() + 15000; _tpCount++; },
     });
     await tryAuth();
     // ─── WATCHDOG PV « à une seconde de mourir » (warp légitime, NO_GIVE only) ──────────────────

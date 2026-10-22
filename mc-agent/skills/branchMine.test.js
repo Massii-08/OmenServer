@@ -731,3 +731,35 @@ test('placeTorchAt : sol impossible → torche MURALE ; sans torche → raison n
   const { bot: b2 } = makeBot({ y: 16, world: { '0,16,0': 'air' }, inv: [] });
   assert.deepStrictEqual(await placeTorchAt(b2, { x: 0, y: 16, z: 0 }), { placed: false, why: 'no_torch' });
 });
+
+// ── LACETS (22/10, lawnMine.js) : le serpentin fer trace des galeries PARALLÈLES espacées de 3 ──────
+test('branchMine serpentin + lawn : galeries parallèles à 3 blocs, aucun bloc re-creusé, état rendu', async () => {
+  const { bot, calls } = makeBot({ y: 16, yaw: -Math.PI / 2 });
+  const r = await branchMine(bot, { targetY: 16, mainLength: 60, serpentine: true, lawn: { length: 10 }, rng: () => 0 });
+  const foot = calls.dig.filter((b) => b.position.y === 16).map((b) => ({ x: b.position.x, z: b.position.z }));
+  const keys = foot.map((f) => f.x + ',' + f.z);
+  assert.strictEqual(new Set(keys).size, keys.length, 'chaque case de pieds n\'est creusée qu\'une fois');
+  assert.ok(foot.length >= 50, `assez de blocs (${foot.length})`);
+  // Les longues galeries tiennent sur des lignes distantes de 3 (2 blocs de pilier entre elles).
+  const byLine = new Map();
+  const horiz = foot[1].x !== foot[0].x;                 // axe des longues galeries
+  for (const f of foot) { const k = horiz ? f.z : f.x; byLine.set(k, (byLine.get(k) || 0) + 1); }
+  const lines = [...byLine.entries()].filter(([, n]) => n >= 8).map(([k]) => k).sort((a, b) => a - b);
+  assert.ok(lines.length >= 3, `≥ 3 galeries longues : ${JSON.stringify(lines)}`);
+  for (let i = 1; i < lines.length; i++) assert.strictEqual(lines[i] - lines[i - 1], 3);
+  assert.ok(r.lawn && r.lawn.heading, 'état des lacets rendu pour la reprise');
+});
+
+test('branchMine serpentin + lawn : lawnState reprend le tracé (cap mémorisé), pas le regard du bot', async () => {
+  const { bot, calls } = makeBot({ y: 16, yaw: 0 });   // regard ≠ cap mémorisé
+  const state = { heading: { dx: 1, dz: 0 }, leg: 'long', turn: 1, left: 5 };
+  await branchMine(bot, { targetY: 16, mainLength: 4, serpentine: true, lawn: true, lawnState: state, rng: () => 0 });
+  const first = calls.dig.find((b) => b.position.y === 16);
+  assert.deepStrictEqual([first.position.x, first.position.z], [1, 0]);
+});
+
+test('branchMine serpentin SANS lawn : comportement historique (pas de champ lawn rendu)', async () => {
+  const { bot } = makeBot({ y: 16 });
+  const r = await branchMine(bot, { targetY: 16, mainLength: 6, serpentine: true, rng: () => 0 });
+  assert.strictEqual(r.lawn, undefined);
+});

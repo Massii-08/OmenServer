@@ -21,7 +21,8 @@
 const IRON_ORES = new Set(['iron_ore', 'deepslate_iron_ore']);
 const CAVE_LINK = 6;                     // blocs : deux minerais plus proches appartiennent à la même paroi
 const CAVE_MIN_ORES = 3;                 // en dessous, ce n'est pas une grotte rentable
-const CAVE_MAX_DIST = 80;                // blocs (mesuré : à 170-190 blocs, 70 cibles sur 81 `unreachable`)
+const CAVE_MAX_DIST = 80;                // blocs À PLAT (mesuré : à 170-190 blocs, 70 cibles sur 81 `unreachable`)
+const CAVE_MAX_DROP = 80;                // blocs de dénivelé (escalier dirigé, 22/10)
 const CAVE_UNREACH_STREAK = 3;           // disjoncteur : 3 échecs `unreachable`…
 const CAVE_UNREACH_WINDOW_MS = 15 * 60 * 1000;   // …en moins de 15 min…
 const CAVE_COOLDOWN_MS = 20 * 60 * 1000;         // …=> plus de cible pendant 20 min (branch-mine habituel)
@@ -218,6 +219,38 @@ function caveDisabledUntil(trips, now) {
   return off > t ? off : 0;
 }
 
+// ── ESCALIER DIRIGÉ VERS UNE GRAPPE (22/10) ────────────────────────────────────────────────────────
+// L'escalier de descendDiagonal avance d'1 bloc pour 1 bloc descendu, dans un cap cardinal fixe. Pour
+// arriver SUR la grappe, on part du point situé `drop` blocs AVANT elle sur l'axe principal (celui où
+// l'écart horizontal est le plus grand), le cap tourné vers elle. Au-delà de STAIR_MIN_DROP blocs de
+// dénivelé seulement : plus près, le pathfinder (marche/creusage court) suffit.
+const STAIR_MIN_DROP = 4;
+
+/** yaw mineflayer d'un cap cardinal (inverse exact de descendDiagonal.cardinalFromYaw). */
+function yawOf(dir) {
+  if (!dir) return 0;
+  if (dir.dz > 0) return 0;
+  if (dir.dx < 0) return Math.PI / 2;
+  if (dir.dz < 0) return Math.PI;
+  return -Math.PI / 2;
+}
+
+/**
+ * PUR — plan d'escalier de `from` vers `t` ({x,y,z}) : {dir, start:{x,z}, drop, targetY, yaw}, ou null
+ * si la cible n'est pas à plus de STAIR_MIN_DROP blocs SOUS le bot.
+ */
+function stairPlan(from, t) {
+  if (!_valid(from) || !_valid(t)) return null;
+  const drop = Math.floor(from.y) - Math.floor(t.y);
+  if (!(drop > STAIR_MIN_DROP)) return null;
+  const dx = t.x - from.x, dz = t.z - from.z;
+  const dir = Math.abs(dx) >= Math.abs(dz)
+    ? { dx: dx < 0 ? -1 : 1, dz: 0 }
+    : { dx: 0, dz: dz < 0 ? -1 : 1 };
+  const start = { x: Math.round(t.x - dir.dx * drop), z: Math.round(t.z - dir.dz * drop) };
+  return { dir, start, drop, targetY: Math.floor(t.y), yaw: yawOf(dir) };
+}
+
 function _nearFail(center, fails) {
   const n2 = CAVE_FAIL_NEAR * CAVE_FAIL_NEAR;
   return fails.some((f) => (f.x - center.x) ** 2 + (f.y - center.y) ** 2 + (f.z - center.z) ** 2 <= n2);
@@ -236,6 +269,7 @@ function rankIronCaves(ores, from, o = {}) {
   if (!from || !Number.isFinite(from.x)) return [];
   const now = Number.isFinite(o.now) ? o.now : Date.now();
   const maxDist = Number.isFinite(o.maxDist) ? o.maxDist : CAVE_MAX_DIST;
+  const maxDrop = Number.isFinite(o.maxDrop) ? o.maxDrop : CAVE_MAX_DROP;
   const minOres = Number.isFinite(o.minOres) ? o.minOres : CAVE_MIN_ORES;
   const fails = caveFailsPrune(o.fails, now);
   if (caveCooldownUntil(fails, now)) return [];
@@ -251,9 +285,17 @@ function rankIronCaves(ores, from, o = {}) {
     if ((g.length - dry.length) / g.length >= WET_SHARE_MAX) continue;      // grotte inondée
     const c = centroid(dry);
     const dist = Math.hypot(c.x - from.x, c.y - from.y, c.z - from.z);
-    if (dist > maxDist) continue;
+    // Portée : 80 blocs À PLAT et 80 de dénivelé (22/10). Mesurer la portée en 3D excluait tout le fer
+    // sous y≈0 depuis la surface, alors qu'un escalier de 70 marches n'est que 3 min de pioche.
+    if (Math.hypot(c.x - from.x, c.z - from.z) > maxDist || Math.abs(c.y - from.y) > maxDrop) continue;
     if (conf && Math.hypot(c.x - conf.x, c.z - conf.z) > conf.radius - CONFINE_MARGIN) continue;
-    if (!caveAccessible(c, from, o.caves)) continue;
+    // ⚠️ PLUS de filtre « accès plausible » (caveAccessible, 21/10) — 22/10, mémoire 943e2c : 5 719 fers
+    // exposés secs pour 3 entrées de grotte notées → depuis le spawn (y≈70) la règle ne laissait qu'UNE
+    // grappe ciblable, et la flotte retombait sur le branch-mine aveugle (12 minerais/h). Un joueur qui
+    // SAIT où est le fer creuse un escalier vers lui : c'est ce que fait désormais le trajet (stairPlan +
+    // escalier dirigé côté index.js) pour toute grappe plus basse que lui. Restent exclues : les grappes
+    // noyées, trop loin, hors confine, réservées, déjà ratées (< 30 min) ; le disjoncteur reste en place.
+    // La profondeur reste PAYÉE dans le score (DEPTH_K) : à rendement égal, la plus proche en 3D d'abord.
     const key = caveKey(c);
     if (_nearFail(c, fails)) continue;
     let claimed = false;
@@ -275,11 +317,12 @@ function pickIronCave(ores, from, o = {}) {
 }
 
 module.exports = {
-  IRON_ORES, CAVE_LINK, CAVE_MIN_ORES, CAVE_MAX_DIST, CAVE_FAIL_TTL_MS, CAVE_FAIL_NEAR, CAVE_CELL,
+  IRON_ORES, CAVE_LINK, CAVE_MIN_ORES, CAVE_MAX_DIST, CAVE_MAX_DROP, CAVE_FAIL_TTL_MS, CAVE_FAIL_NEAR, CAVE_CELL,
   DEPTH_K, WET_SHARE_MAX, CAVE_FAILS_CAP,
   isIronOre, exposedIronOres, clusterOres, centroid, caveKey, orderOres,
   CAVE_UNREACH_STREAK, CAVE_UNREACH_WINDOW_MS, CAVE_COOLDOWN_MS, caveCooldownUntil,
   caveFailsPrune, caveFailsAdd, rankIronCaves, pickIronCave,
   CAVE_ACCESS_DY, CAVE_ENTRANCE_NEAR, caveAccessible,
+  STAIR_MIN_DROP, yawOf, stairPlan,
   CAVE_ESCALATE_WINDOW_MS, CAVE_DISABLE_MS, caveBreakerNote, caveDisabledUntil,
 };

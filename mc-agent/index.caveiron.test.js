@@ -67,6 +67,8 @@ function sandbox(o = {}) {
   vm.createContext(sb);
   run(sb, [constSrc('IRON_CAVE_CACHE_MS'), letSrc('_ironCaveCache'), constSrc('IRON_CAVE_OBJECTIVES'),
     letSrc('_caveCooldownEmitted'), letSrc('_caveDisabledEmitted'),
+    letSrc('_tpCount'), letSrc('_caveTripBusy'), letSrc('_caveInterrupts'), constSrc('CAVE_INTERRUPT_WINDOW_MS'),
+    constSrc('CAVE_PULLED_AWAY'), fnSrc('caveTravelVerdict'),
     fnSrc('_caveInvTier'), fnSrc('_caveWorld'), fnSrc('_caveWorldOres'), fnSrc('loadCaveFails'), fnSrc('noteCaveTried'),
     fnSrc('ironCaveCtx'), fnSrc('runCaveIron'),
     'this.ironCaveCtx = ironCaveCtx; this.runCaveIron = runCaveIron; this.noteCaveTried = noteCaveTried;',
@@ -179,10 +181,11 @@ test('runCaveIron : sondes passées au skill (état du minerai, vue, home work)'
 // ── 21/10 : accès plausible + escalade du disjoncteur ──
 const DEEP = [ore(20, 20, 0), ore(22, 20, 0), ore(24, 21, 1)];          // 44 blocs sous le bot (y 64)
 
-test('ironCaveCtx : grappe à > 24 blocs en vertical ignorée, sauf entrée de grotte connue (worlds.<w>.caves)', () => {
-  assert.strictEqual(sandbox({ ores: DEEP }).ironCaveCtx(), null);
-  assert.ok(sandbox({ ores: DEEP, caves: [{ x: 25, y: 60, z: 5, at: 'x', flooded: false }] }).ironCaveCtx());
-  assert.strictEqual(sandbox({ ores: DEEP, caves: [{ x: 25, y: 60, z: 5, at: 'x', flooded: true }] }).ironCaveCtx(), null);
+test('ironCaveCtx : grappe PROFONDE ciblable sans entrée de grotte connue (22/10 : escalier dirigé ; 943e2c n\'a que 3 entrées)', () => {
+  const c = sandbox({ ores: DEEP }).ironCaveCtx();
+  assert.ok(c, 'plus de filtre « accès plausible »');
+  assert.strictEqual(c.y, 20);
+  assert.ok(sandbox({ ores: DEEP, caves: [{ x: 25, y: 60, z: 5, at: 'x', flooded: true }] }).ironCaveCtx(), 'une entrée inondée ne retire plus rien');
 });
 
 test('ironCaveCtx : 2e repos du disjoncteur en 2 h → iron_cave coupé 2 h, persisté (survit au respawn)', () => {

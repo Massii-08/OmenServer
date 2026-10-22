@@ -340,8 +340,10 @@ const IRON_ARMOR_CHAIN = [
   // pipeline diamant (resource). Rétro-compat : IRON_CHAIN (objectif pioche) reste en couloir.
   // allowDeeper (cycle 2) : un bot ramené SOUS la fenêtre [10,18] (water_rescue → /home safe à y=4)
   // bouclait wrong_depth à vie — le serpentin mine au niveau courant, on l'admet jusqu'à y=-59.
+  // lawn (22/10, lawnMine.js) : les virages du serpentin tracent des galeries PARALLÈLES espacées de 3
+  // (le serpentin au hasard se recroisait : 8 fers en 29 min mesurés) ; reprise au front mémorisé.
   { name: 'iron_deep',    met: (c) => ironOK(c) || IA(c),
-    skill: 'branchMine',  args: { targetY: 16, mainLength: 48, branchSpacing: 3, branchLength: 8, serpentine: true, allowDeeper: true } },
+    skill: 'branchMine',  args: { targetY: 16, mainLength: 48, branchSpacing: 3, branchLength: 8, serpentine: true, allowDeeper: true, lawn: true } },
   // 4 lingots, pas 3 : la pioche en consomme exactement 3 → il ne restait JAMAIS de quoi forger
   // un bouclier. Le 4e lingot est l'investissement de survie le moins cher du jeu (preuve live
   // 25/07 : les squelettes sont le tueur n°1 des bots nus).

@@ -12,6 +12,7 @@
 // ce module ne touche jamais mineflayer, il se teste avec des doublures.
 
 const CAVE_MAX_MS = 6 * 60 * 1000;   // une grappe = 6 min au plus, trajet compris
+const CAVE_MINE_MIN_MS = 3 * 60 * 1000;   // temps de minage garanti après l'arrivée (22/10)
 const TORCH_EVERY_ORES = 3;          // une torche tous les 3 minerais traités (et une à l'arrivée)
 
 /**
@@ -42,16 +43,22 @@ async function caveIron(o = {}, token = null) {
     return Object.assign({ ok: false, reason: why, took_s: took() }, stats);
   };
   if (!cave || !Array.isArray(cave.ores) || !cave.ores.length) return fail('no_cave_target');
-  const deadline = t0 + (Number.isFinite(o.maxMs) ? o.maxMs : CAVE_MAX_MS);
+  let deadline = t0 + (Number.isFinite(o.maxMs) ? o.maxMs : CAVE_MAX_MS);
   const safe = async (fn, dflt) => { try { return typeof fn === 'function' ? await fn() : dflt; } catch (e) { return dflt; } };
   const cancelled = () => !!(token && token.cancelled);
 
   emit({ type: 'cave_target', x: cave.x, y: cave.y, z: cave.z, ores: cave.count || cave.ores.length, dist: cave.dist });
   const reached = await safe(() => o.travel(cave), false);
   if (cancelled()) return fail('cancelled');
+  // `travel` peut rendre 'interrupted' (TP, but pathfinder volé, bot emmené ailleurs) : pas un verdict
+  // sur la grotte — l'appelant ne le compte pas dans le disjoncteur `unreachable` (22/10).
+  if (reached === 'interrupted') return fail('interrupted');
   if (!reached) return fail(now() >= deadline ? 'timeout' : 'unreachable');
   await safe(() => o.markWork(), false);
   await safe(() => o.placeTorch(), null);
+  // Un long trajet (escalier dirigé vers une grappe profonde, 22/10) ne doit pas manger le temps de
+  // minage : arrivé, on garde au moins CAVE_MINE_MIN_MS pour le filon.
+  deadline = Math.max(deadline, now() + CAVE_MINE_MIN_MS);
 
   let processed = 0;
   for (const ore of cave.ores) {
@@ -89,4 +96,4 @@ async function caveIron(o = {}, token = null) {
   }
 }
 
-module.exports = { caveIron, CAVE_MAX_MS, TORCH_EVERY_ORES };
+module.exports = { caveIron, CAVE_MAX_MS, CAVE_MINE_MIN_MS, TORCH_EVERY_ORES };

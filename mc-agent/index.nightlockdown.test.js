@@ -147,6 +147,7 @@ function squadSandbox(opts = {}) {
     armorNeed: () => 1, buildCtxInv: () => ({}),
     _stillBusy: false, _imminentBusy: false, _smeltOppBusy: false, _armorBusy: false,
     _migrating: false, _escaping: false, _foodTripBusy: false, _exploreBusy: false, _zoneIronMined: 0, _craftDepth: 0,
+    _caveTripBusy: false, isMiningGoal: R.isMiningGoal,
     _lastSquadAt: 0, _lastRegroupAt: 0, _curGoal: null, _squadSkipWhy: null, _squadSkipAt: 0,
     isLumberjackObjective: () => false,   // bûcheron d'équipe (20/10) : hors sujet ici
     squadTarget: R.squadTarget, pickRegroupTarget: R.pickRegroupTarget,
@@ -194,6 +195,37 @@ test('SQUAD / REGROUPEMENT : armé (2 pièces) de nuit, ou nu de JOUR → le /tp
   await dayNude.tryRegroup();
   assert.deepStrictEqual(dayNude.chat, ['/tpa NethBot1']);
   assert.strictEqual(dayNude.shelters.length, 0);
+});
+
+// 22/10 (chrono world_oct22) : le regroupement PÉRIODIQUE (timer d'équipe) arrachait les bots en plein
+// trajet de grotte (→ faux `unreachable` → disjoncteur iron_cave 2 h) et en pleine migration.
+test('REGROUPEMENT périodique : trajet de grotte / migration / but de minage → aucun /tpa ; après mort → inchangé', async () => {
+  const cave = squadSandbox({ worn: 0, timeOfDay: DAY, _caveTripBusy: true });
+  assert.deepStrictEqual(plain(await cave.tryRegroup({ periodic: true })), { ok: false, reason: 'busy' });
+  const mig = squadSandbox({ worn: 0, timeOfDay: DAY, _migrating: true });
+  assert.deepStrictEqual(plain(await mig.tryRegroup({ periodic: true })), { ok: false, reason: 'busy' });
+  const mine = squadSandbox({ worn: 0, timeOfDay: DAY });
+  run(mine, "_curGoal = { name: 'iron_cave', skill: 'caveIron', at: 0 }");
+  assert.deepStrictEqual(plain(await mine.tryRegroup({ periodic: true })), { ok: false, reason: 'busy' });
+  assert.deepStrictEqual(cave.chat.concat(mig.chat, mine.chat), []);
+  // Le regroupement APRÈS MORT (handler spawn, sans opts) garde son comportement.
+  const dead = squadSandbox({ worn: 0, timeOfDay: DAY, _caveTripBusy: true });
+  await dead.tryRegroup();
+  assert.deepStrictEqual(dead.chat, ['/tpa NethBot1']);
+  // Libre, de jour, but hors minage → le /tpa périodique part comme avant.
+  const free = squadSandbox({ worn: 0, timeOfDay: DAY });
+  await free.tryRegroup({ periodic: true });
+  assert.deepStrictEqual(free.chat, ['/tpa NethBot1']);
+});
+
+test('SQUAD : trajet de grotte en cours → aucun /tpa (même garde que les autres tâches longues)', async () => {
+  const sb = squadSandbox({ worn: 2, timeOfDay: DAY, _caveTripBusy: true });
+  await sb.trySquad();
+  assert.deepStrictEqual(sb.chat, []);
+});
+
+test('timer d\'équipe : appelle tryRegroup en mode périodique', () => {
+  assert.match(SRC, /await tryRegroup\(\{ periodic: true \}\);/);
 });
 
 // 21/10 : le mineur au fond n'est jamais arraché (regroup.squadHold), et le refus est TRACÉ (squad_skip).
