@@ -273,3 +273,84 @@ test('shouldReleaseSurfacing : oxygène inconnu → on relâche (jamais de verro
     assert.strictEqual(shouldFlee(botWith([creeper(3)])), true);
   });
 }
+
+// ─── RÉPONSE AU SQUELETTE (22/10) : les réflexes délèguent à onSkeleton au lieu de fuir à découvert ──
+// Live : `aura_hit {skeleton, dist:2.8}` → `fight_refused low_hp` → `reflex flee` → « shot by Skeleton ».
+const { skeletonThreat } = require('./reflexes');
+
+function botSkel({ health = 5, skelX = 12, zombieX = null, food = 20 } = {}) {
+  const entities = [{ type: 'mob', name: 'skeleton', position: { x: skelX, y: 64, z: 0 } }];
+  if (zombieX != null) entities.push({ type: 'mob', name: 'zombie', position: { x: zombieX, y: 64, z: 0 } });
+  return {
+    health, food,
+    entity: { position: { x: 0, y: 64, z: 0 } },
+    entities: Object.fromEntries(entities.map((e, i) => [i, e])),
+    on: () => {}, pathfinder: { setGoal: () => {} }, setControlState: () => {},
+    inventory: { items: () => [{ name: 'cobblestone', count: 20 }] },
+    nearestEntity: (pred) => entities.find(pred) || null,
+  };
+}
+
+function runSkel(bot, extra = {}) {
+  const calls = { flee: 0, cover: 0, skel: [], attack: 0 };
+  const { react } = installReflexes(bot, Object.assign({
+    emit: () => {},
+    fleeFrom: () => { calls.flee += 1; },
+    onCover: () => { calls.cover += 1; },
+    onSkeleton: (foe, from) => { calls.skel.push([foe && foe.name, from]); },
+    attack: () => { calls.attack += 1; },
+    now: () => 100000,
+  }, extra));
+  return { react, calls };
+}
+
+test('skeletonThreat : squelette à 3 blocs (contact) ET à 12 blocs comptent ; zombie collé → null', () => {
+  assert.equal(skeletonThreat(botSkel({ skelX: 3 })).name, 'skeleton');
+  assert.equal(skeletonThreat(botSkel({ skelX: 12 })).name, 'skeleton');
+  assert.equal(skeletonThreat(botSkel({ skelX: 20 })), null, 'au-delà de la portée d\'arc');
+  assert.equal(skeletonThreat(botSkel({ skelX: 8, zombieX: 2 })), null, 'mêlée mixte : logique historique');
+});
+
+test('PV bas + squelette en vue → onSkeleton(from:flee), ni fuite ni ancien couvert', () => {
+  const { react, calls } = runSkel(botSkel({ health: 5 }));
+  react();
+  assert.deepEqual(calls.skel, [['skeleton', 'flee']]);
+  assert.equal(calls.flee, 0);
+  assert.equal(calls.cover, 0);
+});
+
+test('PV bas + squelette AU CONTACT (2,8 blocs) → onSkeleton aussi (avant : fuite → tir dans le dos)', () => {
+  const { react, calls } = runSkel(botSkel({ health: 5, skelX: 2.8 }));
+  react();
+  assert.deepEqual(calls.skel, [['skeleton', 'flee']]);
+  assert.equal(calls.flee, 0);
+});
+
+test('frappé par un squelette au contact → onSkeleton(from:riposte), pas la porte canEngage→fuite', () => {
+  const bot = botSkel({ health: 12, skelX: 3 });
+  const { react, calls } = runSkel(bot, { canEngage: () => ({ ok: false, reason: 'low_hp' }) });
+  react();                 // relève lastHealth
+  bot.health = 9;          // encaisse
+  react();
+  assert.deepEqual(calls.skel, [['skeleton', 'riposte']]);
+  assert.equal(calls.flee, 0, 'le refus d\'engager ne doit plus déclencher une fuite à découvert');
+  assert.equal(calls.attack, 0);
+});
+
+test('canardé à distance → onSkeleton(from:ranged) au lieu d\'onRanged', () => {
+  const bot = botSkel({ health: 16, skelX: 12 });
+  let ranged = 0;
+  const { react, calls } = runSkel(bot, { onRanged: () => { ranged += 1; } });
+  react();
+  bot.health = 13;
+  react();
+  assert.deepEqual(calls.skel, [['skeleton', 'ranged']]);
+  assert.equal(ranged, 0);
+});
+
+test('zombie collé + squelette → logique historique (fuite), onSkeleton non appelé', () => {
+  const { react, calls } = runSkel(botSkel({ health: 5, skelX: 10, zombieX: 1 }));
+  react();
+  assert.equal(calls.skel.length, 0);
+  assert.equal(calls.flee, 1);
+});

@@ -159,7 +159,15 @@ function createFightBreaker() {
     return { ok: true, cornered: false, reason: null };
   }
 
-  return { sample, check, noteAbort, noteFlee, canEngage, _state: () => ({ samples: samples.slice(), abortedAt, flee, corneredUntil }) };
+  // CHARGE SUR UN SQUELETTE (skeletonResponse.js, 22/10) : la décision « rush » a déjà pesé PV, distance
+  // et arme ; lâcher ce combat à mi-course (plancher 10 PV) remettrait le bot de dos dans la ligne de tir
+  // — c'est exactement ce qui le tuait. Même régime qu'un combat accordé « acculé ».
+  function grant({ t, ms } = {}) {
+    if (!_num(t) || !_num(ms) || ms <= 0) return;
+    corneredUntil = Math.max(corneredUntil, t + ms);
+  }
+
+  return { sample, check, noteAbort, noteFlee, canEngage, grant, _state: () => ({ samples: samples.slice(), abortedAt, flee, corneredUntil }) };
 }
 
 module.exports = {

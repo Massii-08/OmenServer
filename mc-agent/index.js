@@ -126,6 +126,7 @@ const { descentFoodGate, undergroundFoodTripDue, foodGateLoad } = require('./foo
 const { noteDropAhead, turnYaw, shiftTarget } = require('./dropAhead');
 const { canDealWith, attackDamage, boldFightAdvised } = require('./survival');
 const { fleeTarget } = require('./skills/fleeFrom');
+const { decideSkeletonResponse, findCoverCell, zigzagSide } = require('./skeletonResponse');
 const { createFightBreaker } = require('./fightBreaker');
 // SYSTÈME À 3 HOMES (Massii 27/07) : safe = LA BASE, work = le chantier courant, death = la dette
 // de mort. Le serveur n'autorise que 3 homes et le code en posait 4 → un /sethome échouait EN
@@ -583,6 +584,16 @@ async function fleeDeathCamp(fromPos) {
     await safeWarpHome('safe', { ctx: 'death_camp_flee' });
     return;
   }
+  // SQUELETTE EN VUE (22/10 : `death_camp_flee via:foot` à 1,5 PV puis « shot by Skeleton ») : 90 blocs
+  // à pied dans son champ de tir, c'est la mort. On casse la ligne de vue / on le tue d'abord ; le camp
+  // reste banni, la fuite repartira au prochain passage du watchdog si besoin.
+  try {
+    const sit = skeletonSituation(null);
+    if (sit && sit.los) {
+      const dec = skeletonRespond(sit.shooter, 'death_camp');
+      if (dec && dec.action !== 'flee') { emit({ type: 'death_camp_flee', via: 'skeleton', action: dec.action }); return; }
+    }
+  } catch (e) { emit({ type: 'skeleton_response_error', err: String((e && e.message) || e).slice(0, 160) }); }
   const ang = Math.random() * Math.PI * 2;
   const tx = Math.round(fromPos.x + Math.cos(ang) * 90);
   const tz = Math.round(fromPos.z + Math.sin(ang) * 90);
@@ -3026,7 +3037,7 @@ async function gatherStone(goal) {
         // Survie LÉGÈRE seulement (combat/fuite/manger) : ni torches (miner du charbon désaligne
         // l'escalier, cf. descendDiagonal) ni tossJunk (il jetterait le cobble qu'on vient chercher).
         onSurvivalTick: async () => {
-          try { await survivalTick(bot, { fleeFrom, emit, ...fightGateDeps() }); } catch (e) {}
+          try { await survivalTick(bot, { fleeFrom: skeletonFirstFlee, emit, ...fightGateDeps() }); } catch (e) {}
           try { await eat(bot); } catch (e) {}
         },
         survivalEvery: 4,
@@ -3562,7 +3573,7 @@ async function tryKitUpgrade() {
 async function settleSurvivalKit() {
   for (let i = 0; i < 10; i++) {
     if (taskToken.cancelled) return;
-    const action = await survivalTick(bot, { fleeFrom, emit, holdPosition: shelterHoldNow, strikeInPlace, ...fightGateDeps() });
+    const action = await survivalTick(bot, { fleeFrom: skeletonFirstFlee, emit, holdPosition: shelterHoldNow, strikeInPlace, ...fightGateDeps() });
     if (!action) return;
     await sleep(1500);
   }
@@ -7284,7 +7295,227 @@ async function provisionStartKit() {
  * souterrain : tenir (armé) ou se murer (tunnelGuard) ; partout ailleurs : fleeFrom, inchangé.
  */
 function tunnelAwareFlee(b) {
+  if (skeletonAwareFlee(b, 'tunnel_flee')) return true;
   return tunnelFlee(b || bot, { fleeFrom, emit, stopMotion: () => stopMotion(), eat, withTimeout });
+}
+
+// ─── RÉPONSE AU SQUELETTE (22/10, skeletonResponse.js) ─────────────────────────────────────────────
+// Mesure live (chrono « de zéro », Hard) : 4 morts de mineurs sur 6 en 12 min = « shot by Skeleton ».
+// Signatures : `aura_hit {skeleton, dist:2.8}` → `fight_refused low_hp` → `reflex flee` → mort ;
+// `take_cover ok` → `survival flee` → mort ; `death_camp_flee via:foot` à 1,5 PV. Toute fuite d'un
+// mineur passe désormais par skeletonAwareFlee : face à un tireur en vue sans mêlée collée, on fonce
+// (rush, zigzag) ou on casse la ligne de vue (cover = un pas derrière un coin, block = muret) et on
+// RESTE derrière ; la fuite (ranged-aware de fleeFrom) n'est plus qu'un dernier recours.
+// État lu par les réflexes, les ticks de survie et le disjoncteur → NIVEAU MODULE (piège #56).
+const SKEL_HOLD_MS = 3000;        // après un couvert réussi : on ne se laisse pas tirer hors de l'abri
+const SKEL_RUSH_MS = 6000;        // charge bornée (le disjoncteur est suspendu pendant ce temps)
+const SKEL_COVER_GOTO_MS = 2500;
+const SKEL_RANGE = 16;
+let _skelBusy = false;            // une seule réponse à la fois
+let _skelHoldUntil = 0;           // fin de la tenue derrière le couvert
+let _pvpAttackRaw = null;         // pvp.attack d'origine (avant la porte du disjoncteur)
+
+/** Situation « squelette » : tireur en portée sans mêlée collée ni creeper proche. null sinon. */
+function skeletonSituation(hint) {
+  if (IS_MAPPER) return null;     // les cartographes gardent leur fuite par défaut (preferFlee)
+  const me = bot.entity && bot.entity.position;
+  if (!me) return null;
+  const self = { x: me.x, y: me.y, z: me.z };   // position MUTÉE en place : copie
+  const d = (e) => Math.hypot(e.position.x - self.x, e.position.y - self.y, e.position.z - self.z);
+  let shooter = null, shooters = 0, meleeOthers = 0, creeper = false;
+  for (const e of Object.values(bot.entities || {})) {
+    if (!e || !e.position || e === bot.entity) continue;
+    if (e.type !== 'mob' && e.type !== 'hostile') continue;
+    const dist = d(e);
+    if (!Number.isFinite(dist)) continue;
+    if (RANGED.has(e.name)) {
+      if (dist > SKEL_RANGE) continue;
+      shooters++;
+      if (!shooter || dist < d(shooter)) shooter = e;
+    } else if (e.name === 'creeper') {
+      if (dist <= 7) creeper = true;
+    } else if (isFleeHostile(e) && dist <= 5) {
+      meleeOthers++;
+    }
+  }
+  if (hint && hint.position && RANGED.has(hint.name) && d(hint) <= SKEL_RANGE) shooter = hint;
+  if (!shooter || creeper) return null;
+  return { shooter, dist: d(shooter), los: canSeeEntityNow(shooter), shooters, meleeOthers, self };
+}
+
+function _skelWeapon() {
+  try { return bestWeapon(bot); } catch (e) { return null; }
+}
+function _skelShield() {
+  return ((bot.inventory && bot.inventory.items()) || []).find((i) => i.name === 'shield') || null;
+}
+async function _skelShieldUp(shooter, ms) {
+  const sh = _skelShield();
+  if (!sh) return false;
+  try {
+    const off = bot.inventory && bot.inventory.slots && bot.inventory.slots[45];
+    if (!off || off.name !== 'shield') await bot.equip(sh, 'off-hand');
+    if (shooter && shooter.position) {
+      await bot.lookAt(shooter.position.offset(0, 1.5, 0), true);
+    }
+    bot.activateItem(true);
+    setTimeout(() => { try { bot.deactivateItem(); } catch (e) {} }, ms);
+    return true;
+  } catch (e) { emit({ type: 'skeleton_shield_failed', err: String((e && e.message) || e).slice(0, 120) }); return false; }
+}
+
+async function _skelRush(shooter) {
+  const raw = _pvpAttackRaw || (bot.pvp && bot.pvp.attack && bot.pvp.attack.bind(bot.pvp));
+  if (!raw) return false;
+  const t0 = Date.now();
+  try { _fightBreaker.grant({ t: t0, ms: SKEL_RUSH_MS }); } catch (e) {}
+  const sh = _skelShield();
+  if (sh) { try { const off = bot.inventory.slots[45]; if (!off || off.name !== 'shield') await bot.equip(sh, 'off-hand'); } catch (e) {} }
+  const w = _skelWeapon();
+  if (w) { try { await bot.equip(w, 'hand'); } catch (e) {} }
+  try {
+    Promise.resolve(raw(shooter)).catch((e) => emit({ type: 'skeleton_rush_failed', err: String((e && e.message) || e).slice(0, 120) }));
+  } catch (e) { emit({ type: 'skeleton_rush_failed', err: String((e && e.message) || e).slice(0, 120) }); return false; }
+  // ZIGZAG : un squelette vise la position COURANTE — un pas latéral alterné à l'approche fait rater
+  // la flèche en vol. Seulement tant qu'on n'est pas au contact (au contact, on frappe droit).
+  let side = null;
+  const zz = setInterval(() => {
+    try {
+      const me = bot.entity && bot.entity.position;
+      const alive = shooter && shooter.isValid !== false && bot.entities && bot.entities[shooter.id];
+      if (!alive || !me || Date.now() - t0 > SKEL_RUSH_MS) return;
+      const far = Math.hypot(shooter.position.x - me.x, shooter.position.z - me.z) > 3;
+      const want = far && bot.entity.onGround ? zigzagSide(Date.now() - t0, 400) : null;
+      if (want !== side) {
+        if (side) bot.setControlState(side, false);
+        if (want) bot.setControlState(want, true);
+        side = want;
+      }
+    } catch (e) { /* best-effort */ }
+  }, 100);
+  try {
+    while (Date.now() - t0 < SKEL_RUSH_MS) {
+      await sleep(250);
+      const alive = shooter && shooter.isValid !== false && bot.entities && bot.entities[shooter.id];
+      if (!alive) break;
+      if (!bot.pvp || bot.pvp.target !== shooter) break;   // quelqu'un d'autre a repris la main
+    }
+  } finally {
+    clearInterval(zz);
+    try { if (side) bot.setControlState(side, false); } catch (e) {}
+    const killed = !(shooter && bot.entities && bot.entities[shooter.id]);
+    try { if (bot.pvp && bot.pvp.target === shooter) bot.pvp.stop(); } catch (e) {}
+    emit({ type: 'skeleton_rush_done', killed, took_ms: Date.now() - t0, hp: Math.round((bot.health || 0) * 10) / 10 });
+  }
+  return true;
+}
+
+async function _skelCover(cell, shooter) {
+  try { stopMotion(); } catch (e) {}
+  if (cell) {
+    try {
+      await withTimeout(bot.pathfinder.goto(new pfGoals.GoalBlock(cell.x, cell.y, cell.z)), SKEL_COVER_GOTO_MS,
+        () => { try { stopMotion(); } catch (e) {} });
+    } catch (e) { /* vérifié ci-dessous par la ligne de vue */ }
+  }
+  _skelHoldUntil = Date.now() + SKEL_HOLD_MS;
+  await _skelShieldUp(shooter, 2000);
+  return !canSeeEntityNow(shooter);
+}
+
+/**
+ * Réponse au squelette (fire-and-forget). `from` = qui appelle (flee | riposte | ranged | defensive |
+ * survival | fight_refused | fight_abort | death_camp | tunnel_flee). Rend la décision prise (ou null).
+ */
+function skeletonRespond(hint, from) {
+  const sit = skeletonSituation(hint);
+  if (!sit) return null;
+  if (sit.meleeOthers > 0) {
+    // mêlée collée (zombie, araignée…) : la logique historique (tunnel, disjoncteur, fuite) garde la
+    // main — et une charge en cours sur le squelette est lâchée, sinon elle tirerait le bot dans ses bras.
+    if (_skelBusy) { try { if (bot.pvp && bot.pvp.target === sit.shooter) bot.pvp.stop(); } catch (e) {} }
+    return null;
+  }
+  if (_skelBusy) return { action: 'busy' };
+  if (Date.now() < _skelHoldUntil && !sit.los) return { action: 'hold' };   // déjà caché : on ne bouge pas
+  let inWater = false;
+  try { inWater = isInWater(bot); } catch (e) {}
+  const cell = (!inWater && sit.los) ? findCoverCell({
+    from: sit.self, shooter: sit.shooter.position,
+    isSolid: (x, y, z) => { const b = bot.blockAt(vec3Lib(x, y, z)); return !!(b && b.boundingBox === 'block'); },
+  }) : null;
+  const dec = decideSkeletonResponse({
+    dist: sit.dist, los: sit.los, health: bot.health,
+    armorPoints: armorPoints(bot), attackDamage: attackDamage(bot), hasShield: !!_skelShield(),
+    hasBlock: !!pickCoverBlock(bot), meleeOthers: sit.meleeOthers, shooters: sit.shooters,
+    inWater, coverCell: !!cell,
+  });
+  emit({ type: 'skeleton_response', action: dec.action, reason: dec.reason, from, mob: sit.shooter.name,
+    hp: Math.round((bot.health || 0) * 10) / 10, dist: Math.round(sit.dist * 10) / 10, los: !!sit.los,
+    shooters: sit.shooters });
+  if (dec.action === 'flee') {
+    try { fleeFrom(bot); } catch (e) { emit({ type: 'skeleton_flee_failed', err: String((e && e.message) || e).slice(0, 120) }); }
+    return dec;
+  }
+  _skelBusy = true;
+  (async () => {
+    const shooter = sit.shooter;
+    if (dec.action === 'rush') {
+      await _skelRush(shooter);
+    } else if (dec.action === 'cover') {
+      if (dec.reason === 'no_los') {
+        // déjà hors de vue : s'arrêter là (la fuite nous ferait ressortir dans son champ)
+        try { stopMotion(); } catch (e) {}
+        _skelHoldUntil = Date.now() + SKEL_HOLD_MS;
+      } else {
+        const hidden = await _skelCover(cell, shooter);
+        if (!hidden) {
+          // la case n'a pas suffi (il a bougé, chemin raté) → muret sur place
+          const r = await withTimeout(takeCover(bot, shooter), 3000, () => { try { stopMotion(); } catch (e) {} });
+          emit({ type: 'take_cover', mob: shooter.name, from: 'skeleton_cover', placed: (r && r.placed) || 0, ok: !!(r && r.ok), ...coverWhy(r) });
+          if (r && r.ok) _skelHoldUntil = Date.now() + SKEL_HOLD_MS;
+        }
+      }
+    } else if (dec.action === 'block') {
+      try { stopMotion(); } catch (e) {}
+      const r = await withTimeout(takeCover(bot, shooter), 3000, () => { try { stopMotion(); } catch (e) {} });
+      emit({ type: 'take_cover', mob: shooter.name, from: 'skeleton_block', placed: (r && r.placed) || 0, ok: !!(r && r.ok), ...coverWhy(r) });
+      if (r && r.ok) {
+        _skelHoldUntil = Date.now() + SKEL_HOLD_MS;
+        await _skelShieldUp(shooter, 2000);
+      } else {
+        // rien à poser / refusé : le rush reste meilleur que courir devant lui s'il est proche
+        const again = decideSkeletonResponse({ dist: sit.dist, los: true, health: bot.health,
+          armorPoints: armorPoints(bot), attackDamage: attackDamage(bot), hasShield: !!_skelShield(),
+          hasBlock: false, meleeOthers: 0, shooters: sit.shooters, inWater: false, coverCell: false });
+        emit({ type: 'skeleton_response', action: again.action, reason: 'block_failed', from, mob: shooter.name,
+          hp: Math.round((bot.health || 0) * 10) / 10, dist: Math.round(sit.dist * 10) / 10, los: true, shooters: sit.shooters });
+        if (again.action === 'rush') await _skelRush(shooter);
+        else { try { fleeFrom(bot); } catch (e) {} }
+      }
+    }
+  })().catch((e) => emit({ type: 'skeleton_response_error', err: String((e && e.message) || e).slice(0, 160) }))
+    .finally(() => { _skelBusy = false; });
+  return dec;
+}
+
+/**
+ * Porte de toute fuite d'un mineur : face à un squelette, la réponse squelette prend la main (rend
+ * true, la fuite est « traitée ») ; sinon false et l'appelant fuit comme avant.
+ */
+function skeletonAwareFlee(b, from) {
+  if (b && b !== bot) return false;
+  let dec = null;
+  try { dec = skeletonRespond(null, from || 'flee'); }
+  catch (e) { emit({ type: 'skeleton_response_error', err: String((e && e.message) || e).slice(0, 160) }); return false; }
+  if (!dec) return false;
+  return true;   // y compris 'flee' : fleeFrom (ranged-aware) a déjà été lancé par skeletonRespond
+}
+
+/** fleeFrom avec la porte squelette devant (survie, disjoncteur). Même contrat : true si une fuite/réponse part. */
+function skeletonFirstFlee(b, from = 'survival') {
+  if (skeletonAwareFlee(b, from)) return true;
+  return fleeFrom(b || bot);
 }
 
 // ─── BRANCH-MINE FER EN LACETS : reprise au FRONT (22/10, chrono world_oct22) ──────────────────────
@@ -9815,7 +10046,7 @@ async function onSpawn() {
                            // Réinitialisée à CHAQUE spawn (déclarée au niveau module, cf. l. ~229).
     _workDrownTimes = []; // fresh par session (les strikes de noyade ne traversent pas un respawn)
     _workStuckTimes = []; // idem : les strikes d'impasse sèche ne traversent pas un respawn
-    installReflexes(bot, {
+    const _reflexHooks = {
       emit,
       // Sous terre dans un couloir : tenir/murer au lieu de courir dans le noir (tunnelAwareFlee).
       fleeFrom: tunnelAwareFlee,
@@ -9833,6 +10064,18 @@ async function onSpawn() {
             if (!r || !r.ok) { try { fleeFrom(bot); } catch (e) {} }
           } catch (e) { try { fleeFrom(bot); } catch (e2) {} }
         })();
+      },
+      // RÉPONSE AU SQUELETTE (22/10) : mineurs seulement. Situation non confirmée (creeper, mêlée arrivée
+      // entre-temps) → repli sur le comportement d'avant (fuite tunnel-aware / riposte / tir à distance).
+      onSkeleton: IS_MAPPER ? undefined : (foe, from) => {
+        let dec = null;
+        try { dec = skeletonRespond(foe, from); } catch (e) { dec = null; }
+        if (dec) return;
+        try {
+          if (from === 'riposte' && _reflexHooks.attack) _reflexHooks.attack(foe);
+          else if (from === 'ranged' && _reflexHooks.onRanged) _reflexHooks.onRanged(foe);
+          else tunnelAwareFlee(bot);
+        } catch (e) { emit({ type: 'skeleton_fallback_failed', from, err: String((e && e.message) || e).slice(0, 120) }); }
       },
       // MAPPEUR (Massii live 2026-07-15) : riposte mêlée à portée de coup only (3) ; canardé → fuit.
       meleeRadius: IS_MAPPER ? 3 : undefined,
@@ -9896,6 +10139,10 @@ async function onSpawn() {
       // POSTURE DÉFENSIVE à ~10 PV (hole C — AVANT le seuil critique) : équipe + lève le bouclier
       // brièvement (réduit les dégâts entrants). La riposte mêlée et onRanged gèrent l'agresseur.
       onDefensive: (threat) => {
+        // Squelette : la réponse dédiée (rush / cover / block) remplace muret + bouclier génériques.
+        if (!IS_MAPPER && threat && RANGED.has(threat.name)) {
+          try { if (skeletonRespond(threat, 'defensive')) return; } catch (e) {}
+        }
         (async () => {
           try {
             const sh = ((bot.inventory && bot.inventory.items()) || []).find((i) => i.name === 'shield');
@@ -10087,7 +10334,8 @@ async function onSpawn() {
           .catch(() => {})
           .finally(() => { waterRescue = null; });
       },
-    });
+    };
+    installReflexes(bot, _reflexHooks);
     // TÉLÉPORTATION (#10) : détecte tout TP (admin /tp, /home, portail, respawn) → émet
     // teleport_detected{from,to} + ABANDONNE le goal pathfinder (il visait l'ancienne position —
     // jamais y retourner à pied). Le mapper consomme le pending pour se ré-ancrer (mapper.js).
@@ -10475,7 +10723,7 @@ function _fightBreakerCheck() {
   try { if (bot.pvp && typeof bot.pvp.stop === 'function') bot.pvp.stop(); }
   catch (e) { emit({ type: 'fight_abort_stop_failed', err: String(e && e.message || e) }); }
   let fleeOk = false;
-  try { fleeOk = fleeFrom(bot) !== false; }
+  try { fleeOk = skeletonFirstFlee(bot, 'fight_abort') !== false; }
   catch (e) { fleeOk = false; emit({ type: 'fight_abort_flee_failed', err: String(e && e.message || e) }); }
   const p = bot.entity && bot.entity.position;
   _fightBreaker.noteAbort({ t, pos: p ? { x: p.x, y: p.y, z: p.z } : null, fleeOk, health: bot.health });
@@ -10496,6 +10744,7 @@ function wireFightBreaker() {
     try { _fightBreakerCheck(); } catch (e) { emit({ type: 'fight_breaker_error', err: String(e && e.message || e) }); }
   });
   const origAttack = bot.pvp.attack.bind(bot.pvp);
+  _pvpAttackRaw = origAttack;   // la charge sur un squelette (skeletonRespond) a déjà pesé l'engagement
   bot.pvp.attack = function gatedAttack(target, ...rest) {
     let g = null;
     if (target && isFleeHostile(target)) {
@@ -10507,7 +10756,7 @@ function wireFightBreaker() {
     if (t < _fightRefuseFleeAt || t - _fightRefuseFleeAt >= 1500) {
       _fightRefuseFleeAt = t;
       try { if (bot.pvp.target) bot.pvp.stop(); } catch (e) {}
-      try { fleeOk = fleeFrom(bot) !== false; }
+      try { fleeOk = skeletonFirstFlee(bot, 'fight_refused') !== false; }
       catch (e) { fleeOk = false; emit({ type: 'fight_refuse_flee_failed', err: String(e && e.message || e) }); }
       _fightNoteFlee(fleeOk);
     }

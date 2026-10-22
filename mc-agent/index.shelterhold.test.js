@@ -63,7 +63,7 @@ test('respawnThreatsNow marque les TIREURS (ranged) — sinon la fuite d un arch
 });
 
 test('câblage : réflexes et tick de survie du planner reçoivent holdPosition + strikeInPlace', () => {
-  const reflexBlock = grab(/installReflexes\(bot, \{[\s\S]*?panicCooldownMs: 8000,/, 'installReflexes(bot, {…})');
+  const reflexBlock = grab(/const _reflexHooks = \{[\s\S]*?panicCooldownMs: 8000,/, 'const _reflexHooks = {…}');
   assert.match(reflexBlock, /holdPosition: shelterHoldNow/);
   assert.match(reflexBlock, /strikeInPlace,/);
   assert.match(fnSrc('settleSurvivalKit'), /holdPosition: shelterHoldNow, strikeInPlace/);

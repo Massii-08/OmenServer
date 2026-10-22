@@ -22,6 +22,7 @@ test('tunnelAwareFlee : délègue à tunnelFlee avec la VRAIE fuite en repli (fl
   const sb = {
     bot: { id: 'b' }, emit() {}, eat: async () => {}, withTimeout: (p) => p, stopMotion: () => seen.push('stop'),
     fleeFrom: () => 'flee', tunnelFlee: (b, deps) => { seen.push(deps); return 'hold'; },
+    skeletonAwareFlee: () => false,   // pas de squelette en vue : chemin historique
   };
   vm.createContext(sb);
   run(sb, fnSrc('tunnelAwareFlee'));
@@ -31,6 +32,19 @@ test('tunnelAwareFlee : délègue à tunnelFlee avec la VRAIE fuite en repli (fl
   assert.strictEqual(d.eat, sb.eat);
   assert.strictEqual(typeof d.stopMotion, 'function');
   assert.strictEqual(d.withTimeout, sb.withTimeout);
+});
+
+test('tunnelAwareFlee : squelette en vue → la réponse squelette prend la main, pas de fuite tunnel', () => {
+  let tf = 0;
+  const sb = {
+    bot: { id: 'b' }, emit() {}, eat: async () => {}, withTimeout: (p) => p, stopMotion: () => {},
+    fleeFrom: () => 'flee', tunnelFlee: () => { tf++; return 'hold'; },
+    skeletonAwareFlee: (b, from) => from === 'tunnel_flee',
+  };
+  vm.createContext(sb);
+  run(sb, fnSrc('tunnelAwareFlee'));
+  assert.strictEqual(run(sb, 'tunnelAwareFlee(bot)'), true);
+  assert.strictEqual(tf, 0);
 });
 
 test('les ticks de survie du tunnel et de la descente fuient via tunnelAwareFlee (plus fleeFrom brut)', async () => {
@@ -52,8 +66,9 @@ test('les ticks de survie du tunnel et de la descente fuient via tunnelAwareFlee
 });
 
 test('les réflexes (fuite à PV bas / swarm) passent par tunnelAwareFlee', () => {
-  const i = SRC.indexOf('installReflexes(bot, {');
+  const i = SRC.indexOf('const _reflexHooks = {');
   assert.ok(i > 0);
+  assert.ok(SRC.includes('installReflexes(bot, _reflexHooks);'));
   const head = SRC.slice(i, i + 400);
   assert.match(head, /fleeFrom: tunnelAwareFlee/);
 });

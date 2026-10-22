@@ -153,3 +153,15 @@ test('canEngage : la fuite DÉCROCHE (PV stables) → toujours refusé low_hp', 
   assert.strictEqual(g.ok, false);
   assert.strictEqual(g.reason, 'low_hp');
 });
+
+// ─── grant : charge sur un squelette (skeletonResponse, 22/10) ─────────────────────────────────────
+test('grant : un combat accordé (rush squelette) n\'est ni refusé ni disjoncté pendant la fenêtre', () => {
+  const { createFightBreaker } = require('./fightBreaker');
+  const fb = createFightBreaker();
+  fb.sample(9, 1000);
+  assert.equal(fb.canEngage({ t: 1000, health: 9, hostiles: 1, nearestDist: 3 }).ok, false, 'sans grant : 1 hostile sous 12 PV refusé');
+  fb.grant({ t: 1000, ms: 6000 });
+  assert.equal(fb.canEngage({ t: 1500, health: 9, hostiles: 1, nearestDist: 3 }).ok, true);
+  assert.equal(fb.check({ inFight: true, health: 7, t: 2000 }).abort, false, 'plancher 10 PV ignoré pendant la charge');
+  assert.equal(fb.check({ inFight: true, health: 7, t: 7500 }).abort, true, 'fenêtre écoulée : le disjoncteur reprend');
+});

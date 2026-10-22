@@ -170,6 +170,28 @@ function rangedThreat(bot) {
   });
 }
 
+/**
+ * Squelette (tireur) qui DICTE la réponse (skeletonResponse.js, 22/10) : le tireur le plus proche à
+ * ≤ RANGED_MAX blocs, contact compris — à condition qu'aucun hostile de MÊLÉE (zombie, araignée…) ne
+ * soit collé (≤ radius) ni qu'un creeper soit à ≤ CREEPER_RADIUS (ces cas gardent la logique
+ * historique : décrocher / s'écarter). null sinon.
+ */
+function skeletonThreat(bot, radius = MELEE_RADIUS) {
+  const self = (bot && bot.entity && bot.entity.position) || null;
+  if (!self || typeof bot.nearestEntity !== 'function') return null;
+  const dist = (e) => (typeof e.position.distanceTo === 'function')
+    ? e.position.distanceTo(self)
+    : Math.sqrt((e.position.x - self.x) ** 2 + (e.position.y - self.y) ** 2 + (e.position.z - self.z) ** 2);
+  const isHostile = (e) => e && (e.type === 'mob' || e.type === 'hostile') && e.position;
+  const blocker = bot.nearestEntity((e) => {
+    if (!isHostile(e)) return false;
+    if (e.name === 'creeper') return dist(e) <= CREEPER_RADIUS;
+    return MELEE_HOSTILES.has(e.name) && !RANGED.has(e.name) && dist(e) <= radius;
+  });
+  if (blocker) return null;
+  return bot.nearestEntity((e) => isHostile(e) && RANGED.has(e.name) && dist(e) <= RANGED_MAX) || null;
+}
+
 const OXYGEN_THRESHOLD = 5;   // sur 20 — en dessous : urgence remonter
 const SURFACE_RELEASE_O2 = 15;   // hystérésis : air franchement revenu
 const SURFACE_MAX_MS = 8000;     // au-delà, on relâche QUOI QU'IL ARRIVE (cf. shouldReleaseSurfacing)
@@ -237,6 +259,11 @@ function installReflexes(bot, opts = {}) {
   // rend le résultat de cette fuite au disjoncteur (test « acculé »). Absents → comportement inchangé.
   const canEngage = typeof opts.canEngage === 'function' ? opts.canEngage : null;
   const onFlee = typeof opts.onFlee === 'function' ? opts.onFlee : null;
+  // RÉPONSE AU SQUELETTE (22/10, skeletonResponse.js) : `onSkeleton(shooter, from)` — from ∈ flee |
+  // riposte | ranged. Fourni ⇒ face à un tireur sans mêlée collée, les réflexes ne fuient plus à
+  // découvert : index.js décide rush / cover / block / flee. Absent ⇒ comportement inchangé.
+  const onSkeleton = typeof opts.onSkeleton === 'function' ? opts.onSkeleton : null;
+  const skel = () => (onSkeleton ? skeletonThreat(bot, meleeRadius) : null);
   const strikeInPlace = typeof opts.strikeInPlace === 'function' ? opts.strikeInPlace : null;
   const panicCooldownMs = opts.panicCooldownMs != null ? opts.panicCooldownMs : 8000;
   const defensiveCooldownMs = opts.defensiveCooldownMs != null ? opts.defensiveCooldownMs : 6000;
@@ -296,9 +323,13 @@ function installReflexes(bot, opts = {}) {
       // CESSE de tirer → se masquer domine strictement la fuite. Condition : aucun assaillant au
       // CONTACT (contre un zombie collé, un muret ne protège de rien — là il faut décrocher).
       const shooterOnly = onCover && !meleeAssailant(bot, meleeRadius) ? rangedThreat(bot) : null;
+      const sk = skel();
       if (!fleeing) {
         fleeing = true;
-        if (shooterOnly) {
+        if (sk) {
+          emit({ type: 'reflex', action: 'skeleton', from: 'flee', mob: sk.name });
+          act(() => { try { onSkeleton(sk, 'flee'); } catch (e) {} });
+        } else if (shooterOnly) {
           emit({ type: 'reflex', action: 'cover', mob: shooterOnly.name });
           act(() => { try { onCover(shooterOnly); } catch (e) {} });
         } else {
@@ -316,7 +347,17 @@ function installReflexes(bot, opts = {}) {
     const hurting = bot.health != null && lastHealth != null && bot.health < lastHealth;
     if (attack && hurting) {
       const foe = meleeAssailant(bot, meleeRadius);
-      if (foe && isFleeOnlyMob(foe.name, bot.health)) {
+      const skFoe = foe && RANGED.has(foe.name) ? skel() : null;
+      if (skFoe) {
+        // Squelette au contact : ni la porte d'engagement (refus → fuite dans son dos) ni la riposte
+        // aveugle — skeletonResponse tranche (le plus souvent : rush, il est déjà à portée de coup).
+        if (!fighting) {
+          fighting = true;
+          emit({ type: 'reflex', action: 'skeleton', from: 'riposte', mob: skFoe.name });
+          act(() => { try { onSkeleton(skFoe, 'riposte'); } catch (e) {} });
+          setTimeout(() => { fighting = false; }, 2000);
+        }
+      } else if (foe && isFleeOnlyMob(foe.name, bot.health)) {
         // FLEE-ONLY : assaillant trop dangereux au contact (wither_skeleton / hoglin bas-PV) → FUIR
         // au lieu de riposter (riposter = mort à petit feu / se faire manger, cause morts Nether).
         if (!fleeing) { fleeing = true; emit({ type: 'reflex', action: 'flee', reason: 'flee_only', mob: foe.name }); act(() => { try { flee(bot); } catch (e) {} }); }
@@ -351,7 +392,13 @@ function installReflexes(bot, opts = {}) {
         // tireur nous canarde. La riposte mêlée est PRIORITAIRE ; le ranged n'est traité que sans
         // contact (foe == null).
         const shooter = rangedThreat(bot);
-        if (shooter) {
+        const sk = shooter ? skel() : null;
+        if (sk) {
+          fighting = true;
+          emit({ type: 'reflex', action: 'skeleton', from: 'ranged', mob: sk.name });
+          act(() => { try { onSkeleton(sk, 'ranged'); } catch (e) {} });
+          setTimeout(() => { fighting = false; }, 2000);
+        } else if (shooter) {
           fighting = true;
           try { onRanged(shooter); emit({ type: 'reflex', action: 'fight_ranged', mob: shooter.name }); } catch (e) {}
           setTimeout(() => { fighting = false; }, 5000);
@@ -429,4 +476,4 @@ function installReflexes(bot, opts = {}) {
   return { react, breathe };
 }
 
-module.exports = { pickFood, eatWanted, LAST_RESORT_FOODS, HURT_HEALTH, contactFoe, HOLD_STRIKE_RADIUS, shouldReleaseSurfacing, SURFACE_RELEASE_O2, SURFACE_MAX_MS, tryEat, shouldFlee, meleeAssailant, rangedThreat, installReflexes, isFleeOnlyMob, HUNGER_THRESHOLD, HEALTH_THRESHOLD, DEFENSIVE_HEALTH, OXYGEN_THRESHOLD, DROWN_CRITICAL, FOODS, EMERGENCY_FOODS, MELEE_HOSTILES, RANGED, FLEE_ONLY_ALWAYS, FLEE_ONLY_LOWHP, FLEE_ONLY_LOWHP_THRESHOLD, REGEN_FOOD, NO_REGEN_HP_MARGIN };
+module.exports = { skeletonThreat, pickFood, eatWanted, LAST_RESORT_FOODS, HURT_HEALTH, contactFoe, HOLD_STRIKE_RADIUS, shouldReleaseSurfacing, SURFACE_RELEASE_O2, SURFACE_MAX_MS, tryEat, shouldFlee, meleeAssailant, rangedThreat, installReflexes, isFleeOnlyMob, HUNGER_THRESHOLD, HEALTH_THRESHOLD, DEFENSIVE_HEALTH, OXYGEN_THRESHOLD, DROWN_CRITICAL, FOODS, EMERGENCY_FOODS, MELEE_HOSTILES, RANGED, FLEE_ONLY_ALWAYS, FLEE_ONLY_LOWHP, FLEE_ONLY_LOWHP_THRESHOLD, REGEN_FOOD, NO_REGEN_HP_MARGIN };

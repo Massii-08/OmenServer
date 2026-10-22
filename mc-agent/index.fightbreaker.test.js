@@ -36,12 +36,14 @@ function setup({ health = 20, hostiles = [] } = {}) {
     bot, emit: (e) => events.push(e), IS_MAPPER: false, Date, Math, Number, String,
     _fightBreaker: createFightBreaker(), isFleeHostile,
     nearbyHostiles: () => hostiles, fleeFrom: () => { fled++; return true; },
+    // porte squelette (22/10) : les fuites du disjoncteur passent par skeletonFirstFlee
+    skeletonFirstFlee: () => { fled++; return true; },
   };
   vm.createContext(sb);
   vm.runInContext(`'use strict';
-    var _fightBreakerWired = false; var _fightRefusedAt = -Infinity; var _fightRefuseFleeAt = -Infinity;
+    var _fightBreakerWired = false; var _fightRefusedAt = -Infinity; var _fightRefuseFleeAt = -Infinity; var _pvpAttackRaw = null;
     ${NAMES.map(fnSrc).join('\n')}
-    globalThis.api = { wireFightBreaker, fightGateDeps, get wired() { return _fightBreakerWired; } };`, sb);
+    globalThis.api = { wireFightBreaker, fightGateDeps, get wired() { return _fightBreakerWired; }, get raw() { return _pvpAttackRaw; } };`, sb);
   return { bot, sb, events, attacked, get stops() { return stops; }, get fled() { return fled; } };
 }
 
@@ -98,4 +100,12 @@ test('fightGateDeps : vide pour un cartographe', () => {
   h.sb.IS_MAPPER = true;
   h.sb.api.wireFightBreaker();
   assert.deepStrictEqual(Object.keys(h.sb.api.fightGateDeps()), []);
+});
+
+test('wireFightBreaker : garde le pvp.attack d\'origine pour la charge sur squelette (hors porte)', () => {
+  const h = setup({ health: 9, hostiles: [zombie(3)] });
+  h.sb.api.wireFightBreaker();
+  assert.strictEqual(typeof h.sb.api.raw, 'function');
+  h.sb.api.raw(zombie(3));                  // 9 PV : la porte refuserait, l'original attaque
+  assert.deepStrictEqual(h.attacked, ['zombie']);
 });
