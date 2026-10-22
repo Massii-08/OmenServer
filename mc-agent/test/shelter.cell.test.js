@@ -14,7 +14,7 @@
 const { describe, it } = require('node:test');
 const assert = require('node:assert/strict');
 const { Vec3 } = require('vec3');
-const { shelterUntilDawn, createSpotMemory, SHELTER_PIT_DEPTH } = require('../skills/shelter');
+const { shelterUntilDawn, createSpotMemory, SHELTER_PIT_DEPTH, shelterHold } = require('../skills/shelter');
 
 const GROUND = 63;                       // herbe à y=63 : un joueur debout dessus a les pieds à y=64
 
@@ -272,5 +272,66 @@ describe('abri : la cellule fermée, dans un monde qui joue la physique', () => 
     const { sealed } = await buildCell(w);
     assert.equal(sealed.sealed, false);
     assert.equal(sealed.why, 'no_block');
+  });
+});
+
+// TÉLÉPORT ≠ RECUL (live 22/10, NethBot1 session 206 : `dig_in → reflex fight skeleton → teleported dist:6
+// → reflex flee → teleported dist:8 → walled_in after:teleported → mort`). Un recul de quelques blocs
+// pendant le creusage abandonnait le trou commencé pour en recommencer un ailleurs, à découvert.
+describe('abri : un RECUL pendant le creusage ramène dans le trou commencé', () => {
+  it('reculé de 5 blocs après le 1er coup → `pushed`, retour dans la colonne, puits fini (3 blocs), jamais `teleported`', async () => {
+    const w = world({ at: { x: 0.5, y: GROUND + 1, z: 0.5 } });
+    const dig0 = w.bot.dig;
+    let n = 0;
+    w.bot.dig = async (b) => {
+      await dig0(b);
+      n++;
+      if (n === 1) w.bot.entity.position = new Vec3(5.5, w.bot.entity.position.y, 0.5);   // flèche / fuite
+    };
+    const { events, sealed } = await buildCell(w);
+    assert.ok(events.some((e) => e.action === 'pushed'), 'recul tracé');
+    assert.ok(!events.some((e) => e.action === 'teleported'), 'un recul n est pas un téléport');
+    assert.ok(!events.some((e) => e.action === 'walled_in'), 'pas de plan B');
+    const p = w.bot.entity.position;
+    assert.equal(Math.floor(p.x), 0, 'revenu dans la colonne du trou commencé');
+    assert.equal(sealed.depth, SHELTER_PIT_DEPTH);
+    assert.ok(w.log.digs.every((k) => k.startsWith('0,') && k.endsWith(',0')), 'un seul puits, au même endroit');
+  });
+  it('vrai téléport (≥ 10 blocs) pendant le creusage → `teleported`, pas de retour', async () => {
+    const w = world({ at: { x: 0.5, y: GROUND + 1, z: 0.5 } });
+    const dig0 = w.bot.dig;
+    let n = 0;
+    w.bot.dig = async (b) => {
+      await dig0(b);
+      n++;
+      if (n === 1) w.bot.entity.position = new Vec3(400.5, GROUND + 1, 300.5);   // /home safe
+    };
+    const { events } = await buildCell(w);
+    assert.ok(events.some((e) => e.action === 'teleported'));
+    assert.ok(!events.some((e) => e.action === 'pushed'));
+  });
+  it('la case est « tenue » pendant l abri et RELÂCHÉE à la fin', async () => {
+    const w = world({ at: { x: 0.5, y: GROUND + 1, z: 0.5 } });
+    let held = false;
+    const dig0 = w.bot.dig;
+    w.bot.dig = async (b) => { held = held || !!w.bot._mcaShelterCell; await dig0(b); };
+    await buildCell(w);
+    assert.ok(held);
+    assert.equal(w.bot._mcaShelterCell, null);
+  });
+});
+
+describe('shelterHold (PUR)', () => {
+  const cell = { x: 0.5, y: 64, z: 0.5, walled: false };
+  it('enterré dans sa colonne → tenu ; encore en surface → pas tenu ; sorti de la colonne → pas tenu', () => {
+    assert.equal(shelterHold(cell, { x: 0.5, y: 63, z: 0.5 }), true);
+    assert.equal(shelterHold(cell, { x: 0.5, y: 61, z: 0.6 }), true);
+    assert.equal(shelterHold(cell, { x: 0.5, y: 64, z: 0.5 }), false);
+    assert.equal(shelterHold(cell, { x: 3.5, y: 63, z: 0.5 }), false);
+  });
+  it('muré au niveau du sol → tenu dans sa case ; donnée absente → false', () => {
+    assert.equal(shelterHold({ x: 0.5, y: 64, z: 0.5, walled: true }, { x: 0.6, y: 64, z: 0.5 }), true);
+    assert.equal(shelterHold(null, { x: 0, y: 0, z: 0 }), false);
+    assert.equal(shelterHold(cell, null), false);
   });
 });

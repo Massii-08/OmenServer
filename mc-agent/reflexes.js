@@ -120,6 +120,19 @@ function meleeAssailant(bot, radius = MELEE_RADIUS) {
   });
 }
 
+/** Hostile (non creeper) À PORTÉE DE COUP — la cible d'une frappe sur place (abri tenu). null sinon. */
+const HOLD_STRIKE_RADIUS = 3.5;
+const HOLD_STRIKE_EVERY_MS = 1000;
+function contactFoe(bot, radius = HOLD_STRIKE_RADIUS) {
+  const self = (bot.entity && bot.entity.position) || null;
+  if (!self || typeof bot.nearestEntity !== 'function') return null;
+  return bot.nearestEntity((e) => {
+    if (!e || (e.type !== 'mob' && e.type !== 'hostile') || e.name === 'creeper' || !e.position) return false;
+    if (typeof e.position.distanceTo === 'function') return e.position.distanceTo(self) <= radius;
+    return Math.hypot(e.position.x - self.x, e.position.y - self.y, e.position.z - self.z) <= radius;
+  });
+}
+
 /** Tireur à distance (squelette/stray/bogged) dans la bande [RANGED_MIN, RANGED_MAX] blocs — la
  *  cible d'une riposte à distance. null sinon. Au contact (< RANGED_MIN) → géré par meleeAssailant. */
 function rangedThreat(bot) {
@@ -191,6 +204,12 @@ function installReflexes(bot, opts = {}) {
   // et, canardé à distance, FUIT au lieu de riposter (preferFlee).
   const meleeRadius = opts.meleeRadius != null ? opts.meleeRadius : MELEE_RADIUS;
   const preferFlee = !!opts.preferFlee;
+  // TENIR SA CASE (live 22/10, NethBot1 session 206) : `holdPosition()` vrai = le bot est enterré dans son
+  // abri (index.js : shelterHold). Fuir, se couvrir à découvert ou poursuivre un mob (pvp) l'en sortirait —
+  // vécu : `dig_in → reflex fight → teleported dist:6 → reflex flee → teleported dist:8 → mort`. On frappe
+  // SUR PLACE (`strikeInPlace`, sans poursuite) ce qui est au contact ; manger / murer / bouclier restent.
+  const holdPosition = typeof opts.holdPosition === 'function' ? opts.holdPosition : null;
+  const strikeInPlace = typeof opts.strikeInPlace === 'function' ? opts.strikeInPlace : null;
   const panicCooldownMs = opts.panicCooldownMs != null ? opts.panicCooldownMs : 8000;
   const defensiveCooldownMs = opts.defensiveCooldownMs != null ? opts.defensiveCooldownMs : 6000;
   let lastPanic = -Infinity;    // -∞ : le 1er panic n'est jamais bloqué par le cooldown
@@ -226,6 +245,20 @@ function installReflexes(bot, opts = {}) {
         const threat = meleeAssailant(bot) || rangedThreat(bot) || null;
         act(() => { try { onDefensive(threat); } catch (e) {} });
       }
+    }
+    let hold = false;
+    try { hold = !!(holdPosition && holdPosition()); } catch (e) { hold = false; }
+    if (hold) {
+      fleeing = false;
+      const foe = contactFoe(bot);
+      if (foe && strikeInPlace && !fighting) {
+        fighting = true;
+        emit({ type: 'reflex', action: 'hold_strike', mob: foe.name });
+        act(() => { try { strikeInPlace(foe); } catch (e) {} });
+        setTimeout(() => { fighting = false; }, HOLD_STRIKE_EVERY_MS);
+      }
+      lastHealth = bot.health;
+      return;
     }
     if (shouldFlee(bot)) {
       // COUVERT PLUTÔT QUE FUITE face à un TIREUR (autopsie live world_ax4 25/07 : CHAQUE mort
@@ -351,4 +384,4 @@ function installReflexes(bot, opts = {}) {
   return { react, breathe };
 }
 
-module.exports = { shouldReleaseSurfacing, SURFACE_RELEASE_O2, SURFACE_MAX_MS, tryEat, shouldFlee, meleeAssailant, rangedThreat, installReflexes, isFleeOnlyMob, HUNGER_THRESHOLD, HEALTH_THRESHOLD, DEFENSIVE_HEALTH, OXYGEN_THRESHOLD, DROWN_CRITICAL, FOODS, EMERGENCY_FOODS, MELEE_HOSTILES, RANGED, FLEE_ONLY_ALWAYS, FLEE_ONLY_LOWHP, FLEE_ONLY_LOWHP_THRESHOLD, REGEN_FOOD, NO_REGEN_HP_MARGIN };
+module.exports = { contactFoe, HOLD_STRIKE_RADIUS, shouldReleaseSurfacing, SURFACE_RELEASE_O2, SURFACE_MAX_MS, tryEat, shouldFlee, meleeAssailant, rangedThreat, installReflexes, isFleeOnlyMob, HUNGER_THRESHOLD, HEALTH_THRESHOLD, DEFENSIVE_HEALTH, OXYGEN_THRESHOLD, DROWN_CRITICAL, FOODS, EMERGENCY_FOODS, MELEE_HOSTILES, RANGED, FLEE_ONLY_ALWAYS, FLEE_ONLY_LOWHP, FLEE_ONLY_LOWHP_THRESHOLD, REGEN_FOOD, NO_REGEN_HP_MARGIN };

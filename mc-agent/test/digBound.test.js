@@ -5,7 +5,7 @@ const { describe, it } = require('node:test');
 const assert = require('node:assert/strict');
 const { EventEmitter } = require('node:events');
 const { Vec3 } = require('vec3');
-const { boundedDig, bounded } = require('../digBound');
+const { boundedDig, bounded, classifyForcedMove } = require('../digBound');
 const { shelterUntilDawn } = require('../skills/shelter');
 
 function hangingBot() {
@@ -170,5 +170,28 @@ describe('mineDown digTimeoutMs', () => {
     const r = await mineDown(bot, { count: 2 });
     assert.equal(r.ok, true);
     assert.equal(n, 2);
+  });
+});
+
+// TÉLÉPORT ≠ RECUL (live 22/10, NethBot1 session 206) : un recul de flèche ou une fuite qui déplace le
+// bot de quelques blocs pendant le creusage était pris pour un téléport → trou abandonné, recommencé
+// ailleurs à découvert. Seul un saut ≥ 10 blocs est un téléport.
+describe('boundedDig : recul ≠ téléport', () => {
+  it('classifyForcedMove : < 2 ignoré, 2-10 recul, ≥ 10 téléport, inconnu = téléport', () => {
+    assert.equal(classifyForcedMove(0), 'none');
+    assert.equal(classifyForcedMove(1.9), 'none');
+    assert.equal(classifyForcedMove(2), 'displaced');
+    assert.equal(classifyForcedMove(8), 'displaced');
+    assert.equal(classifyForcedMove(10), 'teleported');
+    assert.equal(classifyForcedMove(400), 'teleported');
+    assert.equal(classifyForcedMove(NaN), 'teleported');
+  });
+  it('un forcedMove de 6 blocs (recul) coupe le coup en `displaced`, pas en `teleported`', async () => {
+    const bot = hangingBot();
+    bot.entity = { position: new Vec3(10.5, 64, 10.5) };
+    setTimeout(() => { bot.entity.position = new Vec3(16.5, 64, 10.5); bot.emit('forcedMove'); }, 10);
+    const r = await boundedDig(bot, { position: new Vec3(0, 0, 0) }, { timeoutMs: 15000 });
+    assert.equal(r.reason, 'displaced');
+    assert.equal(bot.stops, 1);
   });
 });

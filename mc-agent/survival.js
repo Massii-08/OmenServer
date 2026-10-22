@@ -272,6 +272,8 @@ let _lastFightChosenAt = -Infinity;
 // terminé (`!isMoving`) ou si FLEE_RECALL_MS s'est écoulé (la menace a eu le temps de se déplacer).
 const FLEE_RECALL_MS = 5000;
 let _lastFleeAt = -Infinity;
+const HOLD_STRIKE_REACH = 3.5;   // frappe sur place : portée de coup d'un joueur (≈ 3)
+
 async function survivalTick(bot, deps = {}) {
   const emit = deps.emit || (() => {});
   const now = typeof deps.now === 'function' ? deps.now : Date.now;
@@ -303,6 +305,20 @@ async function survivalTick(bot, deps = {}) {
   const cdw = canDealWith(armorPoints(bot), attackDamage(bot));
   const night = _isNightTod(bot.time && bot.time.timeOfDay);
   const decision = combatDecision({ health: bot.health, hostileCount: hostiles.length, armored: isArmored(bot), hasCreeper, lavaNear, preferFlee: !!deps.preferFlee, nearestDist, fleeOnly, capability, food: bot.food, canDealWith: cdw, fightCount: fighters.length, night });
+  // ABRI TENU (live 22/10, NethBot1 session 206) : enterré dans sa case, ni fuite ni poursuite pvp — elles
+  // le sortaient du trou en pleine nuit. On frappe SUR PLACE ce qui est à portée de coup (deps.strikeInPlace).
+  let hold = false;
+  try { hold = typeof deps.holdPosition === 'function' && !!deps.holdPosition(); } catch (e) { hold = false; }
+  if (hold && (decision === 'flee' || decision === 'fight')) {
+    const reach = self ? hostiles.filter((h) => h.name !== 'creeper' && _d3(h.position, self) <= HOLD_STRIKE_REACH)
+      .sort((a, b) => _d3(a.position, self) - _d3(b.position, self)) : [];
+    if (reach.length && typeof deps.strikeInPlace === 'function') {
+      try { await deps.strikeInPlace(reach[0]); } catch (e) {}
+      emit({ type: 'survival', action: 'hold_strike', target: reach[0].name });
+      return 'hold_strike';
+    }
+    return null;   // rien à portée : on reste dans le trou, sans boucler
+  }
   if (decision === 'flee') {
     const t = now();
     const stillFleeing = !!(bot.pathfinder && bot.pathfinder.isMoving && bot.pathfinder.isMoving());
@@ -335,6 +351,7 @@ async function survivalTick(bot, deps = {}) {
     return 'fight';
   }
   if (await eatAny(bot)) { emit({ type: 'survival', action: 'eat' }); return 'eat'; }
+  if (hold) return null;   // pas de chasse hors du trou
   if (needHunt(bot)) {
     const prey = nearestPassive(bot, 24);
     if (prey) {

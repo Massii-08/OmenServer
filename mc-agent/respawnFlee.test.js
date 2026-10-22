@@ -46,3 +46,17 @@ test('fleeStuck : < 1 bloc en 1,5 s = coincé', () => {
   assert.strictEqual(R.fleeStuck({ x: 0, z: 0, t: 0 }, { x: 3, z: 0 }, 1500), false);
   assert.strictEqual(R.fleeStuck(null, { x: 0, z: 0 }, 9999), false);
 });
+
+// LIVE 22/10 (NethBot1 session 206) : `threat_hide skeleton dist:8.3` → creusé sous les flèches → mort.
+test('un TIREUR à 8-16 blocs déclenche la fuite ; un zombie seul à 10 non', () => {
+  assert.ok(R.respawnFleePlan({ self, threats: [{ x: 10, y: 70, z: 0, ranged: true }] }), 'squelette à 10');
+  assert.ok(R.respawnFleePlan({ self, threats: [{ x: 15, y: 70, z: 0, ranged: true }] }), 'squelette à 15');
+  assert.strictEqual(R.respawnFleePlan({ self, threats: [{ x: 17, y: 70, z: 0, ranged: true }] }), null);
+  assert.strictEqual(R.respawnFleePlan({ self, threats: [{ x: 10, y: 70, z: 0 }] }), null);
+});
+test('une MEUTE (≥ 2 hostiles à ≤ 12 blocs) déclenche la fuite', () => {
+  const p = R.respawnFleePlan({ self, threats: [{ x: 10, y: 70, z: 0 }, { x: 0, y: 70, z: 11 }] });
+  assert.ok(p);
+  assert.ok(p.dest.x < 0 && p.dest.z < 0, JSON.stringify(p));
+  assert.strictEqual(R.respawnFleePlan({ self, threats: [{ x: 10, y: 70, z: 0 }, { x: 0, y: 70, z: 14 }] }), null);
+});

@@ -35,10 +35,25 @@ async function boundedEquip(bot, item, dest = 'hand', ms = EQUIP_TIMEOUT_MS) {
   return r.ok;
 }
 
-const FORCED_MOVE_TELEPORT_DIST = 2; // même seuil que le avant/après de shelter.js (piège du jour, 21/10)
+// ─── TÉLÉPORT ≠ RECUL (live 22/10, NethBot1 session 206 : 5 morts en 85 s au point de réapparition) ──
+// Un `forcedMove` qui déplace le bot de 2-10 blocs n'est PAS un téléport : c'est un recul (coup, flèche,
+// correction de position du serveur pendant une fuite). L'ancien seuil unique (2) le prenait pour un
+// téléport → l'abri abandonnait le trou commencé et en recommençait un AILLEURS, à découvert, sous les
+// flèches. Trois classes : < 2 = resync (ignoré), 2-10 = 'displaced' (on coupe le coup, l'abri revient
+// sur sa case), ≥ 10 = 'teleported' (/home, /tp, changement de monde : le trou est perdu).
+const FORCED_MOVE_DISPLACE_DIST = 2;
+const FORCED_MOVE_TELEPORT_DIST = 10;
+
+/** PUR : nature d'un déplacement imposé de `dist` blocs → 'none' | 'displaced' | 'teleported'.
+ *  Distance inconnue (pas de position) → 'teleported' (contrat d'origine). */
+function classifyForcedMove(dist) {
+  if (!Number.isFinite(dist)) return 'teleported';
+  if (dist < FORCED_MOVE_DISPLACE_DIST) return 'none';
+  return dist >= FORCED_MOVE_TELEPORT_DIST ? 'teleported' : 'displaced';
+}
 
 /**
- * Creuse `block`, borné. → { ok:true } | { ok:false, reason:'timeout'|'teleported'|'cancelled'|'error'|'no_block' }.
+ * Creuse `block`, borné. → { ok:true } | { ok:false, reason:'timeout'|'teleported'|'displaced'|'cancelled'|'error'|'no_block' }.
  * opts : { timeoutMs (déf 15 s), token ({cancelled}), pollMs (déf 250) }. Jamais de throw.
  *
  * ⚠️ `forcedMove` (mineflayer) n'est pas toujours un VRAI téléport : le paquet position_and_look que le
@@ -65,7 +80,10 @@ function boundedDig(bot, block, opts = {}) {
       if (from) {
         const p1 = bot.entity && bot.entity.position;
         const moved = p1 ? Math.hypot(p1.x - from.x, p1.y - from.y, p1.z - from.z) : Infinity;
-        if (moved < FORCED_MOVE_TELEPORT_DIST) return; // resync/confirmation de respawn — pas un vrai téléport
+        const kind = classifyForcedMove(moved);
+        if (kind === 'none') return; // resync/confirmation de respawn — pas un vrai téléport
+        finish({ ok: false, reason: kind }, true);   // 'displaced' (recul) ou 'teleported'
+        return;
       }
       finish({ ok: false, reason: 'teleported' }, true);
     };
@@ -91,4 +109,5 @@ function boundedDig(bot, block, opts = {}) {
   });
 }
 
-module.exports = { boundedDig, boundedEquip, bounded, DIG_STEP_TIMEOUT_MS, EQUIP_TIMEOUT_MS };
+module.exports = { boundedDig, boundedEquip, bounded, classifyForcedMove, DIG_STEP_TIMEOUT_MS, EQUIP_TIMEOUT_MS,
+  FORCED_MOVE_DISPLACE_DIST, FORCED_MOVE_TELEPORT_DIST };

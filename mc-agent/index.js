@@ -158,7 +158,7 @@ const {
 } = require('./lumberjack');
 const { tierRank } = require('./tools');
 const { createTeleportWatcher, wireTeleportDetection } = require('./teleport');
-const { isNight, shelterUntilDawn, exitPendingShelter, shouldShelter, DAWN_WAIT_MAX_MS, DAWN_SAFE_EXIT_MAX_MS } = require('./skills/shelter');
+const { isNight, shelterUntilDawn, exitPendingShelter, shouldShelter, shelterHold, DAWN_WAIT_MAX_MS, DAWN_SAFE_EXIT_MAX_MS } = require('./skills/shelter');
 const { plannerWatchdogVerdict, deriveToken } = require('./plannerWatchdog');
 const { shelterToken, shelterCancelLoopNote } = require('./shelterToken');
 // LIT (20/10) : réapparaître dans sa base, pas au spawn du monde campé — cf. bed.js.
@@ -3360,7 +3360,7 @@ async function tryKitUpgrade() {
 async function settleSurvivalKit() {
   for (let i = 0; i < 10; i++) {
     if (taskToken.cancelled) return;
-    const action = await survivalTick(bot, { fleeFrom, emit });
+    const action = await survivalTick(bot, { fleeFrom, emit, holdPosition: shelterHoldNow, strikeInPlace });
     if (!action) return;
     await sleep(1500);
   }
@@ -3442,6 +3442,31 @@ function nightGateNote(what, extra) {
 //      que soit l'appelant : un abri raté ou interrompu se reprend tout de suite. Dans l'eau, l'écart
 //      historique reste (on ne creuse pas de trou en pleine eau, le sauvetage garde la main).
 const FORCED_SHELTER_MIN_GAP_MS = 60 * 1000;
+
+// ─── TENIR SA CASE (live 22/10, NethBot1 session 206 : 5 morts en 85 s au point de réapparition) ──────
+// `dig_in → reflex fight skeleton → teleported dist:6 → reflex flee → teleported dist:8 → walled_in
+// after:teleported → flee → mort` : la riposte pvp (qui POURSUIT sa cible) et les fuites (réflexe, tick
+// de survie du planner concurrent) tiraient le bot hors du trou qu'il creusait. Une fois enterré (≥ ~1 bloc
+// dans sa colonne) ou muré, on TIENT la case : rien ne le fait fuir, ce qui est au contact est frappé sur
+// place. ⚠️ NIVEAU MODULE (piège #56) : lu par les réflexes et le tick de survie.
+function shelterHoldNow() {
+  try {
+    if (!_shelterInFlight || !bot || !bot.entity) return false;
+    return shelterHold(bot._mcaShelterCell, bot.entity.position);
+  } catch (e) { return false; }
+}
+
+/** Frappe SUR PLACE (sans poursuite pvp, sans but pathfinder). Jamais de throw. */
+function strikeInPlace(foe) {
+  try {
+    if (!foe || !foe.position || !bot.entity) return;
+    if (bot.pvp && bot.pvp.target) { try { bot.pvp.stop(); } catch (e) {} }
+    const h = Number.isFinite(foe.height) ? foe.height * 0.8 : 1.4;
+    try { Promise.resolve(bot.lookAt(foe.position.offset(0, h, 0), true)).catch(() => {}); } catch (e) {}
+    bot.attack(foe);
+    _auraLastHitAt = Date.now();   // l'aura respecte le cooldown de ce coup
+  } catch (e) { /* best-effort */ }
+}
 async function maybeNightShelter(proactive = false, opts = {}) {
   if (_shelterInFlight) {
     try { await _shelterInFlight; } catch (e) { /* l'abri en cours a ses propres garde-fous */ }
@@ -7525,7 +7550,7 @@ function respawnThreatsNow() {
   try {
     for (const e of Object.values(bot.entities || {})) {
       if (!e || !e.position || !isThreatHostile(e)) continue;
-      out.push({ x: e.position.x, y: e.position.y, z: e.position.z });
+      out.push({ x: e.position.x, y: e.position.y, z: e.position.z, ranged: RANGED.has(e.name) });
     }
   } catch (e) { /* lecture ratée → rien */ }
   return out;
@@ -8818,6 +8843,9 @@ async function onSpawn() {
       // MAPPEUR (Massii live 2026-07-15) : riposte mêlée à portée de coup only (3) ; canardé → fuit.
       meleeRadius: IS_MAPPER ? 3 : undefined,
       preferFlee: IS_MAPPER,
+      // Enterré dans l'abri : ni fuite ni poursuite, frappe sur place (live 22/10, NethBot1 session 206).
+      holdPosition: shelterHoldNow,
+      strikeInPlace,
       // DÉLAI DE RÉACTION humain sur les réflexes (anti aimbot 0 ms / anti-ban) — TOUJOURS actif
       // (sécurité, pas seulement en humanize) : ~300 ms par défaut (les captures ne mesurent pas
       // encore reaction.*). Coût nul sur le minage (ce n'est pas un réflexe). Cf. paquet 1.

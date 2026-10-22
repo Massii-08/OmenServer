@@ -157,6 +157,7 @@ function fleeSandbox({ zombies, moveTo }) {
     _creeperHold: GH.createHoldState(),
     pfGoals: { GoalNearXZ: function (x, z, r) { this.x = x; this.z = z; this.r = r; } },
     isThreatHostile: (e) => e.name === 'zombie',
+    RANGED: require('./reflexes').RANGED,   // respawnThreatsNow marque les tireurs (live 22/10)
     zombies,
     bot: {
       health: 20,

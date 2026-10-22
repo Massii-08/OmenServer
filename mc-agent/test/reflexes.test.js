@@ -415,3 +415,34 @@ test('panic : cooldown configurable via panicCooldownMs', () => {
   t = 2000; bot.calls.handlers.health();        // 2 s → oui
   assert.strictEqual(panics.length, 2);
 });
+
+// TENIR SA CASE (live 22/10, NethBot1 session 206 : `dig_in → reflex fight → teleported dist:6 → reflex flee
+// → teleported dist:8 → mort`) : enterré dans l'abri, aucun réflexe ne le fait sortir — il frappe sur place.
+test('abri tenu : PV bas → PAS de fuite ; squelette au contact → frappe SUR PLACE (pas de pvp)', () => {
+  const sk = { type: 'hostile', name: 'skeleton', position: { x: 2, y: 64, z: 0, distanceTo: () => 2 } };
+  const events = []; const attacked = []; const struck = []; let fled = 0;
+  const bot = fakeBot({ health: 20, threat: sk });
+  installReflexes(bot, { emit: (e) => events.push(e), fleeFrom: () => fled++, attack: (t) => attacked.push(t),
+    holdPosition: () => true, strikeInPlace: (t) => struck.push(t) });
+  bot.calls.handlers.health();
+  bot.health = 5;                              // sous le seuil de fuite
+  bot.calls.handlers.health();
+  assert.strictEqual(fled, 0, 'pas de fuite hors du trou');
+  assert.strictEqual(attacked.length, 0, 'pas de poursuite pvp');
+  assert.strictEqual(struck.length, 1);
+  assert.ok(events.some((e) => e.action === 'hold_strike' && e.mob === 'skeleton'));
+});
+
+test('abri tenu : creeper au contact → ni fuite ni frappe ; hors abri → fuite comme avant', () => {
+  const cr = { type: 'mob', name: 'creeper', position: { x: 3, y: 64, z: 0, distanceTo: () => 3 } };
+  let fled = 0; const struck = [];
+  let hold = true;
+  const bot = fakeBot({ health: 20, threat: cr });
+  installReflexes(bot, { emit() {}, fleeFrom: () => fled++, holdPosition: () => hold, strikeInPlace: (t) => struck.push(t) });
+  bot.calls.handlers.health();
+  assert.strictEqual(fled, 0);
+  assert.strictEqual(struck.length, 0);
+  hold = false;
+  bot.calls.handlers.health();
+  assert.ok(fled >= 1, 'hors abri : comportement d origine');
+});

@@ -508,3 +508,26 @@ test('survivalTick : la nuit vient de bot.time (2 zombies, 13 PV, épée pierre 
   assert.ok((await run(6000)).some((e) => e.type === 'fight_chosen'), 'jour : combat audacieux choisi');
   assert.ok(!(await run(18000)).some((e) => e.type === 'fight_chosen'), 'nuit : plus de combat audacieux');
 });
+
+// ABRI TENU (live 22/10, NethBot1 session 206) : enterré, ni fuite ni pvp — frappe sur place.
+test('survivalTick holdPosition : 3 hostiles dont un au contact → frappe SUR PLACE, jamais fleeFrom ni pvp', async () => {
+  const { bot, calls } = fakeBot({
+    entities: [fakeEntity('zombie', 'Hostile mobs', { x: 2, y: 64, z: 0 }),
+      fakeEntity('skeleton', 'Hostile mobs', { x: 6, y: 64, z: 0 }), fakeEntity('zombie', 'Hostile mobs', { x: 7, y: 64, z: 0 })],
+  });
+  let fled = 0; const struck = [];
+  const act = await survivalTick(bot, { fleeFrom: () => { fled++; }, holdPosition: () => true, strikeInPlace: (t) => struck.push(t.name) });
+  assert.strictEqual(act, 'hold_strike');
+  assert.strictEqual(fled, 0);
+  assert.deepStrictEqual(calls.attack, []);
+  assert.deepStrictEqual(struck, ['zombie']);
+});
+test('survivalTick holdPosition : hostile hors de portée → null (on reste dans le trou), pas de chasse', async () => {
+  const { bot, calls } = fakeBot({ food: 6, entities: [fakeEntity('zombie', 'Hostile mobs', { x: 6, y: 64, z: 0 }),
+    fakeEntity('pig', 'Passive mobs', { x: 4, y: 64, z: 0 })] });
+  let fled = 0;
+  const act = await survivalTick(bot, { fleeFrom: () => { fled++; }, holdPosition: () => true, strikeInPlace: () => {} });
+  assert.strictEqual(act, null);
+  assert.strictEqual(fled, 0);
+  assert.deepStrictEqual(calls.attack, []);
+});

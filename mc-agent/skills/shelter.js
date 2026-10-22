@@ -120,6 +120,22 @@ function dawnExitPlan(opts) {
 // ré-abriter, attendait avec lui. Le trou fait 1×1 : en sortir, c'est quitter sa colonne (≥ 1,5 bloc
 // à plat) ou remonter au niveau du sol (≥ 1,5 en hauteur — un saut fait 1,25, il ne compte pas).
 const SHELTER_DISPLACED_BLOCKS = 1.5;
+// Pendant le creusage : un écart à plat > 2 blocs = RECULÉ (coup, flèche, fuite d'un réflexe) → on revient
+// dans le trou commencé (au plus 2 fois) ; ≥ 10 blocs = TÉLÉPORTÉ (le trou est perdu) — cf. digBound.
+const SHELTER_PUSH_BLOCKS = 2;
+const SHELTER_TELEPORT_BLOCKS = 10;
+const SHELTER_PUSH_RETURNS = 2;
+
+/** PUR : le bot TIENT-il sa case d'abri ? cell = bot._mcaShelterCell ({x,y,z,walled}, posée par l'abri),
+ *  pos = position. Vrai s'il est dans la colonne (< 1,5 bloc à plat) ET enterré (≥ ~1 bloc sous la surface
+ *  de départ) ou muré. Lu par index.js : tant qu'il tient sa case, aucun réflexe ne le fait fuir — il frappe
+ *  sur place. Donnée absente/absurde → false (comportement d'origine). */
+function shelterHold(cell, pos, maxBlocks = SHELTER_DISPLACED_BLOCKS) {
+  const ok = (p) => !!p && Number.isFinite(p.x) && Number.isFinite(p.y) && Number.isFinite(p.z);
+  if (!ok(cell) || !ok(pos)) return false;
+  if (Math.hypot(pos.x - cell.x, pos.z - cell.z) >= maxBlocks) return false;
+  return !!cell.walled || pos.y <= cell.y - 0.5;
+}
 
 /** PUR : le bot a-t-il quitté son abri ? anchor/pos = {x,y,z}. Coordonnée absente/absurde → false
  *  (jamais déclaré dehors sur une donnée manquante — c'est aussi la rétro-compat des faux bots). */
@@ -504,19 +520,48 @@ async function _buildCell(bot, token, deps, sleep, emit) {
     await _waitWorld(bot, sleep);
     const pick = _hasPick(bot);
     const here = () => bot.entity.position.floored();
+    // Fond ACTUEL du puits commencé en (fx, fz) depuis les pieds fy : la plus basse case libre de la colonne.
+    const holeFloor = (fx, fy, fz) => {
+      let y = fy;
+      for (let d = 1; d <= SHELTER_PIT_DEPTH; d++) {
+        if (!_clear(bot.blockAt(new Vec3(fx, fy - d, fz)))) break;
+        y = fy - d;
+      }
+      return new Vec3(fx, y, fz);
+    };
     const attempt = async () => {
       _centerInBlock(bot);
       const p0 = bot.entity.position;
       const x0 = p0.x; const y0 = p0.y; const z0 = p0.z;   // COPIES : la position est mutée en place (#73d)
-      const r = await dig({ count: SHELTER_PIT_DEPTH, land: { sleep } });
-      const p1 = bot.entity.position;
-      // TÉLÉPORTÉ pendant le creusage (live 21/10 : /home safe parti juste avant l'abri) : l'écart de y
-      // n'est PAS une profondeur creusée (vu : « depth 6 » sur un trou jamais fait, ressorti 58 → 64).
-      if ((r && r.why === 'teleported') || Math.hypot(p1.x - x0, p1.z - z0) > 2) {
-        emit({ type: 'shelter', action: 'teleported', dist: Math.round(Math.hypot(p1.x - x0, p1.z - z0)) });
-        return { r: { ok: false, reason: 'teleported' }, depth: 0 };
+      const fx0 = Math.floor(x0); const fy0 = Math.floor(y0); const fz0 = Math.floor(z0);
+      // La case de l'abri, lue par index.js (shelterHold) : une fois enterré, les réflexes ne l'en sortent plus.
+      bot._mcaShelterCell = { x: fx0 + 0.5, y: y0, z: fz0 + 0.5, walled: false };
+      let r = await dig({ count: SHELTER_PIT_DEPTH, land: { sleep } });
+      for (let back = 0; ; back++) {
+        const p1 = bot.entity.position;
+        const drift = Math.hypot(p1.x - x0, p1.z - z0);
+        const far = Math.hypot(p1.x - x0, p1.y - y0, p1.z - z0);
+        // TÉLÉPORTÉ pendant le creusage (live 21/10 : /home safe parti juste avant l'abri) : l'écart de y
+        // n'est PAS une profondeur creusée (vu : « depth 6 » sur un trou jamais fait, ressorti 58 → 64).
+        // Seul un VRAI saut (≥ 10 blocs, cf. digBound.classifyForcedMove) — pas un recul.
+        if ((r && r.why === 'teleported') || far >= SHELTER_TELEPORT_BLOCKS) {
+          emit({ type: 'shelter', action: 'teleported', dist: Math.round(drift) });
+          return { r: { ok: false, reason: 'teleported' }, depth: 0 };
+        }
+        // RECULÉ (live 22/10, NethBot1 session 206 : `teleported dist:6` puis `dist:8` sur une flèche et une
+        // fuite → trou abandonné, recommencé ailleurs à découvert, mort) : on REVIENT dans le trou commencé
+        // et on finit de le creuser, au lieu de tout recommencer.
+        const pushed = (r && r.why === 'displaced') || drift > SHELTER_PUSH_BLOCKS;
+        if (!pushed) return { r, depth: Math.max(0, Math.round(y0 - p1.y)) };
+        emit({ type: 'shelter', action: 'pushed', dist: Math.round(drift), back: back + 1 });
+        if (back >= SHELTER_PUSH_RETURNS || (token && token.cancelled)) return { r: { ok: false, reason: 'pushed' }, depth: 0 };
+        const floor = holeFloor(fx0, fy0, fz0);
+        if (!(await _stepTo(bot, floor, deps))) return { r: { ok: false, reason: 'pushed' }, depth: 0 };
+        moved = true;
+        _centerInBlock(bot);
+        const left = SHELTER_PIT_DEPTH - (fy0 - floor.y);
+        r = left > 0 ? await dig({ count: left, land: { sleep } }) : { ok: true, dug: 0 };
       }
-      return { r, depth: Math.max(0, Math.round(y0 - p1.y)) };
     };
     const f0 = here();
     if (spots.fails(f0.x, f0.z, now()) >= SPOT_MAX_FAILS) {
@@ -563,6 +608,10 @@ async function _buildCell(bot, token, deps, sleep, emit) {
     }
     placed += walled.placed || 0;
     mode = 'walled';
+    if (located) {
+      const pw = bot.entity.position;
+      bot._mcaShelterCell = { x: pw.x, y: pw.y, z: pw.z, walled: true };
+    }
     emit({ type: 'shelter', action: 'walled_in', placed: walled.placed || 0, after: reason });
   }
 
@@ -618,6 +667,11 @@ async function _buildCell(bot, token, deps, sleep, emit) {
  * shelterDisplaced) termine l'abri → {ok:false, reason:'displaced'} (sans lui : comportement d'origine).
  */
 async function shelterUntilDawn(bot, token = null, deps = {}) {
+  try { return await _shelterUntilDawn(bot, token, deps); }
+  finally { if (bot) bot._mcaShelterCell = null; }   // la case n'est « tenue » que pendant l'abri
+}
+
+async function _shelterUntilDawn(bot, token, deps) {
   const sleep = deps.sleep || ((ms) => new Promise((r) => setTimeout(r, ms)));
   const emit = deps.emit || (() => {});
   const maxWaitMs = deps.maxWaitMs || 12 * 60 * 1000;
@@ -793,7 +847,8 @@ module.exports = {
   isNightTime, isNight, shelterUntilDawn, exitPendingShelter, roofPlan, shouldShelter,
   dawnExitDecision, DAWN_WAIT_MAX_MS, DAWN_WAIT_CHECK_MS, DAWN_WAIT_MIN_WORN,
   dawnExitPlan, DAWN_SAFE_EXIT_MAX_MS, DAWN_SAFE_CHECK_MS, DAY_SAFE_END,
-  shelterDisplaced, SHELTER_DISPLACED_BLOCKS,
+  shelterDisplaced, SHELTER_DISPLACED_BLOCKS, shelterHold,
+  SHELTER_PUSH_BLOCKS, SHELTER_TELEPORT_BLOCKS, SHELTER_PUSH_RETURNS,
   createSpotMemory, cellBlockItem, SHELTER_PIT_DEPTH, SHELTER_MIN_DEPTH, CELL_BLOCKS,
   SHELTER_STAGE_MS, SHELTER_PILLAR_MS,
 };
