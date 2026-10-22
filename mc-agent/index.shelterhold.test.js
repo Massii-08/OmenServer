@@ -68,3 +68,72 @@ test('câblage : réflexes et tick de survie du planner reçoivent holdPosition 
   assert.match(reflexBlock, /strikeInPlace,/);
   assert.match(fnSrc('settleSurvivalKit'), /holdPosition: shelterHoldNow, strikeInPlace/);
 });
+
+// ── DEUX PLANNERS (live 22/10, session 206 : `autonomous_resume`/`autonomous_start` ×2 à 4 ms) ─────────
+function autoSandbox() {
+  const events = []; const bodies = [];
+  let tok = { cancelled: false };
+  const sb = vm.createContext({
+    Date, Promise, Object, Array,
+    emit: (e) => events.push(e), events, bodies,
+    world: { objective: { type: 'iron_armor', status: 'in_progress' } }, args: {},
+    objectiveForStart: (t) => t, buildCtxInv: () => [], _wornArmor: () => new Set(),
+    setObjective: () => {}, saveWorld: () => {}, worldFile: 'w.json', stopMotion: () => {},
+    taskCtl: { active: null, begin(name) { tok.cancelled = true; tok = { cancelled: false }; this.active = name; return tok; },
+      cancel() { tok.cancelled = true; this.active = null; } },
+    taskToken: { cancelled: true }, _autoRunners: 0,
+    runAutonomousBody: (s, o, t) => new Promise((resolve) => { bodies.push({ t, resolve }); }),
+  });
+  run(sb, 'var _autoLive = null;');
+  run(sb, fnSrc('autonomousDupStart'));
+  run(sb, fnSrc('startAutonomous'));
+  return sb;
+}
+
+test('startAutonomous : un 2e appel pendant qu un runner vit (même objectif) ne lance PAS un 2e planner', () => {
+  const sb = autoSandbox();
+  run(sb, 'startAutonomous(null); startAutonomous(null);');
+  assert.strictEqual(sb.bodies.length, 1, 'un seul runner');
+  assert.strictEqual(sb.bodies[0].t.cancelled, false, 'le 1er runner n a pas été annulé par le doublon');
+  assert.ok(sb.events.some((e) => e.type === 'autonomous_dup_skipped'));
+});
+
+test('startAutonomous : après préemption (taskCtl.cancel / begin d un autre), la relance démarre', () => {
+  const sb = autoSandbox();
+  run(sb, 'startAutonomous(null);');
+  run(sb, 'taskCtl.cancel();');                       // mort, watchdog, migration…
+  run(sb, 'startAutonomous(null);');
+  assert.strictEqual(sb.bodies.length, 2);
+});
+
+test('onSpawn d une vie PASSÉE ne reprend pas le planner (génération de spawn)', () => {
+  const body = grab(/^async function onSpawn\(\) \{[\s\S]*?^\}$/m, 'onSpawn');
+  assert.match(body, /const spawnGen = \+\+_spawnGen;/);
+  const guard = body.indexOf('spawnGen !== _spawnGen');
+  const resume = body.indexOf("type: 'autonomous_resume'");
+  assert.ok(guard > 0 && resume > guard, 'la garde de génération précède la reprise');
+  assert.match(SRC, /^let _spawnGen = 0;$/m, '_spawnGen au niveau module');
+});
+
+// ── L'ABRI SURVIT À LA MORT (live 22/10 : `walled_in` à 826301 pour un `dig_in` de 807870) ──────────────
+test('abortShelterOnDeath : annule le jeton, libère le verrou, oublie la case et la sortie différée', () => {
+  const events = [];
+  const tok = { cancelled: false };
+  const bot = { _mcaShelterCell: { x: 0, y: 0, z: 0 }, _mcaShelterPending: { mode: 'pit' } };
+  const sb = vm.createContext({ emit: (e) => events.push(e), bot, __tok: tok });
+  run(sb, 'var _shelterInFlight = Promise.resolve(); var _shelterTok = globalThis.__tok; var _stillBusy = true;');
+  run(sb, fnSrc('abortShelterOnDeath'));
+  run(sb, 'abortShelterOnDeath()');
+  assert.strictEqual(tok.cancelled, true);
+  assert.strictEqual(run(sb, '_shelterInFlight'), null);
+  assert.strictEqual(run(sb, '_shelterTok'), null);
+  assert.strictEqual(run(sb, '_stillBusy'), false);
+  assert.strictEqual(bot._mcaShelterCell, null);
+  assert.strictEqual(bot._mcaShelterPending, null);
+  assert.ok(events.some((e) => e.action === 'death_abort'));
+});
+
+test('le handler death appelle abortShelterOnDeath en premier', () => {
+  const h = grab(/^bot\.on\('death', \(\) => \{[\s\S]*?^\}\);$/m, "bot.on('death')");
+  assert.match(h, /emit\(\{ type: 'status', state: 'dead' \}\);\n  abortShelterOnDeath\(\);/);
+});

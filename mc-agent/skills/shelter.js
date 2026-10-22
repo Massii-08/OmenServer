@@ -535,7 +535,7 @@ async function _buildCell(bot, token, deps, sleep, emit) {
       const x0 = p0.x; const y0 = p0.y; const z0 = p0.z;   // COPIES : la position est mutée en place (#73d)
       const fx0 = Math.floor(x0); const fy0 = Math.floor(y0); const fz0 = Math.floor(z0);
       // La case de l'abri, lue par index.js (shelterHold) : une fois enterré, les réflexes ne l'en sortent plus.
-      bot._mcaShelterCell = { x: fx0 + 0.5, y: y0, z: fz0 + 0.5, walled: false };
+      bot._mcaShelterCell = { x: fx0 + 0.5, y: y0, z: fz0 + 0.5, walled: false, owner: deps._cellOwner || null };
       let r = await dig({ count: SHELTER_PIT_DEPTH, land: { sleep } });
       for (let back = 0; ; back++) {
         const p1 = bot.entity.position;
@@ -610,7 +610,7 @@ async function _buildCell(bot, token, deps, sleep, emit) {
     mode = 'walled';
     if (located) {
       const pw = bot.entity.position;
-      bot._mcaShelterCell = { x: pw.x, y: pw.y, z: pw.z, walled: true };
+      bot._mcaShelterCell = { x: pw.x, y: pw.y, z: pw.z, walled: true, owner: deps._cellOwner || null };
     }
     emit({ type: 'shelter', action: 'walled_in', placed: walled.placed || 0, after: reason });
   }
@@ -667,8 +667,13 @@ async function _buildCell(bot, token, deps, sleep, emit) {
  * shelterDisplaced) termine l'abri → {ok:false, reason:'displaced'} (sans lui : comportement d'origine).
  */
 async function shelterUntilDawn(bot, token = null, deps = {}) {
-  try { return await _shelterUntilDawn(bot, token, deps); }
-  finally { if (bot) bot._mcaShelterCell = null; }   // la case n'est « tenue » que pendant l'abri
+  // PROPRIÉTAIRE de la case : un abri d'une vie PRÉCÉDENTE (annulé à la mort, il finit plus tard) ne doit
+  // jamais effacer la case de l'abri suivant.
+  const owner = {};
+  try { return await _shelterUntilDawn(bot, token, Object.assign({}, deps, { _cellOwner: owner })); }
+  finally {   // la case n'est « tenue » que pendant l'abri
+    if (bot && bot._mcaShelterCell && bot._mcaShelterCell.owner === owner) bot._mcaShelterCell = null;
+  }
 }
 
 async function _shelterUntilDawn(bot, token, deps) {

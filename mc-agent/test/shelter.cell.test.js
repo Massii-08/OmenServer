@@ -335,3 +335,15 @@ describe('shelterHold (PUR)', () => {
     assert.equal(shelterHold(cell, null), false);
   });
 });
+
+describe('abri : la case appartient à SON abri (22/10)', () => {
+  it('un abri qui finit n efface PAS la case posée entre-temps par un autre abri (vie suivante)', async () => {
+    const w = world({ at: { x: 0.5, y: GROUND + 1, z: 0.5 } });
+    const foreign = { x: 9.5, y: 64, z: 9.5, walled: false, owner: {} };
+    const dig0 = w.bot.dig;
+    let n = 0;
+    w.bot.dig = async (b) => { await dig0(b); if (++n === 3) w.bot._mcaShelterCell = foreign; };
+    await buildCell(w);
+    assert.strictEqual(w.bot._mcaShelterCell, foreign);
+  });
+});

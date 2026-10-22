@@ -239,6 +239,7 @@ function deathSandbox(opts = {}) {
     lastDeath: null,
     deathSpots: { noteDeath: () => null },
     abandonWorkIfDeathSpot: () => {},
+    abortShelterOnDeath: () => { sb.calls.push('shelter_abort'); },   // mort = fin de l'abri (22/10, cf. index.shelterhold.test.js)
     // HOME CAMPÉ (19/10) : la position de la mort est notée par le handler (glue réelle testée plus bas
     // et dans index.homesafety.test.js) — ici un témoin qui trace l'ordre des écritures.
     recordDeathPosition: () => { sb.calls.push('pos'); return true; },

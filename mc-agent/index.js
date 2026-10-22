@@ -3449,6 +3449,24 @@ const FORCED_SHELTER_MIN_GAP_MS = 60 * 1000;
 // de survie du planner concurrent) tiraient le bot hors du trou qu'il creusait. Une fois enterré (≥ ~1 bloc
 // dans sa colonne) ou muré, on TIENT la case : rien ne le fait fuir, ce qui est au contact est frappé sur
 // place. ⚠️ NIVEAU MODULE (piège #56) : lu par les réflexes et le tick de survie.
+/**
+ * MORT = FIN DE L'ABRI (live 22/10, NethBot1 session 206 : `walled_in after:no_fall` à 826301 pour un
+ * `dig_in` de 807870 — l'abri de la vie précédente creusait encore au respawn, et les onSpawn suivants le
+ * REJOIGNAIENT). Annule son jeton (le creusage borné s'arrête au prochain relevé), libère le verrou
+ * `_shelterInFlight`/`_shelterTok`, et oublie la case tenue et la sortie différée. Jamais de throw.
+ */
+function abortShelterOnDeath() {
+  try {
+    const had = !!_shelterInFlight;
+    if (_shelterTok) { try { _shelterTok.cancelled = true; } catch (e) {} }
+    _shelterInFlight = null;
+    _shelterTok = null;
+    _stillBusy = false;
+    if (bot) { bot._mcaShelterCell = null; bot._mcaShelterPending = null; }
+    if (had) emit({ type: 'shelter', action: 'death_abort' });
+  } catch (e) { /* best-effort */ }
+}
+
 function shelterHoldNow() {
   try {
     if (!_shelterInFlight || !bot || !bot.entity) return false;
@@ -8176,6 +8194,14 @@ async function startResource() {
 }
 
 // Lance (ou relance) la boucle autonome ; le planner re-dérive depuis l'état courant.
+// ⚠️ NIVEAU MODULE (piège #56) : le dernier runner démarré — lu par startAutonomous (idempotence).
+let _autoLive = null;   // { tok, objective }
+/** PUR : ce démarrage serait-il un DOUBLON d'un runner vivant ? */
+function autonomousDupStart({ runners, live, active, objective } = {}) {
+  return runners > 0 && !!live && !!live.tok && !live.tok.cancelled && active === 'autonomous'
+    && live.objective === objective;
+}
+
 async function startAutonomous(sender) {
   // objectif : depuis le world (seedé par le backend/launch), sinon --objective, sinon pioche pierre.
   let objType = (world.objective && world.objective.type) || args.objective || 'stone_pickaxe';
@@ -8185,6 +8211,15 @@ async function startAutonomous(sender) {
     const back = objectiveForStart(objType, { inv: buildCtxInv(bot), worn: [..._wornArmor()] });
     if (back !== objType) { emit({ type: 'objective_regressed', from: objType, to: back }); objType = back; }
   } catch (e) { /* best-effort : objectif inchangé */ }
+  // UN SEUL RUNNER (live 22/10, NethBot1 session 206 : deux `autonomous_resume`/`autonomous_start` à 4 ms —
+  // deux onSpawn de deux vies successives, tous deux en attente du MÊME abri, reprenaient ensemble ; le 2e
+  // `taskCtl.begin` annulait l'abri que le 1er venait d'ouvrir, `sealed:false why:cancelled` en 68 ms).
+  // Un runner vivant (jeton non annulé, toujours autonomous) pour le même objectif → ce 2e appel ne fait rien.
+  // Qui veut VRAIMENT relancer (watchdog, migration, fuite) préempte d'abord par taskCtl.begin/cancel.
+  if (autonomousDupStart({ runners: _autoRunners, live: _autoLive, active: taskCtl.active, objective: objType })) {
+    emit({ type: 'autonomous_dup_skipped', objective: objType, runners: _autoRunners });
+    return null;
+  }
   setObjective(world, { type: objType, status: 'in_progress' });
   saveWorld(worldFile, world);
   taskToken = taskCtl.begin('autonomous', stopMotion);
@@ -8194,6 +8229,7 @@ async function startAutonomous(sender) {
   // repartait EN PARALLÈLE (runChain passait le global à runPlanner). Même classe que le « jeton de
   // génération » de startMapper. Plus AUCUNE lecture du global après cette ligne : myTok.
   const myTok = taskToken;
+  _autoLive = { tok: myTok, objective: objType };
   // Ce runner est vivant jusqu'à son dernier await : migrateZone attend qu'il ait rendu la main
   // avant de marcher — sinon un startResource en retard, relisant le global, prendrait le jeton
   // VIVANT de la migration pour le sien (et irait jusqu'à clearObjective + resource_idle).
@@ -8356,7 +8392,11 @@ function tryAuth() {
   });
 }
 
+// Génération du spawn (NIVEAU MODULE, piège #56) : un onSpawn d'une vie PASSÉE (encore en attente d'un
+// abri, d'une fuite, de la base…) ne relance pas le planner par-dessus celui de la vie courante (22/10).
+let _spawnGen = 0;
 async function onSpawn() {
+  const spawnGen = ++_spawnGen;
   bot._mcaProfile = profile; // expose le profil au skill explore (jitter humanisation ∝ movementJitter)
   bot._mcaStealth = HUMANIZE; // explore : jitter de déplacement humain (furtif OU humanize cartographe)
   // Mémoire de monde : gather émet material_found (apprentissage matériau↔biome), explore lit le
@@ -9332,6 +9372,10 @@ async function onSpawn() {
       (async () => { try { await sleep(2500); await tryRegroup(); } catch (e) {} })();
     }
   }
+  if (spawnGen !== _spawnGen) {   // une vie plus récente a son propre onSpawn : elle reprend, pas nous
+    emit({ type: 'spawn_superseded', gen: spawnGen, current: _spawnGen });
+    return;
+  }
   if (world.objective && world.objective.status === 'in_progress') {
     emit({ type: 'autonomous_resume', objective: world.objective.type });
     // jam_loop RÉPÉTÉ au même endroit (20/10, NethBot1 : 4 sessions emmuré à y 40) : escalier d'abord,
@@ -9793,6 +9837,7 @@ let lastDeath = null; // {x,y,z,t} — pour retourner ramasser ses items au resp
 
 bot.on('death', () => {
   emit({ type: 'status', state: 'dead' });
+  abortShelterOnDeath();
   // Relevé AVANT que le serveur ne vide l'inventaire (keepInventory OFF) : à l'event `death`, les slots
   // sont encore ceux de la vie qui s'achève. Jamais de throw dans ce handler (il persiste l'historique).
   try { _invAtDeath = _invTotal(() => true); } catch (e) { _invAtDeath = -1; }
