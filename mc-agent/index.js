@@ -74,6 +74,7 @@ const { fishCatch } = require('./skills/fish');   // pêche : la nourriture qui 
 const { nearestPassive, survivalTick, nearbyHostiles, lavaNearby, armorPoints, weaponDamage } = require('./survival');
 const { loadWorld, saveWorld, setObjective, clearObjective } = require('./worldModel');
 const { _nearestTable, tableKey, tablePlan, TABLE_REACH, TABLE_SEEK, pickJunkToToss } = require('./skills/craft'); // craftItem déjà importé plus haut
+const { recycleWorthIt, createNoSpaceMemo, stepAsideCells } = require('./tableSpot');
 const { placeBlockNear } = require('./skills/placeBlockNear');
 const { smelt, logsToConvert, fuelUnits } = require('./skills/smelt');
 const { descendDiagonal } = require('./skills/descendDiagonal');
@@ -1947,6 +1948,8 @@ async function waitForBlock(pos, blockName, timeoutMs = 2000) {
   return false;
 }
 
+const RECLAIM_COLLECT_MS = 20000;   // borne d'une reprise (collectBlock) — niveau module
+
 async function reclaimBlock(pos, blockName = 'crafting_table') {
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
@@ -1960,7 +1963,16 @@ async function reclaimBlock(pos, blockName = 'crafting_table') {
       // four perdu en boucle). collectBlock n'équipe rien (mineflayer-tool non chargé).
       const tool = bestToolFor(bot, b);
       if (tool) { try { await bot.equip(tool, 'hand'); } catch (e) {} }
-      await bot.collectBlock.collect(b);
+      // BORNÉ (22/10, NethBot3 session 246 : `crafting_table` timeout ×4 = 6 min) — collectBlock
+      // pathfinde SANS limite vers un bloc hors d'atteinte (table 38 blocs plus haut) et gelait le but.
+      const res = await withTimeout(bot.collectBlock.collect(b), RECLAIM_COLLECT_MS, () => {
+        try { if (bot.collectBlock.cancelTask) bot.collectBlock.cancelTask(); } catch (e) {}
+        try { stopMotion(); } catch (e) {}
+      });
+      if (res && res.ok === false) {
+        if (res.reason === 'timeout') break;       // inatteignable : ne pas re-tenter à l'aveugle
+        continue;
+      }
       return;                                      // repris
     } catch (e) { /* retry une fois */ }
   }
@@ -1994,12 +2006,25 @@ const _badTables = createExpiringSet({ ttlMs: 30 * 60 * 1000 });
 async function recycleNearbyTable(blacklist) {
   const litter = _nearestTable(bot, TABLE_SEEK, { exclude: _badTables });
   if (!litter) return null;
+  // Autre étage (22/10, NethBot3 : bot y 15-20, table abandonnée y 53) : aller la chercher = remonter
+  // une colline de 38 blocs ou un autre tunnel. Liste noire (TTL 30 min) → fabrication sur place.
+  if (!recycleWorthIt(bot.entity.position, litter.position)) {
+    blacklist(litter.position, 'other_level');
+    return null;
+  }
   try {
     if (bot.entity.position.distanceTo(litter.position) > 3) {
       await withTimeout(
         bot.pathfinder.goto(new pfGoals.GoalNear(litter.position.x, litter.position.y, litter.position.z, 2)),
         30000, () => { try { stopMotion(); } catch (e) {} }
       );
+    }
+    // `withTimeout` RÉSOUT au timeout : seule la distance dit si on est arrivé. Pas arrivé → la reprise
+    // (collectBlock) re-pathfinderait sans fin vers la même table : liste noire, pas de reprise.
+    if (bot.entity.position.distanceTo(litter.position) > TABLE_REACH - 1) {
+      blacklist(litter.position, 'unreachable');
+      emit({ type: 'table_recycled', ok: false, why: 'unreachable' });
+      return false;
     }
     await reclaimBlock(litter.position);
   } catch (e) { /* pas de chemin → on retombe sur la fabrication */ }
@@ -2023,6 +2048,33 @@ function blacklistBadTable(pos, why) {
     _badTables.add(tableKey(pos));
     emit({ type: 'table_blacklisted', why, x: pos.x, y: pos.y, z: pos.z });
   } catch (e) { /* best-effort : l'observabilité ne doit jamais casser un craft */ }
+}
+
+// ÉCHECS DE POSE PAR ENDROIT (22/10) — niveau module (piège #56) : survit d'un but au suivant, c'est
+// précisément la boucle `spare_picks` → `no_space` → `spare_picks` qu'il doit casser.
+const _noSpaceMemo = createNoSpaceMemo();
+const STEP_ASIDE_GOTO_MS = 10000;
+
+/** Se décaler de 2-4 blocs en ligne droite (tunnel : avancer ou reculer), bornée. true = déplacé. */
+async function stepAsideForTable() {
+  const tok = taskToken;
+  let cells = [];
+  try {
+    const base = bot.entity.position.floored();
+    cells = stepAsideCells(base, (x, y, z) => bot.blockAt(vec3Lib(x, y, z)));
+  } catch (e) { cells = []; }
+  for (const c of cells.slice(0, 3)) {
+    if (tok && tok.cancelled) break;
+    await withTimeout(bot.pathfinder.goto(new pfGoals.GoalBlock(c.x, c.y, c.z)), STEP_ASIDE_GOTO_MS,
+      () => { try { stopMotion(); } catch (e) {} });
+    const p = bot.entity.position;
+    if (Math.hypot(p.x - (c.x + 0.5), p.z - (c.z + 0.5)) <= 1.2 && Math.abs(p.y - c.y) < 1.5) {
+      emit({ type: 'table_step_aside', ok: true, dist: c.dist, x: c.x, y: c.y, z: c.z });
+      return true;
+    }
+  }
+  emit({ type: 'table_step_aside', ok: false, candidates: cells.length });
+  return false;
 }
 
 // `opts.inPlace` (22/10, crafts DANS l'abri de nuit) : ne JAMAIS marcher — ni vers une table lointaine,
@@ -2098,6 +2150,15 @@ async function withCraftingTable(fn, opts = {}) {
     }
   }
   let place = await placeBlockNear(bot, 'crafting_table');
+  if (!place.ok && place.reason === 'no_space' && !place.unloaded) {
+    // JAMAIS DEUX FOIS LA MÊME CASE (22/10) : 2 échecs `no_space` au même endroit → se décaler de 2-4
+    // blocs dans le tunnel (avancer/reculer) avant de re-tenter, comme un joueur.
+    const here = bot.entity.position;
+    _noSpaceMemo.note(here, Date.now());
+    if (!inPlace && _noSpaceMemo.shouldShift(here, Date.now()) && await stepAsideForTable()) {
+      place = await placeBlockNear(bot, 'crafting_table');
+    }
+  }
   if (!place.ok) {
     // sol encombré (feuillage jungle, pente) → se déplacer vers un sol dégagé proche et re-tenter
     // UNE fois (vu live MapT4 : stall wooden_pickaxe avec table+planks+sticks en poche, pose impossible).

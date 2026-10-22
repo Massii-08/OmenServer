@@ -5,6 +5,8 @@
 // Pass 2  : toutes les cases sont solides → creuse une case puis pose (cas underground/enclosed).
 // Pass 3  : piédestal (voisins ET sols voisins absents) → remblai, puis pose dessus.
 // Pass 4  : pose CONTRE UNE PAROI quand le sol de la case voisine manque.
+// Pass 5  : niche à hauteur de TÊTE (creusée si pleine), table posée sur le voisin des pieds.
+// Pass 0  : voisinage non chargé (juste après un TP) → attente bornée des chunks avant tout.
 // Échec total : { ok:false, reason:'no_space', around, under } — voir `_surroundings`.
 const { Vec3 } = require('vec3');
 const { bestToolFor } = require('../tools');
@@ -109,6 +111,13 @@ async function _breakClutter(bot, block) {
 // (blockAt → null). L'instantané est pris à l'ÉCHEC, donc APRÈS nos tentatives : une fleur cassée y
 // apparaît en `air` — une case posable qui n'a rien donné = désync client/serveur, pas un manque de
 // place. Sans ça, un `no_table:no_space` ne disait rien du terrain (cf. fleurs, ci-dessus).
+const CHUNK_WAIT_MS = 6000;   // attente BORNÉE des chunks d'arrivée (après un TP)
+/** Une case du voisinage (sol des pieds, 4 voisins, 4 sols voisins) est-elle non chargée (blockAt → null) ? */
+function _anyUnloaded(bot, base, dirs) {
+  if (!bot.blockAt(base.offset(0, -1, 0))) return true;
+  return dirs.some((d) => !bot.blockAt(base.plus(d)) || !bot.blockAt(base.plus(d).offset(0, -1, 0)));
+}
+
 function _surroundings(bot, base, dirs) {
   const nameAt = (pos) => { const b = bot.blockAt(pos); return (b && b.name) || 'unloaded'; };
   return {
@@ -123,7 +132,7 @@ function _surroundings(bot, base, dirs) {
  * `around` / `under` (noms des 4 voisins et des 4 sols voisins). `reason` ne change JAMAIS : des
  * appelants testent `reason === 'no_space'` et `'no_table:' + reason`.
  */
-async function placeBlockNear(bot, itemName) {
+async function placeBlockNear(bot, itemName, opts = {}) {
   const item = bot.inventory.items().find((i) => i.name === itemName);
   if (!item) return { ok: false, reason: 'unknown_item' };
 
@@ -134,6 +143,21 @@ async function placeBlockNear(bot, itemName) {
     new Vec3(0, 0, 1),
     new Vec3(0, 0, -1),
   ];
+
+  // ── Pass 0 : MONDE PAS ENCORE CHARGÉ (22/10, NethBot3 session 246) — `no_space` ×4 en 6 ms, `around`/
+  // `under` = « unloaded » ×8, juste après un `/tpa` de regroupement de 453 blocs : les chunks
+  // d'arrivée n'étaient pas reçus, `blockAt` rendait null partout, toutes les passes sautaient. On
+  // attend les chunks (BORNÉ) avant de conclure — sinon ce n'est pas un manque de place.
+  if (_anyUnloaded(bot, base, dirs) && typeof bot.waitForChunksToLoad === 'function') {
+    const waitMs = opts.chunkWaitMs != null ? opts.chunkWaitMs : CHUNK_WAIT_MS;
+    let timer = null;
+    try {
+      await Promise.race([
+        Promise.resolve().then(() => bot.waitForChunksToLoad()).catch(() => {}),
+        new Promise((r) => { timer = setTimeout(r, waitMs); }),
+      ]);
+    } finally { if (timer) clearTimeout(timer); }
+  }
 
   // ── Pass 1 : cherche une case libre/replaceable avec sol solide ──────────
   for (const d of dirs) {
@@ -282,9 +306,42 @@ async function placeBlockNear(bot, itemName) {
     }
   }
 
-  // reason INCHANGÉ ('no_space') ; `around`/`under` disent CE QUI bloque (diagnostic live).
+  // ── Pass 5 : NICHE À HAUTEUR DE TÊTE (22/10). Les cases des pieds sont pleines mais increusables, ou
+  // libres sans rien où s'accrocher : un joueur creuse alors la paroi d'un cran plus haut et pose sa
+  // table DESSUS le bloc des pieds (référence pleine garantie, face +Y). Case de tête déjà libre → pose
+  // directe ; pleine → on la creuse (outil adapté) ; jamais un fluide ni ce qu'on pose.
+  for (const d of dirs) {
+    const refPos = base.plus(d);                                   // voisin au niveau des pieds
+    const headPos = refPos.offset(0, 1, 0);                        // case de tête voisine → la niche
+    const ref = bot.blockAt(refPos);
+    const head = bot.blockAt(headPos);
+    if (!ref || ref.boundingBox !== 'block' || !head) continue;
+    if (head.boundingBox === 'block') {
+      if (NON_DIGGABLE.has(head.name) || head.name === itemName) continue;
+      try {
+        const tool = bestToolFor(bot, head);
+        if (tool) await bot.equip(tool, 'hand');
+        await bot.dig(head);
+      } catch (e) { continue; }
+    } else if (!REPLACEABLE.has(head.name)) {
+      continue;                                                    // torche, rail… : on n'y touche pas
+    }
+    try {
+      const r2 = bot.blockAt(refPos);
+      if (!_refOk(bot, r2)) continue;
+      await bot.equip(item, 'hand');
+      await bot.placeBlock(r2, new Vec3(0, 1, 0));
+      if (!(await _confirmPlaced(bot, headPos))) continue;
+      return { ok: true, pos: headPos };
+    } catch (e) { /* direction suivante */ }
+  }
+
+  // reason INCHANGÉ ('no_space') ; `around`/`under` disent CE QUI bloque (diagnostic live). `unloaded`
+  // = le voisinage n'était toujours pas chargé : l'appelant se décale / attend au lieu de re-tenter ici.
   const diag = _surroundings(bot, base, dirs);
-  return { ok: false, reason: 'no_space', around: diag.around, under: diag.under };
+  const out = { ok: false, reason: 'no_space', around: diag.around, under: diag.under };
+  if (diag.around.concat(diag.under).includes('unloaded')) out.unloaded = true;
+  return out;
 }
 
 module.exports = { placeBlockNear, isBreakableClutter };

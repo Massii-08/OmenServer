@@ -87,7 +87,8 @@ function tableSandbox({ tableSeen = true, reclaimWorks = true } = {}) {
   const sb = {
     events: [], crafts: [], reclaims: [], blacklisted: [],
     emit(e) { sb.events.push(e); },
-    TABLE_SEEK: 48, _badTables: { has: () => false, add: () => {} },
+    TABLE_SEEK: 48, TABLE_REACH: 6, _badTables: { has: () => false, add: () => {} },
+    recycleWorthIt: require('./tableSpot').recycleWorthIt,           // 22/10 : table du même étage
     tableKey: (p) => `${p.x},${p.y},${p.z}`,
     pfGoals: { GoalNear: function () {} },
     withTimeout: async (p) => p, stopMotion: () => {},
@@ -97,8 +98,9 @@ function tableSandbox({ tableSeen = true, reclaimWorks = true } = {}) {
     _craftPrereqs: async () => null,
     withCraftingTable: async (fn) => fn(),
     bot: {
-      entity: { position: { distanceTo: () => 10 } },
-      pathfinder: { goto: async () => {} },
+      // 10 blocs avant le trajet, 2 après (22/10 : la reprise n'est tentée que si le goto est ARRIVÉ)
+      entity: { position: { y: 64, distanceTo: () => (sb.arrived ? 2 : 10) } },
+      pathfinder: { goto: async () => { sb.arrived = true; } },
       blockAt: () => (sb.reclaimed ? { name: 'air' } : { name: 'crafting_table' }),
       inventory: { items: () => Object.entries(inv).filter(([, c]) => c > 0).map(([name, count]) => ({ name, count })) },
     },

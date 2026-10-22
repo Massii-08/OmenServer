@@ -743,3 +743,63 @@ describe('index.js — withCraftingTable émet table_place_failed avant de renvo
     assert.equal((src.match(/'table_place_failed'/g) || []).length, 1);
   });
 });
+
+// ─── 22/10 (NethBot3 session 246) : pose juste APRÈS un téléport → chunks pas encore reçus ──────
+describe('placeBlockNear — voisinage non chargé (après un TP) et niche à hauteur de tête', () => {
+  it('voisinage « unloaded » : attend les chunks (borné) puis pose — au lieu de no_space en 1 ms', async () => {
+    const bot = makeBot({ position: [0, 64, 0], blocks: {}, inventory: ['crafting_table'] });
+    let waited = 0;
+    bot.waitForChunksToLoad = async () => {
+      waited++;
+      bot._blockMap['0,63,0'] = { name: 'stone', boundingBox: 'block' };
+      bot._blockMap['1,64,0'] = { name: 'air', boundingBox: 'empty' };
+      bot._blockMap['1,63,0'] = { name: 'stone', boundingBox: 'block' };
+    };
+    const r = await placeBlockNear(bot, 'crafting_table');
+    assert.equal(waited, 1);
+    assert.equal(r.ok, true);
+    assert.deepEqual([r.pos.x, r.pos.y, r.pos.z], [1, 64, 0]);
+  });
+
+  it('chunks qui n\'arrivent jamais : rend no_space (reason inchangée) sans attendre au-delà de la borne', async () => {
+    const bot = makeBot({ position: [0, 64, 0], blocks: {}, inventory: ['crafting_table'] });
+    bot.waitForChunksToLoad = () => new Promise(() => {});      // ne résout jamais
+    const t0 = Date.now();
+    const r = await placeBlockNear(bot, 'crafting_table', { chunkWaitMs: 50 });
+    assert.ok(Date.now() - t0 < 1000, 'borné');
+    assert.equal(r.ok, false);
+    assert.equal(r.reason, 'no_space');
+    assert.equal(r.unloaded, true, 'le retour dit que le monde n\'était pas chargé');
+  });
+
+  it('voisinage chargé : n\'appelle PAS waitForChunksToLoad', async () => {
+    const bot = makeBot({
+      position: [0, 64, 0],
+      blocks: { '0,63,0': { name: 'stone', boundingBox: 'block' }, '1,64,0': { name: 'air', boundingBox: 'empty' }, '1,63,0': { name: 'stone', boundingBox: 'block' },
+        '-1,64,0': { name: 'stone', boundingBox: 'block' }, '0,64,1': { name: 'stone', boundingBox: 'block' }, '0,64,-1': { name: 'stone', boundingBox: 'block' },
+        '-1,63,0': { name: 'stone', boundingBox: 'block' }, '0,63,1': { name: 'stone', boundingBox: 'block' }, '0,63,-1': { name: 'stone', boundingBox: 'block' } },
+      inventory: ['crafting_table'],
+    });
+    let waited = 0;
+    bot.waitForChunksToLoad = async () => { waited++; };
+    const r = await placeBlockNear(bot, 'crafting_table');
+    assert.equal(r.ok, true);
+    assert.equal(waited, 0);
+  });
+
+  it('niche à hauteur de TÊTE : voisins des pieds pleins mais increusables, cases de tête libres → pose sur le voisin', async () => {
+    // Pieds entourés de bedrock (Pass 2 ne creuse pas), pas de remblai en poche (Pass 3), cases des pieds
+    // pleines (Pass 4 : pas de case libre). La tête (y 65) au-dessus d'un voisin est creusable → niche.
+    const blocks = { '0,63,0': { name: 'stone', boundingBox: 'block' } };
+    for (const [x, z] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+      blocks[`${x},64,${z}`] = { name: 'bedrock', boundingBox: 'block' };
+      blocks[`${x},63,${z}`] = { name: 'bedrock', boundingBox: 'block' };
+      blocks[`${x},65,${z}`] = { name: 'stone', boundingBox: 'block' };
+    }
+    const bot = makeBot({ position: [0, 64, 0], blocks, inventory: ['crafting_table'] });
+    const r = await placeBlockNear(bot, 'crafting_table');
+    assert.equal(r.ok, true, JSON.stringify(r));
+    assert.equal(r.pos.y, 65, 'posée dans la niche creusée à hauteur de tête');
+    assert.equal(bot._digCalls.length, 1, 'une seule niche creusée');
+  });
+});
