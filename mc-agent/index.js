@@ -21,7 +21,8 @@ const { mineBlock, collectWood } = require('./skills/mineBlock');
 const { attackNearest } = require('./skills/attackNearest');
 const { fleeFrom, isFleeHostile } = require('./skills/fleeFrom');
 const { installOxygenGuard } = require('./oxygen');
-const { installReflexes, RANGED, DEFENSIVE_HEALTH, isFleeOnlyMob, FOODS, EMERGENCY_FOODS } = require('./reflexes');
+const { installReflexes, RANGED, DEFENSIVE_HEALTH, isFleeOnlyMob, FOODS, EMERGENCY_FOODS, tryEat } = require('./reflexes');
+const { lowHpStep, craftBlockedAtLowHp, LOWHP_RECOVERY_BUDGET_MS, LOWHP_FOOD_RUN_TTL_MS } = require('./lowhp');
 const { decideReaction } = require('./triggers');
 const { loadCommands, isAllowed, buildCommandDocs } = require('./commands');
 const { loadPolicy, isTrusted, parseTpRequest, parseTradeRequest, gateDecision, buildTrustDocs } = require('./trust');
@@ -2186,6 +2187,87 @@ function craftMatterSummary() {
   return { mat, empty, combat: craftCombatNow() };
 }
 
+// ── PV CRITIQUES : RÉCUPÉRER AU LIEU DE RÉESSAYER (22/10, cf. lowhp.js) ─────────────────────────
+// Niveau MODULE (piège #56) : lu par craftSmart (planner ET timers) et par recoverLowHp.
+let _lowHpFoodRunAt = 0;       // dernière sortie nourriture lancée PAR une récupération
+let _lowHpRecoverBusy = false;
+
+/** Signaux de lowhp.lowHpStep, lus sur le bot. Jamais de throw. */
+function lowHpSignals() {
+  let hasFood = false;
+  let threatDist = null;
+  try {
+    const items = (bot.inventory && bot.inventory.items()) || [];
+    hasFood = items.some((i) => i && (FOODS.has(i.name) || EMERGENCY_FOODS.has(i.name)));
+  } catch (e) { /* inventaire pas livré → rien à manger */ }
+  try {
+    const p = bot.entity && bot.entity.position;
+    if (p) {
+      for (const e of Object.values(bot.entities || {})) {
+        if (!e || e.isValid === false || !e.position) continue;
+        if (!isFleeHostile(e) || NEUTRAL_NO_PROVOKE.has(e.name)) continue;
+        const d = Math.hypot(e.position.x - p.x, e.position.y - p.y, e.position.z - p.z);
+        if (threatDist == null || d < threatDist) threatDist = d;
+      }
+      if (bot.pvp && bot.pvp.target && threatDist == null) threatDist = 0;
+    }
+  } catch (e) { /* lecture ratée → aucune menace connue */ }
+  return {
+    health: bot.health, food: bot.food, hasFood, threatDist,
+    foodRunTriedRecently: _lowHpFoodRunAt > 0 && Date.now() - _lowHpFoodRunAt < LOWHP_FOOD_RUN_TTL_MS,
+  };
+}
+
+/** Garde de craftSmart : refuser le craft tant que la récupération a quelque chose à faire. */
+function craftLowHpBlocked() {
+  return craftBlockedAtLowHp(lowHpSignals());
+}
+
+/**
+ * Récupération à PV critiques, BORNÉE (LOWHP_RECOVERY_BUDGET_MS) : manger → se murer si un hostile est
+ * collé → sortie nourriture si la faim coupe la régénération → sinon rester immobile jusqu'à PV > seuil.
+ * Rend { outcome } : healed | no_regen (rien à gagner à attendre) | timeout | cancelled | dead | busy.
+ */
+async function recoverLowHp(goalName) {
+  if (_lowHpRecoverBusy) { await sleep(2000); return { outcome: 'busy' }; }
+  _lowHpRecoverBusy = true;
+  const t0 = Date.now();
+  let sealed = false;
+  let eats = 0;
+  let eatFails = 0;
+  let outcome = 'timeout';
+  emit({ type: 'low_hp_recover', goal: goalName, hp: bot.health, food: bot.food });
+  try {
+    while (Date.now() - t0 < LOWHP_RECOVERY_BUDGET_MS) {
+      if (taskToken.cancelled || migrationOwnsBot()) { outcome = 'cancelled'; break; }
+      if (!bot.entity || bot.health === 0) { outcome = 'dead'; break; }
+      const step = lowHpStep(Object.assign(lowHpSignals(), { sealed, eatFails }));
+      if (step === 'ok') { outcome = 'healed'; break; }
+      if (step === 'proceed') { outcome = 'no_regen'; break; }
+      if (step === 'eat') {
+        try { bot.stopDigging(); } catch (e) {}
+        const ate = await withTimeout(tryEat(bot), 8000, () => {});
+        if (ate === true) { eats++; emit({ type: 'ate', item: 'low_hp_recover', food: bot.food }); }
+        else { eatFails++; emit({ type: 'eat_failed', item: 'low_hp_recover', food: bot.food, reason: (ate && ate.reason) || 'no_eat' }); await sleep(1000); }
+      } else if (step === 'seal') {
+        sealed = true;
+        try { stopMotion(); } catch (e) {}
+        const n = await withTimeout(nightSeal(), 10000, () => {});
+        emit({ type: 'low_hp_seal', placed: typeof n === 'number' ? n : 0, hp: bot.health });
+      } else if (step === 'food_run') {
+        _lowHpFoodRunAt = Date.now();
+        try { await foodRunTick(); } catch (e) { /* best-effort : ses propres portes décident */ }
+      } else {
+        await sleep(1000);                                // 'wait' : immobile, l'aura défend
+      }
+    }
+  } finally {
+    _lowHpRecoverBusy = false;
+    emit({ type: 'low_hp_recover_done', goal: goalName, outcome, hp: bot.health, food: bot.food, eats, sealed, took_ms: Date.now() - t0 });
+  }
+  return { outcome };
+}
+
 async function craftSmart(args) {
   const prev = _craftTail;
   let release = () => {};
@@ -2205,9 +2287,13 @@ async function craftSmart(args) {
     // (index.js:10059, « coupe l'aura (equip/coup) ») — crafter désarme le bot pile quand il en a
     // le plus besoin. Mesuré NethBot3 session-94 : craft torche déféré 2,5 s pendant un combat à
     // 4,33 PV, exécuté dès que le combat redevient momentanément faux, mort ~500 ms après. Vérifié
-    // avant ET après le différé (les PV peuvent chuter PENDANT l'attente) : à PV critiques, aucun
-    // craft n'en vaut le prix.
-    if (homewarp.isCriticalHealth(bot.health)) {
+    // avant ET après le différé (les PV peuvent chuter PENDANT l'attente).
+    // 22/10 : la garde est désormais lowhp.craftBlockedAtLowHp — même seuil, même refus tant qu'il y
+    // a une menace en vue, de quoi manger, une régénération en cours ou une sortie nourriture à
+    // tenter ; elle laisse passer le seul cas où attendre ne rend AUCUN PV (rien à manger, faim < 18,
+    // sortie déjà tentée, personne à 16 blocs). Le refus est rattrapé par runSkillWithTelemetry, qui
+    // RÉCUPÈRE (recoverLowHp) au lieu de laisser le planner relancer le craft en boucle.
+    if (craftLowHpBlocked()) {
       _auraEmit('craft_skipped_low_hp', { name: args && args.name, health: bot.health, waited_ms: deferred ? Date.now() - t0 : 0 });
       return { ok: false, reason: 'low_hp_skip' };
     }
@@ -4855,6 +4941,16 @@ async function runSkillWithTelemetry(g) {
   const r = await withTimeout(run, timeoutFor(g.skill), () => { try { stopMotion(); } catch (e) {} });
   // Temps de MINAGE effectif : c'est le dénominateur du rendement de la zone (verdict 'exhausted').
   if (MINING_GOALS.has(g.name)) _zoneMiningMs += (Date.now() - _t0);
+  // PV CRITIQUES (22/10) : un craft refusé (`low_hp_skip`) n'est PAS un échec du but — ni goal_failed,
+  // ni noteZoneFailure, ni demande de bois. On RÉCUPÈRE (manger / se murer / sortie nourriture /
+  // attendre, ≤ 60 s) puis on rend `wait:true` : le planner ne le compte ni dans failStreak ni dans le
+  // fingerprint, et re-dérive le but au tour suivant (cf. planner.js MAX_WAIT_TURNS).
+  if (r && r.ok === false && r.reason === 'low_hp_skip') {
+    if (taskToken.cancelled || migrationOwnsBot()) return { ok: false, reason: 'cancelled' };
+    const rec = await recoverLowHp(g.name);
+    if (taskToken.cancelled || migrationOwnsBot()) return { ok: false, reason: 'cancelled' };
+    return { ok: false, reason: 'recovering', wait: true, outcome: rec.outcome };
+  }
   if (!r || r.ok === false) {
     emit({ type: 'goal_failed', name: g.name, reason: (r && r.reason) || 'unknown' });
     noteZoneFailure(g.name, r && r.reason);

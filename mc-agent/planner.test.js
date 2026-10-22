@@ -298,3 +298,69 @@ test('runPlanner : tous les buts restants différés → le premier quand même 
   assert.deepStrictEqual(h.calls, ['a', 'b']);
   assert.strictEqual(res.done, true);
 });
+
+// ─── RÉCUPÉRATION À PV CRITIQUES (22/10) ─────────────────────────────────────────────────────
+// `{ok:false, reason:'recovering', wait:true}` : le skill n'a pas échoué, le bot récupère (manger,
+// se murer, attendre la régénération). Ni failStreak ni fingerprint ne doivent compter ce tour —
+// avant, 4 `low_hp_skip` en 300 ms = stall `crafting_table`, et le but repartait en boucle.
+test('wait:true → ni failStreak ni fingerprint ; le but reprend une fois récupéré', async () => {
+  let t = 0;
+  let turns = 0;
+  const inv = {};
+  const bot = { inventory: { items: () => Object.entries(inv).map(([name, count]) => ({ name, count })) }, entity: { position: { x: 0, y: 64, z: 0 } } };
+  const chain = [{ name: 'crafting_table', met: (c) => (c.inv.crafting_table || 0) >= 1, skill: 'craft' }];
+  const r = await runPlanner(bot, {
+    chain, ctxExtra: () => ({}), now: () => t, sleep: async (ms) => { t += ms; },
+    runSkill: async () => {
+      turns++; t += 30000;                                  // une récupération dure (≤ 60 s)
+      if (turns <= 6) return { ok: false, reason: 'recovering', wait: true };
+      inv.crafting_table = 1; return { ok: true };
+    },
+  }, { cancelled: false });
+  assert.deepStrictEqual(r, { done: true, steps: 7 }, '6 attentes immobiles (inventaire ET position inchangés) sans stall');
+});
+
+test('wait:true → borné : au 10e tour d’attente consécutif, stalled { reason: recovering }', async () => {
+  let t = 0;
+  let turns = 0;
+  const bot = { inventory: { items: () => [] }, entity: { position: { x: 0, y: 64, z: 0 } } };
+  const chain = [{ name: 'furnace', met: () => false, skill: 'craft' }];
+  const r = await runPlanner(bot, {
+    chain, ctxExtra: () => ({}), now: () => t, sleep: async (ms) => { t += ms; },
+    runSkill: async () => { turns++; t += 60000; return { ok: false, reason: 'recovering', wait: true }; },
+  }, { cancelled: false });
+  assert.deepStrictEqual(r, { stalled: true, goal: 'furnace', reason: 'recovering' });
+  assert.strictEqual(turns, 10);
+});
+
+test('wait:true instantané en rafale → la garde anti-boucle-chaude reste le filet', async () => {
+  let t = 0;
+  let turns = 0;
+  const sleeps = [];
+  const bot = { inventory: { items: () => [] }, entity: { position: { x: 0, y: 64, z: 0 } } };
+  const chain = [{ name: 'furnace', met: () => false, skill: 'craft' }];
+  const r = await runPlanner(bot, {
+    chain, ctxExtra: () => ({}), now: () => t, sleep: async (ms) => { sleeps.push(ms); t += ms; },
+    runSkill: async () => { turns++; t += 10; return { ok: false, reason: 'recovering', wait: true }; },
+  }, { cancelled: false });
+  assert.deepStrictEqual(r, { stalled: true, goal: 'furnace', reason: 'hot_loop' });
+  assert.strictEqual(turns, 8);
+  assert.deepStrictEqual(sleeps, [250, 500, 1000, 2000, 2000]);
+});
+
+test('un échec ordinaire après des attentes repart de zéro dans failStreak (les attentes n’y comptent pas)', async () => {
+  let t = 0;
+  let turns = 0;
+  const bot = { inventory: { items: () => [] }, entity: { position: { get x() { return turns; }, y: 64, z: 0 } } };
+  const chain = [{ name: 'furnace', met: () => false, skill: 'craft' }];
+  const seq = ['fail', 'wait', 'fail', 'wait', 'wait', 'fail', 'fail'];
+  const r = await runPlanner(bot, {
+    chain, ctxExtra: () => ({}), now: () => t, sleep: async (ms) => { t += ms; },
+    runSkill: async () => {
+      const k = seq[turns++]; t += 5000;
+      return k === 'wait' ? { ok: false, reason: 'recovering', wait: true } : { ok: false, reason: 'x' };
+    },
+  }, { cancelled: false });
+  assert.deepStrictEqual(r, { stalled: true, goal: 'furnace' });
+  assert.strictEqual(turns, 7, '4 vrais échecs (tours 1,3,6,7) : les 3 attentes intercalées ne comptent pas');
+});

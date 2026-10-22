@@ -11,6 +11,8 @@ const vm = require('node:vm');
 const { isFleeHostile } = require('./skills/fleeFrom');
 const { NEUTRAL_NO_PROVOKE } = require('./survival');
 const homewarp = require('./homewarp');
+const { FOODS, EMERGENCY_FOODS } = require('./reflexes');
+const lowhp = require('./lowhp');
 
 const SRC = fs.readFileSync(path.join(__dirname, 'index.js'), 'utf8');
 function grab(re, label) {
@@ -33,7 +35,8 @@ function sandbox({ entities = [], raw } = {}) {
     Date: { now: () => clock.t },
     sleep: async (ms) => { clock.t += ms; },
     setTimeout, clearTimeout, Promise,
-    isFleeHostile, NEUTRAL_NO_PROVOKE, homewarp,
+    isFleeHostile, NEUTRAL_NO_PROVOKE, homewarp, FOODS, EMERGENCY_FOODS,
+    craftBlockedAtLowHp: lowhp.craftBlockedAtLowHp, LOWHP_FOOD_RUN_TTL_MS: lowhp.LOWHP_FOOD_RUN_TTL_MS,
     bot: {
       entity: { position: { x: 0, y: 70, z: 0 } },
       entities: Object.fromEntries(entities.map((e, i) => [i, e])),
@@ -45,8 +48,8 @@ function sandbox({ entities = [], raw } = {}) {
   };
   vm.createContext(sb);
   for (const c of ['CRAFT_QUEUE_MAX_WAIT_MS', 'CRAFT_COMBAT_WAIT_MS', 'CRAFT_COMBAT_RADIUS']) run(sb, constSrc(c));
-  for (const l of ['_craftTail', '_craftDepth']) run(sb, letSrc(l));
-  for (const f of ['craftCombatNow', 'craftMatterSummary', 'craftSmart']) run(sb, fnSrc(f));
+  for (const l of ['_craftTail', '_craftDepth', '_lowHpFoodRunAt']) run(sb, letSrc(l));
+  for (const f of ['craftCombatNow', 'craftMatterSummary', 'lowHpSignals', 'craftLowHpBlocked', 'craftSmart']) run(sb, fnSrc(f));
   return sb;
 }
 
@@ -143,4 +146,100 @@ test('craftSmart : PV sains → aucun impact (non-régression)', async () => {
 test('index.js : l aura et le /tpa de squad respectent un craft en cours', () => {
   assert.match(fnSrc('auraTick'), /if \(_craftDepth > 0\) return;/);
   assert.match(SRC, /_foodTripBusy \|\| _exploreBusy \|\| _craftDepth > 0;\n  const pick = squadTarget\(/);
+});
+
+// ─── 22/10 : refus à PV critiques → RÉCUPÉRER, pas réessayer ─────────────────────────────────
+test('craftSmart : PV critiques, rien à manger, sortie nourriture déjà tentée, personne en vue → le craft part', async () => {
+  // Attendre ne rendrait aucun PV (faim < 18) : figer le bot ne le sauve pas, un craft sans menace ne coûte rien.
+  const sb = sandbox({});
+  sb.bot.health = 4.5; sb.bot.food = 13;
+  sb.clock.t = 100000;
+  run(sb, '_lowHpFoodRunAt = 99000');
+  const r = await run(sb, "craftSmart({ name: 'crafting_table' })");
+  assert.strictEqual(r.ok, true);
+  assert.ok(!sb.events.some((e) => e.type === 'craft_skipped_low_hp'));
+});
+
+test('craftSmart : PV critiques + hostile à 12 blocs → toujours refusé (intention de 0990f4c)', async () => {
+  const sb = sandbox({ entities: [zombie(12)] });
+  sb.bot.health = 4.5; sb.bot.food = 13;
+  sb.clock.t = 100000;
+  run(sb, '_lowHpFoodRunAt = 99000');
+  const r = await run(sb, "craftSmart({ name: 'crafting_table' })");
+  assert.strictEqual(r.reason, 'low_hp_skip');
+});
+
+test('runSkillWithTelemetry : low_hp_skip → recoverLowHp + wait:true, AVANT goal_failed / noteZoneFailure', () => {
+  const body = fnSrc('runSkillWithTelemetry');
+  const iSkip = body.indexOf("r.reason === 'low_hp_skip'");
+  const iFail = body.indexOf("type: 'goal_failed'");
+  assert.ok(iSkip > 0 && iFail > 0 && iSkip < iFail, 'le refus est intercepté avant le bloc d échec');
+  assert.match(body, /await recoverLowHp\(g\.name\)/);
+  assert.match(body, /return \{ ok: false, reason: 'recovering', wait: true, outcome: rec\.outcome \};/);
+});
+
+// recoverLowHp exécuté pour de vrai (bac à sable) : ordre des pas et borne.
+function recoverSandbox({ health = 4, food = 13, items = [], entities = [], onSleep } = {}) {
+  const clock = { t: 1000 };
+  const sb = {
+    events: [], calls: [], clock,
+    emit(ev) { sb.events.push(ev); },
+    Date: { now: () => clock.t },
+    sleep: async (ms) => { clock.t += ms; if (onSleep) onSleep(sb); },
+    withTimeout: (p) => Promise.resolve(p),
+    taskToken: { cancelled: false },
+    migrationOwnsBot: () => false,
+    stopMotion: () => { sb.calls.push('stopMotion'); },
+    nightSeal: async () => { sb.calls.push('seal'); return 3; },
+    foodRunTick: async () => { sb.calls.push('food_run'); clock.t += 20000; },
+    tryEat: async (b) => { sb.calls.push('eat'); b.food = 20; b._items.length = 0; return true; },
+    isFleeHostile, NEUTRAL_NO_PROVOKE, FOODS, EMERGENCY_FOODS,
+    lowHpStep: lowhp.lowHpStep, LOWHP_RECOVERY_BUDGET_MS: lowhp.LOWHP_RECOVERY_BUDGET_MS, LOWHP_FOOD_RUN_TTL_MS: lowhp.LOWHP_FOOD_RUN_TTL_MS,
+    bot: {
+      health, food, _items: items.slice(),
+      entity: { position: { x: 0, y: 70, z: 0 } },
+      entities: Object.fromEntries(entities.map((e, i) => [i, e])),
+      pvp: { target: null },
+      stopDigging() {},
+    },
+  };
+  sb.bot.inventory = { items: () => sb.bot._items };
+  vm.createContext(sb);
+  for (const l of ['_lowHpFoodRunAt', '_lowHpRecoverBusy']) run(sb, letSrc(l));
+  for (const f of ['lowHpSignals', 'recoverLowHp']) run(sb, fnSrc(f));
+  return sb;
+}
+
+test('recoverLowHp : de quoi manger → mange, puis attend la régénération jusqu’au-dessus du seuil', async () => {
+  const sb = recoverSandbox({ items: [{ name: 'rotten_flesh', count: 3 }], onSleep: (s) => { s.bot.health += 0.5; } });
+  const r = await run(sb, "recoverLowHp('furnace')");
+  assert.strictEqual(r.outcome, 'healed');
+  assert.deepStrictEqual(sb.calls, ['eat']);
+  assert.ok(sb.bot.health > 6);
+  const done = sb.events.find((e) => e.type === 'low_hp_recover_done');
+  assert.ok(done && done.outcome === 'healed' && done.eats === 1, JSON.stringify(done));
+  assert.strictEqual(run(sb, '_lowHpRecoverBusy'), false);
+});
+
+test('recoverLowHp : affamé, rien en poche, personne → UNE sortie nourriture puis rend la main (no_regen)', async () => {
+  const sb = recoverSandbox({ health: 5.3, food: 13 });
+  const r = await run(sb, "recoverLowHp('crafting_table')");
+  assert.strictEqual(r.outcome, 'no_regen');
+  assert.deepStrictEqual(sb.calls, ['food_run']);
+});
+
+test('recoverLowHp : hostile collé sans régénération → se mure une fois puis attend, borné à 60 s', async () => {
+  const sb = recoverSandbox({ health: 3.6, food: 13, entities: [zombie(4)] });
+  const r = await run(sb, "recoverLowHp('furnace')");
+  assert.strictEqual(r.outcome, 'timeout');
+  assert.deepStrictEqual(sb.calls, ['stopMotion', 'seal']);
+  assert.ok(sb.clock.t - 1000 >= 60000 && sb.clock.t - 1000 <= 61000, 'budget respecté : ' + (sb.clock.t - 1000));
+});
+
+test('recoverLowHp : annulé → rend la main tout de suite', async () => {
+  const sb = recoverSandbox({ entities: [zombie(4)] });
+  sb.taskToken.cancelled = true;
+  const r = await run(sb, "recoverLowHp('furnace')");
+  assert.strictEqual(r.outcome, 'cancelled');
+  assert.deepStrictEqual(sb.calls, []);
 });

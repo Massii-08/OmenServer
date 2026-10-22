@@ -20,6 +20,17 @@ const HOT_LOOP_BACKOFF_FROM = 3;                  // dès le 3e tour instantané
 const HOT_LOOP_STALL_AT = 8;                      // au 8e : stalled { reason: 'hot_loop' }
 const HOT_LOOP_BACKOFF_STEPS = [250, 500, 1000, 2000];   // croissant ; le dernier palier est le plafond
 
+// ─── ATTENTES (22/10) ─────────────────────────────────────────────────────────────────────────
+// Un skill peut répondre `{ ok:false, reason:'recovering', wait:true }` : il n'a pas échoué, il a
+// rendu la main pendant que le bot récupère (PV critiques : manger, se murer, attendre la
+// régénération — cf. lowhp.js). Ce tour ne nourrit NI failStreak NI le fingerprint (un bot qui
+// attend immobile a par construction le même inventaire et la même position) ; avant, 4
+// `low_hp_skip` en 300 ms suffisaient à staller le but et le bot rejouait la chaîne à 3 PV.
+// Borné : au MAX_WAIT_TURNS-ième tour d'attente consécutif sur le même but (≈ 10 min, une
+// récupération durant ≤ 60 s), stalled { reason: 'recovering' }. La garde anti-boucle-chaude, elle,
+// s'applique aux attentes comme au reste : une « attente » instantanée en rafale reste une boucle.
+const MAX_WAIT_TURNS = 10;
+
 // Attente (ms) imposée après le n-ième tour instantané consécutif : 3 → 250, 4 → 500, 5 → 1000,
 // 6 et au-delà → 2000 (plafond).
 function hotLoopBackoffMs(instantTurns) {
@@ -45,7 +56,8 @@ const _realSleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
  *  steps = nb de skills exécutés par CE run. 0 = chaîne satisfaite d'office : sans ce compte, le
  *  caller ne distinguait pas « objectif atteint après une heure de travail » de « rien à faire » —
  *  d'où la boucle à vide mapper_armor→mapper_armor ×47 791 du run 17-18/08 (fix 18/08).
- *  reason n'est renseigné que par la garde anti-boucle-chaude ('hot_loop') ; les stalls historiques
+ *  reason n'est renseigné que par la garde anti-boucle-chaude ('hot_loop') et la borne des attentes
+ *  ('recovering', cf. MAX_WAIT_TURNS) ; les stalls historiques
  *  (failStreak, fingerprint) gardent EXACTEMENT leur forme { stalled, goal }.
  */
 async function runPlanner(bot, opts, token) {
@@ -61,6 +73,7 @@ async function runPlanner(bot, opts, token) {
   let steps = 0;        // skills réellement lancés dans ce run (succès comme échec)
   let hotGoal = null;   // but du tour précédent, pour la garde anti-boucle-chaude
   let instant = 0;      // tours INSTANTANÉS (< HOT_LOOP_MS) consécutifs sur ce même but
+  let waitTurns = 0;    // tours d'ATTENTE ({wait:true}) consécutifs sur ce même but
 
   while (true) {
     if (token && token.cancelled) return { cancelled: true };
@@ -87,18 +100,27 @@ async function runPlanner(bot, opts, token) {
     // sur un but EXPLORATOIRE (gatherLog en anneaux = position qui change à chaque tentative →
     // stalls remis à 0 → boucle infinie logs timeout). Un skill qui RÉPOND {ok:false} 4× de
     // suite sur le même but = stall, peu importe le déplacement.
-    if (goal.name !== lastGoal) { lastGoal = goal.name; failStreak = 0; }
-    if (result && result.ok === false) failStreak++;
-    else if (result && result.ok) failStreak = 0;
-    if (failStreak >= maxStalls) return { stalled: true, goal: goal.name };
+    if (goal.name !== lastGoal) { lastGoal = goal.name; failStreak = 0; waitTurns = 0; }
+    const waiting = !!(result && result.wait);
+    if (waiting) {
+      waitTurns++;
+      if (waitTurns >= MAX_WAIT_TURNS) return { stalled: true, goal: goal.name, reason: 'recovering' };
+    } else {
+      waitTurns = 0;
+      if (result && result.ok === false) failStreak++;
+      else if (result && result.ok) failStreak = 0;
+      if (failStreak >= maxStalls) return { stalled: true, goal: goal.name };
+    }
 
     const ctx2 = Object.assign({ inv: buildCtxInv(bot) }, ctxExtra());
     const _ax = bot && bot.entity && bot.entity.position ? Math.floor(bot.entity.position.x) : 0;
     const _az = bot && bot.entity && bot.entity.position ? Math.floor(bot.entity.position.z) : 0;
     const _ay = ctx2.y !== undefined ? Math.floor(ctx2.y) : 0;
     const after = JSON.stringify(ctx2.inv) + '|' + (ctx2.hasTable ? 1 : 0) + '|' + _ax + ',' + _ay + ',' + _az;
-    if (after === before) { stalls++; } else { stalls = 0; }
-    if (stalls >= maxStalls) return { stalled: true, goal: goal.name };
+    if (!waiting) {
+      if (after === before) { stalls++; } else { stalls = 0; }
+      if (stalls >= maxStalls) return { stalled: true, goal: goal.name };
+    }
 
     // GARDE ANTI-BOUCLE-CHAUDE — APRÈS les deux sorties historiques, qui gardent la priorité (leur
     // forme de retour et leur moment de déclenchement ne changent pas). Un changement de but ou un
@@ -121,4 +143,4 @@ async function runPlanner(bot, opts, token) {
   }
 }
 
-module.exports = { runPlanner, hotLoopBackoffMs, HOT_LOOP_MS, HOT_LOOP_BACKOFF_FROM, HOT_LOOP_STALL_AT };
+module.exports = { runPlanner, hotLoopBackoffMs, HOT_LOOP_MS, HOT_LOOP_BACKOFF_FROM, HOT_LOOP_STALL_AT, MAX_WAIT_TURNS };
