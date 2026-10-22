@@ -157,7 +157,7 @@ const { teamStatus, pickDonation, allArmored, pickMobAssist, pickMapperToEquip, 
 const {
   isWoodGoal, woodWantFor, logCount, activeLumberjack, woodWaitDecision, WOOD_UNDERGROUND_Y, preferredLumberjack,
   lumberjackVerdict, pickWoodRequest, tossPlan, WOOD_REQUEST_TTL_MS, WOOD_MIN_GIFT, LUMBERJACK_STOCK,
-  wornIronCount, LUMBERJACK_MIN_WORN,
+  wornIronCount, LUMBERJACK_MIN_WORN, ljSwitchBlock,
   missingIronPieces, ownArmorAction, pickMapperForLumberjack, ljGiftReady,
   woodShortForFailure, giftBatchFor,
   stockFailsPrune, stockFailsAdd, needsForestTrip, forestTriedAdd, pickForestCell, LJ_FOREST_TRIP_MS,
@@ -1614,8 +1614,18 @@ async function ljIronSlice(act) {
  * Jamais par-dessus un ordre joueur, une migration ou un bot sans planner autonome.
  */
 async function switchLumberjack(toLumberjack, why) {
-  if (_ljSwitching || _migrating || taskCtl.active !== 'autonomous') return false;
-  if (!(world.objective && world.objective.status === 'in_progress')) return false;
+  // Refus MOTIVÉ et visible (22/10, NethBot1 session 239 : bûcheron vidé resté bûcheron 6 min, refus
+  // silencieux pendant une migration). Cf. lumberjack.ljSwitchBlock pour qui est préempté.
+  const active = taskCtl.active;
+  const block = ljSwitchBlock({ active, migrating: _migrating, switching: _ljSwitching,
+    inProgress: !!(world.objective && world.objective.status === 'in_progress') });
+  if (block) {
+    if (block !== 'switching') {
+      _ljEmit('lumberjack_switch_refused',
+        { why: block, active: active || null, to: toLumberjack ? 'lumberjack' : 'resign', reason: why }, 60000);
+    }
+    return false;
+  }
   _ljSwitching = true;
   try {
     const from = world.objective.type;
@@ -1624,7 +1634,11 @@ async function switchLumberjack(toLumberjack, why) {
     while ((_skillInFlight > 0 || _autoRunners > 0) && !tok.cancelled && Date.now() - w0 < MIGRATION_PREEMPT_WAIT_MS) {
       await sleep(250);
     }
-    if (tok.cancelled) return false;
+    if (tok.cancelled) {
+      _ljEmit('lumberjack_switch_refused',
+        { why: 'preempted', active: taskCtl.active || null, to: toLumberjack ? 'lumberjack' : 'resign', reason: why });
+      return false;
+    }
     taskToken = tok;
     const st = Object.assign({}, loadBaseState() || {});
     let to;
@@ -1637,11 +1651,7 @@ async function switchLumberjack(toLumberjack, why) {
       // Rôle rendu pour cause d'armure incomplète (usure/perte) : on REFORGE d'abord — la chaîne
       // iron_armor rend la main à la suite (iron_help → mapper_armor → diamant) une fois 4/4.
       to = why === 'unarmored' ? 'iron_armor' : (st.lumberjackPrev || 'iron_armor');
-      delete st.lumberjackPrev;
-      saveBaseState(st);
-      _workSet = false;                                      // `work` pointe le spot de coupe, pas une mine
-      if (_ljTarget) { try { if (_teamClaims) _teamClaims.release('wood:' + _ljTarget.to); } catch (e) {} _ljTarget = null; }
-      _ljReleaseGift();                                      // le cartographe réservé redevient libre pour les ouvriers
+      _ljResignCleanup();
     }
     setObjective(world, { type: to, status: 'in_progress' });
     saveWorld(worldFile, world);
@@ -1657,6 +1667,17 @@ async function switchLumberjack(toLumberjack, why) {
     startAutonomous(null).catch((e) => emit({ type: 'error', message: String((e && e.message) || e) }));
     return true;
   } finally { _ljSwitching = false; }
+}
+
+/** Rôle rendu : oublie l'objectif d'avant (mémo FUSIONNÉ), le spot de coupe, la livraison et le cadeau
+ *  réservés. Partagé par switchLumberjack et startAutonomous (régression au démarrage, objectiveForStart). */
+function _ljResignCleanup() {
+  const st = Object.assign({}, loadBaseState() || {});
+  delete st.lumberjackPrev;
+  saveBaseState(st);
+  _workSet = false;                                          // `work` pointe le spot de coupe, pas une mine
+  if (_ljTarget) { try { if (_teamClaims) _teamClaims.release('wood:' + _ljTarget.to); } catch (e) {} _ljTarget = null; }
+  _ljReleaseGift();                                          // le cartographe réservé redevient libre pour les ouvriers
 }
 
 /** Tick d'élection (30 s). Rend le verdict (pour les tests / l'observation). */
@@ -8645,7 +8666,16 @@ async function startAutonomous(sender) {
   // pièces cassées) → on repart sur iron_armor et sa chaîne de démarrage (21/10, cf. goals.objectiveForStart).
   try {
     const back = objectiveForStart(objType, { inv: buildCtxInv(bot), worn: [..._wornArmor()] });
-    if (back !== objType) { emit({ type: 'objective_regressed', from: objType, to: back }); objType = back; }
+    if (back !== objType) {
+      emit({ type: 'objective_regressed', from: objType, to: back });
+      // Bûcheron sans 4/4 portées (inventaire vidé, 22/10) : le rôle est rendu ICI, avant tout but de coupe.
+      if (objType === 'lumberjack') {
+        try { _ljResignCleanup(); } catch (e) { /* best-effort */ }
+        try { if (_teamClaims) _teamClaims.release(LJ_CLAIM); } catch (e) { /* best-effort */ }
+        emit({ type: 'lumberjack_resigned', from: 'lumberjack', to: back, why: 'unarmored', at: 'start' });
+      }
+      objType = back;
+    }
   } catch (e) { /* best-effort : objectif inchangé */ }
   // UN SEUL RUNNER (live 22/10, NethBot1 session 206 : deux `autonomous_resume`/`autonomous_start` à 4 ms —
   // deux onSpawn de deux vies successives, tous deux en attente du MÊME abri, reprenaient ensemble ; le 2e

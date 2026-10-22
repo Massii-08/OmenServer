@@ -30,10 +30,22 @@ test('objectiveForStart : armure fer couverte (portée OU en poche) → objectif
 });
 
 test('objectiveForStart : les autres objectifs ne bougent jamais (diamond lançable sans armure)', () => {
-  for (const o of ['iron_armor', 'diamond', 'lumberjack', 'mapper', 'resource', 'stone_pickaxe', 'iron_pickaxe']) {
+  for (const o of ['iron_armor', 'diamond', 'mapper', 'resource', 'stone_pickaxe', 'iron_pickaxe']) {
     assert.strictEqual(G.objectiveForStart(o, { inv: {}, worn: [] }), o);
   }
   assert.strictEqual(G.objectiveForStart('iron_help', null), 'iron_help', 'contexte illisible : inchangé');
+});
+
+test('objectiveForStart (22/10, NethBot1 session 239) : bûcheron sans 4/4 PORTÉES → iron_armor', () => {
+  // inventaire vidé (RCON clear, armure comprise) : la règle d'éligibilité (4/4 portées) vaut au démarrage
+  assert.strictEqual(G.objectiveForStart('lumberjack', { inv: {}, worn: [] }), 'iron_armor');
+  assert.strictEqual(G.objectiveForStart('lumberjack', { inv: {}, worn: IRON_SET.slice(0, 3) }), 'iron_armor', '3/4');
+  // en poche ne suffit pas : le bûcheron est élu sur l'armure PORTÉE
+  assert.strictEqual(G.objectiveForStart('lumberjack', { inv: { iron_boots: 1 }, worn: IRON_SET.slice(0, 3) }), 'iron_armor');
+  assert.strictEqual(G.objectiveForStart('lumberjack', { inv: {}, worn: IRON_SET }), 'lumberjack');
+  assert.strictEqual(G.objectiveForStart('lumberjack',
+    { inv: {}, worn: ['diamond_helmet', 'iron_chestplate', 'netherite_leggings', 'iron_boots'] }), 'lumberjack', 'fer ou mieux');
+  assert.strictEqual(G.objectiveForStart('lumberjack', null), 'lumberjack', 'contexte illisible : inchangé');
 });
 
 test('NethBot3 : à vide, iron_help commence par help_pick ; iron_armor commence par logs', () => {

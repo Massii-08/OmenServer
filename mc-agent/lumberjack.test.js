@@ -371,3 +371,18 @@ test('woodWaitDecision : en surface → self (retire une demande héritée), sou
   assert.strictEqual(L.woodWaitDecision({ lumberjack: 'B', request: null, underground: true, now: NOW }).action, 'request');
   assert.strictEqual(L.WOOD_UNDERGROUND_Y, 50);
 });
+
+test('ljSwitchBlock (22/10) : seuls le planner et son watchdog sont préemptés ; ordre, migration, secours → refus motivé', () => {
+  const L2 = require('./lumberjack');
+  const b = (o) => L2.ljSwitchBlock(Object.assign({ active: 'autonomous', migrating: false, switching: false, inProgress: true }, o));
+  assert.strictEqual(b({}), null);
+  assert.strictEqual(b({ active: 'planner_watchdog' }), null);
+  assert.strictEqual(b({ switching: true }), 'switching');
+  assert.strictEqual(b({ migrating: true }), 'migration');
+  assert.strictEqual(b({ active: 'migration' }), 'migration');
+  assert.strictEqual(b({ inProgress: false }), 'no_objective');
+  assert.strictEqual(b({ active: 'death_camp_flee' }), 'safety');
+  assert.strictEqual(b({ active: 'dig_out' }), 'safety');
+  assert.strictEqual(b({ active: null }), 'no_planner');
+  for (const a of ['follow', 'guard', 'take', 'goto', 'loiter', 'pvp', 'order']) assert.strictEqual(b({ active: a }), 'order', a);
+});

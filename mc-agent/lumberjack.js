@@ -454,7 +454,29 @@ function ljIronSlicePlan(sig = {}) {
   return 'cave';
 }
 
+// ─── BASCULE DE RÔLE : QUI PEUT-ON PRÉEMPTER ? (22/10, NethBot1 session 239) ──────────────────────
+// Vécu : bûcheron élu, inventaire vidé (RCON clear) → présence `worn:0`, mais `switchLumberjack` exigeait
+// `taskCtl.active === 'autonomous'` et rendait `false` EN SILENCE : une migration de zone (bois) avait la
+// main depuis 5 min. Rendu ici explicite et motivé. Préemptés : le planner et son watchdog (celui-ci ne
+// fait que relancer le planner). Refusés : la migration (elle relance le planner à la fin, et
+// `goals.objectiveForStart` y ramène alors un bûcheron sans 4/4 à iron_armor), les secours (fuite de
+// camp, escalier de repli — couper une fuite tue le bot ; ils relancent aussi le planner), un ordre joueur,
+// l'absence de planner (stop/afk).
+const LJ_PREEMPTIBLE = new Set(['autonomous', 'planner_watchdog']);
+const LJ_SAFETY_TASKS = new Set(['death_camp_flee', 'dig_out']);
+/** PUR — null si la bascule peut préempter, sinon la raison du refus. */
+function ljSwitchBlock({ active, migrating, switching, inProgress } = {}) {
+  if (switching) return 'switching';
+  if (migrating || active === 'migration') return 'migration';
+  if (!inProgress) return 'no_objective';
+  if (LJ_PREEMPTIBLE.has(active)) return null;
+  if (LJ_SAFETY_TASKS.has(active)) return 'safety';
+  if (active == null) return 'no_planner';
+  return 'order';
+}
+
 module.exports = {
+  ljSwitchBlock, LJ_PREEMPTIBLE, LJ_SAFETY_TASKS,
   ljIronSlicePlan, LJ_MINE_COBBLE, LJ_MINE_DEPTH, ljMineTargetY, LJ_IRON_TARGET, LJ_IRON_SLICE_MS, LJ_IRON_RETRY_MS, LJ_IRON_CHECK_MS,
   WOOD_REQUEST_TTL_MS, WOOD_REQUEST_COOLDOWN_MS, WOOD_UNDERGROUND_Y, LUMBERJACK_FRESH_MS, WOOD_WANT_MIN, WOOD_WANT_MAX,
   LUMBERJACK_STOCK, LUMBERJACK_RESERVE, WOOD_MIN_GIFT,

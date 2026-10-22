@@ -88,7 +88,7 @@ function sandbox(o = {}) {
     isWoodGoal: L.isWoodGoal, woodWantFor: L.woodWantFor, logCount: L.logCount, activeLumberjack: L.activeLumberjack,
     woodWaitDecision: L.woodWaitDecision, preferredLumberjack: L.preferredLumberjack, lumberjackVerdict: L.lumberjackVerdict,
     wornIronCount: L.wornIronCount, LUMBERJACK_MIN_WORN: L.LUMBERJACK_MIN_WORN,
-    pickWoodRequest: L.pickWoodRequest, tossPlan: L.tossPlan,
+    pickWoodRequest: L.pickWoodRequest, tossPlan: L.tossPlan, ljSwitchBlock: L.ljSwitchBlock,
     pickJunkToToss: require('./skills/craft').pickJunkToToss,
     WOOD_REQUEST_TTL_MS: L.WOOD_REQUEST_TTL_MS, WOOD_UNDERGROUND_Y: L.WOOD_UNDERGROUND_Y, WOOD_MIN_GIFT: L.WOOD_MIN_GIFT, LUMBERJACK_STOCK: L.LUMBERJACK_STOCK,
     // temps mort → fer (21/10) : testé dans index.ljiron.test.js ; ici « rien d'utile » = attente historique
@@ -100,7 +100,7 @@ function sandbox(o = {}) {
     'WOOD_WAIT_POLL_MS', 'WOOD_WAIT_LJ_CHECK_MS', '_woodDone', '_woodFailed', '_ljEvAt']) run(sb, constSrc(c));
   for (const l of ['_woodReq', '_woodTimedOutAt', '_woodReqLoaded', '_beatNow', '_ljTarget', '_ljAt', '_ljSwitching']) run(sb, letSrc(l));
   for (const f of ['_ljEmit', 'isLumberjackObjective', 'loadWoodRequest', 'setWoodRequest', 'woodWaitStep', '_ljContext',
-    'bookmarkCuttingSpot', 'tossLogsTo', 'deliverWoodSkill', 'lumberjackIdleSkill', 'switchLumberjack', 'lumberjackTick']) run(sb, fnSrc(f));
+    'bookmarkCuttingSpot', 'tossLogsTo', 'deliverWoodSkill', 'lumberjackIdleSkill', '_ljResignCleanup', 'switchLumberjack', 'lumberjackTick']) run(sb, fnSrc(f));
   // exposer les `let` du contexte (inaccessibles comme propriétés de l'objet global)
   run(sb, 'globalThis.__get = (n) => eval(n); globalThis.__set = (n, v) => eval(n + " = v");');
   return sb;
@@ -393,4 +393,71 @@ test('ouvrier SOUS TERRE (y<50) avec bûcheron actif : demande publiée comme av
   const r = await run(sb, 'woodWaitStep(' + JSON.stringify(LOGS_GOAL) + ')');
   assert.deepStrictEqual(JSON.parse(JSON.stringify(r)), { ok: true });
   assert.ok(sb.events.some((e) => e.type === 'wood_request'));
+});
+
+// ─── 22/10, NethBot1 session 239 : bûcheron vidé (RCON clear) resté bûcheron ──────────────────────
+const UNARMORED_LJ = (o = {}) => sandbox(Object.assign({ name: 'NethBot1', objective: { type: 'lumberjack' },
+  base: { lumberjackPrev: 'iron_help', keep: 1 }, worn: [],
+  mates: [{ name: 'NethBot3', role: 'worker', at: T0 - 1000, armor: 0, worn: 0 }] }, o));
+
+test('bûcheron vidé pendant une MIGRATION : rendu refusé → lumberjack_switch_refused {why, active}, rien ne bascule', async () => {
+  const sb = UNARMORED_LJ();
+  sb._teamClaims.map.lumberjack = { by: 'NethBot1', at: T0 - 5000 };
+  sb.taskCtl.active = 'migration'; sb._migrating = true;
+  assert.strictEqual(await run(sb, 'lumberjackTick()'), 'release');
+  const ref = sb.events.find((e) => e.type === 'lumberjack_switch_refused');
+  assert.ok(ref, 'le refus se voit');
+  assert.strictEqual(ref.why, 'migration');
+  assert.strictEqual(ref.active, 'migration');
+  assert.strictEqual(sb.world.objective.type, 'lumberjack', 'la migration garde la main (le redémarrage régressera)');
+  assert.ok(!sb.calls.includes('begin:lumberjack_switch'));
+  assert.strictEqual(sb.__get('_ljSwitching'), false);
+});
+
+test('bûcheron vidé pendant un secours (fuite de camp) : refus motivé `safety`, pas de préemption', async () => {
+  const sb = UNARMORED_LJ();
+  sb.taskCtl.active = 'death_camp_flee';
+  await run(sb, 'lumberjackTick()');
+  assert.ok(sb.events.some((e) => e.type === 'lumberjack_switch_refused' && e.why === 'safety' && e.active === 'death_camp_flee'));
+  assert.ok(!sb.calls.includes('begin:lumberjack_switch'));
+});
+
+test('bûcheron vidé pendant que le watchdog du planner a la main : préempté, rôle rendu, iron_armor relancé', async () => {
+  const sb = UNARMORED_LJ();
+  sb.taskCtl.active = 'planner_watchdog';
+  assert.strictEqual(await run(sb, 'lumberjackTick()'), 'release');
+  assert.ok(sb.calls.includes('begin:lumberjack_switch'));
+  assert.strictEqual(sb.world.objective.type, 'iron_armor');
+  assert.ok(sb.events.some((e) => e.type === 'lumberjack_resigned' && e.why === 'unarmored'));
+  assert.ok(!('lumberjackPrev' in sb.base));
+  assert.strictEqual(sb.base.keep, 1);
+  assert.ok(sb.calls.includes('startAutonomous'));
+  assert.strictEqual(sb.__get('_ljSwitching'), false);
+});
+
+test('_ljSwitching revient à false même si la bascule LÈVE (finally)', async () => {
+  const sb = UNARMORED_LJ();
+  sb.saveBaseState = () => { throw new Error('disque plein'); };
+  await assert.rejects(run(sb, 'switchLumberjack(false, "unarmored")'));
+  assert.strictEqual(sb.__get('_ljSwitching'), false);
+});
+
+test('_ljResignCleanup : lumberjackPrev effacé (mémo FUSIONNÉ), work oublié, livraison et cadeau rendus', () => {
+  const sb = UNARMORED_LJ();
+  sb._teamClaims.map['wood:NethBot2'] = { by: 'NethBot1', at: T0 };
+  run(sb, '_ljTarget = { to: "NethBot2", amount: 16, want: 16 }; _workSet = true;');
+  run(sb, '_ljResignCleanup()');
+  assert.ok(!('lumberjackPrev' in sb.base));
+  assert.strictEqual(sb.base.keep, 1);
+  assert.strictEqual(sb.__get('_ljTarget'), null);
+  assert.ok(!sb._teamClaims.map['wood:NethBot2']);
+  assert.ok(sb.calls.includes('ljReleaseGift'));
+  assert.strictEqual(sb._workSet, false);
+});
+
+test('câblage : startAutonomous nettoie le rôle quand objectiveForStart ramène un bûcheron à iron_armor', () => {
+  const body = fnSrc('startAutonomous');
+  assert.match(body, /objectiveForStart\(/);
+  assert.match(body, /objType === 'lumberjack'[\s\S]*_ljResignCleanup\(\)/);
+  assert.match(body, /release\(LJ_CLAIM\)/);
 });

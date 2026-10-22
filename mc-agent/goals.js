@@ -636,7 +636,7 @@ const MAPPER_ARMOR_CHAIN = [
 // leur donne `mapperTarget` / `giftReady` du plan bûcheron (pièces partielles, cf. lumberjack.js).
 // `ljOwnArmor` / `ljForestTrip` sont calculés par ctxExtra (index.js) ; null/false hors rôle.
 // FORÊT : au 2e échec `lj_stock` en 10 min, expédition vers la forêt connue la plus proche (lj_forest).
-const { LUMBERJACK_STOCK } = require('./lumberjack');
+const { LUMBERJACK_STOCK, LUMBERJACK_MIN_WORN, wornIronCount } = require('./lumberjack');
 const _giftGoal = (n) => MAPPER_ARMOR_CHAIN.find((g) => g.name === n);
 const LUMBERJACK_CHAIN = [
   { name: 'lj_deliver', met: (c) => !c.woodRequest, skill: 'deliverWood' },
@@ -799,7 +799,12 @@ function wantsOpportunisticArmor(objType) {
 // tout le démarrage. `diamond` n'en fait pas partie : il peut être lancé directement, sans armure.
 const POST_IRON_ARMOR_OBJECTIVES = new Set(['iron_help', 'mapper_armor']);
 /** PUR — objectif à lancer vraiment : `iron_armor` si l'objectif persisté suppose une armure qu'on n'a plus. */
+// Bûcheron (22/10, NethBot1 session 239) : même angle mort — élu à 4/4, inventaire vidé, il repartait
+// bûcheron au respawn. Sa règle d'éligibilité est l'armure PORTÉE (lumberjack.js), pas « couverte ».
 function objectiveForStart(objective, ctx) {
+  if (objective === 'lumberjack' && ctx && ctx.inv) {
+    return wornIronCount(ctx.worn || []) >= LUMBERJACK_MIN_WORN ? objective : 'iron_armor';
+  }
   if (!POST_IRON_ARMOR_OBJECTIVES.has(objective) || !ctx || !ctx.inv) return objective;
   return IA(ctx) ? objective : 'iron_armor';
 }
