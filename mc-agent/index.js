@@ -571,7 +571,14 @@ async function fleeDeathCamp(fromPos) {
   // not_found` en ~30 ms au lieu d'un échec propre.
   // Même remède qu'`escapeDeathCamp` : on annule la tâche en cours ET on s'annonce busy (même
   // famille que `_exploreBusy`/`_foodTripBusy`, lue par les gardes confine/squad) AVANT de bouger.
-  try { taskCtl.cancel(); } catch (e) {}
+  // RELANCE DU PLANNER (live 22/10, NethBot1 session 152) : un simple `taskCtl.cancel()` laissait le
+  // planner MORT jusqu'au watchdog (6 min) — et la nuit, chaque abri dérivait de ce jeton mort. La fuite
+  // prend donc la main avec SON jeton (patron migrateZone/dig_out) et rallume le planner en partant,
+  // qu'elle ait abouti ou non — sauf si quelqu'un l'a préemptée entre-temps (ordre joueur, migration,
+  // mort → onSpawn), ou si ce qu'elle a coupé n'était pas le planner (ordre joueur, stop/afk).
+  const prevTask = taskCtl.active;
+  let tok = null;
+  try { tok = taskCtl.begin('death_camp_flee', stopMotion); } catch (e) { tok = null; }
   try { stopMotion(); } catch (e) {}
   _escaping = true;
   try {
@@ -583,6 +590,24 @@ async function fleeDeathCamp(fromPos) {
       90000, () => { try { stopMotion(); } catch (e) {} });
   } catch (e) { /* best-effort */ }
   finally { _escaping = false; }
+  await restartPlannerAfterFlee(tok, prevTask);
+}
+
+/** Fin de fleeDeathCamp (22/10) : attendre (borné) que l'ancien planner ait rendu la main, puis le
+ *  rallumer — seulement si la fuite a coupé le PLANNER et que personne ne l'a préemptée depuis. */
+async function restartPlannerAfterFlee(tok, prevTask) {
+  if (!tok || prevTask !== 'autonomous') return false;
+  const w0 = Date.now();
+  while ((_skillInFlight > 0 || _autoRunners > 0) && !tok.cancelled && Date.now() - w0 < MIGRATION_PREEMPT_WAIT_MS) {
+    await sleep(250);
+  }
+  if (tok.cancelled || _migrating || _ljSwitching) return false;     // un autre maître a la main
+  if (!(world.objective && world.objective.status === 'in_progress')) return false;
+  emit({ type: 'death_camp_flee_done', restart: true, waited_ms: Date.now() - w0 });
+  try {
+    startAutonomous(null).catch((e) => emit({ type: 'error', message: String((e && e.message) || e) }));
+  } catch (e) { /* best-effort */ }
+  return true;
 }
 
 // CAMP DE BASE (brique 3 v1, Massii 16/07) : à l'ancre, poser un FOUR (fixe, jamais reclaim —
