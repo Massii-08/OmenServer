@@ -42,6 +42,7 @@ test('les ticks de survie du tunnel et de la descente fuient via tunnelAwareFlee
       eat: async () => {}, fleeFrom: () => {}, tunnelAwareFlee: () => {},
       withTimeout: async () => {}, ensureTorches: async () => {}, furnaceJobTick: async () => {},
       recordAnchor: (a) => a, tossJunk: async () => {}, stopMotion: () => {},
+      fightGateDeps: () => ({}),   // disjoncteur de combat (22/10) : sans effet ici
     };
     vm.createContext(sb);
     run(sb, fnSrc(name));

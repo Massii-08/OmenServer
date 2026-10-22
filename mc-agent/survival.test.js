@@ -49,7 +49,9 @@ test('combatDecision : 0 hostile -> null', () => {
 });
 test('combatDecision : 1-2 hostiles + PV ok -> fight', () => {
   assert.strictEqual(combatDecision({ health: 20, hostileCount: 1 }), 'fight');
-  assert.strictEqual(combatDecision({ health: 12, hostileCount: 2 }), 'fight');
+  assert.strictEqual(combatDecision({ health: 18, hostileCount: 2 }), 'fight');
+  // Règle d'engagement 22/10 (fightBreaker) : ≥ 2 hostiles exige 18 PV.
+  assert.strictEqual(combatDecision({ health: 17.9, hostileCount: 2 }), 'flee');
 });
 test('combatDecision : submergé (>=3 hostiles) -> flee', () => {
   assert.strictEqual(combatDecision({ health: 20, hostileCount: SWARM_COUNT }), 'flee');
@@ -77,11 +79,13 @@ test('combatDecision : SANS armure → fuit dès 2 hostiles (vs 3 avec)', () => 
 });
 test('combatDecision : SANS armure → fuit dès PV ≤ 16 (vs ≤ 8 avec)', () => {
   assert.strictEqual(combatDecision({ health: LOW_HEALTH_UNARMORED, hostileCount: 1, armored: false }), 'flee');
-  assert.strictEqual(combatDecision({ health: 11, hostileCount: 1, armored: true }), 'fight'); // 11 > 8 → se bat avec armure
+  assert.strictEqual(combatDecision({ health: 12, hostileCount: 1, armored: true }), 'fight'); // 12 > 8 → se bat avec armure (sous 12 : règle d'engagement 22/10)
 });
 test('combatDecision : AVEC armure garde les seuils courageux (rétro-compat défaut)', () => {
-  assert.strictEqual(combatDecision({ health: 9, hostileCount: 1, armored: true }), 'fight');
-  assert.strictEqual(combatDecision({ health: 9, hostileCount: 1 }), 'fight'); // défaut (sans flag) = courageux
+  assert.strictEqual(combatDecision({ health: 12, hostileCount: 1, armored: true }), 'fight');
+  assert.strictEqual(combatDecision({ health: 12, hostileCount: 1 }), 'fight'); // défaut (sans flag) = courageux
+  // Sous 12 PV contre 1 hostile : la règle d'engagement (22/10) l'emporte → fuite, même armé.
+  assert.strictEqual(combatDecision({ health: 9, hostileCount: 1, armored: true }), 'flee');
   assert.ok(SWARM_UNARMORED < SWARM_COUNT && LOW_HEALTH_UNARMORED > LOW_HEALTH);
 });
 
@@ -90,7 +94,8 @@ test('combatDecision : AVEC armure garde les seuils courageux (rétro-compat dé
 // laisser le comportement STRICTEMENT identique (aucun test existant ci-dessus ne doit changer).
 test('combatDecision : food absent → seuil bas-santé inchangé (pas de +2 fantôme)', () => {
   // Sans food, le seuil relevé (LOW_HEALTH + marge) ne doit PAS s'appliquer : à cette santé, fight.
-  assert.strictEqual(combatDecision({ health: LOW_HEALTH + NO_REGEN_HP_MARGIN, hostileCount: 1, armored: true }), 'fight');
+  // (22/10) La règle d'engagement (1 hostile → 12 PV mini) couvre désormais cette bande : on teste à 12.
+  assert.strictEqual(combatDecision({ health: 12, hostileCount: 1, armored: true }), 'fight');
 });
 test('combatDecision : food absent → armure jamais forcée à false (pas de swarm fantôme)', () => {
   // Sans food, armored:true garde le seuil de swarm courageux même à 2 hostiles.
@@ -116,7 +121,7 @@ test('combatDecision : food JUSTE au-dessus du critique → armure PAS forcée (
 test('combatDecision : food ≤ REGEN_FOOD (pas de régén) → seuil de fuite relevé de +NO_REGEN_HP_MARGIN (armure)', () => {
   const lowHp = LOW_HEALTH + NO_REGEN_HP_MARGIN;
   assert.strictEqual(combatDecision({ health: lowHp, hostileCount: 1, armored: true, food: REGEN_FOOD }), 'flee');
-  assert.strictEqual(combatDecision({ health: lowHp + 1, hostileCount: 1, armored: true, food: REGEN_FOOD }), 'fight');
+  assert.strictEqual(combatDecision({ health: Math.max(lowHp + 1, 12), hostileCount: 1, armored: true, food: REGEN_FOOD }), 'fight');
 });
 test('combatDecision : food ≤ REGEN_FOOD (pas de régén) → seuil de fuite relevé de +NO_REGEN_HP_MARGIN (sans armure)', () => {
   const lowHp = LOW_HEALTH_UNARMORED + NO_REGEN_HP_MARGIN;
@@ -125,7 +130,7 @@ test('combatDecision : food ≤ REGEN_FOOD (pas de régén) → seuil de fuite r
 });
 
 test('combatDecision : food > REGEN_FOOD (régén active) → comportement normal (pas de marge, armure pas forcée)', () => {
-  assert.strictEqual(combatDecision({ health: LOW_HEALTH + NO_REGEN_HP_MARGIN, hostileCount: 1, armored: true, food: REGEN_FOOD + 1 }), 'fight');
+  assert.strictEqual(combatDecision({ health: Math.max(LOW_HEALTH + NO_REGEN_HP_MARGIN, 12), hostileCount: 1, armored: true, food: REGEN_FOOD + 1 }), 'fight');
   assert.strictEqual(combatDecision({ health: 20, hostileCount: SWARM_UNARMORED, armored: true, food: 20 }), 'fight');
 });
 
@@ -389,9 +394,11 @@ test('boldFightAdvised : canDealWith > nb ET PV > 8 ET au moins 1 mob à combatt
 });
 test('combatDecision : canDealWith > nb ET PV > 8 → fight, MÊME nu là où on fuyait (2 mobs / PV 12)', () => {
   const base = { armored: false, hostileCount: 2 };
-  assert.strictEqual(combatDecision({ ...base, health: 12 }), 'flee', 'sans canDealWith : historique');
-  assert.strictEqual(combatDecision({ ...base, health: 12, canDealWith: 5, fightCount: 2 }), 'fight');
-  assert.strictEqual(combatDecision({ ...base, health: 12, canDealWith: 2, fightCount: 2 }), 'flee', 'ne gère pas le nombre');
+  // (22/10) 2 mobs exigent 18 PV (règle d'engagement) : on teste à 18 ; à 12 c'est désormais la fuite.
+  assert.strictEqual(combatDecision({ ...base, health: 18 }), 'flee', 'sans canDealWith : historique');
+  assert.strictEqual(combatDecision({ ...base, health: 18, canDealWith: 5, fightCount: 2 }), 'fight');
+  assert.strictEqual(combatDecision({ ...base, health: 18, canDealWith: 2, fightCount: 2 }), 'flee', 'ne gère pas le nombre');
+  assert.strictEqual(combatDecision({ ...base, health: 12, canDealWith: 5, fightCount: 2 }), 'flee', '2 mobs sous 18 PV');
   assert.strictEqual(combatDecision({ ...base, health: 8, canDealWith: 9, fightCount: 2 }), 'flee', 'PV ≤ 8');
 });
 test('combatDecision : canDealWith ne passe JAMAIS devant creeper / lave / fleeOnly / mappeur', () => {
@@ -461,10 +468,10 @@ test('survivalTick : zombie + creeper calme lointain → on combat le ZOMBIE (le
   assert.strictEqual(act, 'fight');
   assert.deepStrictEqual(calls.attack, ['zombie']);
 });
-test('survivalTick : nu + épée de pierre, 2 zombies, PV 12 → fight (canDealWith 6 > 2) + event fight_chosen', async () => {
+test('survivalTick : nu + épée de pierre, 2 zombies, PV 18 → fight (canDealWith 6 > 2) + event fight_chosen', async () => {
   const evs = [];
   const { bot, calls } = fakeBot({
-    health: 12, items: [['stone_sword', 1]],
+    health: 18, items: [['stone_sword', 1]],
     entities: [0, 1].map((i) => fakeEntity('zombie', 'Hostile mobs', { x: 3 + i, y: 64, z: 0 })),
   });
   const act = await survivalTick(bot, { fleeFrom: () => true, emit: (e) => evs.push(e), now: () => 1e9 });
@@ -505,7 +512,8 @@ test('survivalTick : la nuit vient de bot.time (2 zombies, 13 PV, épée pierre 
     await survivalTick(bot, { fleeFrom: () => true, emit: (e) => out.push(e), lavaNear: () => false });
     return out;
   };
-  assert.ok((await run(6000)).some((e) => e.type === 'fight_chosen'), 'jour : combat audacieux choisi');
+  // (22/10) la règle d'engagement (2 mobs → 18 PV) couvre désormais ce cas de jour comme de nuit.
+  assert.ok(!(await run(6000)).some((e) => e.type === 'fight_chosen'), 'jour : 13 PV face à 2 → plus de combat');
   assert.ok(!(await run(18000)).some((e) => e.type === 'fight_chosen'), 'nuit : plus de combat audacieux');
 });
 

@@ -446,3 +446,33 @@ test('abri tenu : creeper au contact → ni fuite ni frappe ; hors abri → fuit
   bot.calls.handlers.health();
   assert.ok(fled >= 1, 'hors abri : comportement d origine');
 });
+
+// DISJONCTEUR (22/10, fightBreaker.js) : la riposte réflexe passe par canEngage — refus → FUITE.
+test('riposte : canEngage refuse → pas d\'attaque, fuite + reflex flee reason, onFlee rappelé', () => {
+  const zombie = { type: 'mob', name: 'zombie', position: { x: 2, y: 64, z: 0, distanceTo: () => 2 } };
+  const events = []; const attacked = []; let fled = 0; const flees = [];
+  const bot = fakeBot({ health: 20, threat: zombie });
+  installReflexes(bot, {
+    emit: (e) => events.push(e), fleeFrom: () => { fled++; return true; }, attack: (t) => attacked.push(t),
+    canEngage: () => ({ ok: false, reason: 'cooldown' }), onFlee: (r) => flees.push(r),
+  });
+  bot.calls.handlers.health();
+  bot.health = 16;
+  bot.calls.handlers.health();
+  assert.strictEqual(attacked.length, 0);
+  assert.strictEqual(fled, 1);
+  assert.ok(events.some((e) => e.type === 'reflex' && e.action === 'flee' && e.reason === 'cooldown'));
+  assert.strictEqual(flees.length, 1);
+  assert.strictEqual(flees[0].ok, true);
+});
+
+test('riposte : canEngage accepte → riposte inchangée', () => {
+  const zombie = { type: 'mob', name: 'zombie', position: { x: 2, y: 64, z: 0, distanceTo: () => 2 } };
+  const attacked = [];
+  const bot = fakeBot({ health: 20, threat: zombie });
+  installReflexes(bot, { emit() {}, fleeFrom() {}, attack: (t) => attacked.push(t), canEngage: () => ({ ok: true }) });
+  bot.calls.handlers.health();
+  bot.health = 16;
+  bot.calls.handlers.health();
+  assert.strictEqual(attacked.length, 1);
+});

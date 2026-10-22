@@ -232,6 +232,11 @@ function installReflexes(bot, opts = {}) {
   // vécu : `dig_in → reflex fight → teleported dist:6 → reflex flee → teleported dist:8 → mort`. On frappe
   // SUR PLACE (`strikeInPlace`, sans poursuite) ce qui est au contact ; manger / murer / bouclier restent.
   const holdPosition = typeof opts.holdPosition === 'function' ? opts.holdPosition : null;
+  // DISJONCTEUR (22/10, fightBreaker.js) : `canEngage({foe, health})` → {ok, reason}. Refus (abandon de
+  // combat récent, PV trop bas pour le nombre) → on FUIT au lieu de riposter. `onFlee({ok, refused})`
+  // rend le résultat de cette fuite au disjoncteur (test « acculé »). Absents → comportement inchangé.
+  const canEngage = typeof opts.canEngage === 'function' ? opts.canEngage : null;
+  const onFlee = typeof opts.onFlee === 'function' ? opts.onFlee : null;
   const strikeInPlace = typeof opts.strikeInPlace === 'function' ? opts.strikeInPlace : null;
   const panicCooldownMs = opts.panicCooldownMs != null ? opts.panicCooldownMs : 8000;
   const defensiveCooldownMs = opts.defensiveCooldownMs != null ? opts.defensiveCooldownMs : 6000;
@@ -315,6 +320,23 @@ function installReflexes(bot, opts = {}) {
         // FLEE-ONLY : assaillant trop dangereux au contact (wither_skeleton / hoglin bas-PV) → FUIR
         // au lieu de riposter (riposter = mort à petit feu / se faire manger, cause morts Nether).
         if (!fleeing) { fleeing = true; emit({ type: 'reflex', action: 'flee', reason: 'flee_only', mob: foe.name }); act(() => { try { flee(bot); } catch (e) {} }); }
+      } else if (foe && !fighting && canEngage && (() => {
+        let g = null;
+        try { g = canEngage({ foe, health: bot.health }); } catch (e) { g = null; }
+        if (!g || g.ok !== false) return false;
+        // Refusé : fuir (une fois par épisode, comme les autres fuites du réflexe).
+        if (!fleeing) {
+          fleeing = true;
+          emit({ type: 'reflex', action: 'flee', reason: g.reason || 'refused', mob: foe.name });
+          act(() => {
+            let ok = null;
+            try { ok = flee(bot); } catch (e) { ok = false; }
+            if (onFlee) { try { onFlee({ ok: ok !== false, refused: g.reason || 'refused' }); } catch (e) {} }
+          });
+        }
+        return true;
+      })()) {
+        // refus traité ci-dessus
       } else if (foe && !fighting) {
         fighting = true;
         emit({ type: 'reflex', action: 'fight', mob: foe.name });

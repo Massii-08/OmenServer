@@ -125,6 +125,7 @@ const { descentFoodGate, undergroundFoodTripDue, foodGateLoad } = require('./foo
 const { noteDropAhead, turnYaw, shiftTarget } = require('./dropAhead');
 const { canDealWith, attackDamage, boldFightAdvised } = require('./survival');
 const { fleeTarget } = require('./skills/fleeFrom');
+const { createFightBreaker } = require('./fightBreaker');
 // SYSTÈME À 3 HOMES (Massii 27/07) : safe = LA BASE, work = le chantier courant, death = la dette
 // de mort. Le serveur n'autorise que 3 homes et le code en posait 4 → un /sethome échouait EN
 // SILENCE sur chaque bot (bug prouvé world_mn5). Voir homes.js.
@@ -538,6 +539,12 @@ let _movesKeeper = null;
 let _combatLootWired = false;
 let _combatLootBusy = false;      // un seul ramassage post-combat à la fois
 let _combatTarget = null;         // {name,kind,type} de la cible du combat en cours (relevé à startedAttacking)
+// DISJONCTEUR DE COMBAT (22/10, fightBreaker.js) : état lu par l'event `health`, le wrapper de
+// `bot.pvp.attack` et les ticks de survie → NIVEAU MODULE (piège #56). Posé une fois par process.
+const _fightBreaker = createFightBreaker();
+let _fightBreakerWired = false;
+let _fightRefusedAt = -Infinity;  // event `fight_refused` : au plus 1 / 3 s
+let _fightRefuseFleeAt = -Infinity; // fuite sur refus : au plus 1 / 1,5 s (anti-thrash du but de fuite)
 setInterval(() => {
   try {
     const d = _goalTrace.drain();
@@ -3018,7 +3025,7 @@ async function gatherStone(goal) {
         // Survie LÉGÈRE seulement (combat/fuite/manger) : ni torches (miner du charbon désaligne
         // l'escalier, cf. descendDiagonal) ni tossJunk (il jetterait le cobble qu'on vient chercher).
         onSurvivalTick: async () => {
-          try { await survivalTick(bot, { fleeFrom, emit }); } catch (e) {}
+          try { await survivalTick(bot, { fleeFrom, emit, ...fightGateDeps() }); } catch (e) {}
           try { await eat(bot); } catch (e) {}
         },
         survivalEvery: 4,
@@ -3554,7 +3561,7 @@ async function tryKitUpgrade() {
 async function settleSurvivalKit() {
   for (let i = 0; i < 10; i++) {
     if (taskToken.cancelled) return;
-    const action = await survivalTick(bot, { fleeFrom, emit, holdPosition: shelterHoldNow, strikeInPlace });
+    const action = await survivalTick(bot, { fleeFrom, emit, holdPosition: shelterHoldNow, strikeInPlace, ...fightGateDeps() });
     if (!action) return;
     await sleep(1500);
   }
@@ -7313,7 +7320,7 @@ function ironLawnEnd(r) {
 }
 
 async function branchSurvivalTick() {
-  try { await survivalTick(bot, { fleeFrom: tunnelAwareFlee, emit }); } catch (e) {}
+  try { await survivalTick(bot, { fleeFrom: tunnelAwareFlee, emit, ...fightGateDeps() }); } catch (e) {}
   try { await eat(bot); } catch (e) {}
   // Ancre profonde SÈCHE : on est dans le branch-mine (y≈-58). Si l'OXYGÈNE est plein (= hors de
   // l'eau, sur la terre ferme du tunnel) ET on est profond, on mémorise la position comme refuge sec.
@@ -7351,7 +7358,7 @@ async function branchSurvivalTick() {
 // l'escalier 1×2 → digs hors range au palier suivant). La descente Y64→-58 dure plusieurs minutes
 // pendant lesquelles seuls les réflexes event-driven protégeaient le bot.
 async function descentSurvivalTick() {
-  try { await survivalTick(bot, { fleeFrom: tunnelAwareFlee, emit }); } catch (e) {}
+  try { await survivalTick(bot, { fleeFrom: tunnelAwareFlee, emit, ...fightGateDeps() }); } catch (e) {}
   try { await eat(bot); } catch (e) {}
 }
 
@@ -9464,6 +9471,10 @@ async function onSpawn() {
     // même event s'exécutent dans l'ordre d'enregistrement, la nominale est donc déjà rendue quand on
     // lance lootNearby. Une seule fois par process (garde de NIVEAU MODULE `_combatLootWired`).
     try { wireCombatLoot(); } catch (e) { /* best-effort : sans ça, comportement d'avant */ }
+    // DISJONCTEUR DE COMBAT (22/10) : mineurs seulement — les cartographes gardent leur fuite par défaut.
+    if (!IS_MAPPER) {
+      try { wireFightBreaker(); } catch (e) { emit({ type: 'fight_breaker_wire_failed', err: String(e && e.message || e) }); }
+    }
     bot.pathfinder.setMovements(moves);
     // ANTI-OOM (crash live 25/07 : NethBot2 → 2 Go de heap en 38 s → FATAL heap out of memory,
     // juste après `survival:flee`). mineflayer-pathfinder livre `searchRadius = -1` = espace de
@@ -9586,6 +9597,9 @@ async function onSpawn() {
       // Enterré dans l'abri : ni fuite ni poursuite, frappe sur place (live 22/10, NethBot1 session 206).
       holdPosition: shelterHoldNow,
       strikeInPlace,
+      // DISJONCTEUR (22/10) : la riposte réflexe passe par la même porte que tout engagement (mineurs).
+      canEngage: () => { const d = fightGateDeps(); return d.canEngage ? d.canEngage() : { ok: true }; },
+      onFlee: (r) => { const d = fightGateDeps(); if (d.onFlee) d.onFlee(r); },
       // DÉLAI DE RÉACTION humain sur les réflexes (anti aimbot 0 ms / anti-ban) — TOUJOURS actif
       // (sécurité, pas seulement en humanize) : ~300 ms par défaut (les captures ne mesurent pas
       // encore reaction.*). Coût nul sur le minage (ce n'est pas un réflexe). Cf. paquet 1.
@@ -10151,6 +10165,115 @@ function wireCombatLoot() {
     _combatTarget = null;
     lootAfterCombat(target).catch(() => { /* best-effort */ });
   });
+  return true;
+}
+
+// ─── DISJONCTEUR DE COMBAT (22/10, cf. fightBreaker.js) ─────────────────────────────────────────────
+// Mesure live : `fight_chosen {hostiles:2, health:14.12}` → `imminent_bookmark_death hp:1.3` 3 s plus
+// tard ; une fois engagé, plus rien ne regardait les PV fondre. Trois points d'appui, UN état :
+//   1. event `health` + `startedAttacking` : chute ≥ 6 PV en 4 s ou PV < 10 pendant un combat contre un
+//      HOSTILE → pvp.stop + fuite + event `fight_aborted` ;
+//   2. `bot.pvp.attack` enveloppé : TOUT engagement (réflexes, ticks de survie, planner, tunnelGuard,
+//      combats de skills) passe par `canEngage` — refus (abandon < 8 s, PV trop bas pour le nombre) →
+//      pas d'attaque, fuite ; acculé (la fuite n'avance pas, mob collé) → le combat est permis ;
+//   3. `fightGateDeps()` pour les ticks de survie : le refus y devient une fuite étiquetée.
+// Le gibier (vache, cochon…) n'est jamais concerné : seuls les hostiles (isFleeHostile) le sont.
+function _fightSituation() {
+  let hostiles = 0;
+  let nearestDist = null;
+  try {
+    const list = nearbyHostiles(bot, 10);
+    const me = bot.entity && bot.entity.position;
+    for (const h of list) {
+      if (!h || !h.position) continue;
+      if (h.name !== 'creeper') hostiles++;
+      if (me) {
+        const d = Math.hypot(h.position.x - me.x, h.position.y - me.y, h.position.z - me.z);
+        if (Number.isFinite(d) && (nearestDist == null || d < nearestDist)) nearestDist = d;
+      }
+    }
+  } catch (e) { /* lecture best-effort */ }
+  return { hostiles, nearestDist };
+}
+
+function _fightCanEngage() {
+  const sit = _fightSituation();
+  const p = bot.entity && bot.entity.position;
+  return _fightBreaker.canEngage({ t: Date.now(), pos: p ? { x: p.x, y: p.y, z: p.z } : null, health: bot.health, hostiles: sit.hostiles, nearestDist: sit.nearestDist });
+}
+
+function _fightNoteFlee(ok) {
+  const p = bot.entity && bot.entity.position;
+  _fightBreaker.noteFlee({ t: Date.now(), pos: p ? { x: p.x, y: p.y, z: p.z } : null, fleeOk: ok !== false });
+}
+
+/** Dépendances du disjoncteur pour survivalTick (vide pour un cartographe : comportement inchangé). */
+function fightGateDeps() {
+  if (IS_MAPPER || !_fightBreakerWired) return {};
+  return {
+    canEngage: () => { try { return _fightCanEngage(); } catch (e) { return { ok: true }; } },
+    onFlee: (r) => { try { _fightNoteFlee(r && r.ok); } catch (e) {} },
+  };
+}
+
+function _fightInProgress() {
+  try {
+    const t = bot.pvp && bot.pvp.target;
+    return !!(t && isFleeHostile(t));
+  } catch (e) { return false; }
+}
+
+function _fightBreakerCheck() {
+  if (!_fightInProgress()) return;
+  const t = Date.now();
+  const r = _fightBreaker.check({ inFight: true, health: bot.health, t });
+  if (!r.abort) return;
+  const sit = _fightSituation();
+  try { if (bot.pvp && typeof bot.pvp.stop === 'function') bot.pvp.stop(); }
+  catch (e) { emit({ type: 'fight_abort_stop_failed', err: String(e && e.message || e) }); }
+  let fleeOk = false;
+  try { fleeOk = fleeFrom(bot) !== false; }
+  catch (e) { fleeOk = false; emit({ type: 'fight_abort_flee_failed', err: String(e && e.message || e) }); }
+  const p = bot.entity && bot.entity.position;
+  _fightBreaker.noteAbort({ t, pos: p ? { x: p.x, y: p.y, z: p.z } : null, fleeOk });
+  emit({ type: 'fight_aborted', hp: Math.round((bot.health || 0) * 10) / 10, drop: Math.round(r.drop * 10) / 10,
+    hostiles: sit.hostiles, reason: r.reason, flee: fleeOk, y: p ? Math.round(p.y) : null });
+}
+
+function wireFightBreaker() {
+  if (_fightBreakerWired) return false;
+  if (!bot.pvp || typeof bot.pvp.attack !== 'function') return false;
+  _fightBreakerWired = true;
+  try { _fightBreaker.sample(bot.health, Date.now()); } catch (e) {}
+  bot.on('health', () => {
+    try { _fightBreaker.sample(bot.health, Date.now()); _fightBreakerCheck(); }
+    catch (e) { emit({ type: 'fight_breaker_error', err: String(e && e.message || e) }); }
+  });
+  bot.on('startedAttacking', () => {
+    try { _fightBreakerCheck(); } catch (e) { emit({ type: 'fight_breaker_error', err: String(e && e.message || e) }); }
+  });
+  const origAttack = bot.pvp.attack.bind(bot.pvp);
+  bot.pvp.attack = function gatedAttack(target, ...rest) {
+    let g = null;
+    if (target && isFleeHostile(target)) {
+      try { g = _fightCanEngage(); } catch (e) { g = null; }
+    }
+    if (!g || g.ok !== false) return origAttack(target, ...rest);
+    const t = Date.now();
+    let fleeOk = null;
+    if (t < _fightRefuseFleeAt || t - _fightRefuseFleeAt >= 1500) {
+      _fightRefuseFleeAt = t;
+      try { if (bot.pvp.target) bot.pvp.stop(); } catch (e) {}
+      try { fleeOk = fleeFrom(bot) !== false; }
+      catch (e) { fleeOk = false; emit({ type: 'fight_refuse_flee_failed', err: String(e && e.message || e) }); }
+      _fightNoteFlee(fleeOk);
+    }
+    if (t < _fightRefusedAt || t - _fightRefusedAt >= 3000) {
+      _fightRefusedAt = t;
+      emit({ type: 'fight_refused', reason: g.reason, mob: target.name, hp: Math.round((bot.health || 0) * 10) / 10, flee: fleeOk });
+    }
+    return undefined;
+  };
   return true;
 }
 

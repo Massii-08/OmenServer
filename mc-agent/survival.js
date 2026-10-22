@@ -10,6 +10,7 @@ const { FOODS, FLEE_ONLY_ALWAYS, FLEE_ONLY_LOWHP, FLEE_ONLY_LOWHP_THRESHOLD, isF
 const { bestWeapon } = require('./tools');
 const { creeperPlan } = require('./creeper');
 const { HUNT_MAX_DY } = require('./huntReach');
+const { engageAllowedByHp } = require('./fightBreaker');
 
 const SWARM_COUNT = 3;   // ≥3 hostiles = submergé → fuite (AVEC armure)
 const LOW_HEALTH = 8;    // PV ≤ 8 (4 cœurs) → fuite (AVEC armure)
@@ -72,6 +73,10 @@ function combatDecision({ health, hostileCount, armored, hasCreeper, lavaNear, p
   // Mode MAPPEUR (preferFlee, demande Massii live 2026-07-15) : FUIR par défaut — se défendre
   // UNIQUEMENT si l'assaillant est à portée de coup (risque de hit imminent, ≤3 blocs).
   if (preferFlee) return (nearestDist != null && nearestDist <= 3) ? 'fight' : 'flee';
+  // RÈGLE D'ENGAGEMENT (22/10, fightBreaker.js) : 6 morts sur 10 suivaient un engagement à ≤ 16,8 PV,
+  // dont `fight_chosen {hostiles:2, health:14.12}` → mort 3 s plus tard. ≥ 2 hostiles exige 18 PV,
+  // 1 hostile est refusé sous 12 PV — quelle que soit l'heure, l'armure ou canDealWith.
+  if (!engageAllowedByHp({ health, hostiles: hostileCount })) return 'flee';
   // COMBATTRE QUAND ON GÈRE LE NOMBRE (AltoClef MobDefenseChain, 20/10) : canDealWith > hostiles proches
   // ET PV > 8 → on se bat au lieu de fuir — y compris NU (une fuite à pied ratée tuait 93 % du temps,
   // run 10). Passe devant les seuils prudents ci-dessous, jamais devant creeper/lave/fleeOnly/mappeur.
@@ -323,21 +328,35 @@ async function survivalTick(bot, deps = {}) {
     }
     return null;   // rien à portée : on reste dans le trou, sans boucler
   }
-  if (decision === 'flee') {
+  // DISJONCTEUR (fightBreaker.js) : un abandon récent (8 s) ou la règle des PV, lus par `deps.canEngage`,
+  // transforment le combat en fuite — y compris quand combatDecision l'aurait accepté (cas « acculé »
+  // exclu : canEngage le laisse passer). Absent → comportement inchangé.
+  let decided = decision;
+  let refusedWhy = null;
+  if (decided === 'fight' && typeof deps.canEngage === 'function') {
+    let g = null;
+    try { g = deps.canEngage({ hostiles: hostiles.length, nearestDist, health: bot.health }); } catch (e) { g = null; }
+    if (g && g.ok === false) { decided = 'flee'; refusedWhy = g.reason || 'refused'; }
+  }
+  if (decided === 'flee') {
     const t = now();
     const stillFleeing = !!(bot.pathfinder && bot.pathfinder.isMoving && bot.pathfinder.isMoving());
     const ready = t < _lastFleeAt || (t - _lastFleeAt) >= FLEE_RECALL_MS || !stillFleeing;   // horloge reculée → prêt
     if (ready) {
       _lastFleeAt = t;
-      try { deps.fleeFrom && deps.fleeFrom(bot); } catch (e) {}
+      let fleeOk = null;
+      try { fleeOk = deps.fleeFrom ? deps.fleeFrom(bot) : null; } catch (e) { fleeOk = false; }
+      // Résultat de la fuite rendu au disjoncteur (test « acculé ») ; jamais bloquant.
+      if (typeof deps.onFlee === 'function') { try { deps.onFlee({ ok: fleeOk !== false, refused: refusedWhy }); } catch (e) {} }
     }
     const ev = { type: 'survival', action: 'flee', hostiles: hostiles.length };
     if (lavaNear) ev.reason = 'lava_near';
     else if (fleeOnly) ev.reason = 'flee_only';
+    else if (refusedWhy) ev.reason = refusedWhy;
     emit(ev);
     return 'flee';
   }
-  if (decision === 'fight') {
+  if (decided === 'fight') {
     // Jamais le creeper (il n'arrive ici que si `hasCreeper` est faux, mais on ne frappe pas un creeper).
     const target = fighters[0] || hostiles.find((h) => h.name !== 'creeper');
     if (!target) return null;
