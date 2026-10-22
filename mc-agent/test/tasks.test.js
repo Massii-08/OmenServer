@@ -40,3 +40,16 @@ test('setCleanup met à jour le cleanup courant', () => {
   assert.strictEqual(a, 0);
   assert.strictEqual(b, 1);
 });
+
+// GÉNÉRATION (22/10, abri de nuit) : un consommateur qui ne peut PAS dériver d'un jeton vivant (le
+// jeton global était déjà annulé) doit quand même voir les préemptions POSTÉRIEURES à son démarrage.
+test('generation : avance à chaque begin ET à chaque cancel (même sans tâche active)', () => {
+  const c = createTaskController();
+  const g0 = c.generation;
+  c.begin('a');
+  assert.strictEqual(c.generation, g0 + 1);
+  c.cancel();
+  assert.strictEqual(c.generation, g0 + 2);
+  c.cancel();                       // rien d'actif : la demande de préemption compte quand même
+  assert.strictEqual(c.generation, g0 + 3);
+});

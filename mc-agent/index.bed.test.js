@@ -223,7 +223,7 @@ test('trySleepInBedTonight : de jour, trop loin, ou lit DÉTRUIT → false sans 
 
 test('index.js : le lit est BRANCHÉ (abri de nuit, planner, ctxExtra, messages serveur)', () => {
   const shelter = fnSrc('maybeNightShelter');
-  const iSleep = shelter.indexOf('trySleepInBedTonight(taskToken)');
+  const iSleep = shelter.indexOf('trySleepInBedTonight(shTok)');   // le jeton de l'ABRI (22/10 : jamais un jeton déjà mort)
   assert.ok(iSleep > 0, 'maybeNightShelter ne tente jamais le lit');
   assert.ok(iSleep < shelter.indexOf('shelterUntilDawn(bot'), 'le lit AVANT le trou');
   assert.match(fnSrc('ctxExtra'), /bedCtxNow\(\)/);

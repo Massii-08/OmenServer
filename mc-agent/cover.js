@@ -9,6 +9,8 @@
 // Un vrai joueur CASSE LA LIGNE DE VUE : un squelette qui ne te voit plus cesse de tirer.
 // D'où : poser 1-2 blocs entre soi et le tireur (bien moins cher qu'un panicWall 4 côtés).
 
+const BOT_HALF_WIDTH = 0.3;      // hitbox d'un joueur : 0,6 de large
+
 /** Signe « dominant » d'un vecteur 2D : l'axe le plus fort gagne (mur perpendiculaire au tir). */
 function _dominantAxis(dx, dz) {
   if (Math.abs(dx) >= Math.abs(dz)) return { ax: dx === 0 ? 0 : Math.sign(dx), az: 0 };
@@ -30,9 +32,13 @@ function coverPlan(botPos, shooterPos) {
   const dz = shooterPos.z - botPos.z;
   if (dx === 0 && dz === 0) return null;          // même colonne : aucune direction à couvrir
   const { ax, az } = _dominantAxis(dx, dz);
+  // HITBOX (22/10) : si le flanc du bot (demi-largeur 0,3) déborde déjà dans la case voisine, le serveur
+  // refuse la pose (bloc qui recouperait une entité) — on vise la case d'après.
+  const over = (c, cell, s) => s > 0 ? (c + BOT_HALF_WIDTH > cell + 1 + 1e-6) : (s < 0 ? (c - BOT_HALF_WIDTH < cell - 1e-6) : false);
+  const step = over(botPos.x, bx, ax) || over(botPos.z, bz, az) ? 2 : 1;
   return [
-    { x: bx + ax, y: by, z: bz + az },            // niveau des pieds
-    { x: bx + ax, y: by + 1, z: bz + az },        // niveau de la tête = celui qui coupe la visée
+    { x: bx + ax * step, y: by, z: bz + az * step },        // niveau des pieds
+    { x: bx + ax * step, y: by + 1, z: bz + az * step },    // niveau de la tête = celui qui coupe la visée
   ];
 }
 
@@ -61,4 +67,4 @@ function shouldTakeCover(s) {
   return true;                                         // nu / blessé / désarmé → couvert
 }
 
-module.exports = { coverPlan, shouldTakeCover, MELEE_OK, SAFE_HEALTH, SAFE_ARMOR };
+module.exports = { BOT_HALF_WIDTH, coverPlan, shouldTakeCover, MELEE_OK, SAFE_HEALTH, SAFE_ARMOR };

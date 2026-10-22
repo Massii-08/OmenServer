@@ -297,7 +297,7 @@ function plannerSandbox({ shelterStub, onSleep, ...opts } = {}) {
     MINING_GOALS: new Set(), _zoneMiningMs: 0, noteZoneFailure() {}, _skillInFlight: 0, _curGoal: null,
     woodWaitStep: async () => null,        // bûcheron d'équipe (20/10) : aucun bûcheron → comportement historique
     isInWater: () => false,
-    lastShelterT: 0, _shelterInFlight: null, _shelterTok: null, _shelterStartedAt: 0, deriveToken: require('./plannerWatchdog').deriveToken, SHELTER_HARD_MAX_MS: 13 * 60 * 1000 + Math.max(require('./skills/shelter').DAWN_WAIT_MAX_MS, require('./skills/shelter').DAWN_SAFE_EXIT_MAX_MS), _nightHold: 0,
+    lastShelterT: 0, _shelterInFlight: null, _shelterTok: null, _shelterStartedAt: 0, deriveToken: require('./plannerWatchdog').deriveToken, shelterToken: require('./shelterToken').shelterToken, shelterCancelLoopNote: require('./shelterToken').shelterCancelLoopNote, taskCtl: require('./tasks').createTaskController(), _shelterCancelLoop: null, _shelterFreshNext: false, SHELTER_HARD_MAX_MS: 13 * 60 * 1000 + Math.max(require('./skills/shelter').DAWN_WAIT_MAX_MS, require('./skills/shelter').DAWN_SAFE_EXIT_MAX_MS), _nightHold: 0,
     NIGHT_HOLD_POLL_MS: 2000, NIGHT_HOLD_MAX_MS: 15 * 60 * 1000,
     log,
   }, opts));
@@ -513,7 +513,7 @@ function shelterSandbox({ inWater = false, ...opts } = {}) {
     DAWN_SAFE_EXIT_MAX_MS: SH.DAWN_SAFE_EXIT_MAX_MS,
     dawnExitThreatsNow: () => ({ hostiles: 0, creepers: 0 }), exitAwayFromThreats: () => {},
     hostilesNearNow: () => 0,
-    _shelterInFlight: null, _shelterTok: null, _shelterStartedAt: 0, deriveToken: require('./plannerWatchdog').deriveToken, SHELTER_HARD_MAX_MS: 13 * 60 * 1000 + Math.max(require('./skills/shelter').DAWN_WAIT_MAX_MS, require('./skills/shelter').DAWN_SAFE_EXIT_MAX_MS), _lockdownShelters: null,
+    _shelterInFlight: null, _shelterTok: null, _shelterStartedAt: 0, deriveToken: require('./plannerWatchdog').deriveToken, shelterToken: require('./shelterToken').shelterToken, shelterCancelLoopNote: require('./shelterToken').shelterCancelLoopNote, taskCtl: require('./tasks').createTaskController(), _shelterCancelLoop: null, _shelterFreshNext: false, SHELTER_HARD_MAX_MS: 13 * 60 * 1000 + Math.max(require('./skills/shelter').DAWN_WAIT_MAX_MS, require('./skills/shelter').DAWN_SAFE_EXIT_MAX_MS), _lockdownShelters: null,
     // LIT (20/10) : sans lit à portée, trySleepInBedTonight rend false → l'abri historique (testé dans index.bed.test.js)
     trySleepInBedTonight: async () => false,
     isInWater: () => inWater,

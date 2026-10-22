@@ -4,8 +4,13 @@
 
 function createTaskController() {
   let current = null; // { name, cleanup, token }
+  // GÉNÉRATION (22/10) : avance à CHAQUE demande de préemption (begin ou cancel, tâche active ou non).
+  // Un consommateur qui n'a pas de jeton vivant à suivre (l'abri de nuit quand le jeton global est déjà
+  // mort) compare la génération à celle de son démarrage pour voir les préemptions POSTÉRIEURES.
+  let generation = 0;
 
   function cancel() {
+    generation++;
     if (!current) return;
     const c = current;
     current = null;
@@ -14,7 +19,7 @@ function createTaskController() {
   }
 
   function begin(name, cleanup) {
-    cancel();
+    cancel();                // avance déjà la génération (une seule fois par begin)
     const token = { cancelled: false };
     current = { name, cleanup: cleanup || (() => {}), token };
     return token;
@@ -22,7 +27,7 @@ function createTaskController() {
 
   function setCleanup(fn) { if (current) current.cleanup = fn || (() => {}); }
 
-  return { begin, cancel, setCleanup, get active() { return current ? current.name : null; } };
+  return { begin, cancel, setCleanup, get active() { return current ? current.name : null; }, get generation() { return generation; } };
 }
 
 module.exports = { createTaskController };

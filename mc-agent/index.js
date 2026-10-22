@@ -159,6 +159,7 @@ const { tierRank } = require('./tools');
 const { createTeleportWatcher, wireTeleportDetection } = require('./teleport');
 const { isNight, shelterUntilDawn, exitPendingShelter, shouldShelter, DAWN_WAIT_MAX_MS, DAWN_SAFE_EXIT_MAX_MS } = require('./skills/shelter');
 const { plannerWatchdogVerdict, deriveToken } = require('./plannerWatchdog');
+const { shelterToken, shelterCancelLoopNote } = require('./shelterToken');
 // LIT (20/10) : réapparaître dans sa base, pas au spawn du monde campé — cf. bed.js.
 const { bedItemIn, bedRecipeName, woolMissing, sheepKnown, bedMemoWith, bedMemoCleared, bedRetryMemo, bedOf, bedRetryActive,
   bedSpotPlan, parseBedMessage, sleepErrorReason, sleepDecision, isBedName, BED_HUNT_BUDGET_MS } = require('./bed');
@@ -2292,6 +2293,17 @@ const SKILL_TIMEOUT_MS = Number(args.skillTimeout || 90000);
 // proche connue) a son propre plafond, hors du budget de 60 s — un garde-fou de 90 s la couperait en route.
 const SKILL_TIMEOUTS = { descendDiagonal: 900000, branchMine: 900000, caveHunt: 900000, caveIron: 600000, huntCook: 90000 + FOOD_TRIP_MS, ensureBed: 240000, smeltCharcoal: 300000, gather: 480000, gatherLog: 180000, ensurePick: 480000, fish: 300000, deliverWood: 120000, lumberjackIdle: 330000, lumberjackArmor: 160000, lumberjackForestTrip: LJ_FOREST_TRIP_MS + 20000 };
 function timeoutFor(skill) { return SKILL_TIMEOUTS[skill] || SKILL_TIMEOUT_MS; }
+/** Champs « pourquoi » d'un résultat takeCover pour l'event `take_cover` (22/10 : `placed:0 ok:false`
+ *  sans raison, session 155 — on ne savait pas si rien n'était posable, refusé, ou expiré). */
+function coverWhy(r) {
+  const o = {};
+  if (r && r.reason) o.reason = r.reason;
+  if (r && Array.isArray(r.cells) && r.cells.length) o.cells = r.cells;
+  if (r && r.error) o.error = r.error;
+  if (r && r.joined) o.joined = true;
+  return o;
+}
+
 function withTimeout(promise, ms, onTimeout) {
   return new Promise((resolve) => {
     let done = false;
@@ -3260,6 +3272,10 @@ let _mapperHomeShelterFailedAt = 0;   // abri RATÉ au home safe (mapperNight) �
 let _shelterInFlight = null;   // promesse de l'abri EN COURS — un seul trou à la fois, les autres appelants le rejoignent
 let _shelterTok = null;        // jeton PROPRE de l'abri en cours (dérivé du jeton de tâche) — annulable par sa borne et le watchdog
 let _shelterStartedAt = 0;     // début de l'abri en cours (watchdog du planner : un abri n'est légitime que borné)
+// BOUCLE D'ANNULATIONS (live 22/10, NethBot1 session 152) : série d'abris finis `cancelled` (cf.
+// shelterToken.shelterCancelLoopNote) et, après une boucle, « le prochain abri prend un jeton NEUF ».
+let _shelterCancelLoop = null;
+let _shelterFreshNext = false;
 // Borne DURE d'un abri de nuit (inchangée : 13 min de nuit + l'attente d'aube) — désormais elle ANNULE.
 const SHELTER_HARD_MAX_MS = 13 * 60 * 1000 + Math.max(DAWN_WAIT_MAX_MS, DAWN_SAFE_EXIT_MAX_MS);
 let _lastGoalAt = 0;           // dernier event `goal` du planner (watchdog) — lu par un timer : niveau module
@@ -3346,7 +3362,13 @@ async function maybeNightShelter(proactive = false, opts = {}) {
     // JETON DÉRIVÉ (21/10) : `withTimeout` n'annule rien — sans jeton propre, un abri dont la borne expire
     // continuait derrière (creusage gelé compris). Annulé par : le jeton de tâche (mort, ordre), la borne
     // ci-dessous, le watchdog du planner.
-    const shTok = deriveToken(taskToken);
+    // ⚠️ JAMAIS NÉ ANNULÉ (live 22/10, NethBot1 session 152) : `fleeDeathCamp` avait fait `taskCtl.cancel()`,
+    // plus rien ne re-posait de jeton vivant, et chaque abri dérivé de ce jeton MORT sortait en 0-2 ms
+    // (`sealed:false why:cancelled depth:0`) toutes les 20 s, toute la nuit. shelterToken suit le parent
+    // s'il est vivant ; sinon il ne voit que les préemptions POSTÉRIEURES (génération de taskCtl).
+    const shTok = shelterToken(taskToken, () => taskCtl.generation, { fresh: _shelterFreshNext });
+    _shelterFreshNext = false;
+    if (shTok.inherited !== 'live') emit({ type: 'shelter_token', inherited: shTok.inherited });
     _shelterTok = shTok;
     _shelterStartedAt = lastShelterT;
     const run = (async () => {
@@ -3384,7 +3406,7 @@ async function maybeNightShelter(proactive = false, opts = {}) {
       try {
         // LIT (20/10) : à ≤ 16 blocs de son lit, on y dort au lieu de creuser un trou. Nuit passée au lit
         // → fini ; « monstres à proximité », lit disparu ou réveillé de nuit → l'abri historique ci-dessous.
-        if (!IS_MAPPER && await trySleepInBedTonight(taskToken)) return;
+        if (!IS_MAPPER && await trySleepInBedTonight(shTok)) return;
         // `hostilesNear` + `worn` : l'attente des monstres à l'AUBE (shelter étape 3bis, live 19/10 —
         // 14 morts sur 17 « shot by Skeleton » juste après la sortie d'abri, sous une canopée où ils ne
         // brûlent pas). SANS ce branchement l'attente n'existe pas et rien ne le dit : tests verts, bot
@@ -3399,6 +3421,17 @@ async function maybeNightShelter(proactive = false, opts = {}) {
           endWhenDisplaced: () => nightLockdownNow(),
         }), SHELTER_HARD_MAX_MS,
         () => { shTok.cancelled = true; emit({ type: 'shelter', action: 'hard_timeout' }); try { stopMotion({ arm: true }); } catch (e) {} });
+        // GARDE (22/10) : 3 abris `cancelled` d'affilée en < 2 min = un jeton qui naît/meurt aussitôt,
+        // quelle qu'en soit la cause → tracé, et le prochain abri part sur un jeton NEUF tout de suite.
+        try {
+          const cl = shelterCancelLoopNote(_shelterCancelLoop, { reason: (sres && sres.ok) ? null : (sres && sres.reason) || null, now: Date.now() });
+          _shelterCancelLoop = cl.state;
+          if (cl.loop) {
+            emit({ type: 'shelter_cancel_loop', count: cl.count, inherited: shTok.inherited });
+            _shelterFreshNext = true;
+            lastShelterT = 0;
+          }
+        } catch (e) { /* comptabilité best-effort */ }
         if (IS_MAPPER) {
           const reason = (sres && sres.reason) || null;
           // borne de 13 min atteinte = nuit passée terré ; tâche annulée (mort, ordre) ≠ trou raté
@@ -8578,7 +8611,7 @@ async function onSpawn() {
             const r = await withTimeout(takeCover(bot, shooter), 3000,
               () => { try { stopMotion(); } catch (e) {} });
             emit({ type: 'take_cover', mob: shooter && shooter.name, from: 'flee',
-                   placed: (r && r.placed) || 0, ok: !!(r && r.ok) });
+                   placed: (r && r.placed) || 0, ok: !!(r && r.ok), ...coverWhy(r) });
             if (!r || !r.ok) { try { fleeFrom(bot); } catch (e) {} }
           } catch (e) { try { fleeFrom(bot); } catch (e2) {} }
         })();
@@ -8662,7 +8695,7 @@ async function onSpawn() {
                 const rc = await withTimeout(takeCover(bot, threat), 3000,
                   () => { try { stopMotion(); } catch (e) {} });
                 emit({ type: 'take_cover', mob: threat.name, from: 'defensive',
-                       dist: Math.round(dist), placed: (rc && rc.placed) || 0, ok: !!(rc && rc.ok) });
+                       dist: Math.round(dist), placed: (rc && rc.placed) || 0, ok: !!(rc && rc.ok), ...coverWhy(rc) });
                 if (rc && rc.ok) return;                 // masqué : inutile de lever un bouclier absent
               }
             }
@@ -8699,7 +8732,7 @@ async function onSpawn() {
               const r = await withTimeout(takeCover(bot, foe), 3000,
                 () => { try { stopMotion(); } catch (e) {} });
               emit({ type: 'take_cover', mob: foe && foe.name, dist: Math.round(dist),
-                     placed: (r && r.placed) || 0, ok: !!(r && r.ok) });
+                     placed: (r && r.placed) || 0, ok: !!(r && r.ok), ...coverWhy(r) });
               if (r && r.ok) return;                 // masqué : on reprend le cours normal
               // pas de couvert possible (rien où poser) → on retombe sur la charge ci-dessous
             }

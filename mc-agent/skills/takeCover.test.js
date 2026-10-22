@@ -115,6 +115,76 @@ describe('takeCover', () => {
     assert.equal(r.placed, 0);
   });
 
+  // ── 22/10 : `take_cover placed:0 ok:false` sans raison (session 155, mort 0,5 s après ; 1121/2431 au total) ──
+  it('chaque échec DIT pourquoi : rien où s accrocher → no_support', async () => {
+    const bot = makeBot({ position: [0.5, 64, 0.5], blocks: {}, inventory: ['cobblestone'] });
+    const r = await takeCover(bot, { position: new Vec3(14, 64, 0) });
+    assert.equal(r.ok, false);
+    assert.equal(r.reason, 'no_support');
+    assert.deepEqual(r.cells, ['no_support', 'no_support']);
+  });
+
+  it('pose refusée par le serveur → reason place_rejected (et le message est gardé)', async () => {
+    const bot = makeBot({ position: [0.5, 64, 0.5], blocks: GROUND, inventory: ['cobblestone'] });
+    bot.placeBlock = async () => { throw new Error('No block has been placed : the block is still air'); };
+    const r = await takeCover(bot, { position: new Vec3(14, 64, 0) });
+    assert.equal(r.reason, 'place_rejected');
+    assert.match(r.error, /still air/);
+  });
+
+  it('equip qui ne prend pas (main toujours occupée) → equip_failed, AUCUNE pose avec la nourriture en main', async () => {
+    const bot = makeBot({ position: [0.5, 64, 0.5], blocks: GROUND, inventory: ['cobblestone'] });
+    bot.equip = async () => {};                       // le serveur n a pas suivi : la main tient toujours rien
+    const r = await takeCover(bot, { position: new Vec3(14, 64, 0) });
+    assert.equal(r.reason, 'equip_failed');
+    assert.equal(bot._placed.length, 0);
+  });
+
+  it('en train de MANGER (usingHeldItem) → on lâche la nourriture avant d équiper le bloc', async () => {
+    const bot = makeBot({ position: [0.5, 64, 0.5], blocks: GROUND, inventory: ['cobblestone'] });
+    bot.usingHeldItem = true;
+    let deact = 0;
+    bot.deactivateItem = () => { deact++; bot.usingHeldItem = false; };
+    const r = await takeCover(bot, { position: new Vec3(14, 64, 0) });
+    assert.equal(deact, 1);
+    assert.equal(r.placed, 2);
+  });
+
+  it('pose jamais confirmée (mineflayer attend 5 s) → bornée PAR POSE, reason place_timeout, le budget global tient', async () => {
+    const bot = makeBot({ position: [0.5, 64, 0.5], blocks: GROUND, inventory: ['cobblestone'] });
+    bot.placeBlock = () => new Promise(() => {});      // le blockUpdate n arrive jamais
+    const t0 = Date.now();
+    const r = await takeCover(bot, { position: new Vec3(14, 64, 0) }, { placeTimeoutMs: 30, budgetMs: 200 });
+    assert.ok(Date.now() - t0 < 500, 'rend la main dans son budget, pas après 3 s de timeout extérieur');
+    assert.equal(r.ok, false);
+    assert.equal(r.reason, 'place_timeout');
+  });
+
+  it('pose confirmée EN RETARD (bloc solide après la borne) → comptée', async () => {
+    const bot = makeBot({ position: [0.5, 64, 0.5], blocks: GROUND, inventory: ['cobblestone'] });
+    bot.placeBlock = (ref, face) => {
+      const p = ref.position.plus(face);
+      bot._blockMap[`${p.x},${p.y},${p.z}`] = { name: 'cobblestone', boundingBox: 'block' };
+      return new Promise(() => {});
+    };
+    const r = await takeCover(bot, { position: new Vec3(14, 64, 0) }, { placeTimeoutMs: 20 });
+    assert.equal(r.ok, true);
+    assert.equal(r.placed, 2);
+  });
+
+  it('DEUX couverts concurrents (réflexe defensive + flee, session 155) → un seul pose, l autre le rejoint', async () => {
+    const bot = makeBot({ position: [0.5, 64, 0.5], blocks: GROUND, inventory: ['cobblestone'] });
+    const [a, b] = await Promise.all([
+      takeCover(bot, { position: new Vec3(14, 64, 0) }),
+      takeCover(bot, { position: new Vec3(14, 64, 0) }),
+    ]);
+    assert.equal(bot._placed.length, 2, 'pas de pose en double ni d equip croisé');
+    assert.equal(a.ok, true);
+    assert.equal(b.ok, true);
+    assert.equal(b.joined, true);
+    assert.equal(bot._mcaCoverInFlight, null);
+  });
+
   it('pickCoverBlock : prend un bloc sacrifiable, jamais un item précieux', () => {
     assert.equal(pickCoverBlock({ inventory: { items: () => [{ name: 'diamond' }, { name: 'dirt' }] } }).name, 'dirt');
     assert.equal(pickCoverBlock({ inventory: { items: () => [{ name: 'oak_planks' }] } }).name, 'oak_planks');

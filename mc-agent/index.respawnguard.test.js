@@ -150,7 +150,7 @@ function hideSandbox({ inFlight = null, night = false, shelter = null, fled = fa
     captured,
     bot: { time: { timeOfDay: night ? NIGHT : DAY }, entity: { position: { x: 0, y: 70, z: 0 } } },
     isNight: (b) => !!(b && b.time && b.time.timeOfDay >= 12800 && b.time.timeOfDay <= 23200),
-    _shelterInFlight: inFlight, _shelterTok: null, _shelterStartedAt: 0, deriveToken: require('./plannerWatchdog').deriveToken, SHELTER_HARD_MAX_MS: 13 * 60 * 1000 + Math.max(require('./skills/shelter').DAWN_WAIT_MAX_MS, require('./skills/shelter').DAWN_SAFE_EXIT_MAX_MS), _stillBusy: false, lastShelterT: 0,
+    _shelterInFlight: inFlight, _shelterTok: null, _shelterStartedAt: 0, deriveToken: require('./plannerWatchdog').deriveToken, shelterToken: require('./shelterToken').shelterToken, shelterCancelLoopNote: require('./shelterToken').shelterCancelLoopNote, taskCtl: require('./tasks').createTaskController(), _shelterCancelLoop: null, _shelterFreshNext: false, SHELTER_HARD_MAX_MS: 13 * 60 * 1000 + Math.max(require('./skills/shelter').DAWN_WAIT_MAX_MS, require('./skills/shelter').DAWN_SAFE_EXIT_MAX_MS), _stillBusy: false, lastShelterT: 0,
     hostilesNearNow: () => 0, _wornArmor: () => new Set(), nightLockdownNow: () => false,
     dawnExitThreatsNow: () => ({ hostiles: 0, creepers: 0 }), exitAwayFromThreats: () => {},
     stopMotion: () => sb.calls.push('stop'),

@@ -135,7 +135,7 @@ function shelterSandbox({ worn = 0, entities = [zombie(6), zombie(8, 2, 'skeleto
     // discipline de nuit (19/10 soir) : ce que maybeNightShelter lit en plus — un seul abri à la fois,
     // l'écart de 20 s en lockdown, la comptabilité des ré-abris (cf. index.nightlockdown.test.js).
     // Ce bot n'a pas de `bot.time` : heure inconnue → pas de lockdown → comportement d'avant, à l'identique.
-    _shelterInFlight: null, _shelterTok: null, _shelterStartedAt: 0, deriveToken: require('./plannerWatchdog').deriveToken, SHELTER_HARD_MAX_MS: 13 * 60 * 1000 + Math.max(require('./skills/shelter').DAWN_WAIT_MAX_MS, require('./skills/shelter').DAWN_SAFE_EXIT_MAX_MS), _lockdownShelters: null, isInWater: () => false,
+    _shelterInFlight: null, _shelterTok: null, _shelterStartedAt: 0, deriveToken: require('./plannerWatchdog').deriveToken, shelterToken: require('./shelterToken').shelterToken, shelterCancelLoopNote: require('./shelterToken').shelterCancelLoopNote, taskCtl: require('./tasks').createTaskController(), _shelterCancelLoop: null, _shelterFreshNext: false, SHELTER_HARD_MAX_MS: 13 * 60 * 1000 + Math.max(require('./skills/shelter').DAWN_WAIT_MAX_MS, require('./skills/shelter').DAWN_SAFE_EXIT_MAX_MS), _lockdownShelters: null, isInWater: () => false,
     // LIT (20/10) : sans lit à portée, trySleepInBedTonight rend false → l'abri historique (testé dans index.bed.test.js)
     trySleepInBedTonight: async () => false,
     nightLockdown: C.nightLockdown, lockdownShelterNote: C.lockdownShelterNote,
@@ -277,4 +277,51 @@ test('maybeNightShelter : le jeton de l abri suit le jeton de tâche (mort, ordr
   assert.strictEqual(tok.cancelled, false);
   sb.taskToken.cancelled = true;
   assert.strictEqual(tok.cancelled, true, 'annuler la tâche annule l abri');
+});
+
+// ═════ 5. JAMAIS NÉ ANNULÉ (live 22/10, NethBot1 session 152) ═════
+// `fleeDeathCamp` (via:foot) fait `taskCtl.cancel()` ; le planner sort ; le jeton global reste MORT.
+// Avant : chaque abri suivant dérivait de ce jeton → `sealed:false why:cancelled depth:0 took_ms:0-2`
+// toutes les 20 s, `shelter_reenter count:10`, la nuit à découvert.
+test('maybeNightShelter : jeton de tâche DÉJÀ annulé → l abri naît VIVANT (et le lit reçoit ce même jeton)', async () => {
+  const sb = shelterSandbox({ worn: 0 });
+  sb.taskCtl.begin('autonomous');
+  sb.taskCtl.cancel();                        // fleeDeathCamp
+  sb.taskToken.cancelled = true;              // le global reste sur le jeton mort
+  let tok = null; let bedTok = null;
+  sb.trySleepInBedTonight = async (t) => { bedTok = t; return false; };
+  sb.shelterUntilDawn = async (b, t) => { tok = t; return { ok: true }; };
+  assert.strictEqual(await sb.maybeNightShelter(true), true);
+  assert.strictEqual(tok.cancelled, false, 'shelterUntilDawn ne doit pas recevoir un jeton déjà annulé');
+  assert.strictEqual(bedTok, tok, 'le lit tourne sous le jeton de l abri, pas sous le jeton mort');
+  assert.ok(sb.events.some((e) => e.type === 'shelter_token' && e.inherited === 'fresh'));
+});
+
+test('maybeNightShelter : parent mort → une préemption POSTÉRIEURE (migration, ordre) annule quand même l abri', async () => {
+  const sb = shelterSandbox({ worn: 0 });
+  sb.taskCtl.cancel();
+  sb.taskToken.cancelled = true;
+  let tok = null;
+  sb.shelterUntilDawn = async (b, t) => { tok = t; return { ok: true }; };
+  await sb.maybeNightShelter(true);
+  assert.strictEqual(tok.cancelled, false);
+  sb.taskCtl.begin('migration');
+  assert.strictEqual(tok.cancelled, true);
+});
+
+test('maybeNightShelter : 3 abris `cancelled` d affilée < 2 min → shelter_cancel_loop + jeton NEUF tout de suite', async () => {
+  const sb = shelterSandbox({ worn: 0 });
+  const toks = [];
+  sb.shelterUntilDawn = async (b, t) => { toks.push(t); return toks.length <= 3 ? { ok: false, reason: 'cancelled' } : { ok: true }; };
+  for (let i = 0; i < 3; i++) { sb.lastShelterT = 0; await sb.maybeNightShelter(true, { force: true }); }
+  const loop = sb.events.filter((e) => e.type === 'shelter_cancel_loop');
+  assert.strictEqual(loop.length, 1);
+  assert.strictEqual(loop[0].count, 3);
+  assert.strictEqual(sb.lastShelterT, 0, 'l écart est levé : le prochain abri part sans attendre');
+  await sb.maybeNightShelter(true, { force: true });
+  assert.strictEqual(toks.length, 4);
+  assert.strictEqual(toks[3].inherited, 'forced_fresh');
+  sb.taskToken.cancelled = true; sb.taskCtl.begin('x');
+  assert.strictEqual(toks[3].cancelled, false, 'jeton neuf : seuls sa borne / le watchdog l annulent');
+  assert.strictEqual(sb._shelterFreshNext, false, 'consommé une fois');
 });

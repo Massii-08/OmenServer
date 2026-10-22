@@ -14,7 +14,7 @@ test('coverPlan : tireur à l\'EST → mur sur la case est, 2 de haut (pieds + t
 });
 
 test('coverPlan : tireur à l\'OUEST → mur côté ouest', () => {
-  const p = coverPlan({ x: 10, y: 64, z: 10 }, { x: -3, y: 64, z: 10 });
+  const p = coverPlan({ x: 10.5, y: 64, z: 10.5 }, { x: -3, y: 64, z: 10 });   // centré : à x=10,0 le flanc (9,7) mord déjà la case 9
   assert.deepEqual(p, [{ x: 9, y: 64, z: 10 }, { x: 9, y: 65, z: 10 }]);
 });
 
@@ -27,6 +27,24 @@ test('coverPlan : l\'axe DOMINANT gagne (mur perpendiculaire au tir)', () => {
 test('coverPlan : positions flottantes → cases entières sous le bot', () => {
   const p = coverPlan({ x: 10.7, y: 64.0, z: 10.2 }, { x: 25.5, y: 64, z: 10.1 });
   assert.deepEqual(p, [{ x: 11, y: 64, z: 10 }, { x: 11, y: 65, z: 10 }]);
+});
+
+// HITBOX (22/10, 1121 couverts sur 2431 à placed:0 dans les logs de l'Omen) : le bot fait 0,6 de large.
+// À x=10,85 son flanc est à 11,15 → il OCCUPE déjà la case 11, et le serveur refuse toute pose qui
+// recoupe une entité (mineflayer attend alors 5 s un blockUpdate qui ne vient jamais — le couvert entier
+// tient dans 3 s). Le mur se pose donc sur la PREMIÈRE case que le corps du bot ne touche pas.
+test('coverPlan : bot à cheval sur la case voisine (flanc dedans) → mur une case plus loin', () => {
+  assert.deepEqual(coverPlan({ x: 10.85, y: 64, z: 10.5 }, { x: 25, y: 64, z: 10.5 }),
+    [{ x: 12, y: 64, z: 10 }, { x: 12, y: 65, z: 10 }]);
+  assert.deepEqual(coverPlan({ x: 10.15, y: 64, z: 10.5 }, { x: -5, y: 64, z: 10.5 }),
+    [{ x: 8, y: 64, z: 10 }, { x: 8, y: 65, z: 10 }]);
+  assert.deepEqual(coverPlan({ x: 10.5, y: 64, z: 10.9 }, { x: 10.5, y: 64, z: 30 }),
+    [{ x: 10, y: 64, z: 12 }, { x: 10, y: 65, z: 12 }]);
+});
+
+test('coverPlan : bot centré (flanc qui affleure à peine) → case adjacente, comme avant', () => {
+  assert.deepEqual(coverPlan({ x: 10.5, y: 64, z: 10.5 }, { x: 25, y: 64, z: 10.5 }),
+    [{ x: 11, y: 64, z: 10 }, { x: 11, y: 65, z: 10 }]);
 });
 
 test('coverPlan : même colonne (aucune direction) → null, jamais de crash', () => {
