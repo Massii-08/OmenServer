@@ -9,6 +9,7 @@ const { Vec3 } = require('vec3');
 const { FOODS, FLEE_ONLY_ALWAYS, FLEE_ONLY_LOWHP, FLEE_ONLY_LOWHP_THRESHOLD, isFleeOnlyMob, REGEN_FOOD, NO_REGEN_HP_MARGIN } = require('./reflexes');
 const { bestWeapon } = require('./tools');
 const { creeperPlan } = require('./creeper');
+const { HUNT_MAX_DY } = require('./huntReach');
 
 const SWARM_COUNT = 3;   // ≥3 hostiles = submergé → fuite (AVEC armure)
 const LOW_HEALTH = 8;    // PV ≤ 8 (4 cœurs) → fuite (AVEC armure)
@@ -237,10 +238,13 @@ function needHunt(bot) {
 }
 
 /** Mob passif chassable le plus proche dans le rayon (null si aucun). Ignore les entités mortes. */
+// `HUNT_MAX_DY` (huntReach.js) : une bête sur une falaise ou au fond d'une grotte n'est pas une proie —
+// filtrée DANS le prédicat, sinon la plus proche en 3D masquerait une bête atteignable un peu plus loin.
 function nearestPassive(bot, radius = 24) {
   const self = bot.entity && bot.entity.position;
   if (!self) return null;
-  const e = bot.nearestEntity((x) => x && PASSIVE_FOOD_MOBS.has(x.name) && x.position && x.isValid !== false);
+  const e = bot.nearestEntity((x) => x && PASSIVE_FOOD_MOBS.has(x.name) && x.position && x.isValid !== false
+    && !(Number.isFinite(x.position.y) && Number.isFinite(self.y) && Math.abs(x.position.y - self.y) > HUNT_MAX_DY));
   if (!e) return null;
   const d = e.position.distanceTo ? e.position.distanceTo(self) : Infinity;
   return d <= radius ? e : null;

@@ -21,7 +21,7 @@ const { mineBlock, collectWood } = require('./skills/mineBlock');
 const { attackNearest } = require('./skills/attackNearest');
 const { fleeFrom, isFleeHostile } = require('./skills/fleeFrom');
 const { installOxygenGuard } = require('./oxygen');
-const { installReflexes, RANGED, DEFENSIVE_HEALTH, isFleeOnlyMob, FOODS, EMERGENCY_FOODS, tryEat } = require('./reflexes');
+const { installReflexes, RANGED, DEFENSIVE_HEALTH, isFleeOnlyMob, FOODS, EMERGENCY_FOODS, tryEat, pickFood, eatWanted } = require('./reflexes');
 const { lowHpStep, craftBlockedAtLowHp, LOWHP_RECOVERY_BUDGET_MS, LOWHP_FOOD_RUN_TTL_MS } = require('./lowhp');
 const { decideReaction } = require('./triggers');
 const { loadCommands, isAllowed, buildCommandDocs } = require('./commands');
@@ -225,6 +225,10 @@ const {
   pickGrazingCell, foodTripLeg, triedCellsLoad, triedCellsAdd, FOOD_TRIP_MEMO_KEY,
   FOOD_TRIP_MS, FOOD_TRIP_YIELD_MAX_MS, FOOD_TRIP_NEAR, FOOD_TRIP_ARRIVED, FOOD_TRIP_LEG_MS, FOOD_TRIP_LEG_MIN_MS, FOOD_TRIP_MAX_LEGS, FOOD_TRIP_STUCK_MAX,
 } = require('./foodTrip');
+// TROUPEAUX VUS (22/10, huntReach.js) : chaque animal de bot.entities (jusqu'à 96 blocs) est noté par
+// cellule de 32 dans le mémo de base ; l'expédition vise le troupeau connu le plus proche AVANT les biomes.
+const { herdSightings, herdsLoad, herdsObserve, herdsForget, herdsChanged, pickHerd, HERD_MEMO_KEY } = require('./huntReach');
+const { shelterCraftThrottled } = require('./lowhp');
 
 function parseArgs(argv) {
   const o = {};
@@ -2530,10 +2534,15 @@ function foodTripCell() {
   const p = bot.entity && bot.entity.position;
   if (!p) return null;
   const now = Date.now();
+  const st = loadBaseState();
+  const avoid = triedCellsLoad(st, now);
+  // Un troupeau VU (herdScanTick) bat une cellule de biome où il y a « probablement » des bêtes.
+  const herd = pickHerd(herdsLoad(st, now), { x: p.x, z: p.z }, { avoid, now });
+  if (herd) return herd;
   return pickGrazingCell({
     from: { x: p.x, z: p.z },
     biomes: loadWorldCells().biomes,
-    avoid: triedCellsLoad(loadBaseState(), now),
+    avoid,
     now,
   });
 }
@@ -2568,7 +2577,43 @@ async function foodTripYield() {
 function foodTripMark(cell) {
   const now = Date.now();
   const st = loadBaseState() || {};
-  saveBaseState(Object.assign({}, st, { [FOOD_TRIP_MEMO_KEY]: triedCellsAdd(triedCellsLoad(st, now), cell, now) }));
+  const patch = { [FOOD_TRIP_MEMO_KEY]: triedCellsAdd(triedCellsLoad(st, now), cell, now) };
+  // Troupeau visé, ARRIVÉ sur place, rien tué : il n'y est plus — on l'oublie (pas arrivé = il y est
+  // peut-être encore : la cellule ratée suffit à ne pas y retourner pendant 20 min).
+  const p = bot.entity && bot.entity.position;
+  if (cell && cell.herd && p && Math.hypot(p.x - cell.x, p.z - cell.z) <= FOOD_TRIP_ARRIVED) {
+    patch[HERD_MEMO_KEY] = herdsForget(herdsLoad(st, now), cell);
+  }
+  saveBaseState(Object.assign({}, st, patch));
+}
+
+// ── TROUPEAUX VUS (22/10) : le serveur envoie les animaux jusqu'à 96 blocs ; un bot qui passe près d'un
+// pré le NOTE, comme un joueur qui se souvient « il y avait des vaches derrière la colline ». Écrit dans
+// le mémo de base (fusion, jamais un objet neuf) : survit aux morts et aux relances du self-healing.
+// Écriture seulement si la liste a changé (cellule apparue/oubliée, effectif), au plus toutes les 30 s.
+// Niveau MODULE (piège #56) : lu par le timer.
+let _herdSavedAt = 0;
+const HERD_SCAN_MS = 15000;
+const HERD_SAVE_MIN_MS = 30000;
+const HERD_REFRESH_MS = 10 * 60000;
+function herdScanTick() {
+  try {
+    const p = bot.entity && bot.entity.position;
+    if (!p || !bot.entities) return;
+    const now = Date.now();
+    if (now - _herdSavedAt < HERD_SAVE_MIN_MS) return;
+    const seen = herdSightings(bot.entities, p);
+    const st = loadBaseState() || {};
+    const prev = herdsLoad(st, now);
+    if (!seen.length && !prev.length) return;
+    const next = herdsObserve(prev, seen, { x: p.x, z: p.z }, now);
+    // Inchangé : on rafraîchit quand même les dates toutes les 10 min (sinon un pré sous nos yeux
+    // expirerait au bout d'1 h de TTL).
+    if (!herdsChanged(prev, next) && !(seen.length && now - _herdSavedAt >= HERD_REFRESH_MS)) return;
+    _herdSavedAt = now;
+    saveBaseState(Object.assign({}, loadBaseState() || {}, { [HERD_MEMO_KEY]: next }));
+    emit({ type: 'herds_seen', cells: next.length, animals: seen.reduce((n, s) => n + s.n, 0) });
+  } catch (e) { /* watchdog : ne crash jamais */ }
 }
 
 /**
@@ -4803,16 +4848,25 @@ async function shelterWhileSealed(info) {
   try { wet = isInWater(bot); } catch (e) { wet = false; }
   if (wet) return null;
   const night = _nightId();
-  if (!_shelterCraft || _shelterCraft.night !== night) _shelterCraft = { night, failed: new Set(), handoff: null };
+  if (!_shelterCraft || _shelterCraft.night !== night) _shelterCraft = { night, failed: new Set(), handoff: null, lowHpSkipAt: 0 };
   const st = _shelterCraft;
+  // MANGER AVANT TOUT (22/10, NethBot3 : PV bas dans son abri, faim < 18, de quoi manger, et 56
+  // `night_craft torch low_hp_skip` — la garde refusait le craft « parce qu'il y a à manger » et rien
+  // ne mangeait). Muré : on mange même avec un zombie derrière la paroi.
+  try { if (await hungerNetTick('shelter', { sealed: true })) return null; } catch (e) { /* best-effort */ }
   const items = (bot.inventory && bot.inventory.items()) || [];
   const inv = items.map((i) => ({ name: i.name, count: i.count }));
   const next = shelterCraftNext(inv, { cellMode: info.mode, skip: st.failed });
   if (next) {
+    // PV critiques : un craft refusé n'est retenté qu'une fois par minute (lowhp.shelterCraftThrottled).
+    let blocked = false;
+    try { blocked = craftLowHpBlocked(); } catch (e) { blocked = false; }
+    if (shelterCraftThrottled({ blocked, lastSkipAt: st.lowHpSkipAt, now: Date.now() })) return null;
     const r = await withTimeout(craftSmart({ name: next.name, count: next.count, _inPlace: true }), SHELTER_CRAFT_MS,
       () => { try { stopMotion(); } catch (e) {} });
     const ok = !!(r && r.ok);
-    // PV critiques : refus passager, pas un verdict sur la recette (on retentera au pas suivant).
+    if (r && r.reason === 'low_hp_skip') st.lowHpSkipAt = Date.now();
+    // PV critiques : refus passager, pas un verdict sur la recette (on retentera dans une minute).
     if (!ok && !(r && r.reason === 'low_hp_skip')) st.failed.add(next.name);
     emit({ type: 'night_craft', goal: next.name, count: next.count, ok, reason: ok ? null : ((r && r.reason) || 'unknown'), mode: info.mode });
     await _shelterRecenter(info.anchor);
@@ -10333,14 +10387,32 @@ setInterval(async () => {
 // `equip` échoue quand le bot est en train de miner, ce qu'un ouvrier fait en permanence.
 // Ici : on ARRÊTE de creuser, on mange, et on DIT ce qui s'est passé (le silence est ce qui a
 // laissé ce bug vivre plusieurs runs).
+// 22/10 (chrono de 61 min : PV bas qui ne remontaient pas, faim 13-17, nourriture en poche, 4 `ate` en
+// 1 h pour 3 bots) : le filet ne regardait que la faim ≤ 8. Or sous 18 la régénération vanilla est
+// COUPÉE — un bot blessé à faim 14 ne remonte jamais. Il mange donc aussi blessé (≤ 14 PV) sous 18
+// (reflexes.eatWanted), et choisit le poulet cru / la chair en dernier (reflexes.pickFood).
+// Extrait en fonction de NIVEAU MODULE : le trou de nuit l'appelle aussi, avant tout craft.
 let _hungerBusy = false;
-setInterval(async () => {
-  if (_hungerBusy) return;
+async function hungerNetTick(tag = 'net', { sealed = false } = {}) {
+  if (_hungerBusy) return false;
+  let ate = false;
   try {
-    if (!bot.inventory || bot.food == null || bot.food > 8) return;
-    const items = bot.inventory.items() || [];
-    const food = items.find((i) => FOODS.has(i.name)) || items.find((i) => EMERGENCY_FOODS.has(i.name));
-    if (!food) return;                                   // vraiment rien à manger : ensureFood s'en occupe
+    if (!bot.inventory || bot.food == null) return false;
+    // Le cas « blessé, faim < 18 » attend la fin du corps-à-corps : manger rengaine l'épée 1,6 s. La
+    // vraie faim (≤ 8), elle, n'attend pas (historique). Muré dans l'abri (`sealed`) : le zombie
+    // derrière la paroi ne frappe pas, on mange.
+    const starving = bot.food <= 8;
+    if (!starving) {
+      if (!eatWanted({ food: bot.food, health: bot.health })) return false;
+      if (bot.pvp && bot.pvp.target) return false;
+    }
+    if (!starving && !sealed) {
+      let td = null;
+      try { td = _nearestThreatDist(); } catch (e) { td = null; }
+      if (typeof td === 'number' && td <= 6) return false;
+    }
+    const food = pickFood(bot.inventory.items() || []);
+    if (!food) return false;                             // vraiment rien à manger : ensureFood s'en occupe
     _hungerBusy = true;
     try { bot.stopDigging(); } catch (e) {}               // libère la main (la cause du silence)
     try {
@@ -10348,13 +10420,16 @@ setInterval(async () => {
         await bot.equip(food, 'hand');
         await bot.consume();
       })(), 8000, () => {});
-      emit({ type: 'ate', item: food.name, food: bot.food });
+      ate = true;
+      emit({ type: 'ate', item: food.name, food: bot.food, hp: bot.health, via: tag });
     } catch (e) {
-      emit({ type: 'eat_failed', item: food.name, food: bot.food, reason: String((e && e.message) || e).slice(0, 60) });
+      emit({ type: 'eat_failed', item: food.name, food: bot.food, via: tag, reason: String((e && e.message) || e).slice(0, 60) });
     }
   } catch (e) { /* watchdog : ne crash jamais */ }
   finally { _hungerBusy = false; }
-}, 5000);
+  return ate;
+}
+setInterval(() => { hungerNetTick().catch(() => {}); }, 5000);
 
 // ── FAIM : PARTIR CHERCHER À MANGER AVANT LE POINT DE NON-RETOUR (run world_mn15, 18/08 — la
 // famine est devenue la cause de mort DOMINANTE : 5 « starved to death » en 10 min sur des bots
@@ -10430,6 +10505,7 @@ async function foodRunTick() {
   finally { _foodRunBusy = false; }
 }
 setInterval(() => { foodRunTick().catch(() => {}); }, 30000);
+setInterval(() => { herdScanTick(); }, HERD_SCAN_MS);
 
 // ── RUN 20/10 : ENDERMAN, PORTE NOURRITURE, DROP_AHEAD ───────────────────────────────────────────
 // Logique PURE dans enderman.js / foodGate.js / dropAhead.js ; ici la glue. ⚠️ TOUT l'état est de

@@ -34,6 +34,9 @@ function sandbox(o = {}) {
     nightWorkPlan: NW.nightWorkPlan, nightUnderground: NW.nightUnderground, nightDeferGoal: NW.nightDeferGoal,
     nightSealCells: NW.nightSealCells, shelterCraftNext: NW.shelterCraftNext,
     migrationOwnsBot: () => false,
+    hungerNetTick: async (tag, opt) => { sb.eatCalls = (sb.eatCalls || []).concat([[tag, opt]]); return !!o.eats; },
+    craftLowHpBlocked: () => !!sb.lowHpBlocked,
+    shelterCraftThrottled: require('./lowhp').shelterCraftThrottled,
     furnaceJobPlan: FJ.furnaceJobPlan, fuelLoadPlan: FJ.fuelLoadPlan, jobReadyAt: FJ.jobReadyAt,
     SMELT_JOB_ABANDON_DIST: FJ.SMELT_JOB_ABANDON_DIST,
     IS_MAPPER: false, isLumberjackObjective: () => false,
@@ -253,6 +256,30 @@ test('trou de nuit : craft raté → pas retenté cette nuit ; PV critiques → 
   await sb.shelterWhileSealed(PIT(67));
   assert.deepStrictEqual(asked, ['crafting_table', 'crafting_table'], 'low_hp_skip retenté, no_space non');
   assert.ok(sb.events.some((e) => e.type === 'night_craft' && e.ok === false && e.reason === 'no_table:no_space'));
+});
+
+test('trou de nuit : PV bas + de quoi manger → manger AVANT tout craft (muré : sealed)', async () => {
+  const sb = sandbox({ items: [{ name: 'oak_planks', count: 12 }], pos: { y: 67 }, eats: true });
+  sb.craftSmart = async () => { throw new Error('ne doit pas crafter ce pas-ci'); };
+  assert.strictEqual(await sb.shelterWhileSealed(PIT(67)), null);
+  assert.deepStrictEqual(JSON.parse(JSON.stringify(sb.eatCalls)), [['shelter', { sealed: true }]]);
+});
+
+test('trou de nuit : craft refusé à PV critiques → une tentative par minute, pas à chaque pas', async () => {
+  const sb = sandbox({ items: [{ name: 'oak_planks', count: 12 }], pos: { y: 67 } });
+  const asked = [];
+  sb.lowHpBlocked = true;
+  sb.craftSmart = async (a) => { asked.push(a.name); return { ok: false, reason: 'low_hp_skip' }; };
+  await sb.shelterWhileSealed(PIT(67));
+  sb.clock.t += 5000; await sb.shelterWhileSealed(PIT(67));
+  sb.clock.t += 5000; await sb.shelterWhileSealed(PIT(67));
+  assert.deepStrictEqual(asked, ['crafting_table'], '10 s : une seule tentative');
+  assert.strictEqual(sb.events.filter((e) => e.type === 'night_craft').length, 1, 'pas de spam night_craft');
+  sb.clock.t += 60000; await sb.shelterWhileSealed(PIT(67));
+  assert.deepStrictEqual(asked, ['crafting_table', 'crafting_table'], 'une minute plus tard : on retente');
+  sb.lowHpBlocked = false; sb.craftSmart = async (a) => { asked.push(a.name); return { ok: true }; };
+  sb.clock.t += 1000; await sb.shelterWhileSealed(PIT(67));
+  assert.strictEqual(asked.length, 3, 'PV remontés : craft tout de suite');
 });
 
 test('trou de nuit : pioche en main → leave_down, surface = fond + profondeur, puis tryNightWork depuis l abri (hostile ignoré)', async () => {

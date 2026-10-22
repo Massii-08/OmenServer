@@ -543,11 +543,11 @@ test('huntCookGoal (câblage) : jeton CAPTURÉ à l entrée, target et options r
   assert.deepStrictEqual(w.capturedArgs, [4, {}]);
 });
 
-test('huntCookGoal (câblage) : proie en vue = nearestPassive à 32 blocs ; lecture impossible → false', async () => {
+test('huntCookGoal (câblage) : proie en vue = nearestPassive à 96 blocs (portée de suivi du serveur) ; lecture impossible → false', async () => {
   const w = huntGlue();
   await w.huntCookGoal(4);
   assert.strictEqual(w.captured.passiveInView(), true);
-  assert.strictEqual(w.lastRadius, 32);
+  assert.strictEqual(w.lastRadius, 96);
   w.passive = null;
   assert.strictEqual(w.captured.passiveInView(), false);
   w.passiveThrows = true;
@@ -560,7 +560,7 @@ test('huntCookGoal (câblage) : la chasse relaie le jeton dérivé à huntPassiv
   const ctl = F.boundedToken(w.taskToken);
   const r = await w.captured.hunt({ count: 4, token: ctl.token, ms: 45000, cancel: ctl.cancel });
   assert.deepStrictEqual(r, { ok: true, kills: 1 });
-  assert.deepStrictEqual(w.hunts[0][0], { count: 4, maxDistance: 32 });
+  assert.deepStrictEqual(w.hunts[0][0], { count: 4, maxDistance: 96 });
   assert.strictEqual(w.hunts[0][1], ctl.token);
   assert.strictEqual(w.timeouts[0][0], 45000);
   // à l expiration du délai : le jeton est coupé ET le mouvement stoppé
@@ -872,7 +872,7 @@ test('VRAI huntPassive : le jeton dérivé s arrête à la proie SUIVANTE dès q
     registry: { itemsByName: {} },
   };
   const ctl = F.boundedToken({ cancelled: false }, () => F.foodPoints(inv) >= 12);
-  const r = await huntPassive(bot, { count: 4, maxDistance: 32 }, ctl.token, {
+  const r = await huntPassive(bot, { count: 4, maxDistance: 96 }, ctl.token, {
     sleep: async () => { for (const e of Object.values(bot.entities)) if (e._hit) e.isValid = false; },
     goto: async () => { inv.beef = (inv.beef || 0) + 4; },        // le 1er gibier rapporte 4 bœufs crus = 12 points
     pickupMs: 0,
@@ -898,7 +898,7 @@ test('VRAI huntPassive : le jeton coupé par le plafond arrête une chasse en co
   };
   const ctl = F.boundedToken({ cancelled: false });
   let polls = 0;
-  const r = await huntPassive(bot, { count: 4, maxDistance: 32 }, ctl.token, {
+  const r = await huntPassive(bot, { count: 4, maxDistance: 96 }, ctl.token, {
     sleep: async () => { polls++; if (polls === 3) ctl.cancel(); },    // le plafond tombe pendant la poursuite
     pickupMs: 0,
   });

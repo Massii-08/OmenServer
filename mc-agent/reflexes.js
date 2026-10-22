@@ -72,17 +72,40 @@ const EMERGENCY_FOODS = new Set([
   'suspicious_stew', 'beetroot_soup', 'rabbit_stew',
 ]);
 
+// Dernier recours PARMI la détresse (22/10) : le poulet cru (30 % de chance de Faim) et la chair
+// putréfiée (80 %) affament en partie ce qu'ils nourrissent — on mange d'abord le bœuf / porc /
+// mouton crus, puis le poulet, puis la chair. Jamais l'inverse : un bot qui avale son poulet cru avec
+// un steak cru en poche perd des points de faim pour rien.
+const LAST_RESORT_FOODS = ['chicken', 'rotten_flesh'];
+
+/** Ce qu'on mange, dans l'ordre : cuit → détresse sûre → poulet cru → chair putréfiée. (pur) */
+function pickFood(items) {
+  const list = Array.isArray(items) ? items.filter(Boolean) : [];
+  return list.find((it) => FOODS.has(it.name))
+    || list.find((it) => EMERGENCY_FOODS.has(it.name) && !LAST_RESORT_FOODS.includes(it.name))
+    || LAST_RESORT_FOODS.map((n) => list.find((it) => it.name === n)).find(Boolean)
+    || null;
+}
+
+/**
+ * Faut-il manger MAINTENANT ? Faim basse — OU blessé (≤ 14 PV) et la faim ne permet plus la régen
+ * (< 18). Le second cas est celui qui tuait au chrono du 22/10 : PV bas, faim 13-17, nourriture en
+ * poche, et le filet de index.js ne regardait que la faim ≤ 8. (pur)
+ */
+function eatWanted({ food, health } = {}) {
+  if (typeof food !== 'number' || Number.isNaN(food)) return false;
+  if (food <= HUNGER_THRESHOLD) return true;
+  return typeof health === 'number' && health <= HURT_HEALTH && food <= REGEN_FOOD;
+}
+
 /** Mange si faim basse — OU si blessé et que la faim ne permet plus la régen (phase B). */
 async function tryEat(bot) {
   if (bot.food == null) return false;
-  const hungry = bot.food <= HUNGER_THRESHOLD;
-  const needRegen = bot.health != null && bot.health <= HURT_HEALTH && bot.food <= REGEN_FOOD;
-  if (!hungry && !needRegen) return false;
+  if (!eatWanted({ food: bot.food, health: bot.health })) return false;
   const items = (bot.inventory && bot.inventory.items()) || [];
   // Le CUIT d'abord, la détresse ensuite : on ne gâche pas un steak cuit pour de la chair putréfiée,
   // mais on ne meurt pas de faim avec de la viande crue en poche.
-  const food = items.find((it) => FOODS.has(it.name))
-    || items.find((it) => EMERGENCY_FOODS.has(it.name));
+  const food = pickFood(items);
   if (!food) return false;
   await bot.equip(food, 'hand');
   await bot.consume();
@@ -384,4 +407,4 @@ function installReflexes(bot, opts = {}) {
   return { react, breathe };
 }
 
-module.exports = { contactFoe, HOLD_STRIKE_RADIUS, shouldReleaseSurfacing, SURFACE_RELEASE_O2, SURFACE_MAX_MS, tryEat, shouldFlee, meleeAssailant, rangedThreat, installReflexes, isFleeOnlyMob, HUNGER_THRESHOLD, HEALTH_THRESHOLD, DEFENSIVE_HEALTH, OXYGEN_THRESHOLD, DROWN_CRITICAL, FOODS, EMERGENCY_FOODS, MELEE_HOSTILES, RANGED, FLEE_ONLY_ALWAYS, FLEE_ONLY_LOWHP, FLEE_ONLY_LOWHP_THRESHOLD, REGEN_FOOD, NO_REGEN_HP_MARGIN };
+module.exports = { pickFood, eatWanted, LAST_RESORT_FOODS, HURT_HEALTH, contactFoe, HOLD_STRIKE_RADIUS, shouldReleaseSurfacing, SURFACE_RELEASE_O2, SURFACE_MAX_MS, tryEat, shouldFlee, meleeAssailant, rangedThreat, installReflexes, isFleeOnlyMob, HUNGER_THRESHOLD, HEALTH_THRESHOLD, DEFENSIVE_HEALTH, OXYGEN_THRESHOLD, DROWN_CRITICAL, FOODS, EMERGENCY_FOODS, MELEE_HOSTILES, RANGED, FLEE_ONLY_ALWAYS, FLEE_ONLY_LOWHP, FLEE_ONLY_LOWHP_THRESHOLD, REGEN_FOOD, NO_REGEN_HP_MARGIN };

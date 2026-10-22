@@ -60,7 +60,21 @@ function craftBlockedAtLowHp(s) {
   return st !== 'ok' && st !== 'proceed';
 }
 
+// ─── LE TROU DE NUIT NE MARTÈLE PLUS UN CRAFT REFUSÉ (22/10) ─────────────────────────────────────
+// Chrono de 61 min : NethBot3, 56 `night_craft torch low_hp_skip` dans son abri — un essai à chaque pas
+// de l'attente (≈ 5 s), alors que la garde ne pouvait que refuser tant que les PV ne remontaient pas.
+// Une tentative par minute suffit : la garde se relit au pas suivant, et le refus ne coûte rien.
+const LOWHP_SKIP_RETRY_MS = 60000;
+
+/** Faut-il NE PAS retenter le craft ce pas-ci ? (refus encore en vigueur, dernier refus < 1 min) (pur) */
+function shelterCraftThrottled({ blocked, lastSkipAt, now } = {}) {
+  if (!blocked) return false;
+  if (typeof lastSkipAt !== 'number' || !(lastSkipAt > 0) || typeof now !== 'number') return false;
+  return now - lastSkipAt < LOWHP_SKIP_RETRY_MS && now >= lastSkipAt;
+}
+
 module.exports = {
+  shelterCraftThrottled, LOWHP_SKIP_RETRY_MS,
   lowHpStep, craftBlockedAtLowHp, isCritical,
   LOWHP_THREAT_RADIUS, LOWHP_SEAL_RADIUS, LOWHP_RECOVERY_BUDGET_MS, LOWHP_FOOD_RUN_TTL_MS, LOWHP_MAX_EAT_FAILS,
 };

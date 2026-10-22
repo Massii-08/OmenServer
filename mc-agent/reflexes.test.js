@@ -185,6 +185,38 @@ test('tryEat : jamais de nourriture TOXIQUE, même affamé', async () => {
   assert.deepStrictEqual(eaten, []);
 });
 
+test('pickFood : cuit → cru sûr → poulet cru → chair putréfiée', () => {
+  const { pickFood } = require('./reflexes');
+  const n = (a) => (pickFood(a.map((name) => ({ name }))) || {}).name || null;
+  assert.strictEqual(n(['rotten_flesh', 'chicken', 'beef']), 'beef');
+  assert.strictEqual(n(['rotten_flesh', 'chicken']), 'chicken');
+  assert.strictEqual(n(['rotten_flesh']), 'rotten_flesh');
+  assert.strictEqual(n(['chicken', 'cooked_chicken']), 'cooked_chicken');
+  assert.strictEqual(n(['spider_eye', 'stone']), null);
+  assert.strictEqual(pickFood(null), null);
+});
+
+test('tryEat : poulet cru seulement en dernier recours (le porc cru passe devant)', async () => {
+  const eaten = [];
+  const bot = {
+    food: 4, health: 20,
+    inventory: { items: () => [{ name: 'chicken' }, { name: 'porkchop' }] },
+    equip: async (it) => eaten.push(it.name), consume: async () => {},
+  };
+  await tryEat(bot);
+  assert.deepStrictEqual(eaten, ['porkchop']);
+});
+
+test('eatWanted : faim basse OU blessé sans régénération ; rassasié et blessé → non (la régen fait le travail)', () => {
+  const { eatWanted } = require('./reflexes');
+  assert.strictEqual(eatWanted({ food: 6, health: 20 }), true);
+  assert.strictEqual(eatWanted({ food: 14, health: 5 }), true, 'PV bas, faim 14 : le cas du chrono');
+  assert.strictEqual(eatWanted({ food: 17, health: 14 }), true);
+  assert.strictEqual(eatWanted({ food: 18, health: 5 }), false);
+  assert.strictEqual(eatWanted({ food: 14, health: 18 }), false);
+  assert.strictEqual(eatWanted({ health: 5 }), false);
+});
+
 test('EMERGENCY_FOODS et FOODS sont disjoints (pas de doublon de priorité)', () => {
   for (const f of EMERGENCY_FOODS) assert.ok(!FOODS.has(f), `${f} est dans les deux listes`);
 });

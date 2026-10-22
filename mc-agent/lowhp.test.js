@@ -45,3 +45,13 @@ test('craftBlockedAtLowHp : garde l’intention de 0990f4c — pas de craft à P
   // Ni menace, ni nourriture, ni régénération, sortie déjà tentée : attendre ne rend rien.
   assert.strictEqual(craftBlockedAtLowHp({ health: 4.33, food: 13, foodRunTriedRecently: true }), false);
 });
+
+test('shelterCraftThrottled : un craft refusé (low_hp_skip) n est retenté qu une fois par minute', () => {
+  const { shelterCraftThrottled, LOWHP_SKIP_RETRY_MS } = require('./lowhp');
+  assert.strictEqual(LOWHP_SKIP_RETRY_MS, 60000);
+  assert.strictEqual(shelterCraftThrottled({ blocked: true, lastSkipAt: 1000, now: 6000 }), true, '5 s après : on attend');
+  assert.strictEqual(shelterCraftThrottled({ blocked: true, lastSkipAt: 1000, now: 61000 }), false, '1 min après : on retente');
+  assert.strictEqual(shelterCraftThrottled({ blocked: false, lastSkipAt: 1000, now: 6000 }), false, 'PV remontés : craft tout de suite');
+  assert.strictEqual(shelterCraftThrottled({ blocked: true, lastSkipAt: 0, now: 6000 }), false, 'jamais refusé : on essaie');
+  assert.strictEqual(shelterCraftThrottled({ blocked: true, lastSkipAt: 9000, now: 6000 }), false, 'horloge à rebours : pas de gel');
+});

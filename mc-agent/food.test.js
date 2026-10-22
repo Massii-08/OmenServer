@@ -98,11 +98,11 @@ test('FOOD_POINTS ⇄ reflexes.js : le bot MANGE tout ce qu on compte, et on com
   assert.strictEqual(F.FOOD_POINTS.suspicious_stew, undefined);
 });
 
-test('seuils : kit 12, ensureFood 20, remontée 6, portée de vue 32', () => {
+test('seuils : kit 12, ensureFood 20, remontée 6, portée de vue 96 (suivi des animaux du serveur)', () => {
   assert.strictEqual(F.STOCK_POINTS, 12);
   assert.strictEqual(F.ENSURE_SKIP_POINTS, 20);
   assert.strictEqual(F.SURFACE_TRIP_POINTS, 6);
-  assert.strictEqual(F.HUNT_SIGHT_RADIUS, 32);
+  assert.strictEqual(F.HUNT_SIGHT_RADIUS, 96);
   assert.ok(F.STOCK_POINTS < F.ENSURE_SKIP_POINTS, 'le kit se contente de moins que ce que ensureFood vise');
 });
 

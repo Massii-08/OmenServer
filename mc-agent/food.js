@@ -44,7 +44,10 @@ const STOCK_POINTS = 12;          // `food_stock` du kit mappeur
 const ENSURE_SKIP_POINTS = 20;    // `ensureFood` : au-dessus, on ne sort pas
 const SURFACE_TRIP_POINTS = 6;    // remontée /home safe : seulement si on est vraiment à sec
 const RAW_PIECE_POINTS = 3;       // une pièce de viande crue ≈ 3 points : « target en pièces » → points
-const HUNT_SIGHT_RADIUS = 32;     // « proie en vue » : même rayon que la chasse elle-même
+// « Proie en vue » : même rayon que la chasse elle-même. 32 jusqu'au 22/10 — or le serveur envoie les
+// animaux jusqu'à 96 blocs (entity-tracking-range) : une vache à 40 blocs, DANS bot.entities, ne
+// comptait pas, et la chasse rendait `no_prey:no_passive` (17 fois en 1 h de chrono). Cf. huntReach.js.
+const HUNT_SIGHT_RADIUS = require('./huntReach').HUNT_REACH_RADIUS;
 
 const _hasOwn = (o, k) => Object.prototype.hasOwnProperty.call(o, k);
 

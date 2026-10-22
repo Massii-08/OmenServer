@@ -17,6 +17,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const T = require('./foodTrip');
 const F = require('./food');
+const HR = require('./huntReach');
 const { runHuntCook } = require('./foodRun');
 const { LEG_DIST, LEG_STUCK_MIN } = require('./zone');
 
@@ -836,6 +837,8 @@ function tripGlue(over = {}) {
     pickGrazingCell: T.pickGrazingCell,
     triedCellsLoad: T.triedCellsLoad,
     triedCellsAdd: T.triedCellsAdd,
+    pickHerd: HR.pickHerd, herdsLoad: HR.herdsLoad, herdsForget: HR.herdsForget, herdsObserve: HR.herdsObserve,
+    herdSightings: HR.herdSightings, herdsChanged: HR.herdsChanged, HERD_MEMO_KEY: HR.HERD_MEMO_KEY,
     FOOD_TRIP_MEMO_KEY: T.FOOD_TRIP_MEMO_KEY,
     foodTripLeg: T.foodTripLeg,
     FOOD_TRIP_NEAR: T.FOOD_TRIP_NEAR,
@@ -880,7 +883,7 @@ function tripGlue(over = {}) {
   const names = Object.keys(env);
   const decl = FLAG_NAMES.map((n) => `let ${n} = false;`).join('\n');
   const setter = `const __flags = { set(n, v) { switch (n) { ${FLAG_NAMES.map((n) => `case '${n}': ${n} = v; break;`).join(' ')} } }, get(n) { switch (n) { ${FLAG_NAMES.map((n) => `case '${n}': return ${n};`).join(' ')} } } };`;
-  const factory = new Function(...names, `${decl}\n${setter}\n${TRIP_SRC}\nreturn { foodTripState, foodTripCell, foodTripLock, foodTripUnlock, foodTripMark, foodTripWalk, foodTripYield, huntCookGoal, __flags };`);
+  const factory = new Function(...names, `${decl}\n${setter}\n${TRIP_SRC}\nreturn { foodTripState, foodTripCell, foodTripLock, foodTripUnlock, foodTripMark, foodTripWalk, foodTripYield, huntCookGoal, herdScanTick, __flags };`);
   Object.assign(w, factory(...names.map((n) => env[n])));
   return w;
 }
@@ -1130,6 +1133,59 @@ test('foodTripMark → foodTripCell : la cellule ratée n est pas re-visée (all
   assert.ok(second && second.biome !== first.biome, 'la suivante, pas la même');
   w.clock.t += 20 * MIN;
   assert.strictEqual(w.foodTripCell().biome, first.biome, '20 min plus tard elle est de nouveau éligible');
+});
+
+// ── TROUPEAUX VUS (22/10) ──
+
+const cow = (x, z, id) => ({ id, name: 'cow', position: { x, y: 70, z }, isValid: true });
+
+test('herdScanTick : les animaux de bot.entities (jusqu à 96 blocs) sont notés dans le mémo, en le FUSIONNANT', () => {
+  const w = tripGlue({ memo: { base: { x: 1, y: 2, z: 3 }, foodTrips: [] } });
+  w.bot.entities = { 1: cow(70, 10, 1), 2: cow(72, 12, 2), 3: { name: 'zombie', position: { x: 5, y: 70, z: 5 } } };
+  w.herdScanTick();
+  assert.strictEqual(w.saved.length, 1);
+  assert.deepStrictEqual(w.memo.base, { x: 1, y: 2, z: 3 }, 'le reste du mémo survit');
+  assert.strictEqual(w.memo.herds.length, 1);
+  assert.strictEqual(w.memo.herds[0].n, 2);
+  w.herdScanTick();
+  assert.strictEqual(w.saved.length, 1, 'rien n a changé et < 30 s : pas de réécriture');
+  w.clock.t += 31000;
+  w.herdScanTick();
+  assert.strictEqual(w.saved.length, 1, 'inchangé : pas de réécriture avant le rafraîchissement de 10 min');
+  w.clock.t += 10 * MIN;
+  w.herdScanTick();
+  assert.strictEqual(w.saved.length, 2, 'rafraîchi au bout de 10 min (sinon le TTL d 1 h l expirerait sous nos yeux)');
+});
+
+test('herdScanTick : bot.entities absent / aucune bête et rien en mémoire → aucune écriture, aucune exception', () => {
+  const w = tripGlue({ memo: null });
+  w.herdScanTick();
+  w.bot.entities = {};
+  w.herdScanTick();
+  assert.strictEqual(w.saved.length, 0);
+});
+
+test('foodTripCell : un troupeau VU bat une plaine de la carte (la plus proche connue)', () => {
+  const w = tripGlue({ cells: [cell('plains', 128, 0)] });
+  w.memo = { herds: [{ x: -150, z: 0, n: 3, at: w.clock.t - MIN }] };
+  w.bot.entity.position.x = 40;
+  assert.ok(T.pickGrazingCell({ from: { x: 40, z: 0 }, biomes: w.cells, now: w.clock.t }), 'la plaine est éligible');
+  const r = w.foodTripCell();
+  assert.ok(r && r.herd, 'le troupeau');
+  assert.deepStrictEqual([r.x, r.z], [-150, 0], 'même plus loin que la plaine : des bêtes VUES valent mieux qu un biome probable');
+  w.memo.foodTrips = [{ x: -150, z: 0, at: w.clock.t }];
+  assert.strictEqual(w.foodTripCell().biome, 'plains', 'troupeau raté il y a < 20 min : on retombe sur la carte');
+});
+
+test('foodTripMark : troupeau visé, ARRIVÉ, rien tué → oublié ; pas arrivé → gardé', () => {
+  const w = tripGlue({ memo: { herds: [{ x: 150, z: 0, n: 3, at: 4_990_000 }] } });
+  const herd = { x: 150, z: 0, biome: 'herd', herd: true, dist: 150 };
+  w.foodTripMark(herd);
+  assert.strictEqual(w.memo.herds.length, 1, 'pas arrivé (bot au spawn) : il y est peut-être encore');
+  w.bot.entity.position.x = 145;
+  w.foodTripMark(herd);
+  assert.deepStrictEqual(w.memo.herds, [], 'arrivé, rien : il n y est plus');
+  assert.strictEqual(w.memo.foodTrips.length, 1);
 });
 
 // ── foodTripWalk ──
