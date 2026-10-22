@@ -27,7 +27,8 @@
 // anti-noyade mort). `canchor`/`wsite` sont retirés : `safe` EST l'ancre, `work` EST le chantier.
 
 const { isForbiddenCheat } = require('./nogive');
-const { HOMES, HOME_SAFE, HOME_WORK } = require('./homes');
+const { HOMES, HOME_SAFE, HOME_WORK, HOME_DEATH } = require('./homes');
+const { groundCheck } = require('./voidGuard');
 
 const RESERVED = HOMES.slice();
 
@@ -44,10 +45,37 @@ function _send(bot, cmd) {
   return true;
 }
 
-/** Pose (ou écrase) le signet <name> à la position courante. Retourne le nom nettoyé, ou false. */
+/**
+ * Pose (ou écrase) le signet <name> à la position courante. Retourne le nom nettoyé, ou false.
+ * GARDE ANTI-VIDE (live 22/10, NethBot3) : jamais un home (hors `death`, qui marque juste le lieu où
+ * ramasser) au-dessus d'une colonne qui n'a pas 2 blocs pleins sous les pieds — un /home vers ce point
+ * tue d'une chute (vécu : `safe` posé EN PLEIN VOL à y59 dans un puits, puis « destination unsafe »).
+ * Refus → false, `bot._mcaBookmarkRefused` renseigné et `bot._mcaOnBookmarkRefused(info)` appelé
+ * (index.js l'émet). Sol illisible (chunk/fake-bot sans blockAt) → comportement d'avant (on pose).
+ */
 function bookmark(bot, name) {
   const n = sanitizeName(name);
+  if (n !== HOME_DEATH) {
+    let g = { ok: null };
+    try {
+      const p = bot && bot.entity && bot.entity.position;
+      if (p && typeof bot.blockAt === 'function') g = groundCheck((q) => bot.blockAt(_vec(p, q)), p);
+    } catch (e) { g = { ok: null }; }
+    if (g.ok === false) {
+      const p = bot.entity.position;
+      const info = { name: n, reason: g.reason, solid: g.solid, x: Math.round(p.x), y: Math.round(p.y), z: Math.round(p.z), at: Date.now() };
+      try { bot._mcaBookmarkRefused = info; } catch (e) {}
+      try { if (typeof bot._mcaOnBookmarkRefused === 'function') bot._mcaOnBookmarkRefused(info); } catch (e) {}
+      return false;
+    }
+  }
   return _send(bot, '/sethome ' + n) ? n : false;
+}
+
+/** {x,y,z} → objet passable à bot.blockAt (Vec3 si la position du bot en est un : `offset`). */
+function _vec(p, q) {
+  if (p && typeof p.offset === 'function') return p.offset(q.x - p.x, q.y - p.y, q.z - p.z).floored();
+  return q;
 }
 
 /** Téléporte le bot vers le signet <name>. Retourne le nom nettoyé, ou false.

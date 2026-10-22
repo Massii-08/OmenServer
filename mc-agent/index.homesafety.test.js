@@ -34,7 +34,7 @@ const zombie = (x, z, y = 70) => ({ name: 'zombie', kind: 'Hostile mobs', positi
 
 const GLUE = ['loadDeathPositions', '_recentDeathPositions', 'recordDeathPosition', 'noteSafeHome', '_isFoe',
   'noteHostileNearSafeHome', 'safeHomeVeto', '_campedAt', 'maybeMoveCampedSafeHome', 'poseSafeHomeAtSpawn',
-  'anchorSpawnpoint'];   // run 10 (20/10) : tous les /spawnpoint passent par le veto « zone campée »
+  'anchorSpawnpoint', '_groundHere'];   // run 10 (20/10) : tous les /spawnpoint passent par le veto « zone campée »
 
 /**
  * Bac à sable = le niveau MODULE de index.js, réduit à ce que ces fonctions ont le droit de lire.
@@ -55,6 +55,7 @@ function glue({ disk = { memo: null }, clock = { t: T0 }, bot: botOver = {}, ...
     loadBaseState: () => (disk.memo ? JSON.parse(JSON.stringify(disk.memo)) : null),
     saveBaseState(st) { disk.memo = JSON.parse(JSON.stringify(st)); sb.saves++; return true; },
     homewarp,
+    voidGuard: require('./voidGuard'), vec3Lib: require('vec3'),   // anti-vide (22/10) : sol sous les pieds
     isInWater: () => false,
     isNight: (b) => !!(b && b.time && b.time.timeOfDay >= 12800 && b.time.timeOfDay <= 23200),
     isFleeHostile: (e) => !!(e && (e.kind === 'Hostile mobs' || e.name === 'creeper')),

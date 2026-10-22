@@ -21,6 +21,12 @@ const CORNERED_AFTER_MS = 2000;    // …sauf ACCULÉ : la fuite tourne depuis 2
 const CORNERED_MOVE = 1.5;         // …le bot a bougé de moins de 1,5 bloc…
 const CORNERED_REACH = 3.5;        // …et l'assaillant est encore à portée de coup
 const ABORT_MIN_GAP_MS = 1000;     // anti-rafale : un abandon au plus par seconde
+// FUITE PERDUE (live 22/10, `fight_refused low_hp` : un mineur fuit UN zombie en perdant 13,6→9,2→4,8 PV).
+// Un zombie marche aussi vite qu'un bot qui ne sprinte pas (faim ≤ 6 = sprint coupé) : la fuite ne le
+// distance pas, il frappe dans le dos. Seul contre un seul assaillant, se battre vaut mieux que mourir
+// en courant → « acculé » même si le bot a bougé, dès que la fuite a COÛTÉ des PV sans décrocher.
+const OUTRUN_LOSS_HP = 2;          // PV perdus depuis le début de la fuite…
+const OUTRUN_AFTER_MS = 1000;      // …après au moins 1 s de fuite, l'assaillant toujours à portée de coup
 
 function _num(x) { return typeof x === 'number' && Number.isFinite(x); }
 
@@ -64,6 +70,18 @@ function isCornered({ fleePos, pos, sinceFleeMs, nearestDist, fleeFailed } = {})
   if (!fleePos || !pos || !_num(sinceFleeMs) || sinceFleeMs < CORNERED_AFTER_MS) return false;
   const moved = Math.hypot((pos.x - fleePos.x) || 0, (pos.y - fleePos.y) || 0, (pos.z - fleePos.z) || 0);
   return Number.isFinite(moved) && moved < CORNERED_MOVE;
+}
+
+/**
+ * PUR — la fuite est-elle PERDUE ? Un seul hostile, encore au contact (≤ CORNERED_REACH), la fuite dure
+ * depuis ≥ 1 s et le bot a perdu ≥ 2 PV depuis qu'elle a commencé. (Contre un groupe : jamais — la
+ * règle « ne pas engager un groupe sous 18 PV » reste souveraine.)
+ */
+function fleeLosing({ fleeHp, health, sinceFleeMs, nearestDist, hostiles } = {}) {
+  if (!_num(fleeHp) || !_num(health) || !_num(sinceFleeMs) || !_num(nearestDist)) return false;
+  if (_num(hostiles) && hostiles > 1) return false;
+  if (nearestDist > CORNERED_REACH || sinceFleeMs < OUTRUN_AFTER_MS) return false;
+  return fleeHp - health >= OUTRUN_LOSS_HP;
 }
 
 /** PUR — ré-engagement permis ? (aucun abandon, délai écoulé, horloge reculée, ou acculé) */
@@ -113,26 +131,27 @@ function createFightBreaker() {
 
   // Une fuite déjà en cours (< REENGAGE_COOLDOWN_MS) garde son point et son heure de départ : sinon
   // chaque refus d'engager la redémarrerait et le test « acculé » (≥ 2 s sans bouger) ne passerait jamais.
-  function noteFlee({ t, pos, fleeOk, reset } = {}) {
+  function noteFlee({ t, pos, fleeOk, reset, health } = {}) {
     const recent = !reset && flee && _num(flee.t) && _num(t) && t >= flee.t && t - flee.t <= REENGAGE_COOLDOWN_MS;
     if (recent) { if (fleeOk === false) flee.failed = true; return; }
-    flee = { t: _num(t) ? t : null, pos: _copy(pos), failed: fleeOk === false };
+    flee = { t: _num(t) ? t : null, pos: _copy(pos), failed: fleeOk === false, hp: _num(health) ? health : null };
   }
 
-  function noteAbort({ t, pos, fleeOk } = {}) {
+  function noteAbort({ t, pos, fleeOk, health } = {}) {
     abortedAt = _num(t) ? t : null;
     lastAbortAt = _num(t) ? t : -Infinity;
     corneredUntil = -Infinity;
-    noteFlee({ t, pos, fleeOk, reset: true });
+    noteFlee({ t, pos, fleeOk, reset: true, health });
   }
 
   function canEngage({ t, pos, health, hostiles, nearestDist } = {}) {
     const sinceFleeMs = flee && _num(flee.t) && _num(t) ? t - flee.t : null;
     const fleeRecent = sinceFleeMs != null && sinceFleeMs >= 0 && sinceFleeMs <= REENGAGE_COOLDOWN_MS;
     const cornered = fleeRecent && isCornered({ fleePos: flee.pos, pos: _copy(pos), sinceFleeMs, nearestDist, fleeFailed: flee.failed });
-    if (cornered) {
+    const losing = fleeRecent && !cornered && fleeLosing({ fleeHp: flee.hp, health, sinceFleeMs, nearestDist, hostiles });
+    if (cornered || losing) {
       if (_num(t)) corneredUntil = t + REENGAGE_COOLDOWN_MS;
-      return { ok: true, cornered: true, reason: 'cornered' };
+      return { ok: true, cornered: true, reason: losing ? 'outrun_failed' : 'cornered' };
     }
     if (_num(t) && t < corneredUntil) return { ok: true, cornered: true, reason: 'cornered' };
     if (!reengageAllowed({ now: t, abortedAt, cornered: false })) return { ok: false, cornered: false, reason: 'cooldown' };
@@ -144,7 +163,8 @@ function createFightBreaker() {
 }
 
 module.exports = {
-  engageAllowedByHp, hpDrop, shouldAbortFight, isCornered, reengageAllowed, createFightBreaker,
+  engageAllowedByHp, hpDrop, shouldAbortFight, isCornered, fleeLosing, reengageAllowed, createFightBreaker,
+  OUTRUN_LOSS_HP, OUTRUN_AFTER_MS,
   FIGHT_GROUP_MIN_HP, FIGHT_SOLO_MIN_HP, ABORT_DROP_HP, ABORT_WINDOW_MS, ABORT_FLOOR_HP,
   REENGAGE_COOLDOWN_MS, CORNERED_AFTER_MS, CORNERED_MOVE, CORNERED_REACH, ABORT_MIN_GAP_MS,
 };

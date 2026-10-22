@@ -43,7 +43,7 @@ const { gather, woodExpeditionCount, woodExploreShape } = require('./skills/gath
 const { gotoWithTimeout } = require('./skills/explore');   // trajet borné ET interruptible (abortIf)
 // Kit de secours en coffre (run 10, 20/10) — décisions PURES, glue « KIT DE SECOURS EN COFFRE ».
 const { depositPlan, restorePlan, STASH_NEAR_BASE } = require('./stash');
-const { mineDown } = require('./skills/mineDown');
+const { mineDown: _mineDownRaw } = require('./skills/mineDown');   // gardé plus bas (anti-vide)
 const { guard } = require('./skills/guard');
 const { giveItem, giveAll } = require('./skills/give');
 const { craftItem } = require('./skills/craft');
@@ -56,7 +56,8 @@ const fs = require('fs');
 const { runPlanner } = require('./planner');
 const { chainFor, buildCtxInv, firstUnmet, armorNeed, chainAfterDone, wantsOpportunisticArmor, GIFT_SET_INGOTS, objectiveForStart } = require('./goals');
 const { isForbiddenCheat } = require('./nogive');
-const homewarp = require('./homewarp'); // couche warp LÉGITIME sans-give (/sethome+/home ; goSpawn=/home safe)
+const homewarp = require('./homewarp');
+const voidGuard = require('./voidGuard'); // anti-vide : sol sous les homes/spawnpoint, descente loin de la base, rattrapage post-TP // couche warp LÉGITIME sans-give (/sethome+/home ; goSpawn=/home safe)
 const { secureSpot } = require('./skills/secureSpot'); // secure-then-warp : pilier/se murer/flotter AVANT le /home
 const { SCAFFOLD, pillarUp } = require('./skills/pillarUp');     // blocs sacrifiables (comptés pour la tactique)
 // PILIER ANTI-MÊLÉE + POINT DE RÉAPPARITION CAMPÉ (live 22/10, NethBot3 : 9 morts « slain by Zombie » en
@@ -77,7 +78,7 @@ const { _nearestTable, tableKey, tablePlan, TABLE_REACH, TABLE_SEEK, pickJunkToT
 const { recycleWorthIt, createNoSpaceMemo, stepAsideCells } = require('./tableSpot');
 const { placeBlockNear } = require('./skills/placeBlockNear');
 const { smelt, logsToConvert, fuelUnits } = require('./skills/smelt');
-const { descendDiagonal } = require('./skills/descendDiagonal');
+const { descendDiagonal: _descendDiagonalRaw } = require('./skills/descendDiagonal');   // gardé plus bas (anti-vide)
 const { pickTier, stoneBatchWant, stoneStairPlan } = require('./stoneDig');
 const { pickWornOutToReport } = require('./wornOut');
 const { branchMine, floodFillVein } = require('./skills/branchMine');
@@ -4572,7 +4573,9 @@ async function migrateZone(reason) {
     // testait que `!isInWater` → base sous terre → /home safe noyé → jamais de bois → `logs
     // not_found` 98.9 %, done figé à 0. Sous terre on traite la migration comme NON aboutie (le
     // bot garde son safe de surface précédent) — cf. isSurfaceSpot dans homes.js.
-    if (p2 && reallyMoved && isSurfaceSpot({ y: p2.y, inWater: p2wet })) {
+    // ANTI-VIDE (22/10) : l'arrivée de migration ancre base + safe + spawnpoint — jamais au-dessus d'un vide
+    // (NethBot3 : base posée là où il a ensuite percé son puits). stepToSafeGround marche jusqu'au sol sûr.
+    if (p2 && reallyMoved && isSurfaceSpot({ y: p2.y, inWater: p2wet }) && (await stepToSafeGround('migration'))) {
       // « Il enlève leur vieux home et il le remet au nouveau safe place » (Massii, 27/07).
       // Le `work` DOIT partir : il pointe sur le chantier de la zone qu'on vient d'abandonner —
       // le laisser en place, c'est garder un `/home work` qui re-téléporte à des centaines de
@@ -4581,8 +4584,7 @@ async function migrateZone(reason) {
       // re-sethome qui suit ne peut pas échouer sur une destination noyée).
       try { homewarp.delhome(bot, HOME_WORK); } catch (e) { /* best-effort */ }
       try { homewarp.delhome(bot, HOME_SAFE); } catch (e) { /* best-effort */ }
-      homewarp.bookmark(bot, HOME_SAFE);
-      noteSafeHome(p2, 'migration');   // état du process + `safeHome` persisté (le process suivant doit le savoir)
+      if (homewarp.bookmark(bot, HOME_SAFE)) noteSafeHome(p2, 'migration');   // sol déjà vérifié : ne refuse pas en pratique   // état du process + `safeHome` persisté (le process suivant doit le savoir)
       anchorSpawnpoint('migration');   // jamais dans un camp (homeSafety.spawnpointVeto)
       const base = { x: Math.round(p2.x), y: Math.round(p2.y), z: Math.round(p2.z) };
       const st = loadBaseState() || {};
@@ -6525,7 +6527,7 @@ function poseSafeHomeAtSpawn() {
     }
     return;
   }
-  homewarp.bookmark(bot, 'safe');
+  if (!homewarp.bookmark(bot, 'safe')) return;   // refusé (vide sous les pieds) : jamais noté comme posé
   noteSafeHome(p, 'spawn');
   emit({
     type: 'safe_home_set', surface: atSurface, x: Math.round(p.x), y: Math.round(p.y), z: Math.round(p.z),
@@ -6806,7 +6808,9 @@ async function establishBase(opts = {}) {
         return;
       }
     }
-    homewarp.bookmark(bot, 'safe');
+    // ANTI-VIDE (22/10) : jamais une base au-dessus d'un vide — on marche d'abord jusqu'au sol sûr.
+    if (!(await stepToSafeGround('base'))) { emit({ type: 'base_establish_failed', reason: 'void_below', y: Math.round(p.y) }); return; }
+    if (!homewarp.bookmark(bot, 'safe')) { emit({ type: 'base_establish_failed', reason: 'sethome_refused', y: Math.round(p.y) }); return; }
     noteSafeHome(p, 'base');   // état du process + `safeHome` persisté (relu par le process suivant)
     // « mettre un home pour l'utiliser comme spawn » : /spawnpoint ancre le respawn ICI, donc une
     // mort ne renvoie plus au spawn du monde partagé (précédent : /spawnpoint post-kit des bots
@@ -8418,6 +8422,244 @@ function noteRespawnDeath() {
   } catch (e) { return null; }
 }
 
+
+// ─── ANTI-VIDE (live 22/10, NethBot3 : 17 morts « fell from a high place » en 40 min) ────────────
+// Preuve : base + /spawnpoint + home `safe` posés en (-343,75,359) à l'arrivée d'une migration, puis
+// une tranche 'mine' partie de CE point (/home safe → descente) creuse un puits VERTICAL y74→y44 sous
+// la base (branchMine:enter à x/z identiques, y43.9). Chaque respawn tombe alors 32 blocs, et le
+// respawn suivant re-posait `safe` en plein vol (safe_home_set y59). Trois gardes, toutes ici (niveau
+// MODULE, lues par des timers/handlers — piège #56) : (1) jamais de home/spawnpoint sans 2 pleins
+// sous les pieds (homewarp.bookmark + anchorSpawnpoint), (2) jamais de descente dans la colonne d'une
+// ancre, (3) rattrapage après un TP au-dessus du vide + invalidation du home/base condamné.
+let _voidRescueBusy = false;     // un seul rattrapage post-TP à la fois
+let _spawnOverVoidAt = 0;        // dernier respawn/TP arrivé au-dessus du vide (→ ré-ancrer ailleurs, au sol)
+let _spawnOverVoidPos = null;    // {x,z} de ce vide : le ré-ancrage ne se fait qu'à ≤ 24 blocs de lui
+let _fallDeaths = [];            // [{x,y,z,at}] morts de CHUTE de ce bot (message serveur) — boucle par chute
+let _lastSpawnAt = 0;            // instant du dernier `spawn` (pour attribuer un TP au respawn)
+
+/** Sol sous les pieds du bot (voidGuard.groundCheck). Jamais de throw ; illisible → {ok:null}. */
+function _groundHere(need = 2) {
+  try {
+    const p = bot.entity && bot.entity.position;
+    if (!p || typeof bot.blockAt !== 'function') return { ok: null };
+    return voidGuard.groundCheck((q) => bot.blockAt(new vec3Lib.Vec3(q.x, q.y, q.z)), p, need);
+  } catch (e) { return { ok: null }; }
+}
+
+/** Lecture de blocs pure pour voidGuard (coordonnées entières → Vec3). */
+function _vgBlockAt(q) {
+  try { return bot.blockAt(new vec3Lib.Vec3(q.x, q.y, q.z)); } catch (e) { return null; }
+}
+
+/**
+ * Avant de poser un home/base/spawnpoint : si la colonne sous les pieds n'a pas 2 pleins, marcher
+ * jusqu'à la case sûre la plus proche (rayon 4). Rend true si l'on est (désormais) sur un sol sûr ou
+ * illisible (comportement d'avant), false sinon — l'appelant ne pose alors RIEN.
+ */
+async function stepToSafeGround(ctx) {
+  const g = _groundHere();
+  if (g.ok !== false) return true;
+  const p = bot.entity && bot.entity.position;
+  const spot = p ? voidGuard.nearestSafeStand(_vgBlockAt, p, 4) : null;
+  if (!spot) { emit({ type: 'safe_ground_none', ctx }); return false; }
+  try {
+    await withTimeout(bot.pathfinder.goto(new pfGoals.GoalBlock(spot.x, spot.y, spot.z)), 8000,
+      () => { try { stopMotion(); } catch (e) {} });
+  } catch (e) { /* jugé sur le résultat ci-dessous */ }
+  const ok = _groundHere().ok !== false;
+  emit({ type: 'safe_ground_step', ctx, ok, x: spot.x, y: spot.y, z: spot.z });
+  return ok;
+}
+
+/** Ancres dont la colonne ne doit JAMAIS être percée : base persistée, home safe, point de respawn. */
+function _voidAnchors() {
+  const out = [];
+  try { const st = loadBaseState(); if (st && st.base) out.push(st.base); } catch (e) {}
+  if (_safeHomePos) out.push(_safeHomePos);
+  try { const sp = bot.spawnPoint; if (sp && Number.isFinite(sp.x)) out.push({ x: sp.x, y: sp.y, z: sp.z }); } catch (e) {}
+  return out;
+}
+
+/**
+ * Garde de descente : partir d'ici percerait la colonne d'une ancre (≤ 3 blocs) → on se décale de ~7
+ * blocs avant de creuser. Rend true si la descente peut partir, false sinon (event `descent_blocked_base`).
+ */
+async function moveOffAnchorsBeforeDescent(ctx) {
+  try {
+    const p = bot.entity && bot.entity.position;
+    if (!p) return true;
+    const anchors = _voidAnchors();
+    const a = voidGuard.anchorAbove(p, anchors, 3);
+    if (!a) return true;
+    const off = voidGuard.descentOffset(p, anchors, 3, 7);
+    if (off && bot.pathfinder && pfGoals.GoalNearXZ) {
+      try {
+        await withTimeout(bot.pathfinder.goto(new pfGoals.GoalNearXZ(off.x, off.z, 1)), 15000,
+          () => { try { stopMotion(); } catch (e) {} });
+      } catch (e) { /* jugé ci-dessous */ }
+    }
+    const q = bot.entity && bot.entity.position;
+    const still = q ? voidGuard.anchorAbove(q, _voidAnchors(), 3) : null;
+    emit({ type: still ? 'descent_blocked_base' : 'descent_offset', ctx,
+      anchor: { x: Math.round(a.x), y: Number.isFinite(a.y) ? Math.round(a.y) : null, z: Math.round(a.z) },
+      ...(q ? { x: Math.round(q.x), z: Math.round(q.z) } : {}) });
+    return !still;
+  } catch (e) { return true; }
+}
+
+/** descendDiagonal gardé : jamais un escalier/puits qui part dans la colonne de la base. */
+async function descendDiagonal(b, opts, token) {
+  if (!(await moveOffAnchorsBeforeDescent('descend'))) {
+    const y = b && b.entity && b.entity.position ? b.entity.position.y : 0;
+    return { ok: false, reachedY: y, reason: 'near_base' };
+  }
+  return _descendDiagonalRaw(b, opts, token);
+}
+
+/** mineDown gardé (même règle). */
+async function mineDown(b, opts, token) {
+  if (!(await moveOffAnchorsBeforeDescent('mine_down'))) return { ok: false, reason: 'near_base' };
+  return _mineDownRaw(b, opts, token);
+}
+
+/** Bloc de remblai en poche (jamais gravier/sable : ils tombent). */
+const VOID_FILLERS = ['dirt', 'cobblestone', 'cobbled_deepslate', 'netherrack', 'stone', 'andesite', 'diorite',
+  'granite', 'tuff', 'deepslate', 'coarse_dirt', 'oak_planks', 'spruce_planks', 'birch_planks'];
+function _voidFiller() {
+  const items = (bot.inventory && bot.inventory.items()) || [];
+  for (const n of VOID_FILLERS) { const it = items.find((i) => i && i.name === n); if (it) return it; }
+  return null;
+}
+
+/**
+ * Juste après un TÉLÉPORT (respawn, /home, /tpa) : sol à > 3 blocs sous les pieds → on GÈLE la
+ * physique client (le serveur n'applique pas de gravité au joueur : il ne tombe pas tant qu'on ne bouge
+ * pas — allow-flight=true sur nos serveurs), on pose un bloc de remblai sous soi, puis on dégèle. Le
+ * home/respawn qui nous a amenés là est condamné : `/delhome` + `home_invalidated_void` (le respawn,
+ * lui, sera ré-ancré au sol dès que possible). Jamais de throw ; la physique est TOUJOURS rétablie.
+ */
+async function rescueVoidAfterTeleport() {
+  if (_voidRescueBusy) return;
+  const p0 = bot.entity && bot.entity.position;
+  if (!p0 || typeof bot.blockAt !== 'function') return;
+  let drop = voidGuard.dropDepth(_vgBlockAt, p0, 40);
+  if (drop !== null && drop <= 3) return;          // cas normal : rend la main sans rien toucher
+  _voidRescueBusy = true;
+  const hadPhysics = bot.physicsEnabled !== false;
+  const now = Date.now();
+  const lastHome = bot._mcaLastHome && now - bot._mcaLastHome.at < 10000 ? bot._mcaLastHome.name : null;
+  const viaRespawn = !lastHome && now - _lastSpawnAt < 10000;
+  let placed = false; let why = null; let at = null;
+  try {
+    // GEL PRÉVENTIF : chunk pas encore reçu (drop null) ou vide sous les pieds → on ne bouge plus.
+    bot.physicsEnabled = false;
+    const t0 = Date.now();
+    while (drop === null && Date.now() - t0 < 3000) {
+      await sleep(50);
+      const q = bot.entity && bot.entity.position;
+      drop = q ? voidGuard.dropDepth(_vgBlockAt, q, 40) : null;
+    }
+    if (drop === null || drop <= 3) return;          // sol sain (ou toujours illisible) : dégel au finally
+    const p = bot.entity.position;
+    at = { x: Math.round(p.x), y: Math.round(p.y), z: Math.round(p.z) };
+    const filler = _voidFiller();
+    const plan = voidGuard.catchBlockPlan(_vgBlockAt, p);
+    if (!filler) why = 'no_block';
+    else if (!plan) why = 'no_ref';
+    else {
+      try {
+        await bot.equip(filler, 'hand');
+        const ref = bot.blockAt(new vec3Lib.Vec3(plan.ref.x, plan.ref.y, plan.ref.z));
+        await withTimeout(bot.placeBlock(ref, new vec3Lib.Vec3(plan.face.x, plan.face.y, plan.face.z)), 2500, () => {});
+        placed = voidGuard.isSolid(bot.blockAt(new vec3Lib.Vec3(plan.target.x, plan.target.y, plan.target.z))) === true;
+        if (!placed) why = 'not_placed';
+      } catch (e) { why = 'place_failed'; }
+    }
+  } finally {
+    try { bot.physicsEnabled = hadPhysics; } catch (e) {}
+    _voidRescueBusy = false;
+  }
+  if (!at) return;
+  emit({ type: 'tp_void_landing', drop, placed, ...(why ? { why } : {}), via: lastHome ? 'home:' + lastHome : (viaRespawn ? 'respawn' : 'tp'), ...at });
+  if (lastHome === HOME_SAFE || lastHome === HOME_WORK) invalidateVoidHome(lastHome, at, 'tp_over_void');
+  if (viaRespawn || lastHome === HOME_SAFE) { _spawnOverVoidAt = now; _spawnOverVoidPos = { x: at.x, z: at.z }; }
+}
+
+/**
+ * Home condamné (au-dessus d'un vide connu) : `/delhome` + état du process oublié + event
+ * `home_invalidated_void`. Le safe sera re-posé par le watchdog à la prochaine surface sèche AU SOL
+ * (la garde de homewarp.bookmark refuse toute pose au-dessus du vide).
+ */
+function invalidateVoidHome(name, at, reason) {
+  try { homewarp.delhome(bot, name); } catch (e) {}
+  if (name === HOME_SAFE) {
+    _safeHomeSet = false; _safeHomeSurface = false; _safeHomePos = null;
+    try {
+      const st = Object.assign({}, loadBaseState() || {});
+      delete st.safeHome;
+      saveBaseState(st);
+    } catch (e) {}
+  }
+  if (name === HOME_WORK) { _workSet = false; _workPos = null; }
+  emit({ type: 'home_invalidated_void', name, reason, ...(at || {}) });
+}
+
+/**
+ * Mort par CHUTE (message serveur) : (a) un home/base dans la MÊME colonne, au-dessus de la mort, est
+ * condamné tout de suite (on ne re-téléporte JAMAIS vers lui) ; (b) ≥ 2 chutes à ≤ 6 blocs en 2 min =
+ * boucle → la base persistée dans cette colonne est oubliée et le respawn sera ré-ancré au sol.
+ */
+function noteFallDeath(pos) {
+  if (!pos || !Number.isFinite(pos.x)) return;
+  const now = Date.now();
+  const d = { x: pos.x, y: pos.y, z: pos.z, at: now };
+  _fallDeaths = _fallDeaths.filter((f) => now - f.at <= 600000).concat([d]);
+  if (_safeHomePos && voidGuard.deathBelowAnchor(d, _safeHomePos)) invalidateVoidHome(HOME_SAFE, { x: Math.round(d.x), z: Math.round(d.z) }, 'fall_death_below');
+  const loop = voidGuard.fallDeathLoop(_fallDeaths, now);
+  let st = null;
+  try { st = loadBaseState(); } catch (e) { st = null; }
+  const baseHit = st && st.base && (voidGuard.deathBelowAnchor(d, st.base) || (loop.loop && Math.hypot(st.base.x - loop.x, st.base.z - loop.z) <= 6));
+  if (baseHit) {
+    const old = st.base;
+    try {
+      const nx = Object.assign({}, st, { voidBase: { x: old.x, y: old.y, z: old.z, at: now } });
+      delete nx.base;
+      saveBaseState(nx);
+    } catch (e) {}
+    emit({ type: 'base_invalidated_void', x: old.x, y: old.y, z: old.z, loop: !!loop.loop });
+  }
+  if (loop.loop || baseHit) { _spawnOverVoidAt = now; _spawnOverVoidPos = { x: d.x, z: d.z }; }
+  emit({ type: 'fall_death', x: Math.round(d.x), y: Math.round(d.y), z: Math.round(d.z), loop: !!loop.loop, count: loop.count || 1 });
+}
+
+/**
+ * Respawn arrivé au-dessus du vide (ou boucle de chute) : dès qu'on est debout et au calme, marcher
+ * jusqu'à une case SÛRE et y ré-ancrer /spawnpoint + base (la base reste celle d'avant si elle est saine).
+ * Appelé par un timer (niveau module) ; best-effort.
+ */
+let _voidReanchorBusy = false;
+async function reanchorAfterVoid() {
+  if (!_spawnOverVoidAt || _voidReanchorBusy || _voidRescueBusy) return;
+  if (Date.now() - _spawnOverVoidAt > 10 * 60000) { _spawnOverVoidAt = 0; return; }
+  if (!bot.entity || !bot.entity.onGround) return;
+  _voidReanchorBusy = true;
+  try {
+    const p = bot.entity.position;
+    // Loin du vide (le bot est reparti travailler) : on ne pose PAS un respawn au hasard, on attend la
+    // prochaine arrivée au-dessus du vide (le gel + remblai le garde en vie d'ici là).
+    if (_spawnOverVoidPos && Math.hypot(p.x - _spawnOverVoidPos.x, p.z - _spawnOverVoidPos.z) > 24) { _spawnOverVoidAt = 0; return; }
+    if (!(await stepToSafeGround('void_reanchor'))) return;
+    if (!anchorSpawnpoint('void_reanchor')) return;
+    const st = loadBaseState() || {};
+    if (!IS_MAPPER && (!st.base || voidGuard.deathBelowAnchor({ x: p.x, y: -1e9, z: p.z }, st.base))) {
+      saveBaseState(Object.assign({}, st, { base: { x: Math.round(p.x), y: Math.round(p.y), z: Math.round(p.z) } }));
+    }
+    _spawnOverVoidAt = 0; _spawnOverVoidPos = null;
+    emit({ type: 'void_reanchored', x: Math.round(p.x), y: Math.round(p.y), z: Math.round(p.z) });
+  } catch (e) { /* best-effort */ } finally { _voidReanchorBusy = false; }
+}
+setInterval(() => { reanchorAfterVoid().catch(() => {}); }, 3000);
+
 /**
  * Pose le /spawnpoint ICI — SAUF dans une zone campée (homeSafety.spawnpointVeto, ≥ 2 morts récentes à
  * ≤ 24 blocs) ou position illisible. Run 10 : 39 `/spawnpoint` posés pour 67 `home_safe_camped` — le
@@ -8430,6 +8672,7 @@ function anchorSpawnpoint(reason) {
   let v;
   try { v = spawnpointVeto({ pos, deaths: _recentDeathPositions(), now: Date.now() }); }
   catch (e) { v = { veto: true, reason: 'error' }; }
+  if (!v.veto && _groundHere().ok === false) v = { veto: true, reason: 'void_below' };   // anti-vide (22/10)
   if (v.veto) {
     emit({ type: 'spawnpoint_vetoed', reason: v.reason, why: reason, deaths: v.deaths != null ? v.deaths : null,
       x: pos ? Math.round(pos.x) : null, z: pos ? Math.round(pos.z) : null });
@@ -9924,10 +10167,10 @@ async function onSpawn() {
           // surface sèche : un signet noyé/absent = filet de secours mort pour toute la session.
           if ((_homeRefusedAt.safe || !_safeHomeSet) && bot.entity && bot.entity.position && bot.entity.onGround
               && bot.entity.position.y >= 58 && !isInWater(bot)) {
-            homewarp.bookmark(bot, 'safe');
-            delete _homeRefusedAt.safe;
+            const okR = homewarp.bookmark(bot, 'safe');
             const pR = bot.entity.position;
-            noteSafeHome(pR, 'reset');   // y ≥ 58 vérifié ci-dessus → safe de surface
+            if (okR) delete _homeRefusedAt.safe;
+            if (okR) noteSafeHome(pR, 'reset');   // y ≥ 58 vérifié ci-dessus → safe de surface
             emit({ type: 'safe_home_reset', x: Math.round(pR.x), y: Math.round(pR.y), z: Math.round(pR.z) });
           }
           const s = imminentState();
@@ -10204,7 +10447,7 @@ function _fightCanEngage() {
 
 function _fightNoteFlee(ok) {
   const p = bot.entity && bot.entity.position;
-  _fightBreaker.noteFlee({ t: Date.now(), pos: p ? { x: p.x, y: p.y, z: p.z } : null, fleeOk: ok !== false });
+  _fightBreaker.noteFlee({ t: Date.now(), pos: p ? { x: p.x, y: p.y, z: p.z } : null, fleeOk: ok !== false, health: bot.health });
 }
 
 /** Dépendances du disjoncteur pour survivalTick (vide pour un cartographe : comportement inchangé). */
@@ -10235,7 +10478,7 @@ function _fightBreakerCheck() {
   try { fleeOk = fleeFrom(bot) !== false; }
   catch (e) { fleeOk = false; emit({ type: 'fight_abort_flee_failed', err: String(e && e.message || e) }); }
   const p = bot.entity && bot.entity.position;
-  _fightBreaker.noteAbort({ t, pos: p ? { x: p.x, y: p.y, z: p.z } : null, fleeOk });
+  _fightBreaker.noteAbort({ t, pos: p ? { x: p.x, y: p.y, z: p.z } : null, fleeOk, health: bot.health });
   emit({ type: 'fight_aborted', hp: Math.round((bot.health || 0) * 10) / 10, drop: Math.round(r.drop * 10) / 10,
     hostiles: sit.hostiles, reason: r.reason, flee: fleeOk, y: p ? Math.round(p.y) : null });
 }
@@ -10405,6 +10648,16 @@ bot.loadPlugin(collectBlock);
 // HOME `safe` CAMPÉ (live 19/10) : TOUT /home safe passe par homewarp.goHome, qui consulte ce veto avant
 // d'envoyer la commande (point d'entrée unique : goSpawn, safeWarpHome et les appels directs).
 bot._mcaSafeVeto = (ctx) => !!safeHomeVeto(ctx);
+// ANTI-VIDE (22/10) : homewarp.bookmark refuse un home au-dessus du vide — on le DIT (jamais en silence).
+bot._mcaOnBookmarkRefused = (i) => { try { emit({ type: 'sethome_refused_void', name: i.name, reason: i.reason, solid: i.solid, x: i.x, y: i.y, z: i.z }); } catch (e) {} };
+// Mort par CHUTE annoncée par le serveur → home/base de la même colonne condamnés, boucle détectée.
+bot.on('messagestr', (msg) => {
+  try {
+    if (!voidGuard.isFallDeathMessage(msg, bot.username)) return;
+    const p = (lastDeath && Date.now() - lastDeath.t < 5000) ? lastDeath : (bot.entity && bot.entity.position);
+    if (p) noteFallDeath({ x: p.x, y: p.y, z: p.z });
+  } catch (e) { emit({ type: 'error', message: 'fall_death_note: ' + String((e && e.message) || e) }); }
+});
 
 bot.on('spawn', () => {
   _floatSettleUntil = Date.now() + 15000;
@@ -11225,6 +11478,13 @@ async function endermanTick() {
 }
 bot.once('inject_allowed', () => { try { installEndermanGuard(); } catch (e) {} });
 bot.on('spawn', () => { try { installEndermanGuard(); } catch (e) {} });
+// ANTI-VIDE (22/10) : instant du respawn (attribue un TP au-dessus du vide au point de respawn) et, à
+// CHAQUE position imposée par le serveur (respawn, /home, /tpa, correction), rattrapage si le sol est à
+// > 3 blocs : physique gelée + remblai sous soi (rescueVoidAfterTeleport, rend la main aussitôt sinon).
+bot.on('spawn', () => { _lastSpawnAt = Date.now(); });
+bot.on('forcedMove', () => {
+  rescueVoidAfterTeleport().catch((e) => emit({ type: 'error', message: 'void_rescue: ' + String((e && e.message) || e) }));
+});
 bot.on('entityHurt', (e, source) => { try { if (e && bot.entity && e === bot.entity) noteEndermanHurt(source); } catch (err) {} });
 setInterval(() => { endermanTick().catch(() => {}); }, 500);
 

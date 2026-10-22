@@ -58,8 +58,17 @@ async function bridgeGap(bot, where) {
 
 // Construit un GoalNear si pathfinder dispo (range=1 = arrive sur le bloc exact ou un voisin).
 // Fallback : objet POJO accepté par notre fake-bot (tests).
+// ⚠️ PUITS VERTICAL (live 22/10, NethBot3) : GoalNear(marche, 1) acceptait AUSSI le nœud « creuser
+// sous ses pieds » — la case sous le bot est à distance 1 de la marche — et l'A* le préférait dès que le
+// pas en avant coûtait un bloc de plus (marche non dégagée). Résultat mesuré : 30 paliers à x/z
+// IDENTIQUES (y74→y44), un puits sous la base qui a tué 17 respawns. La fin exige donc la COLONNE de la
+// marche (même x/z), à sa hauteur ou plus bas (saut survivable autorisé plus haut), jamais à côté.
 function buildGoal(x, y, z) {
-  if (goals && goals.GoalNear) return new goals.GoalNear(x, y, z, 1);
+  if (goals && goals.GoalNear) {
+    const g = new goals.GoalNear(x, y, z, 1);
+    g.isEnd = (n) => !!n && n.x === x && n.z === z && n.y <= y && n.y >= y - 24;
+    return g;
+  }
   return { x, y, z };
 }
 
@@ -193,4 +202,4 @@ async function descendDiagonal(bot, { targetY = -54, maxDepth = 200, onSurvivalT
   return { ok: false, reachedY, reason: 'max_depth' };
 }
 
-module.exports = { descendDiagonal, cardinalFromYaw, NO_PROGRESS_STEPS };
+module.exports = { descendDiagonal, cardinalFromYaw, NO_PROGRESS_STEPS, buildGoal };

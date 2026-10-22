@@ -239,3 +239,13 @@ test('descendDiagonal : coincé sur place (goto KO, rien de visible) → no_prog
   assert.strictEqual(r.reason, 'no_progress');
   assert.ok(gotos <= NO_PROGRESS_STEPS, `gotos=${gotos} : sortie rapide, pas 200 tours`);
 });
+
+test('buildGoal : la fin est la COLONNE de la marche — jamais la case creusée sous les pieds (puits vertical, 22/10)', () => {
+  const { buildGoal } = require('./descendDiagonal');
+  const g = buildGoal(11, 63, 5);                  // bot en (10,64,5), cap +x → marche (11,63,5)
+  if (typeof g.isEnd !== 'function') return;        // sans mineflayer-pathfinder : objet POJO, rien à vérifier
+  assert.strictEqual(g.isEnd({ x: 11, y: 63, z: 5 }), true, 'la marche');
+  assert.strictEqual(g.isEnd({ x: 11, y: 60, z: 5 }), true, 'plus bas dans la colonne (saut survivable)');
+  assert.strictEqual(g.isEnd({ x: 10, y: 63, z: 5 }), false, 'creuser tout droit sous soi : REFUSÉ');
+  assert.strictEqual(g.isEnd({ x: 11, y: 64, z: 5 }), false, 'au-dessus de la marche : pas une descente');
+});

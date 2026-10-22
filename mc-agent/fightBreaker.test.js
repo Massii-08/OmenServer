@@ -117,3 +117,39 @@ test('breaker : fuite impossible (fleeOk false) → acculé tout de suite si col
   assert.strictEqual(b2.canEngage({ t: 100, pos: { x: 0, y: 0, z: 0 }, health: 9, hostiles: 2, nearestDist: 6 }).ok, false);
   assert.strictEqual(b.canEngage({ t: 100, pos: { x: 0, y: 0, z: 0 }, health: 9, hostiles: 2, nearestDist: 2 }).ok, true);
 });
+
+// ─── FUITE PERDUE (live 22/10) : un seul zombie, la fuite coûte 13,6 → 9,2 → 4,8 PV ──────────────
+test('fleeLosing : un seul hostile au contact, ≥ 2 PV perdus en fuyant depuis ≥ 1 s → perdue', () => {
+  const { fleeLosing } = require('./fightBreaker');
+  assert.strictEqual(fleeLosing({ fleeHp: 13.6, health: 9.2, sinceFleeMs: 1500, nearestDist: 1.8, hostiles: 1 }), true);
+  assert.strictEqual(fleeLosing({ fleeHp: 13.6, health: 13, sinceFleeMs: 3000, nearestDist: 1.8, hostiles: 1 }), false, 'la fuite tient');
+  assert.strictEqual(fleeLosing({ fleeHp: 13.6, health: 9.2, sinceFleeMs: 1500, nearestDist: 6, hostiles: 1 }), false, 'décroché');
+  assert.strictEqual(fleeLosing({ fleeHp: 13.6, health: 9.2, sinceFleeMs: 1500, nearestDist: 1.8, hostiles: 2 }), false, 'groupe : jamais');
+  assert.strictEqual(fleeLosing({ fleeHp: 13.6, health: 9.2, sinceFleeMs: 400, nearestDist: 1.8, hostiles: 1 }), false, 'trop tôt');
+  assert.strictEqual(fleeLosing({ fleeHp: null, health: 9.2, sinceFleeMs: 1500, nearestDist: 1.8, hostiles: 1 }), false, 'PV de départ inconnus');
+});
+
+test('canEngage : refus low_hp, fuite qui BOUGE mais se fait frapper → combat autorisé (outrun_failed)', () => {
+  const { createFightBreaker } = require('./fightBreaker');
+  const fb = createFightBreaker();
+  const t0 = 100000;
+  let g = fb.canEngage({ t: t0, pos: { x: 0, y: 64, z: 0 }, health: 9.2, hostiles: 1, nearestDist: 2 });
+  assert.strictEqual(g.reason, 'low_hp');
+  fb.noteFlee({ t: t0, pos: { x: 0, y: 64, z: 0 }, fleeOk: true, health: 9.2 });
+  // 1,5 s plus tard : 5 blocs parcourus (pas « acculé » au sens du surplace), zombie toujours collé, PV 4,8
+  g = fb.canEngage({ t: t0 + 1500, pos: { x: 5, y: 64, z: 0 }, health: 4.8, hostiles: 1, nearestDist: 1.6 });
+  assert.deepStrictEqual(g, { ok: true, cornered: true, reason: 'outrun_failed' });
+  // et le disjoncteur ne relâche pas aussitôt ce combat de dernier recours
+  assert.strictEqual(fb.check({ inFight: true, health: 4.8, t: t0 + 1600 }).abort, false);
+});
+
+test('canEngage : la fuite DÉCROCHE (PV stables) → toujours refusé low_hp', () => {
+  const { createFightBreaker } = require('./fightBreaker');
+  const fb = createFightBreaker();
+  const t0 = 100000;
+  fb.canEngage({ t: t0, pos: { x: 0, y: 64, z: 0 }, health: 9.2, hostiles: 1, nearestDist: 2 });
+  fb.noteFlee({ t: t0, pos: { x: 0, y: 64, z: 0 }, fleeOk: true, health: 9.2 });
+  const g = fb.canEngage({ t: t0 + 1500, pos: { x: 5, y: 64, z: 0 }, health: 9.2, hostiles: 1, nearestDist: 3 });
+  assert.strictEqual(g.ok, false);
+  assert.strictEqual(g.reason, 'low_hp');
+});
