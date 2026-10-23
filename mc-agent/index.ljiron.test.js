@@ -18,6 +18,7 @@ function sandbox(o = {}) {
   const clock = { t: T0 };
   const sb = {
     events: [], calls: [], clock,
+    _lifeGen: 0, lifeStale: (g) => g != null && g !== sb._lifeGen, dropStaleTask: () => ({ ok: false, reason: 'cancelled', stale: true }),   // génération de vie (index.lifegen.test.js)
     emit(e) { sb.events.push(e); },
     Date: { now: () => clock.t }, Object, Math, Number, Promise, Set,
     items: (o.items || []).map((i) => Object.assign({}, i)),
@@ -124,7 +125,7 @@ test('préemption (migration) pendant la tranche : jeton remplacé jamais écras
 
 test('câblage : lumberjackIdleSkill consulte ljIronSliceStep pendant l\'attente', () => {
   const src = fnSrc('lumberjackIdleSkill');
-  assert.match(src, /await ljIronSliceStep\(\)/);
+  assert.match(src, /await ljIronSliceStep\(_gen\)/);
   assert.match(SRC, /^let _ljIronSliceAt = 0;/m);
 });
 
@@ -161,4 +162,20 @@ test('tranches ratées d\'affilée (water_ahead, 0 fer) → répit doublé ; une
   sb.clock.t += 4 * L.LJ_IRON_RETRY_MS + 1000;
   await run(sb, 'ljIronSliceStep()');
   assert.strictEqual(sb.__get('_ljSliceFails'), 0);
+});
+
+test('mort pendant la tranche mine (vie changée) → jeton de tranche annulé, PAS de /home work depuis le respawn', async () => {
+  const sb = sandbox({ items: [PICK, { name: 'cobblestone', count: 8 }], cave: false });
+  let sawCancelled = null;
+  sb.ljMineSlice = async () => {
+    const tok = sb.taskToken;
+    sb.calls.push('mine');
+    sb._lifeGen += 2;                         // mort + respawn
+    sawCancelled = tok.cancelled;
+    return { ok: true, cancelled: true };
+  };
+  await run(sb, 'ljIronSliceStep(0)');
+  assert.strictEqual(sawCancelled, true, 'le jeton de la tranche voit la vie finie');
+  assert.ok(sb.calls.includes('mine'));
+  assert.ok(!sb.calls.includes('mine_return'), 'aucun retour /home work pour une vie finie');
 });

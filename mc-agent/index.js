@@ -1614,15 +1614,16 @@ async function deliverWoodSkill() {
 
 /** Skill `lumberjackIdle` : stock plein, personne n'attend → patienter (≤ 5 min par tranche). */
 async function lumberjackIdleSkill() {
+  const _gen = _lifeGen;   // vie du lancement : après un respawn, le global taskToken est celui du runner suivant
   const t0 = Date.now();
   _ljEmit('lumberjack_idle', { stock: logCount(buildCtxInv(bot)) }, 300000);
   let ironCheckAt = 0;
   while (Date.now() - t0 < LJ_IDLE_MAX_MS) {
-    if (taskToken.cancelled || migrationOwnsBot()) return { ok: false, reason: 'cancelled' };
+    if (taskToken.cancelled || lifeStale(_gen) || migrationOwnsBot()) return { ok: false, reason: 'cancelled' };
     // TEMPS MORT → FER (21/10) : plutôt qu'attendre, une tranche de fer bornée et préemptable.
     if (Date.now() - ironCheckAt >= LJ_IRON_CHECK_MS) {
       ironCheckAt = Date.now();
-      const sliced = await ljIronSliceStep();
+      const sliced = await ljIronSliceStep(_gen);
       if (sliced) return sliced;
     }
     await sleep(2000);
@@ -1645,7 +1646,7 @@ let _ljIronSliceAt = 0;
 let _ljSliceFails = 0;
 
 /** Plan + exécution ; null si rien d'utile (l'attente historique reprend). */
-async function ljIronSliceStep() {
+async function ljIronSliceStep(gen) {
   try {
     const items = (bot.inventory && bot.inventory.items()) || [];
     const n = (name) => items.reduce((s, i) => s + (i && i.name === name ? i.count : 0), 0);
@@ -1663,7 +1664,7 @@ async function ljIronSliceStep() {
       now: Date.now(), lastSliceAt: _ljIronSliceAt, retryMs: ljSliceRetryMs(_ljSliceFails),
     });
     if (!act) return null;
-    return await ljIronSlice(act);
+    return await ljIronSlice(act, gen);
   } catch (e) { return null; }
 }
 
@@ -1727,13 +1728,14 @@ function _ljCaveAvailable() {
   try { return !!ironCaveCtx(); } catch (e) { return false; }
 }
 
-async function ljIronSlice(act) {
+async function ljIronSlice(act, gen) {
   _ljIronSliceAt = Date.now();
+  const _gen = gen != null ? gen : _lifeGen;   // vie du lancement (cf. _lifeGen)
   const parent = taskToken;
   let stop = false;
   let why = null;
   const slice = {
-    get cancelled() { return stop || !!(parent && parent.cancelled); },
+    get cancelled() { return stop || !!(parent && parent.cancelled) || lifeStale(_gen); },
     set cancelled(v) { if (v) stop = true; },
   };
   const count = (name) => ((bot.inventory && bot.inventory.items()) || [])
@@ -1769,7 +1771,10 @@ async function ljIronSlice(act) {
   } finally {
     clearInterval(watch);
     if (taskToken === slice) taskToken = parent;      // une préemption (migration) a pu le remplacer
-    if (act === 'mine') await ljMineReturn();          // four de mine ramassé, puis /home work (coin de coupe)
+    // Four de mine ramassé, puis /home work (coin de coupe) — jamais pour une vie finie : ce serait un TP
+    // depuis le point de réapparition vers le chantier (vu après mort : `work_return ctx:lj_mine`).
+    if (act === 'mine' && !lifeStale(_gen)) await ljMineReturn();
+    else if (act === 'mine') dropStaleTask('lj_mine_return', _gen);
     _ljIronSliceAt = Date.now();                       // le répit anti boucle chaude part de la FIN
   }
   const _end = { ok: !!(r && r.ok), reason: why || (r && r.reason) || null,
@@ -3308,7 +3313,8 @@ async function gatherStone(goal) {
   return r;
 }
 
-async function runGoalSkill(goal) {
+async function runGoalSkill(goal, gen) {
+  const _gen = gen != null ? gen : _lifeGen;   // vie du lancement (cf. _lifeGen, runSkillWithTelemetry)
   // #1 retours live : coincé dans l'eau → s'en sortir AVANT de tenter le skill (sinon le pathfinder
   // rame dans l'angle jusqu'au timeout, le planner re-dérive, et ça recommence).
   if (isInWater(bot)) await escapeWater(bot, { emit });
@@ -3537,6 +3543,8 @@ async function runGoalSkill(goal) {
     // → no_pickaxe → le fer ne s'accumulait jamais). water_rescue ramenait en SURFACE, forçant cette
     // re-descente : c'est LE moteur du churn. Garde : si le tp atterrit dans l'eau, le chantier est noyé
     // → on l'oublie et on re-creuse (qui relocalise au sec via _descendWaterFails).
+    // Mort pendant les pré-hooks (chasse, armure…) : pas de /home work vers le chantier de l'autre vie.
+    if (lifeStale(_gen)) return dropStaleTask('descendDiagonal', _gen);
     if (NO_GIVE && _workSet && bot.entity && bot.entity.position && bot.entity.position.y > 30) {
       emit({ type: 'descend_via_home_work' });
       // Pendant l'attente du TP + le settle (jusqu'à ~9 s), l'escalier compte déjà comme en cours : le
@@ -3555,9 +3563,12 @@ async function runGoalSkill(goal) {
     // juste avant l'appel — les pré-hooks (armure, chasse, steering) ont pu tourner la tête entre-temps.
     await applyDescendHeading();
     let r = await descendDiagonal(bot, goal.args || {}, taskToken);
+    // Mort pendant la descente : rien de ce qui suit (bookmark `work` AU POINT DE RÉAPPARITION, cap, échecs).
+    if (lifeStale(_gen)) return dropStaleTask('descendDiagonal', _gen);
     // Pioche cassée dans l'escalier : la refaire SUR PLACE et reprendre la descente (21/10).
     if (r && r.ok === false && r.reason === 'no_pickaxe' && !taskToken.cancelled && await rebuildPickHere('descend')) {
       r = await descendDiagonal(bot, goal.args || {}, taskToken);
+      if (lifeStale(_gen)) return dropStaleTask('descendDiagonal', _gen);
     }
     // Pioche absente ET irremplaçable (23/10, NethBot1 : 55 min de descend_y16 en boucle) : le dire, une
     // raison distincte (le planner ne relance pas la même descente comme si c'était un accident de terrain).
@@ -3625,7 +3636,8 @@ async function runGoalSkill(goal) {
       return await branchMine(bot, Object.assign(
         { torchEvery: TORCH_EVERY, onSurvivalTick: branchSurvivalTick, survivalEvery: 4,
           onNoPickaxe: () => rebuildPickHere('branch') },
-        { targetY: (goal.args && goal.args.targetY) || -54, mainLength: 16, branchSpacing: 4, branchLength: 4 }),
+        { targetY: (goal.args && goal.args.targetY) || -54, mainLength: 16, branchSpacing: 4, branchLength: 4 },
+        lifeGuardOpts('branchMine', _gen)),
       taskToken);
     }
     return rCH;
@@ -3661,7 +3673,11 @@ async function runGoalSkill(goal) {
     const rBM = await branchMine(bot, Object.assign(
       { torchEvery: TORCH_EVERY, onSurvivalTick: branchSurvivalTick, survivalEvery: 4,
         onNoPickaxe: () => rebuildPickHere('branch') },
-      goal.args || {}, stopOre ? { stopOre } : {}, _lawnState ? { lawnState: _lawnState } : {}), taskToken);
+      goal.args || {}, stopOre ? { stopOre } : {}, _lawnState ? { lawnState: _lawnState } : {},
+      lifeGuardOpts('branchMine', _gen)), taskToken);
+    // Mort dans la galerie : ni front mémorisé (ce serait le point de réapparition), ni four du fond, ni
+    // décalage — la nouvelle vie repart de zéro. (branchMine a déjà dit stale_task_dropped s'il l'a vu.)
+    if (lifeStale(_gen)) return (rBM && rBM.stale) ? { ok: false, reason: 'cancelled', stale: true } : dropStaleTask('branchMine', _gen);
     if (goal.args && goal.args.lawn) { try { ironLawnEnd(rBM); } catch (e) { /* best-effort */ } }
     // Le four laissé en bas (fondre en minant) : on repasse prendre les lingots avant de quitter la mine.
     try { await finishFurnaceJob('branch_end'); } catch (e) { /* best-effort */ }
@@ -4342,7 +4358,45 @@ const _legDigEmitted = new WeakSet();
 // pendant que la nouvelle démarre) — un booléen remis à false par la première mentirait.
 let _skillInFlight = 0;       // runGoalSkill en cours (cf. runSkillWithTelemetry)
 let _autoRunners = 0;         // startAutonomous en cours (planner, ressource, récup post-mort)
+// GÉNÉRATION DE VIE (23/10, logs Omen NethBot1 13:45 / NethBot2 13:56 UTC) : la mort n'annulait rien — le
+// runner autonome survivait (`autonomous_dup_skipped runners:1`) et son serpentin re-pathait depuis le point
+// de réapparition vers la galerie qui venait de le tuer (`bm_approach` à ~120 blocs, re-mort 40 s-2 min
+// plus tard) ; une chasse d'avant la mort enchaînait sur `/home work` vers l'ancien chantier. Avancé à
+// chaque MORT (endLifeTasks) et à chaque SPAWN ; un skill capture la génération à son départ et s'arrête
+// dès qu'elle a changé — le global `taskToken` ne suffit pas : après le respawn il porte le jeton VIVANT
+// du runner suivant. ⚠️ NIVEAU MODULE (piège #56 : lu par des timers et par les skills).
+let _lifeGen = 0;
 const MIGRATION_PREEMPT_WAIT_MS = 30000;   // attente max que le planner rende la main
+
+/** La vie qui a capturé `gen` est-elle finie ? Sans génération capturée (appels historiques) : jamais. */
+function lifeStale(gen) { return gen != null && gen !== _lifeGen; }
+
+/** Un skill d'une vie finie rend la main : `cancelled` (ni échec du but, ni verdict sur la zone). */
+function dropStaleTask(task, gen, why) {
+  emit({ type: 'stale_task_dropped', task, gen, now: _lifeGen, why: why || 'life_changed' });
+  return { ok: false, reason: 'cancelled', stale: true };
+}
+
+/** Options de garde pour skills/branchMine.js (isStale relu à chaque pas et dans approach). */
+function lifeGuardOpts(task, gen) {
+  return {
+    isStale: () => lifeStale(gen),
+    onStale: (why) => { emit({ type: 'stale_task_dropped', task, gen, now: _lifeGen, why: why || 'life_changed' }); },
+  };
+}
+
+/** Fin d'une vie : génération +1 et la tâche longue active est ANNULÉE (son cleanup = stopMotion). Le
+ *  planner repart de zéro au spawn (dette de mort / home work décident d'un retour s'il est sûr) ; une
+ *  migration annulée ici est reprise (zone.migrationCancelEffect : `by` null → resume). → nom de la tâche. */
+function endLifeTasks(why) {
+  const gen = _lifeGen;
+  _lifeGen++;
+  const task = taskCtl.active;
+  if (!task) return null;
+  taskCtl.cancel();
+  emit({ type: 'stale_task_dropped', task, gen, now: _lifeGen, why });
+  return task;
+}
 // FILET ANTI-BOUCLE À VIDE (fix 18/08) : { objectif → instant du dernier run fini SANS AUCUN skill }.
 // Écrit et relu par runAutonomousBody à chaque `done` (décision pure : goals.chainAfterDone). En
 // mémoire de process VOLONTAIREMENT : la boucle mesurée tournait dans UN process (1 cycle / 1,5 s) ;
@@ -5632,19 +5686,22 @@ async function holdForNight(g) {
 }
 
 async function runSkillWithTelemetry(g) {
+  // Vie du lancement (cf. _lifeGen) : les « taskToken.cancelled » ci-dessous lisent le GLOBAL, qui après un
+  // respawn porte le jeton vivant du runner suivant — la génération, elle, ne ment pas.
+  const _gen = _lifeGen;
   if (migrationOwnsBot()) return { ok: false, reason: 'cancelled' };
   await foodTripYield();                                      // expédition vers le gibier en cours : on n'y vole pas le pathfinder
   await settleSurvivalKit();                                  // survie d'abord, le craft ensuite
-  if (taskToken.cancelled || migrationOwnsBot()) return { ok: false, reason: 'cancelled' };
+  if (taskToken.cancelled || lifeStale(_gen) || migrationOwnsBot()) return { ok: false, reason: 'cancelled' };
   // DISCIPLINE DE NUIT : nu + nuit connue → l'abri AU LIEU du skill (cf. holdForNight). Retenu, on rend
   // la main SANS lancer le skill : à l'aube le planner re-dérive son but sur l'état du matin. Pas de
   // `ok` dans ce retour → ni échec (failStreak) ni succès : une nuit n'est pas un verdict sur le but.
   const _night = await holdForNight(g);
-  if (_night.cancelled || taskToken.cancelled || migrationOwnsBot()) return { ok: false, reason: 'cancelled' };
+  if (_night.cancelled || taskToken.cancelled || lifeStale(_gen) || migrationOwnsBot()) return { ok: false, reason: 'cancelled' };
   if (_night.held) return { held: 'night' };
   // NUIT + (mort récente OU PV bas) pendant le kit → ABRI jusqu'à l'aube (vécu Surv4 : 7 morts
   // nocturnes en boucle ; un trou couvert coûte 2 blocs et sauve le kit).
-  if (await maybeNightShelter() && taskToken.cancelled) return { ok: false, reason: 'cancelled' };
+  if (await maybeNightShelter() && (taskToken.cancelled || lifeStale(_gen))) return { ok: false, reason: 'cancelled' };
   if (migrationOwnsBot()) return { ok: false, reason: 'cancelled' };   // l'abri peut durer : re-vérifier
   // BÛCHERON D'ÉQUIPE : un but bois → demander au bûcheron et attendre AU CHANTIER (≤ 4 min) au lieu
   // de remonter explorer une zone rasée. null = comportement historique (le skill tourne ci-dessous).
@@ -5652,11 +5709,11 @@ async function runSkillWithTelemetry(g) {
   if (_wood) return _wood;
   // Four de mine en cours et but qui n'est pas du minage : ramasser les lingots d'abord (21/10).
   if (_furnaceJob && !FURNACE_JOB_KEEP_SKILLS.has(g.skill)) { try { await finishFurnaceJob('goal'); } catch (e) {} }
-  if (taskToken.cancelled || migrationOwnsBot()) return { ok: false, reason: 'cancelled' };
+  if (taskToken.cancelled || lifeStale(_gen) || migrationOwnsBot()) return { ok: false, reason: 'cancelled' };
   // VIANDE CRUE en poche (≥ 3) entre deux buts : on la cuit comme un joueur (23/10, cookMeat.js). Une
   // cuisson lancée par le filet (timer) se termine d'abord : un four ouvert ne survit pas à un départ.
   await cookBetweenGoals(g);
-  if (taskToken.cancelled || migrationOwnsBot()) return { ok: false, reason: 'cancelled' };
+  if (taskToken.cancelled || lifeStale(_gen) || migrationOwnsBot()) return { ok: false, reason: 'cancelled' };
   const _t0 = Date.now();
   // `_skillInFlight` encadre l'exécution RÉELLE du skill, à l'intérieur du withTimeout : un skill
   // expiré continue de tourner en fond (withTimeout ne l'annule pas), et migrateZone doit attendre
@@ -5665,19 +5722,22 @@ async function runSkillWithTelemetry(g) {
     _skillInFlight++;
     const _cg = { name: g.name, skill: g.skill, at: _t0 };
     _curGoal = _cg;                                           // lu par trySquad (squadHold)
-    try { return await runGoalSkill(g); } finally { _skillInFlight--; if (_curGoal === _cg) _curGoal = null; }
+    try { return await runGoalSkill(g, _gen); } finally { _skillInFlight--; if (_curGoal === _cg) _curGoal = null; }
   })();
   const r = await withTimeout(run, timeoutFor(g.skill), () => { try { stopMotion(); } catch (e) {} });
   // Temps de MINAGE effectif : c'est le dénominateur du rendement de la zone (verdict 'exhausted').
   if (MINING_GOALS.has(g.name)) _zoneMiningMs += (Date.now() - _t0);
+  // Le bot est mort pendant le skill : son résultat appartient à une vie finie (ni goal_failed, ni verdict
+  // de zone, ni suite du but). Le planner de cette vie, jeton annulé par endLifeTasks, rend la main.
+  if (lifeStale(_gen)) return (r && r.stale) ? { ok: false, reason: 'cancelled', stale: true } : dropStaleTask(g.skill, _gen);
   // PV CRITIQUES (22/10) : un craft refusé (`low_hp_skip`) n'est PAS un échec du but — ni goal_failed,
   // ni noteZoneFailure, ni demande de bois. On RÉCUPÈRE (manger / se murer / sortie nourriture /
   // attendre, ≤ 60 s) puis on rend `wait:true` : le planner ne le compte ni dans failStreak ni dans le
   // fingerprint, et re-dérive le but au tour suivant (cf. planner.js MAX_WAIT_TURNS).
   if (r && r.ok === false && r.reason === 'low_hp_skip') {
-    if (taskToken.cancelled || migrationOwnsBot()) return { ok: false, reason: 'cancelled' };
+    if (taskToken.cancelled || lifeStale(_gen) || migrationOwnsBot()) return { ok: false, reason: 'cancelled' };
     const rec = await recoverLowHp(g.name);
-    if (taskToken.cancelled || migrationOwnsBot()) return { ok: false, reason: 'cancelled' };
+    if (taskToken.cancelled || lifeStale(_gen) || migrationOwnsBot()) return { ok: false, reason: 'cancelled' };
     return { ok: false, reason: 'recovering', wait: true, outcome: rec.outcome };
   }
   if (!r || r.ok === false) {
@@ -11710,6 +11770,7 @@ bot.on('messagestr', (msg) => {
 });
 
 bot.on('spawn', () => {
+  _lifeGen++;   // une vie commence : tout skill d'une vie antérieure s'arrête à son prochain pas
   _floatSettleUntil = Date.now() + 15000;
   // Là où l'on revient en mourant (COPIE : Vec3 muté en place) — référence du dépôt du kit de secours.
   try { const sp = bot.entity && bot.entity.position; if (sp) _lastRespawnPos = { x: sp.x, y: sp.y, z: sp.z }; } catch (e) {}
@@ -11961,6 +12022,7 @@ let lastDeath = null; // {x,y,z,t} — pour retourner ramasser ses items au resp
 bot.on('death', () => {
   emit({ type: 'status', state: 'dead' });
   abortShelterOnDeath();
+  try { endLifeTasks('death'); } catch (e) { /* ce handler persiste l'historique : jamais de throw */ }
   // Relevé AVANT que le serveur ne vide l'inventaire (keepInventory OFF) : à l'event `death`, les slots
   // sont encore ceux de la vie qui s'achève. Jamais de throw dans ce handler (il persiste l'historique).
   try { _invAtDeath = _invTotal(() => true); } catch (e) { _invAtDeath = -1; }

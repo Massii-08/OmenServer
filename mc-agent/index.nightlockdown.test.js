@@ -68,6 +68,7 @@ function sandbox({ worn = 0, timeOfDay = NIGHT, day = 4, pos = { x: 0, y: 70, z:
   }, botOver);
   const sb = {
     events: [], chat, clock, bot, calls: [],
+    _lifeGen: 0, lifeStale: (g) => g != null && g !== sb._lifeGen, dropStaleTask: () => ({ ok: false, reason: 'cancelled', stale: true }),   // génération de vie (index.lifegen.test.js)
     emit(e) { sb.events.push(e); },
     Date: { now: () => clock.t },
     setTimeout: () => 0,
@@ -534,7 +535,7 @@ test('index.js : runSkillWithTelemetry passe par holdForNight AVANT le skill, et
   const body = fnSrc('runSkillWithTelemetry');
   const iHold = body.indexOf('await holdForNight(g)');
   assert.ok(iHold > 0);
-  assert.ok(iHold < body.indexOf('runGoalSkill(g)'));
+  assert.ok(iHold < body.indexOf('runGoalSkill(g, _gen)'));
   assert.ok(iHold > body.indexOf('await settleSurvivalKit()'), 'la survie immédiate d abord, l abri ensuite');
   assert.match(body, /if \(_night\.held\) return \{ held: 'night' \};/);
 });

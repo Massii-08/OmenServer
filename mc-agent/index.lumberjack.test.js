@@ -38,6 +38,7 @@ function sandbox(o = {}) {
   const clock = { t: T0 };
   const sb = {
     events: [], calls: [], clock, base: o.base || {}, mates: o.mates || [],
+    _lifeGen: 0, lifeStale: (g) => g != null && g !== sb._lifeGen, dropStaleTask: () => ({ ok: false, reason: 'cancelled', stale: true }),   // génération de vie (index.lifegen.test.js)
     emit(e) { sb.events.push(e); },
     Date: { now: () => clock.t },
     Object, Math, Number, Array, JSON, Promise, Set, Map, String,
@@ -327,6 +328,7 @@ test('câblage : runSkillWithTelemetry consulte woodWaitStep APRÈS la nuit et n
     emit() {}, Date: { now: () => T0 }, Promise,
     taskToken: { cancelled: false }, migrationOwnsBot: () => false,
     foodTripYield: async () => {}, settleSurvivalKit: async () => {},
+    _lifeGen: 0, lifeStale: (g) => g != null && g !== sb._lifeGen, dropStaleTask: () => ({ ok: false, reason: 'cancelled', stale: true }),
     holdForNight: async () => ({ held: 0, cancelled: false }), maybeNightShelter: async () => false,
     woodWaitStep: async (g) => (g.skill === 'gatherLog' ? { ok: true } : null),
     woodGoalRequestStep: async () => null,

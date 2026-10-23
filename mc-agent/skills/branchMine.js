@@ -72,8 +72,28 @@ function stopMotion(bot) {
 // INSTRUMENTATION OOM (23/10) : ~85 sessions mortes « heap out of memory » pendant une approche du
 // serpentin, sans le moindre event. `bm_approach` borne chaque goto (start/end, durée, timeout) et la
 // phase courante est lisible par l'échantillonneur de heap d'index.js (`currentPhase()`).
+// VIE PÉRIMÉE / DÉPLACÉ (23/10, NethBot1 13:45 et NethBot2 13:56 UTC : `bm_approach` vers la galerie qui
+// venait de tuer le bot, ~120 blocs depuis le point de réapparition). `opts.isStale()` vrai → aucun goto
+// (la vie qui a lancé ce serpentin est finie). `opts.maxApproachDist` (posé par branchMine seulement : les
+// cibles du serpentin sont toujours voisines du bot) → une cible plus loin que ça veut dire que le bot a
+// été téléporté/réapparu : aucun goto, `opts.onDisplaced(dist)` prévient la boucle. Rend { stale } /
+// { displaced } (undefined sinon, comportement historique).
+function _isStale(opts) {
+  if (!opts || typeof opts.isStale !== 'function') return false;
+  try { return !!opts.isStale(); } catch (e) { return false; }
+}
 async function approach(bot, target, range = 3, opts = null) {
   if (!bot.pathfinder || !bot.pathfinder.goto) return;
+  if (_isStale(opts)) return { stale: true };
+  const maxD = opts && opts.maxApproachDist;
+  const here = bot.entity && bot.entity.position;
+  if (maxD > 0 && here) {
+    const d = Math.hypot(here.x - target.x, here.y - target.y, here.z - target.z);
+    if (d > maxD) {
+      if (typeof opts.onDisplaced === 'function') { try { opts.onDisplaced(d); } catch (e) { /* jamais bloquant */ } }
+      return { displaced: true, dist: d };
+    }
+  }
   const ms = (opts && opts.approachTimeoutMs) || 20000;
   const t0 = Date.now();
   const tgt = { x: target.x, y: target.y, z: target.z };
@@ -528,6 +548,7 @@ async function safeDigAndOpportunism(bot, target, token, debug, loopOpts) {
   if ((typeof bot.canSeeBlock === 'function' && !bot.canSeeBlock(block))
       || (typeof bot.canDigBlock === 'function' && !bot.canDigBlock(block))) {
     await approach(bot, target, 1, loopOpts);
+    if (_isStale(loopOpts)) return { ok: false, reason: 'stale' };
     if ((typeof bot.canSeeBlock === 'function' && !bot.canSeeBlock(block))
         || (typeof bot.canDigBlock === 'function' && !bot.canDigBlock(block))) {
       return { ok: false, reason: 'dig_failed' };
@@ -551,7 +572,7 @@ async function safeDigAndOpportunism(bot, target, token, debug, loopOpts) {
 
   // Opportunisme → FLOOD-FILL (§3.G) : chaque ore révélé aux abords par le dig déclenche l'extraction
   // de sa VEINE ENTIÈRE (un humain suit la veine), pas juste le bloc voisin.
-  if (token && token.cancelled) return { ok: true };
+  if ((token && token.cancelled) || _isStale(loopOpts)) return { ok: true };
   for (const pos of oreNeighborPositions(bot, target)) {
     try { await floodFillVein(bot, pos, token); } catch (e) { /* opportuniste : on continue */ }
   }
@@ -575,7 +596,28 @@ async function branchMine(bot, opts = {}, token = null) {
   finally { setPhase('idle', null, null); }
 }
 
-async function _branchMine(bot, opts = {}, token = null) {
+// Distance max d'une cible d'approche au bot DANS le serpentin/couloir : la case suivante est voisine, le
+// retour d'une branche latérale au couloir ≤ branchLength. Au-delà, le bot a été téléporté ou est réapparu.
+const DISPLACED_DIST = 32;
+
+async function _branchMine(bot, opts0 = {}, token = null) {
+  // VIE PÉRIMÉE (23/10) : `opts0.isStale` (fourni par l'appelant : génération de vie changée) OU déplacement
+  // détecté par approach → `abort` posé, la boucle sort au prochain point de contrôle avec
+  // { ok:false, reason:'stale', why } et `opts0.onStale(why)` UNE fois. Copie : on n'écrit pas chez l'appelant.
+  let abort = null;
+  const userStale = () => _isStale(opts0);
+  const opts = Object.assign({}, opts0, {
+    isStale: () => !!abort || userStale() || !!(token && token.cancelled),
+    onDisplaced: () => { if (!abort) abort = 'displaced'; },
+    maxApproachDist: opts0.maxApproachDist || DISPLACED_DIST,
+  });
+  // Vrai si la vie est finie (jeton annulé exclu : il garde son retour historique { ok:true, cancelled }).
+  const stale = () => { if (!abort && userStale()) abort = 'life_changed'; return !!abort; };
+  let staleSaid = false;
+  const staleOut = () => {
+    if (!staleSaid) { staleSaid = true; if (typeof opts0.onStale === 'function') { try { opts0.onStale(abort); } catch (e) { /* jamais bloquant */ } } }
+    return { ok: false, reason: 'stale', why: abort, stale: true };
+  };
   const targetY = opts.targetY !== undefined ? opts.targetY : -54;
   const mainLength = opts.mainLength || 32;
   const branchSpacing = opts.branchSpacing || 3;
@@ -727,6 +769,7 @@ async function _branchMine(bot, opts = {}, token = null) {
     let nextTorchAtS = torchEvery > 0 ? torchEvery : Infinity;
     let lastTorchS = 0;                                     // pas de la dernière pose (torche au coude)
     for (let n = 1; n <= mainLength; n++) {
+      if (stale()) return staleOut();
       if (token && token.cancelled) return Object.assign({ ok: true, cancelled: true, ores: deltaOres(oresBefore, snapshotOres(bot)), gotDiamond: countItem(bot, 'diamond') > 0, heading }, lawnOut());
       if (checkStall()) { stopReasonS = 'stalled'; break; }
       if (cobbleLow()) { stopReasonS = 'cobble_low'; break; }
@@ -735,6 +778,7 @@ async function _branchMine(bot, opts = {}, token = null) {
       const footTarget = p(cx + heading.dx, oy, cz + heading.dz);
       const headTarget = p(footTarget.x, footTarget.y + 1, footTarget.z);
       try { await approach(bot, footTarget, 3, opts); } catch (e) { /* dig direct prendra le relais */ }
+      if (stale()) return staleOut();
       // Anti-chute : trou sous la prochaine case (grotte/ravin) → on ne s'y jette PAS, on TOURNE
       // (le serpentin contourne au lieu de tomber/stopper — plus robuste qu'un break sur 1er trou).
       let floorOk = true;
@@ -752,6 +796,7 @@ async function _branchMine(bot, opts = {}, token = null) {
         if (!r.ok && r.reason === 'water_ahead') { wetTurn = true; break; }
         if (!r.ok && r.reason === 'lava_unwallable') { stopReasonS = 'lava'; hardStop = true; break; }
         if (!r.ok && r.reason === 'no_pickaxe') { stopReasonS = 'no_pickaxe'; hardStop = true; break; }
+        if (stale()) return staleOut();
       }
       if (hardStop) break;
       if (wetTurn) {                                          // demi-tour anti-noyade, on reste SEC
@@ -811,6 +856,7 @@ async function _branchMine(bot, opts = {}, token = null) {
   let wetSteps = 0;             // pas de couloir CONSÉCUTIFS face à l'eau (scellés, non creusés) → waterlocked
   outer:
   while (i <= mainLength) {
+    if (stale()) return staleOut();
     if (token && token.cancelled) return { ok: true, cancelled: true, ores: deltaOres(oresBefore, snapshotOres(bot)), gotDiamond: countItem(bot, 'diamond') > 0, heading: dir };
     // Stall : aucun progrès (position figée + aucun ore récolté) depuis > stallMs → échec réel
     // (l'appelant relocate). On échantillonne EN TÊTE de boucle.
@@ -829,6 +875,7 @@ async function _branchMine(bot, opts = {}, token = null) {
     if (debug) dbg('iter', { phase: 'branchMine:iter', i, footTarget: { x: footTarget.x, y: footTarget.y, z: footTarget.z } });
     // Approche AVANT le dig : sinon hors range à i>=6 (cf. risque #5). GoalNear 3 = arrive à ≤3 blocs.
     try { await approach(bot, footTarget, 3, opts); } catch (e) { if (debug) dbg('iter', { phase: 'branchMine:approachThrew', err: String(e).slice(0,150) }); }
+    if (stale()) return staleOut();
     // Sol manquant sous la prochaine case (grotte) → ponté, sinon on arrête le tunnel ici (anti-chute).
     try { if (!(await ensureFloor(bot, footTarget))) { stopReason = 'drop'; break; } } catch (e) { /* best-effort */ }
     let stepWet = false;
@@ -839,6 +886,7 @@ async function _branchMine(bot, opts = {}, token = null) {
       if (!r.ok && r.reason === 'water_ahead') stepWet = true;   // scellé best-effort ; on n'entre pas
       if (!r.ok && r.reason === 'lava_unwallable') { stopReason = 'lava'; break outer; }
       if (!r.ok && r.reason === 'no_pickaxe') { stopReason = 'no_pickaxe'; break outer; } // jamais à la main (Massii #5)
+      if (stale()) return staleOut();
     }
     // Fix n°2 water-wall : ≥8 pas consécutifs face à l'eau = le couloir traverse une nappe que le
     // scellement n'assèche pas → échec RAPIDE et NOMMÉ (l'ancien couloir « avançait » à l'aveugle
@@ -869,6 +917,7 @@ async function _branchMine(bot, opts = {}, token = null) {
     if (i > 0 && i % branchSpacing === 0) {
       for (const side of [left, { dx: -left.dx, dz: -left.dz }]) {
         for (let j = 1; j <= branchLength; j++) {
+          if (stale()) return staleOut();
           if (token && token.cancelled) break;
           if (stopReached()) break outer;
           if (cobbleLow()) { stopReason = 'cobble_low'; break outer; }
@@ -882,6 +931,7 @@ async function _branchMine(bot, opts = {}, token = null) {
           const ht = p(ft.x, ft.y + 1, ft.z);
           // Approche aussi avant la branche — j peut monter à 8, donc range hors limite sans goto.
           await approach(bot, ft, 3, opts);
+          if (stale()) return staleOut();
           // Anti-chute : trou de grotte dans la branche → ponté, sinon la branche s'arrête là.
           let floorOk = true;
           try { floorOk = await ensureFloor(bot, ft); } catch (e) { /* best-effort */ }
@@ -892,6 +942,7 @@ async function _branchMine(bot, opts = {}, token = null) {
             if (!r.ok && r.reason === 'water_ahead') branchWet = true;  // scellé best-effort
             if (!r.ok && r.reason === 'lava_unwallable') { stopReason = 'lava'; break outer; }
             if (!r.ok && r.reason === 'no_pickaxe') { stopReason = 'no_pickaxe'; break outer; }
+            if (stale()) return staleOut();
           }
           // Fix n°2 water-wall : la branche a rencontré l'eau → on l'arrête LÀ (l'ancienne boucle
           // continuait à creuser j+1..branchLength DANS la nappe → inondation de la galerie).

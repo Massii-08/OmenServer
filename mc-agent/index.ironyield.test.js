@@ -307,7 +307,7 @@ test('ironLawnEnd : front à < 8 blocs du work actuel → pas de /sethome ; hors
 
 test('index.js : iron_deep passe lawnState à branchMine et mémorise le front ; goals.js active les lacets', () => {
   assert.match(SRC, /const _lawnState = \(goal\.args && goal\.args\.lawn\) \? ironLawnStart\(\) : null;/);
-  assert.match(SRC, /_lawnState \? \{ lawnState: _lawnState \} : \{\}\), taskToken\);\n    if \(goal\.args && goal\.args\.lawn\) \{ try \{ ironLawnEnd\(rBM\); \}/);
+  assert.match(SRC, /_lawnState \? \{ lawnState: _lawnState \} : \{\},\n      lifeGuardOpts\('branchMine', _gen\)\), taskToken\);\n[\s\S]{0,400}?\n    if \(goal\.args && goal\.args\.lawn\) \{ try \{ ironLawnEnd\(rBM\); \}/);
   const { IRON_ARMOR_CHAIN } = require('./goals');
   const chains = [IRON_ARMOR_CHAIN].filter(Boolean);
   const g = chains.flat().find((x) => x && x.name === 'iron_deep');

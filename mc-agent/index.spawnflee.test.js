@@ -45,6 +45,7 @@ const T0 = 1_700_000_000_000;
 function sandbox({ disk = { memo: null }, clock = { t: T0 }, ...extra } = {}) {
   const sb = {
     events: [], calls: [], disk, clock,
+    _lifeGen: 0, lifeStale: (g) => g != null && g !== sb._lifeGen, dropStaleTask: () => ({ ok: false, reason: 'cancelled', stale: true }),   // génération de vie (index.lifegen.test.js)
     emit(e) { sb.events.push(e); },
     Date: { now: () => clock.t },
     // E/S du mémo : on passe par JSON comme le vrai fichier (rien ne survit par référence)

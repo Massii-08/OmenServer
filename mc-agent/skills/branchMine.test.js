@@ -846,3 +846,95 @@ test('floodFillVein : avec du cobble, la lave contre la veine est murée puis le
   assert.strictEqual(mined, 2);
   assert.strictEqual(world['7,-54,0'], 'cobblestone');
 });
+
+// ── VIE PÉRIMÉE (23/10, NethBot1 13:45 / NethBot2 13:56 UTC) : le serpentin survivait à la mort et
+// re-pathait depuis le point de réapparition vers l'ancienne galerie (souvent celle qui venait de tuer
+// le bot). `opts.isStale` (vie changée) et le DÉPLACEMENT (TP/respawn loin du front) l'arrêtent net.
+function staleRig({ flipAfter = 2, serpentine = false } = {}) {
+  const rig = makeBot({ y: -54 });
+  const { bot, calls } = rig;
+  let dead = false;
+  const orig = bot.pathfinder.goto.bind(bot.pathfinder);
+  bot.pathfinder.goto = async (g) => { await orig(g); if (calls.goto.length >= flipAfter) { dead = true; rig.digsAtFlip = calls.dig.length; } };
+  rig.isStale = () => dead;
+  rig.stales = [];
+  rig.opts = { targetY: -54, mainLength: 20, branchSpacing: 3, branchLength: 4, serpentine, rng: () => 0.3,
+    isStale: rig.isStale, onStale: (why) => rig.stales.push(why) };
+  return rig;
+}
+
+test('vie périmée pendant le SERPENTIN → arrêt net : reason stale, plus aucun goto ni dig, onStale une fois', async () => {
+  const rig = staleRig({ serpentine: true });
+  const r = await branchMine(rig.bot, rig.opts);
+  assert.strictEqual(r.ok, false);
+  assert.strictEqual(r.reason, 'stale');
+  assert.strictEqual(rig.calls.goto.length, 2, 'aucun goto après la mort');
+  assert.strictEqual(rig.calls.dig.length, rig.digsAtFlip, 'aucun coup de pioche après la mort');
+  assert.deepStrictEqual(rig.stales, ['life_changed']);
+});
+
+test('vie périmée dans le COULOIR principal (non serpentin) → même arrêt net', async () => {
+  const rig = staleRig({ serpentine: false });
+  const r = await branchMine(rig.bot, rig.opts);
+  assert.strictEqual(r.reason, 'stale');
+  assert.strictEqual(rig.calls.goto.length, 2);
+  assert.strictEqual(rig.calls.dig.length, rig.digsAtFlip);
+  assert.deepStrictEqual(rig.stales, ['life_changed']);
+});
+
+test('vie périmée dans une BRANCHE latérale → arrêt net', async () => {
+  const rig = staleRig({ serpentine: false, flipAfter: 6 });   // couloir i=1..3 puis branche à i=3
+  const r = await branchMine(rig.bot, rig.opts);
+  assert.strictEqual(r.reason, 'stale');
+  assert.strictEqual(rig.calls.goto.length, 6);
+  assert.strictEqual(rig.calls.dig.length, rig.digsAtFlip);
+});
+
+test('TÉLÉPORTÉ loin du front (respawn/TP à 120 blocs) → pas de re-pathing vers la galerie : stale/displaced', async () => {
+  const rig = makeBot({ y: -54 });
+  const { bot, calls } = rig;
+  const orig = bot.pathfinder.goto.bind(bot.pathfinder);
+  bot.pathfinder.goto = async (g) => {
+    await orig(g);
+    if (calls.goto.length === 2) bot.entity.position = pos(-120, 64, 80);   // respawn loin
+  };
+  const stales = [];
+  const r = await branchMine(bot, { targetY: -54, mainLength: 20, serpentine: true, rng: () => 0.3, onStale: (w) => stales.push(w) });
+  assert.strictEqual(r.reason, 'stale');
+  assert.strictEqual(calls.goto.length, 2, 'aucun goto vers la galerie depuis le point de réapparition');
+  assert.deepStrictEqual(stales, ['displaced']);
+});
+
+test('approach : vie périmée → aucun goto, aucun bm_approach start', async () => {
+  const { approach } = require('./branchMine');
+  let gotos = 0;
+  const bot = { entity: { position: pos(0, 15, 0) }, pathfinder: { goto: async () => { gotos++; } } };
+  const evs = await captureStdout(() => approach(bot, { x: 1, y: 15, z: 0 }, 3, { isStale: () => true }));
+  assert.strictEqual(gotos, 0);
+  assert.strictEqual(evs.filter((e) => e.type === 'bm_approach').length, 0);
+});
+
+test('approach : cible à > maxApproachDist (déplacé) → aucun goto ; sans maxApproachDist (appel externe) → goto', async () => {
+  const { approach } = require('./branchMine');
+  let gotos = 0; const disp = [];
+  const bot = { entity: { position: pos(0, 64, 0) }, pathfinder: { goto: async () => { gotos++; } } };
+  const r = await approach(bot, { x: 100, y: 14, z: 0 }, 3, { maxApproachDist: 32, onDisplaced: (d) => disp.push(d) });
+  assert.strictEqual(gotos, 0);
+  assert.ok(r && r.displaced);
+  assert.strictEqual(disp.length, 1);
+  assert.ok(disp[0] > 100);
+  await approach(bot, { x: 100, y: 14, z: 0 }, 3, {});
+  assert.strictEqual(gotos, 1, 'comportement historique hors branchMine');
+});
+
+test('jeton annulé (mort) : comportement historique conservé (ok:true cancelled:true), sans onStale', async () => {
+  const rig = makeBot({ y: -54 });
+  const tok = { cancelled: false };
+  const orig = rig.bot.pathfinder.goto.bind(rig.bot.pathfinder);
+  rig.bot.pathfinder.goto = async (g) => { await orig(g); if (rig.calls.goto.length >= 2) tok.cancelled = true; };
+  const stales = [];
+  const r = await branchMine(rig.bot, { targetY: -54, mainLength: 20, serpentine: true, rng: () => 0.3, onStale: (w) => stales.push(w) }, tok);
+  assert.strictEqual(r.cancelled, true);
+  assert.ok(rig.calls.goto.length <= 3, `au plus un goto après l'annulation (got ${rig.calls.goto.length})`);
+  assert.deepStrictEqual(stales, []);
+});
