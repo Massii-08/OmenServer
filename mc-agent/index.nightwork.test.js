@@ -95,7 +95,7 @@ function sandbox(o = {}) {
   run(sb, [letSrc('_nightWork'), letSrc('_nightWorkTriedNight'), constSrc('_nightDeferAt'), constSrc('NIGHT_WORK_DESCENT_MS'),
     "const { cellBlockItem: _nightCellItem } = require('./skills/shelter');",
     fnSrc('_nightId'), fnSrc('nightUndergroundNow'), fnSrc('nightSkipGoal'), fnSrc('_nearestThreatDist'),
-    fnSrc('_nightFill'), fnSrc('nightSeal'), fnSrc('nightTorch'), fnSrc('tryNightWork'), fnSrc('rebuildPickHere'),
+    fnSrc('_nightFill'), fnSrc('nightSeal'), fnSrc('nightTorch'), fnSrc('tryNightWork'), letSrc('_lastPickRebuildWhy'), fnSrc('rebuildPickHere'),
     letSrc('_shelterCraft'), constSrc('SHELTER_CRAFT_MS'), fnSrc('_shelterRecenter'), fnSrc('shelterWhileSealed'),
     'this.shelterWhileSealed = shelterWhileSealed; this.shelterCraft = () => _shelterCraft;',
     letSrc('_furnaceJob'), letSrc('_furnaceJobBusy'), constSrc('FURNACE_JOB_KEEP_SKILLS'),

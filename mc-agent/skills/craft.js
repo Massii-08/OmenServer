@@ -188,6 +188,9 @@ const JUNK_TIERS = [
   { names: ['cobbled_deepslate'], keep: COBBLE_KEEP },   // « au-delà de 32 », par nom
   { names: ['cobblestone'], keep: COBBLE_KEEP },
 ];
+// Remblai : tout ce que JUNK_TIERS sait jeter sert aussi à poser (tours, abris, murs de lave).
+const FILL_NAMES = new Set(JUNK_TIERS.reduce((a, t) => a.concat(t.names), []));
+const FILL_KEEP = 64;     // stock de remblai qu'on préfère garder AU TOTAL (toutes roches confondues)
 
 // Quelle pile jeter pour libérer UNE case ? Fonction PURE : `items` = [{ name, count, … }] (l'inventaire
 // utile, 36 cases) → l'élément choisi (la référence, jamais une copie) ou `null` si rien n'est jetable.
@@ -195,23 +198,62 @@ const JUNK_TIERS = [
 // moindre coût ; à égalité, la première rencontrée). Une pile de cobble n'est jetable que si le TOTAL
 // restant après son départ garde au moins COBBLE_KEEP : sous 32 on ne touche à rien, et une pile
 // unique n'est jamais jetée (il resterait 0).
-// `opts.exclude` (Set ou tableau de noms) : ce que la recette consomme ou produit n'est jamais jeté.
+// `opts.exclude` (Set ou tableau de noms) : jamais jeté (le PRODUIT du craft).
+// `opts.reserve` ({ nom: quantité }) : ce que la recette CONSOMME. Avant le 23/10 les ingrédients
+//   étaient exclus EN BLOC : NethBot1 (session 408) bloqué 55 min, poche pleine de 10 piles de cobble
+//   (587), `stone_pickaxe` → `craft_no_effect` en boucle — le cobble, seul déchet en poche, était
+//   l'ingrédient, donc intouchable, alors que la recette n'en prend que 3. Désormais une pile
+//   d'ingrédient part si le reste couvre la réserve du palier PLUS ce que la recette consomme.
+// REMBLAI (FILL_KEEP, 23/10) : on préfère un jet qui laisse ≥ 64 blocs de remblai AU TOTAL (toutes
+//   roches confondues : tours, abris, murs de lave). Si aucun jet ne le permet, on retombe sur la
+//   règle par palier — une case pour le résultat vaut mieux qu'une pioche jetée au sol par mineflayer.
 function pickJunkToToss(items, opts) {
   const ex = opts && opts.exclude;
   const exclude = ex instanceof Set ? ex : new Set(Array.isArray(ex) ? ex : []);
+  const rsv = (opts && opts.reserve && typeof opts.reserve === 'object') ? opts.reserve : {};
   const list = (Array.isArray(items) ? items : []).filter((it) => it && it.name && Number(it.count) > 0);
   const total = {};
-  for (const it of list) total[it.name] = (total[it.name] || 0) + Number(it.count);
-  for (const tier of JUNK_TIERS) {
-    let best = null;
-    for (const it of list) {
-      if (!tier.names.includes(it.name) || exclude.has(it.name)) continue;
-      if (total[it.name] - Number(it.count) < tier.keep) continue;       // le départ de CETTE pile percerait la réserve
-      if (!best || Number(it.count) < Number(best.count)) best = it;
-    }
-    if (best) return best;
+  let fillTotal = 0;
+  for (const it of list) {
+    total[it.name] = (total[it.name] || 0) + Number(it.count);
+    if (FILL_NAMES.has(it.name)) fillTotal += Number(it.count);
   }
-  return null;
+  const pass = (fillFloor) => {
+    for (const tier of JUNK_TIERS) {
+      let best = null;
+      for (const it of list) {
+        if (!tier.names.includes(it.name) || exclude.has(it.name)) continue;
+        const need = Number(rsv[it.name]) > 0 ? Number(rsv[it.name]) : 0;
+        const keep = need > 0 ? Math.max(tier.keep, COBBLE_KEEP) + need : tier.keep;
+        if (total[it.name] - Number(it.count) < keep) continue;           // percerait la réserve
+        if (fillFloor && fillTotal - Number(it.count) < FILL_KEEP) continue;
+        if (!best || Number(it.count) < Number(best.count)) best = it;
+      }
+      if (best) return best;
+    }
+    return null;
+  };
+  return pass(true) || pass(false);
+}
+
+// Combien de cases NEUVES faut-il pour loger `outputs` ([{ name, count, stackSize? }]) ? PUR. Chaque
+// sortie complète d'abord les piles non pleines du même item (comme mineflayer), le reste prend
+// ceil(reste / taille de pile) cases. Le produit ET les résidus (seau rendu, etc.) comptent.
+function slotsNeededFor({ items, outputs, stackSize } = {}) {
+  let slots = 0;
+  const inv = Array.isArray(items) ? items : [];
+  for (const o of (Array.isArray(outputs) ? outputs : [])) {
+    if (!o || !o.name) continue;
+    let left = Number(o.count) > 0 ? Number(o.count) : 1;
+    const cap = Number(o.stackSize) > 0 ? Number(o.stackSize) : (Number(stackSize) > 0 ? Number(stackSize) : 64);
+    for (const it of inv) {
+      if (!it || it.name !== o.name) continue;
+      const c = Number(it.stackSize) > 0 ? Number(it.stackSize) : cap;
+      left -= Math.max(0, c - (Number(it.count) || 0));
+    }
+    if (left > 0) slots += Math.ceil(left / cap);
+  }
+  return slots;
 }
 
 // Faut-il faire de la place ? Fonction PURE. Oui ssi AUCUNE case n'est vide (`emptySlots === 0` ; `null`
@@ -252,13 +294,38 @@ function _emptySlots(bot) {
   return null;
 }
 
-// Noms des ingrédients que la recette CONSOMME (delta négatif) : jamais jetables, même si c'est du cobble.
-function _ingredientNames(bot, recipe) {
+// Ingrédients que la recette CONSOMME (delta négatif) → { nom: quantité pour `crafts` crafts }. Ils ne
+// partent jamais sous ce qu'il faut à la recette (cf. pickJunkToToss / opts.reserve).
+function _ingredientNeeds(bot, recipe, crafts) {
   const items = bot.registry && bot.registry.items;
-  const out = [];
+  const out = {};
   if (!items || !recipe || !Array.isArray(recipe.delta)) return out;
+  const k = Number(crafts) > 0 ? Number(crafts) : 1;
   for (const d of recipe.delta) {
-    if (d && d.count < 0 && items[d.id] && items[d.id].name) out.push(items[d.id].name);
+    if (d && d.count < 0 && items[d.id] && items[d.id].name) {
+      const n = items[d.id].name;
+      out[n] = (out[n] || 0) + (-d.count) * k;
+    }
+  }
+  return out;
+}
+
+// Ce que le craft DÉPOSE en poche (delta positif : le produit + les résidus), × `crafts`.
+function _outputsOf(bot, recipe, crafts, product, id) {
+  const items = bot.registry && bot.registry.items;
+  const k = Number(crafts) > 0 ? Number(crafts) : 1;
+  const out = [];
+  if (items && recipe && Array.isArray(recipe.delta)) {
+    for (const d of recipe.delta) {
+      if (d && d.count > 0 && items[d.id] && items[d.id].name) {
+        out.push({ name: items[d.id].name, count: d.count * k, stackSize: items[d.id].stackSize });
+      }
+    }
+  }
+  if (!out.some((o) => o.name === product)) {
+    const perCraft = recipe && recipe.result && Number(recipe.result.count) > 0 ? Number(recipe.result.count) : 1;
+    const def = items && items[id];
+    out.push({ name: product, count: perCraft * k, stackSize: def && def.stackSize });
   }
   return out;
 }
@@ -273,21 +340,32 @@ async function _tossItem(bot, item) {
   return false;
 }
 
-// Libère une case si le résultat du craft n'a nulle part où aller. Rend le NOM de la pile jetée, ou
-// `null` (rien jeté : de la place, pas d'information, rien de jetable, ou jet impossible).
+// Libère les cases dont le résultat du craft a besoin (produit + résidus). Rend les NOMS des piles
+// jetées (tableau, éventuellement vide : de la place, pas d'information, rien de jetable, jet impossible).
+// Indépendant du combat : la case est libérée même en pleine bagarre (le craft, lui, se fait quand même —
+// sans case, mineflayer jetterait la pioche au sol et le bot bouclerait sans pouvoir creuser).
 async function _makeRoom(bot, id, product, recipe, crafts) {
   const emptySlots = _emptySlots(bot);
-  if (emptySlots !== 0) return null;                    // 1er filtre, sans lire l'inventaire : de la place (ou inconnu)
+  if (emptySlots === null) return [];                   // inconnu (vieux stub) : on ne jette rien
   let items = null;
   try { items = typeof bot.inventory.items === 'function' ? bot.inventory.items() : null; } catch (e) { items = null; }
-  if (!Array.isArray(items)) return null;
-  const perCraft = recipe && recipe.result && Number(recipe.result.count) > 0 ? Number(recipe.result.count) : 1;
-  const need = (Number(crafts) > 0 ? Number(crafts) : 1) * perCraft;
+  if (!Array.isArray(items)) return [];
   const def = bot.registry && bot.registry.items && bot.registry.items[id];
-  if (!needsRoomFor({ emptySlots, items, product, need, stackSize: def && def.stackSize })) return null;
-  const junk = pickJunkToToss(items, { exclude: [product].concat(_ingredientNames(bot, recipe)) });
-  if (!junk) return null;
-  return (await _tossItem(bot, junk)) ? junk.name : null;
+  const outputs = _outputsOf(bot, recipe, crafts, product, id);
+  const missing = slotsNeededFor({ items, outputs, stackSize: def && def.stackSize }) - emptySlots;
+  if (missing <= 0) return [];
+  const reserve = _ingredientNeeds(bot, recipe, crafts);
+  const exclude = [product].concat(outputs.map((o) => o.name));
+  const freed = [];
+  let left = items.slice();
+  for (let i = 0; i < missing; i++) {
+    const junk = pickJunkToToss(left, { exclude, reserve });
+    if (!junk) break;
+    if (!(await _tossItem(bot, junk))) break;
+    freed.push(junk.name);
+    left = left.filter((x) => x !== junk);
+  }
+  return freed;
 }
 
 // PLANCHES HÉTÉROGÈNES — le blocage du bouclier (world_mn14 : 235 `craft_failed:table_present`,
@@ -370,8 +448,7 @@ async function craftItem(bot, { name, count = 1, _fixPlanks = true, _sleep, _fre
   // Le produit est celui DEMANDÉ : `recipesFor(id, …)` ne rend que des recettes qui le fabriquent.
   const produced = String(name).toLowerCase();
   // De la place pour le résultat AVANT de crafter (inventaire plein → mineflayer le jetterait au sol).
-  const tossed = await _makeRoom(bot, id, produced, recipes[0], count);
-  if (tossed) freed.push(tossed);
+  for (const tossed of await _makeRoom(bot, id, produced, recipes[0], count)) freed.push(tossed);
   // Grille 2×2 / curseur encombrés AVANT de crafter → Échap (cf. « GRILLE 2×2 ET CURSEUR PROPRES »).
   let reset = false;
   const left = craftGridLeftovers(bot.inventory);
@@ -422,5 +499,5 @@ function tablePlan({ tableInReach = false, tableSeen = false, hasTableItem = fal
 
 module.exports = {
   craftItem, _nearestTable, tableKey, tablePlan, TABLE_REACH, TABLE_SEEK, EFFECT_POLL_MS, EFFECT_TIMEOUT_MS,
-  pickJunkToToss, needsRoomFor, COBBLE_KEEP, JUNK_TIERS, craftGridLeftovers, GRID_RESET_SETTLE_MS,
+  pickJunkToToss, needsRoomFor, slotsNeededFor, COBBLE_KEEP, FILL_KEEP, FILL_NAMES, JUNK_TIERS, craftGridLeftovers, GRID_RESET_SETTLE_MS,
 };

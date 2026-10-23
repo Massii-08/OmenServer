@@ -75,6 +75,8 @@ const { fishCatch, rodPlan } = require('./skills/fish');   // pêche : la nourri
 const { nearestPassive, survivalTick, nearbyHostiles, lavaNearby, armorPoints, weaponDamage } = require('./survival');
 const { loadWorld, saveWorld, setObjective, clearObjective } = require('./worldModel');
 const { _nearestTable, tableKey, tablePlan, TABLE_REACH, TABLE_SEEK, pickJunkToToss } = require('./skills/craft'); // craftItem déjà importé plus haut
+const { fillOverflow, fillCapDue } = require('./fillCap');   // plafond de remblai (23/10)
+const { noPickWhy } = require('./noPick');                   // pioche irremplaçable (23/10)
 const { recycleWorthIt, createNoSpaceMemo, stepAsideCells } = require('./tableSpot');
 const { placeBlockNear } = require('./skills/placeBlockNear');
 const { smelt, logsToConvert, fuelUnits } = require('./skills/smelt');
@@ -3369,6 +3371,13 @@ async function runGoalSkill(goal) {
     if (r && r.ok === false && r.reason === 'no_pickaxe' && !taskToken.cancelled && await rebuildPickHere('descend')) {
       r = await descendDiagonal(bot, goal.args || {}, taskToken);
     }
+    // Pioche absente ET irremplaçable (23/10, NethBot1 : 55 min de descend_y16 en boucle) : le dire, une
+    // raison distincte (le planner ne relance pas la même descente comme si c'était un accident de terrain).
+    if (r && r.ok === false && r.reason === 'no_pickaxe' && !taskToken.cancelled) {
+      const why = noPickStuckWhy();
+      if (Date.now() - _noPickStuckAt >= 60000) { _noPickStuckAt = Date.now(); emit({ type: 'no_pick_stuck', why, goal: goal.name }); }
+      return { ok: false, reason: 'no_pick_stuck', why };
+    }
     // `drop_ahead` (vide devant, pont impossible) : relancer du même point avec le même regard = même
     // échec garanti (vécu ×4 en 5 ms). Au 2e au même endroit on tourne, au 4e on se décale (dropAhead.js).
     // `no_progress` / `max_depth` (21/10, NethBot3 : `max_depth` ×19 au même endroit en 10-20 s chacun —
@@ -5169,7 +5178,11 @@ async function shelterWhileSealed(info) {
 // Le branch-mine abandonnait à chaque casse ; un timer (pickFixPass) refaisait la pioche à côté, puis le
 // planner relançait un couloir neuf. Un joueur sort sa table et refait une pioche pierre sur place.
 /** Re-crafte une pioche pierre ICI (table portable). true si le bot a une pioche en sortant. */
+// Raison du dernier échec de rebuildPickHere (lue par la branche descendDiagonal → no_pick_stuck). Niveau MODULE.
+let _lastPickRebuildWhy = null;
+let _noPickStuckAt = 0;
 async function rebuildPickHere(where) {
+  _lastPickRebuildWhy = null;
   const items = () => (bot.inventory && bot.inventory.items()) || [];
   const has = () => items().some((i) => i && /_pickaxe$/.test(i.name));
   const n = (re) => items().reduce((s, i) => s + (i && re.test(i.name) ? i.count : 0), 0);
@@ -5180,12 +5193,14 @@ async function rebuildPickHere(where) {
     }
     if (n(/^(cobblestone|cobbled_deepslate)$/) < 3 || n(/^stick$/) < 2) {
       emit({ type: 'pick_rebuild_failed', where, reason: 'no_matter', cobble: n(/^(cobblestone|cobbled_deepslate)$/), sticks: n(/^stick$/) });
+      _lastPickRebuildWhy = 'no_matter';
       return false;
     }
     const r = await withTimeout(craftSmart({ name: 'stone_pickaxe', count: 1 }), 45000, () => {});
     if (has()) { emit({ type: 'pick_rebuilt', where }); return true; }
     emit({ type: 'pick_rebuild_failed', where, reason: (r && r.reason) || 'craft_failed' });
-  } catch (e) { /* best-effort */ }
+    _lastPickRebuildWhy = (r && r.reason) || 'craft_failed';
+  } catch (e) { _lastPickRebuildWhy = 'error'; }
   return false;
 }
 
@@ -7275,6 +7290,72 @@ function schedulePickupEquip(delayMs = PICKUP_EQUIP_DELAY_MS) {
   }, delayMs);
   if (_pickupEquipTimer.unref) _pickupEquipTimer.unref();  // ne retient jamais le process
 }
+/** Pourquoi la pioche ne peut pas être refaite ici (cf. noPick.js). Jamais de throw. */
+function noPickStuckWhy() {
+  try {
+    const items = (bot.inventory && bot.inventory.items()) || [];
+    const n = (re) => items.reduce((s, i) => s + (i && re.test(i.name) ? i.count : 0), 0);
+    const empty = (bot.inventory && typeof bot.inventory.emptySlotCount === 'function') ? bot.inventory.emptySlotCount() : null;
+    return noPickWhy({
+      cobble: n(/^(cobblestone|cobbled_deepslate)$/), sticks: n(/^stick$/), planks: n(/_planks$/),
+      logs: n(/_log$/), emptySlots: empty, rebuildReason: _lastPickRebuildWhy,
+    });
+  } catch (e) { return 'unknown'; }
+}
+
+// ─── PLAFOND DE REMBLAI (23/10, cf. fillCap.js) ──────────────────────────────────────────────────
+// Au ramassage, au-delà de 3 piles de remblai on jette l'excédent DERRIÈRE soi (≤ 1 passe / 20 s).
+// ⚠️ NIVEAU MODULE (piège #56) : lus par le handler de ramassage et le timer différé.
+let _fillCapAt = 0;
+let _fillCapBusy = false;
+let _fillCapTimer = null;
+async function capFillStacks() {
+  if (_fillCapBusy || !bot || !bot.inventory) return;
+  if (!fillCapDue(Date.now(), _fillCapAt)) return;
+  // Jamais au milieu d'un craft (inventaire en cours de manipulation), fenêtre ouverte (four, coffre)
+  // ni d'un coup de pioche (se retourner fausserait la face visée → dig_failed) : on attend le suivant.
+  if (_craftDepth > 0 || bot.currentWindow || bot.targetDigBlock) return;
+  try { if (craftCombatNow()) return; } catch (err) { /* inconnu → on tente */ }   // ne pas tourner le dos à un mob
+  const out = fillOverflow(bot.inventory.items() || []);
+  if (!out.length) return;
+  _fillCapBusy = true;
+  _fillCapAt = Date.now();
+  const e = bot.entity;
+  const yaw = (e && Number.isFinite(e.yaw)) ? e.yaw : 0;
+  const pitch = (e && Number.isFinite(e.pitch)) ? e.pitch : 0;
+  let turned = false;
+  const tossed = [];
+  try {
+    if (typeof bot.look === 'function') { try { await bot.look(yaw + Math.PI, 0, true); turned = true; } catch (err) {} }
+    for (const it of out) {
+      try {
+        if (typeof bot.tossStack === 'function') await bot.tossStack(it);
+        else await bot.toss(it.type, null, it.count);
+        tossed.push(it.name + ':' + it.count);
+      } catch (err) { break; }   // case bougée : on reprendra au prochain ramassage
+    }
+  } finally {
+    if (turned) { try { await bot.look(yaw, pitch, true); } catch (err) {} }
+    _fillCapBusy = false;
+  }
+  if (tossed.length) emit({ type: 'fill_capped', tossed });
+}
+function installFillCap() {
+  if (!bot || bot._fillCapInstalled) return;
+  bot._fillCapInstalled = true;
+  bot.on('playerCollect', (collector) => {
+    try {
+      if (!collector || !bot.entity || collector.id !== bot.entity.id) return;
+      if (_fillCapTimer) return;                         // une passe par rafale de ramassages
+      _fillCapTimer = setTimeout(() => {
+        _fillCapTimer = null;
+        Promise.resolve(capFillStacks()).catch(() => {});
+      }, 500);
+      if (_fillCapTimer.unref) _fillCapTimer.unref();
+    } catch (err) { /* un ramassage ne doit JAMAIS casser la boucle du bot */ }
+  });
+}
+
 function installPickupEquip() {
   if (!bot || bot._pickupEquipInstalled) return;          // idempotent : appelé à chaque ensureArmor
   bot._pickupEquipInstalled = true;                       // et à chaque entrée de startMapper
@@ -10800,6 +10881,7 @@ async function onSpawn() {
       },
     };
     installReflexes(bot, _reflexHooks);
+    installFillCap();   // plafond de remblai : jamais 10 piles de cobble en poche (23/10)
     if (!IS_MAPPER) { try { wireSkeletonHurt(); } catch (e) { emit({ type: 'skeleton_hurt_wire_failed', err: String((e && e.message) || e) }); } }
     // TÉLÉPORTATION (#10) : détecte tout TP (admin /tp, /home, portail, respawn) → émet
     // teleport_detected{from,to} + ABANDONNE le goal pathfinder (il visait l'ancienne position —

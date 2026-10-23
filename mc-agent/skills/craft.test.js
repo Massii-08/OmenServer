@@ -547,8 +547,11 @@ test('pickJunkToToss : terre / rooted_dirt / coarse_dirt forment UN palier (la p
 });
 
 test('pickJunkToToss : à taille égale la 1re rencontrée gagne (déterministe) et le résultat est la RÉFÉRENCE', () => {
-  const items = stacksOf([['gravel', 10], ['gravel', 10], ['dirt', 64]]);
+  const items = stacksOf([['gravel', 10], ['gravel', 10], ['dirt', 64], ['cobblestone', 64], ['cobblestone', 64]]);
   assert.strictEqual(pickJunkToToss(items), items[2], 'terre d\'abord, même si elle est plus grosse que le gravier');
+  // Remblai (FILL_KEEP 64, 23/10) : jeter les 64 de terre laisserait 20 blocs au total → le gravier part.
+  const thin = stacksOf([['gravel', 10], ['gravel', 10], ['dirt', 64]]);
+  assert.strictEqual(pickJunkToToss(thin), thin[0], 'la réserve de remblai de 64 prime sur l\'ordre des paliers');
   const g = stacksOf([['gravel', 10], ['gravel', 10]]);
   assert.strictEqual(pickJunkToToss(g), g[0]);
 });
@@ -840,16 +843,48 @@ test('le cobble AU-DELÀ de 32 part (la plus petite pile) et la réserve de 32 r
   assert.strictEqual(countOf(bot, 'cobblestone'), 64, 'la pile de 40 est partie, 64 restent (≥ 32)');
 });
 
-test('un INGRÉDIENT n\'est jamais jeté : le four (8 cobble) ne jette pas le cobble qu\'il va consommer', async () => {
+test('un INGRÉDIENT part seulement AU-DELÀ de réserve + besoin : le four (8 cobble) garde de quoi se faire', async () => {
   const table = { position: { x: 0, y: 0, z: 0 } };
+  // 128 cobble : une pile de 64 part, il en reste 64 ≥ 32 + 8 → le four se fait.
   const bot = slotBot(fullInv([['cobblestone', 64], ['cobblestone', 64]]), { table });
   const r = await craftItem(bot, { name: 'furnace', count: 1, _sleep: fakeSleep() });
-  assert.deepStrictEqual(bot.tossed, [], 'le cobble est l\'ingrédient : intouchable, même au-delà de 32');
-  assert.deepStrictEqual(r, { ok: false, reason: 'craft_no_effect' }, 'rien d\'autre à jeter → le contrôle d\'effet tranche');
-  // …mais s'il y a de la terre, c'est elle qui libère la case.
+  assert.deepStrictEqual(r, { ok: true, freed: 'cobblestone' });
+  assert.strictEqual(countOf(bot, 'furnace'), 1);
+  assert.strictEqual(countOf(bot, 'cobblestone'), 56);
+  // 32 + 8 = 40 : jeter la pile de 8 laisserait 32 < 32 + 8 → intouchable, le contrôle d'effet tranche.
+  const tight = slotBot(fullInv([['cobblestone', 32], ['cobblestone', 8]]), { table });
+  assert.deepStrictEqual(await craftItem(tight, { name: 'furnace', count: 1, _sleep: fakeSleep() }), { ok: false, reason: 'craft_no_effect' });
+  assert.deepStrictEqual(tight.tossed, []);
+  // …et s'il y a de la terre, c'est elle qui libère la case (palier le plus anodin).
   const bot2 = slotBot(fullInv([['cobblestone', 64], ['cobblestone', 64], ['dirt', 3]]), { table });
   assert.deepStrictEqual(await craftItem(bot2, { name: 'furnace', count: 1, _sleep: fakeSleep() }), { ok: true, freed: 'dirt' });
   assert.strictEqual(countOf(bot2, 'furnace'), 1);
+});
+
+// RÉGRESSION LIVE (23/10, NethBot1 session 408) : 55 min bloqué. Poche PLEINE, 587 cobble en 10 piles,
+// seul déchet en poche ; `stone_pickaxe` → craft_no_effect ×N (mineflayer jetait la pioche au sol)
+// parce que le cobble, ingrédient, était exclu EN BLOC du tri.
+test('LIVE NethBot1 : poche pleine de cobble → une pile de cobble part et la pioche pierre ARRIVE en poche', async () => {
+  const table = { position: { x: 0, y: 0, z: 0 } };
+  const cobble = new Array(9).fill(['cobblestone', 64]).concat([['cobblestone', 11]]);
+  const stacks = cobble.concat([['stick', 3], ['oak_log', 5], ['iron_ingot', 5], ['oak_planks', 9], ['crafting_table', 1]]);
+  const bot = slotBot(fullInv(stacks), { table });
+  assert.strictEqual(bot.inventory.emptySlotCount(), 0);
+  const r = await craftItem(bot, { name: 'stone_pickaxe', count: 1, _sleep: fakeSleep() });
+  assert.deepStrictEqual(r, { ok: true, freed: 'cobblestone' });
+  assert.strictEqual(countOf(bot, 'stone_pickaxe'), 1, 'la pioche est EN POCHE');
+  assert.deepStrictEqual(bot.dropped, [], 'rien au sol');
+  assert.strictEqual(countOf(bot, 'cobblestone'), 587 - 11 - 3, 'la plus petite pile (11) part, 3 consommés');
+});
+
+test('slotsNeededFor : produit + résidus, piles non pleines complétées d\'abord', () => {
+  const { slotsNeededFor } = require('./craft');
+  assert.strictEqual(slotsNeededFor({ items: [], outputs: [{ name: 'stone_pickaxe', count: 1, stackSize: 1 }] }), 1);
+  assert.strictEqual(slotsNeededFor({ items: [], outputs: [{ name: 'stone_pickaxe', count: 2, stackSize: 1 }] }), 2);
+  assert.strictEqual(slotsNeededFor({ items: [{ name: 'oak_planks', count: 60, stackSize: 64 }], outputs: [{ name: 'oak_planks', count: 4 }] }), 0);
+  assert.strictEqual(slotsNeededFor({ items: [], outputs: [{ name: 'cake', count: 1, stackSize: 1 }, { name: 'bucket', count: 3, stackSize: 16 }] }), 2,
+    'gâteau + 3 seaux rendus = 2 cases');
+  assert.strictEqual(slotsNeededFor(), 0);
 });
 
 test('conversion de bûches en planches ET craft du bouclier : la terre libère la case des planches, freed remonte', async () => {
