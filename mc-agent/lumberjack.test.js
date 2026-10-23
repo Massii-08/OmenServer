@@ -386,3 +386,86 @@ test('ljSwitchBlock (22/10) : seuls le planner et son watchdog sont préemptés 
   assert.strictEqual(b({ active: null }), 'no_planner');
   for (const a of ['follow', 'guard', 'take', 'goto', 'loiter', 'pvp', 'order']) assert.strictEqual(b({ active: a }), 'order', a);
 });
+
+// ─── MINEURS D'ABORD (23/10, run live : NethBot1 bûcheron forge bottes+casque pour MapBot2 pendant
+// que NethBot2/NethBot3 restaient à 2 pièces — `gift_craft iron_boots to:MapBot2 by:lumberjack`) ───
+const miner = (name, o = {}) => mate(name, Object.assign({ role: 'worker' }, o));
+const mapperM = (name, o = {}) => mate(name, Object.assign({ role: 'mapper' }, o));
+
+test('pickArmorTargetForLumberjack : un mineur à 2 pièces passe AVANT un cartographe nu', () => {
+  const mates = [
+    mapperM('MapBot2', { armor: 0, worn: 0, missing: ['iron_boots', 'iron_helmet', 'iron_leggings', 'iron_chestplate'] }),
+    miner('NethBot2', { armor: 2, worn: 2, missing: ['iron_leggings', 'iron_chestplate'] }),
+  ];
+  const p = L.pickArmorTargetForLumberjack({ mates, selfName: 'NethBot1', now: NOW, ingots: 9 });
+  assert.deepStrictEqual(p, { to: 'NethBot2', armor: 2, pieces: ['iron_leggings'], ingots: 7, role: 'worker' });
+});
+
+test('pickArmorTargetForLumberjack : mineur en manque mais lingots insuffisants → PERSONNE (le cartographe attend)', () => {
+  const mates = [
+    mapperM('MapBot2', { armor: 0, worn: 0, missing: ['iron_boots', 'iron_helmet', 'iron_leggings', 'iron_chestplate'] }),
+    miner('NethBot2', { armor: 2, worn: 2, missing: ['iron_leggings', 'iron_chestplate'] }),
+  ];
+  assert.strictEqual(L.pickArmorTargetForLumberjack({ mates, selfName: 'NethBot1', now: NOW, ingots: 6 }), null);
+});
+
+test('pickArmorTargetForLumberjack : le mineur le moins équipé d\'abord ; une pièce saine en poche est gratuite', () => {
+  const mates = [
+    miner('NethBot3', { armor: 3, worn: 3, missing: ['iron_chestplate'] }),
+    miner('NethBot2', { armor: 2, worn: 2, missing: ['iron_leggings', 'iron_chestplate'] }),
+  ];
+  assert.deepStrictEqual(L.pickArmorTargetForLumberjack({ mates, selfName: 'NethBot1', now: NOW, ingots: 0, pocket: ['iron_chestplate'] }),
+    { to: 'NethBot2', armor: 2, pieces: ['iron_chestplate'], ingots: 0, role: 'worker' });
+});
+
+test('pickArmorTargetForLumberjack : tous les mineurs 4/4 portés → le cartographe est servi (plan historique)', () => {
+  const mates = [
+    miner('NethBot2', { armor: 4, worn: 4, missing: [] }),
+    miner('NethBot3', { armor: 4, worn: 4, missing: [] }),
+    mapperM('MapBot2', { armor: 0, worn: 0, missing: ['iron_boots', 'iron_helmet', 'iron_leggings', 'iron_chestplate'] }),
+  ];
+  assert.deepStrictEqual(L.pickArmorTargetForLumberjack({ mates, selfName: 'NethBot1', now: NOW, ingots: 9 }),
+    { to: 'MapBot2', armor: 0, pieces: ['iron_boots', 'iron_helmet'], ingots: 9, role: 'mapper' });
+});
+
+test('pickArmorTargetForLumberjack : 4 pièces ACQUISES mais pas portées (worn 3) = toujours un mineur à servir → cartographe bloqué', () => {
+  const mates = [
+    miner('NethBot2', { armor: 4, worn: 3, missing: [] }),
+    mapperM('MapBot2', { armor: 0, worn: 0, missing: ['iron_boots'] }),
+  ];
+  assert.strictEqual(L.pickArmorTargetForLumberjack({ mates, selfName: 'NethBot1', now: NOW, ingots: 9 }), null);
+});
+
+test('pickArmorTargetForLumberjack : mineur périmé ou déjà servi (skip) ne bloque pas… sauf s\'il est encore en manque frais', () => {
+  const stale = [miner('NethBot2', { worn: 2, missing: ['iron_leggings'], at: NOW - 10 * 60 * 1000 }),
+    mapperM('MapBot2', { armor: 0, worn: 0, missing: ['iron_boots'] })];
+  assert.strictEqual(L.pickArmorTargetForLumberjack({ mates: stale, selfName: 'NethBot1', now: NOW, ingots: 4 }).to, 'MapBot2');
+  // Servi il y a < 90 s : son heartbeat ne reflète pas encore la livraison → on ne le resert pas, et on
+  // n'habille pas le cartographe pour autant (il est peut-être encore en manque).
+  const served = [miner('NethBot2', { worn: 2, missing: ['iron_leggings'] }), mapperM('MapBot2', { armor: 0, worn: 0, missing: ['iron_boots'] })];
+  assert.strictEqual(L.pickArmorTargetForLumberjack({ mates: served, selfName: 'NethBot1', now: NOW, ingots: 9, skip: new Set(['NethBot2']) }), null);
+});
+
+test('pickArmorTargetForLumberjack : soi-même et le statut sans champ `worn` (ancienne présence) → armor', () => {
+  const mates = [miner('NethBot1', { worn: 0, missing: ['iron_boots'] }), miner('NethBot2', { armor: 4 }),
+    mapperM('MapBot2', { armor: 0, missing: ['iron_boots'] })];
+  assert.strictEqual(L.pickArmorTargetForLumberjack({ mates, selfName: 'NethBot1', now: NOW, ingots: 4 }).to, 'MapBot2');
+});
+
+// ─── BOIS : buts de craft et zone sans bois (23/10, NethBot2 `sticks no_wood:planks` ×8 à y 54) ───
+test('woodWaitDecision : en surface MAIS zone prouvée sans bois → demande au bûcheron', () => {
+  assert.strictEqual(L.woodWaitDecision({ lumberjack: 'NethBot1', request: null, now: NOW, underground: false }).action, 'self');
+  assert.strictEqual(L.woodWaitDecision({ lumberjack: 'NethBot1', request: null, now: NOW, underground: false, noWoodHere: true }).action, 'request');
+});
+
+test('woodGoalShortage : buts de craft bois (planches / table / bâtons / pioche bois) sans la matière', () => {
+  assert.strictEqual(L.woodGoalShortage({ goalName: 'planks', inv: { cobblestone: 50 } }), true);
+  assert.strictEqual(L.woodGoalShortage({ goalName: 'planks', inv: { oak_log: 1 } }), false);
+  assert.strictEqual(L.woodGoalShortage({ goalName: 'crafting_table', inv: { oak_planks: 3 } }), true);
+  assert.strictEqual(L.woodGoalShortage({ goalName: 'crafting_table', inv: { oak_log: 1 } }), false);
+  assert.strictEqual(L.woodGoalShortage({ goalName: 'sticks', inv: { oak_planks: 1, stick: 1 } }), true);
+  assert.strictEqual(L.woodGoalShortage({ goalName: 'sticks', inv: { birch_planks: 6, oak_planks: 2, stick: 1 } }), false);
+  assert.strictEqual(L.woodGoalShortage({ goalName: 'wooden_pickaxe', inv: { oak_planks: 4, stick: 2 }, hasTable: true }), false);
+  assert.strictEqual(L.woodGoalShortage({ goalName: 'wooden_pickaxe', inv: { oak_planks: 2, stick: 2 }, hasTable: true }), true);
+  assert.strictEqual(L.woodGoalShortage({ goalName: 'iron_deep', inv: {} }), false);
+});

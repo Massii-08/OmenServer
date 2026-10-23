@@ -47,7 +47,7 @@ const { mineDown: _mineDownRaw } = require('./skills/mineDown');   // gardé plu
 const { guard } = require('./skills/guard');
 const { giveItem, giveAll } = require('./skills/give');
 const { craftItem } = require('./skills/craft');
-const { planIntermediates, craftSignature, createCraftBackoff, logBase } = require('./craftPlan');
+const { planIntermediates, woodCountFallback, craftSignature, createCraftBackoff, logBase } = require('./craftPlan');
 const { respawnFleePlan, fleeStuck, RESPAWN_FLEE_LEGS, RESPAWN_FLEE_LEG_MS, RESPAWN_STUCK_MS } = require('./respawnFlee');
 const { deposit } = require('./skills/deposit');
 const { equipItem, eat } = require('./skills/equip');
@@ -167,7 +167,7 @@ const {
   lumberjackVerdict, pickWoodRequest, tossPlan, WOOD_REQUEST_TTL_MS, WOOD_MIN_GIFT, LUMBERJACK_STOCK,
   wornIronCount, LUMBERJACK_MIN_WORN, ljSwitchBlock,
   missingIronPieces, ownArmorAction, pickMapperForLumberjack, ljGiftReady,
-  woodShortForFailure, giftBatchFor,
+  woodShortForFailure, woodGoalShortage, giftBatchFor, pickArmorTargetForLumberjack,
   stockFailsPrune, stockFailsAdd, needsForestTrip, forestTriedAdd, pickForestCell, LJ_FOREST_TRIP_MS,
   ljIronSlicePlan, LJ_IRON_SLICE_MS, LJ_IRON_CHECK_MS, LJ_MINE_COBBLE, ljMineTargetY,
 } = require('./lumberjack');
@@ -1408,6 +1408,7 @@ async function woodWaitStep(g, why) {
     isLumberjack: isLumberjackObjective(), isMapper: IS_MAPPER, lumberjack: lj,
     request: _woodReq, timedOutAt: _woodTimedOutAt, now,
     underground: (bot.entity && bot.entity.position && bot.entity.position.y != null) ? bot.entity.position.y < WOOD_UNDERGROUND_Y : true,
+    noWoodHere: woodNoWoodHere(),
   });
   if (d.action === 'self') { if (d.clear) setWoodRequest(null); return null; }
   if (d.action === 'timeout') {
@@ -1475,6 +1476,26 @@ async function woodRequestOnShortage(g, reason, why) {
     if (!g || isWoodGoal(g) || IS_MAPPER || isLumberjackObjective()) return null;
     if (!woodShortForFailure({ reason, goalName: g.name, inv: buildCtxInv(bot), hasTable: !!_nearestTable(bot) })) return null;
     return await woodWaitStep({ name: g.name, skill: 'gatherLog', args: { count: 16 } }, why || String(reason || 'craft'));
+  } catch (e) { return null; }
+}
+
+/** La zone est-elle PROUVÉE sans bois ? (verrou noWood du ctx, ou échec bois prouvé). Jamais de throw. */
+function woodNoWoodHere() {
+  try { return _zoneLogsNotFound >= LOGS_NOT_FOUND_MAX || !!_needsWoodTrip; } catch (e) { return false; }
+}
+
+/**
+ * BUT DE CRAFT BOIS SANS LA MATIÈRE (23/10, NethBot2 : `sticks`/`crafting_table`/`planks` à y 18-54 →
+ * `wood_trip` vers la surface puis `no_wood:planks` en boucle, AUCUNE `wood_request`, pendant que le
+ * bûcheron attendait sur 51 bûches). woodWaitStep ne voyait que les buts `gatherLog`. On demande AVANT
+ * le skill (donc avant le trajet surface de runGoalSkill), avec la même attente bornée (4 min).
+ * null = rien à faire (bois en poche, pas de bûcheron, timeout…) → chemin historique.
+ */
+async function woodGoalRequestStep(g) {
+  try {
+    if (!g || isWoodGoal(g) || !WOOD_GOALS.has(g.name) || IS_MAPPER || isLumberjackObjective()) return null;
+    if (!woodGoalShortage({ goalName: g.name, inv: buildCtxInv(bot), hasTable: !!_nearestTable(bot) })) return null;
+    return await woodWaitStep({ name: g.name, skill: 'gatherLog', args: { count: 16 } }, 'wood_goal_short');
   } catch (e) { return null; }
 }
 
@@ -1884,8 +1905,10 @@ function _ljArmorContext() {
       const mates = presence.list();
       const skip = new Set([..._giftDone.keys(), ..._ljGiftFailed.keys()]);
       let pick = null;
-      for (let i = 0; i < 6; i++) {                  // descend la liste des cartographes déjà réservés
-        const p = pickMapperForLumberjack({ mates, selfName: bot.username, now, ingots: pk.ingots,
+      // MINEURS D'ABORD (23/10) : un mineur < 4 pièces portées passe avant tout cartographe, et bloque
+      // les cartographes même quand on ne peut pas encore le servir (cf. lumberjack.pickArmorTargetForLumberjack).
+      for (let i = 0; i < 6; i++) {                  // descend la liste des cibles déjà réservées
+        const p = pickArmorTargetForLumberjack({ mates, selfName: bot.username, now, ingots: pk.ingots,
           pocket: pk.good, brokenPocket: pk.broken, skip });
         if (!p) break;
         if (!_teamClaims || _teamClaims.tryClaim('marmor:' + p.to)) { pick = p; break; }
@@ -1947,7 +1970,7 @@ async function ljCraftGiftSkill() {
   for (const piece of g.pieces) {
     if (have.has(piece)) continue;
     const r = await craftSmart({ name: piece, count: 1 });
-    if (r && r.ok) { progressed = true; emit({ type: 'gift_craft', item: piece, to: g.to, by: 'lumberjack' }); }
+    if (r && r.ok) { progressed = true; emit({ type: 'gift_craft', item: piece, to: g.to, by: 'lumberjack', role: g.role || null }); }
   }
   if (!progressed && !ljGiftReady(g.pieces, _ljPocketArmor().good)) {
     _ljForgeHoldUntil = Date.now() + LJ_FORGE_HOLD_MS;
@@ -2348,6 +2371,16 @@ async function _craftSmartRaw(args) {
       && !((bot.inventory && bot.inventory.items()) || []).some((i) => i.name === 'crafting_table')) {
     const got = await recycleNearbyTable(blacklistBadTable);
     if (got) return { ok: true, recycled: true };
+  }
+  // FOURNÉES SUR PLUSIEURS ESSENCES (23/10) : 4 fournées de bâtons avec birch 6 + oak 2 → une seule
+  // (craftPlan.woodCountFallback) au lieu de `no_wood:planks` en boucle avec 8 planches en poche.
+  if (args && args.name && Number(args.count) > 1) {
+    try {
+      const items0 = (bot.inventory && bot.inventory.items()) || [];
+      const n = woodCountFallback(args.name, items0, { count: args.count,
+        tableAvailable: items0.some((it) => it && it.name === 'crafting_table') || !!_nearestTable(bot, inPlace ? TABLE_REACH : TABLE_SEEK, { exclude: _badTables }) });
+      if (n < args.count) { emit({ type: 'craft_count_reduced', item: args.name, from: args.count, to: n }); args = Object.assign({}, args, { count: n }); }
+    } catch (e) { /* best-effort : chemin historique */ }
   }
   const pre = await _craftPrereqs(args);
   if (pre) return pre;
@@ -5573,7 +5606,7 @@ async function runSkillWithTelemetry(g) {
   if (migrationOwnsBot()) return { ok: false, reason: 'cancelled' };   // l'abri peut durer : re-vérifier
   // BÛCHERON D'ÉQUIPE : un but bois → demander au bûcheron et attendre AU CHANTIER (≤ 4 min) au lieu
   // de remonter explorer une zone rasée. null = comportement historique (le skill tourne ci-dessous).
-  const _wood = await woodWaitStep(g);
+  const _wood = (await woodWaitStep(g)) || (await woodGoalRequestStep(g));
   if (_wood) return _wood;
   // Four de mine en cours et but qui n'est pas du minage : ramasser les lingots d'abord (21/10).
   if (_furnaceJob && !FURNACE_JOB_KEEP_SKILLS.has(g.skill)) { try { await finishFurnaceJob('goal'); } catch (e) {} }

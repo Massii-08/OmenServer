@@ -73,6 +73,7 @@ function sandbox(o = {}) {
     bookmarkCuttingSpot: (why) => { sb.calls.push('work:' + why); return true; },
     logCount: L.logCount, LUMBERJACK_STOCK: L.LUMBERJACK_STOCK, LJ_FOREST_TRIP_MS: L.LJ_FOREST_TRIP_MS,
     ownArmorAction: L.ownArmorAction, pickMapperForLumberjack: L.pickMapperForLumberjack, ljGiftReady: L.ljGiftReady,
+    pickArmorTargetForLumberjack: L.pickArmorTargetForLumberjack,
     stockFailsPrune: L.stockFailsPrune, stockFailsAdd: L.stockFailsAdd, needsForestTrip: L.needsForestTrip,
     forestTriedAdd: L.forestTriedAdd, pickForestCell: L.pickForestCell,
   };
@@ -254,4 +255,36 @@ test('câblage : ctxExtra, dispatch, télémétrie, heartbeat `missing`, timeout
   // ljAfterGift sur TOUS les chemins de deliverMapperArmor (sinon _ljGift resterait posé → boucle)
   const deliver = SRC.slice(SRC.indexOf("if (goal.skill === 'deliverMapperArmor')"), SRC.indexOf("if (goal.skill === 'ensureArmor')"));
   assert.strictEqual((deliver.match(/ljAfterGift\(to, /g) || []).length, 4);
+});
+
+// ─── MINEURS D'ABORD (23/10, run live : bottes+casque livrés à MapBot2, NethBot2/3 à 2 pièces) ──────
+const worker = (name, o = {}) => Object.assign({ name, role: 'worker', at: T0 - 1000, x: 0, z: 0, armor: 0 }, o);
+
+test('bûcheron 4/4 + 9 lingots, NethBot2 à 2 pièces portées, MapBot2 nu → jambières pour NethBot2, pas de cartographe', () => {
+  const sb = sandbox({ name: 'NethBot1', worn: ['iron_helmet', 'iron_chestplate', 'iron_leggings', 'iron_boots'],
+    items: [{ name: 'iron_ingot', count: 9 }],
+    mates: [mapper('MapBot2', { missing: ['iron_boots', 'iron_helmet', 'iron_leggings', 'iron_chestplate'], worn: 0 }),
+      worker('NethBot2', { armor: 2, worn: 2, missing: ['iron_leggings', 'iron_chestplate'] })] });
+  const c = run(sb, '_ljArmorContext()');
+  assert.deepStrictEqual(plain(c), { own: null, gift: { to: 'NethBot2', pieces: ['iron_leggings'], ready: false } });
+  assert.deepStrictEqual(Object.keys(sb._teamClaims.map), ['marmor:NethBot2']);
+  assert.strictEqual(run(sb, '_giftTarget'), 'NethBot2');
+});
+
+test('mineur en manque mais 6 lingots seulement → aucune cible (le cartographe nu attend, rien n\'est réservé)', () => {
+  const sb = sandbox({ name: 'NethBot1', worn: ['iron_helmet', 'iron_chestplate', 'iron_leggings', 'iron_boots'],
+    items: [{ name: 'iron_ingot', count: 6 }],
+    mates: [mapper('MapBot2', { missing: ['iron_boots'], worn: 0 }),
+      worker('NethBot2', { armor: 2, worn: 2, missing: ['iron_leggings', 'iron_chestplate'] })] });
+  assert.deepStrictEqual(plain(run(sb, '_ljArmorContext()')), { own: null, gift: null });
+  assert.deepStrictEqual(sb._teamClaims.map, {});
+});
+
+test('forge pour un mineur : l\'event gift_craft porte role:worker', async () => {
+  const sb = sandbox({ name: 'NethBot1', worn: ['iron_helmet', 'iron_chestplate', 'iron_leggings', 'iron_boots'],
+    items: [{ name: 'iron_ingot', count: 9 }],
+    mates: [worker('NethBot2', { armor: 2, worn: 2, missing: ['iron_leggings', 'iron_chestplate'] })] });
+  run(sb, '_ljArmorContext()');
+  await run(sb, 'ljCraftGiftSkill()');
+  assert.ok(sb.events.some((e) => e.type === 'gift_craft' && e.to === 'NethBot2' && e.item === 'iron_leggings' && e.role === 'worker'));
 });

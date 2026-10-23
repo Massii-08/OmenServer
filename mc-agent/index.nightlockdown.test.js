@@ -332,6 +332,7 @@ function plannerSandbox({ shelterStub, onSleep, ...opts } = {}) {
     withTimeout: (p) => p, timeoutFor: () => 60000, stopMotion() {},
     MINING_GOALS: new Set(), _zoneMiningMs: 0, noteZoneFailure() {}, _skillInFlight: 0, _curGoal: null,
     woodWaitStep: async () => null,        // bûcheron d'équipe (20/10) : aucun bûcheron → comportement historique
+    woodGoalRequestStep: async () => null,
     isInWater: () => false,
     lastShelterT: 0, _shelterInFlight: null, _shelterTok: null, _shelterStartedAt: 0, deriveToken: require('./plannerWatchdog').deriveToken, shelterToken: require('./shelterToken').shelterToken, shelterCancelLoopNote: require('./shelterToken').shelterCancelLoopNote, taskCtl: require('./tasks').createTaskController(), _shelterCancelLoop: null, _shelterFreshNext: false, SHELTER_HARD_MAX_MS: 13 * 60 * 1000 + Math.max(require('./skills/shelter').DAWN_WAIT_MAX_MS, require('./skills/shelter').DAWN_SAFE_EXIT_MAX_MS), _nightHold: 0,
     NIGHT_HOLD_POLL_MS: 2000, NIGHT_HOLD_MAX_MS: 15 * 60 * 1000,

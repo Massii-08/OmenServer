@@ -115,3 +115,13 @@ test('logBase exporté : exclut stripped_* et mushroom_stem, gère _log et _stem
   assert.strictEqual(P.logBase('mushroom_stem'), null);
   assert.strictEqual(P.logBase('cobblestone'), null);
 });
+
+test('woodCountFallback : 4 fournées de bâtons sans essence assez fournie (birch 6 + oak 2, NethBot2 23/10) → 1 fournée', () => {
+  const inv = { birch_planks: 6, oak_planks: 2, stick: 1 };
+  assert.strictEqual(P.planIntermediates('stick', inv, { count: 4 }).reason, 'no_wood:planks');
+  assert.strictEqual(P.woodCountFallback('stick', inv, { count: 4 }), 1);
+  assert.strictEqual(P.woodCountFallback('stick', { birch_planks: 8 }, { count: 4 }), 4);   // tient : inchangé
+  assert.strictEqual(P.woodCountFallback('stick', { oak_planks: 1 }, { count: 4 }), 4);     // même 1 ne tient pas : inchangé (la raison reste vraie)
+  assert.strictEqual(P.woodCountFallback('iron_helmet', { iron_ingot: 4 }, { count: 2 }), 2); // pas un manque de bois
+  assert.strictEqual(P.woodCountFallback('unknown_thing', {}, { count: 3 }), 3);
+});

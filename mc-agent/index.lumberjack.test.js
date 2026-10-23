@@ -93,6 +93,7 @@ function sandbox(o = {}) {
     WOOD_REQUEST_TTL_MS: L.WOOD_REQUEST_TTL_MS, WOOD_UNDERGROUND_Y: L.WOOD_UNDERGROUND_Y, WOOD_MIN_GIFT: L.WOOD_MIN_GIFT, LUMBERJACK_STOCK: L.LUMBERJACK_STOCK,
     // temps mort → fer (21/10) : testé dans index.ljiron.test.js ; ici « rien d'utile » = attente historique
     ljIronSliceStep: async () => (o.slice ? o.slice() : null), LJ_IRON_CHECK_MS: L.LJ_IRON_CHECK_MS,
+    woodNoWoodHere: () => !!o.noWoodHere,
   };
   sb._teamClaims = o.noClaims ? null : fakeClaims(sb);
   vm.createContext(sb);
@@ -327,6 +328,7 @@ test('câblage : runSkillWithTelemetry consulte woodWaitStep APRÈS la nuit et n
     foodTripYield: async () => {}, settleSurvivalKit: async () => {},
     holdForNight: async () => ({ held: 0, cancelled: false }), maybeNightShelter: async () => false,
     woodWaitStep: async (g) => (g.skill === 'gatherLog' ? { ok: true } : null),
+    woodGoalRequestStep: async () => null,
     runGoalSkill: async (g) => { skills.push(g.name); return { ok: true }; },
     withTimeout: (p) => p, timeoutFor: () => 1, stopMotion() {}, MINING_GOALS: new Set(), _zoneMiningMs: 0,
     noteZoneFailure() {}, _skillInFlight: 0, _curGoal: null,
@@ -393,6 +395,15 @@ test('ouvrier SOUS TERRE (y<50) avec bûcheron actif : demande publiée comme av
   const r = await run(sb, 'woodWaitStep(' + JSON.stringify(LOGS_GOAL) + ')');
   assert.deepStrictEqual(JSON.parse(JSON.stringify(r)), { ok: true });
   assert.ok(sb.events.some((e) => e.type === 'wood_request'));
+});
+
+test('ouvrier en SURFACE (y 54) mais zone PROUVÉE sans bois (NethBot2 23/10) : demande au bûcheron', async () => {
+  const sb = sandbox({ mates: [LJ()], pos: { y: 54 }, noWoodHere: true });
+  sb.onSleep = (t) => { if (t >= T0 + 5000 && !sb.items.length) sb.items.push({ name: 'oak_log', type: 7, count: 16 }); };
+  const r = await run(sb, 'woodWaitStep(' + JSON.stringify(LOGS_GOAL) + ')');
+  assert.deepStrictEqual(JSON.parse(JSON.stringify(r)), { ok: true });
+  assert.ok(sb.events.some((e) => e.type === 'wood_request'));
+  assert.ok(sb.events.some((e) => e.type === 'wood_received'));
 });
 
 // ─── 22/10, NethBot1 session 239 : bûcheron vidé (RCON clear) resté bûcheron ──────────────────────

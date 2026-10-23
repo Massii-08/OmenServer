@@ -60,13 +60,16 @@ function activeLumberjack({ mates, selfName, now, freshMs = LUMBERJACK_FRESH_MS 
  *  'timeout' : 4 min écoulées sans livraison → repli sur soi (event wood_request_timeout).
  * request = {want, at} | null ; timedOutAt = instant du dernier timeout (ou null).
  */
+// `noWoodHere` (23/10) : la zone est PROUVÉE sans bois (verrou noWood / échec bois prouvé). NethBot2 à
+// y 54 (au-dessus du seuil « sous terre » de 50) bouclait `sticks no_wood:planks` pendant que le
+// bûcheron dormait sur 51 bûches : en surface on coupe soi-même… sauf s'il n'y a rien à couper.
 function woodWaitDecision({ isLumberjack, isMapper, lumberjack, request, timedOutAt, now, underground = true,
-  ttlMs = WOOD_REQUEST_TTL_MS, cooldownMs = WOOD_REQUEST_COOLDOWN_MS } = {}) {
+  noWoodHere = false, ttlMs = WOOD_REQUEST_TTL_MS, cooldownMs = WOOD_REQUEST_COOLDOWN_MS } = {}) {
   const t = now || Date.now();
   if (isLumberjack || isMapper) return { action: 'self', clear: !!request };
   if (!lumberjack) return { action: 'self', clear: !!request };
   // En SURFACE un joueur coupe son bois lui-même : la livraison n'a de sens que pour un ouvrier sous terre.
-  if (!underground) return { action: 'self', clear: !!request };
+  if (!underground && !noWoodHere) return { action: 'self', clear: !!request };
   if (!request && timedOutAt && (t - timedOutAt) < cooldownMs) return { action: 'self', clear: false };
   if (!request) return { action: 'request' };
   const age = t - (request.at || 0);
@@ -259,6 +262,63 @@ function pickMapperForLumberjack({ mates, selfName, now, ingots, pocket, brokenP
   return null;
 }
 
+// ─── MINEURS D'ABORD (23/10, run live, chrono zéro→armure) ─────────────────────────────────────────
+// Vécu : NethBot1, bûcheron élu à 52 min, forge `iron_boots` + `iron_helmet` et les LIVRE à MapBot2
+// (`gift_craft … to:MapBot2 by:lumberjack`, `gift_delivered`) pendant que NethBot2 et NethBot3 restent
+// à 2 pièces portées (`craft_fail_ctx iron_leggings no_iron`). Cause : le bûcheron ne regardait QUE les
+// cartographes (pickMapperForLumberjack filtre `role === 'mapper'`). Or la priorité du propriétaire est
+// la survie et la vitesse des MINEURS : ce sont eux qui ramènent le fer de tout le monde.
+// Règle : tant qu'un mineur frais a < 4 pièces PORTÉES, les lingots vont à un mineur — et si aucun
+// mineur n'est servable avec la poche actuelle, PERSONNE n'est servi (les lingots restent pour lui, la
+// tranche de fer du bûcheron continue d'en accumuler). Un cartographe n'est servi que mineurs 4/4.
+// ⚠️ `worn` (nombre de pièces PORTÉES) et pas `armor` (qui compte aussi la poche) ; une présence sans
+// `worn` (ancien process) retombe sur `armor`.
+const _wornOf = (m) => (m && m.worn !== undefined && m.worn !== null && Number.isFinite(Number(m.worn)))
+  ? Number(m.worn) : (Number(m && m.armor) || 0);
+
+/** PUR — plan glouton (la moins chère d'abord) des pièces de `m` couvertes par la poche / les lingots. */
+function _armorPlanFor(m, { ingots, inPocket, broken }) {
+  let need;
+  if (Array.isArray(m.missing)) need = new Set(m.missing);
+  else if (!(m.armor > 0)) need = new Set(ARMOR_ORDER.map((p) => p.name));
+  else return null;                                    // statut d'avant le champ `missing` : on ne devine pas
+  let budget = Math.max(0, Number(ingots) || 0);
+  let spent = 0;
+  const pieces = [];
+  for (const p of ARMOR_ORDER) {
+    if (!need.has(p.name) || broken.has(p.name)) continue;
+    if (inPocket.has(p.name)) { pieces.push(p.name); continue; }
+    if (budget >= p.ingots) { pieces.push(p.name); budget -= p.ingots; spent += p.ingots; }
+  }
+  return pieces.length ? { pieces, ingots: spent } : null;
+}
+
+/**
+ * PUR — qui le bûcheron arme-t-il ? Les MINEURS (rôle ≠ mapper) en manque d'abord : le moins équipé
+ * (pièces portées), nom ASC. Un mineur en manque frais — même non servable (lingots insuffisants, ou
+ * servi il y a < 90 s : `skip`) — BLOQUE les cartographes. Sinon : pickMapperForLumberjack (historique).
+ * @returns {{to, armor, pieces: string[], ingots: number, role: 'worker'|'mapper'}|null}
+ */
+function pickArmorTargetForLumberjack({ mates, selfName, now, ingots, pocket, brokenPocket, skip,
+  freshMs = LUMBERJACK_FRESH_MS } = {}) {
+  const t = now || Date.now();
+  const inPocket = new Set(pocket || []);
+  const broken = new Set(brokenPocket || []);
+  const miners = (mates || []).filter((m) => m && m.name && m.name !== selfName && m.role !== 'mapper'
+    && _fresh(m, t, freshMs) && _wornOf(m) < 4)
+    .sort((a, b) => (_wornOf(a) - _wornOf(b)) || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+  if (miners.length) {
+    for (const m of miners) {
+      if (skip && skip.has(m.name)) continue;
+      const plan = _armorPlanFor(m, { ingots, inPocket, broken });
+      if (plan) return { to: String(m.name), armor: m.armor || 0, pieces: plan.pieces, ingots: plan.ingots, role: 'worker' };
+    }
+    return null;
+  }
+  const p = pickMapperForLumberjack({ mates, selfName, now: t, ingots, pocket, brokenPocket, skip, freshMs });
+  return p ? Object.assign({}, p, { role: 'mapper' }) : null;
+}
+
 /** PUR — toutes les pièces prévues sont-elles en poche ? (noms de la poche) */
 function ljGiftReady(pieces, pocketNames) {
   if (!pieces || !pieces.length) return false;
@@ -397,6 +457,28 @@ function woodShortForFailure({ reason, goalName, inv, hasTable } = {}) {
   });
 }
 
+/**
+ * PUR (23/10) — un but de CRAFT bois de la chaîne (planches, table, bâtons, pioche bois) qui n'a pas la
+ * matière en poche. Avant : seuls les buts `gatherLog` demandaient au bûcheron ; les buts de craft
+ * partaient en `wood_trip` (/home safe en surface) puis échouaient. Le manque est jugé SANS l'essence
+ * (sens sûr : un doute = pas de demande, le chemin historique tourne).
+ */
+function woodGoalShortage({ goalName, inv, hasTable } = {}) {
+  const logs = logCount(inv);
+  let planks = 0;
+  for (const [k, v] of Object.entries(inv || {})) if (k.endsWith('_planks')) planks += v || 0;
+  const sticks = (inv && inv.stick) || 0;
+  const table = !!hasTable || ((inv && inv.crafting_table) || 0) > 0;
+  switch (goalName) {
+    case 'planks': case 'plank_buffer': return logs === 0 && planks === 0;
+    case 'crafting_table': return craftWoodShortage({ logs, planks, sticks, table: false, needSticks: 0, needTable: true });
+    case 'sticks': return craftWoodShortage({ logs, planks, sticks: 0, table: true, needSticks: 2, needTable: false });
+    case 'wooden_pickaxe':
+      return (planks + logs * 4) < 3 + (sticks < 2 ? PLANKS_FOR_STICKS : 0) + (table ? 0 : PLANKS_FOR_TABLE);
+    default: return false;
+  }
+}
+
 // ─── ARMURE DES CARTOGRAPHES PAR LOTS (20/10, NethBot2) ───────────────────────────────────────────
 // La chaîne mapper_armor visait un set COMPLET (24 lingots) : NethBot2, 11 lingots en poche et deux
 // cartographes nus, redescendait miner au lieu de forger casque + bottes (9) et de les livrer tout de
@@ -486,6 +568,6 @@ module.exports = {
   ARMOR_ORDER, MIN_PIECE_INGOTS, missingIronPieces, ownArmorAction, pickMapperForLumberjack, ljGiftReady,
   LJ_STOCK_FAIL_WINDOW_MS, LJ_STOCK_FAILS_FOR_TRIP, LJ_FOREST_TRIP_MS, LJ_FOREST_MIN_DIST, LJ_FOREST_MAX_DIST,
   LJ_FOREST_ANCHOR_MAX, LJ_FOREST_AVOID_MS,
-  craftWoodShortage, woodShortForFailure, giftBatchFor,
+  craftWoodShortage, woodShortForFailure, woodGoalShortage, giftBatchFor, pickArmorTargetForLumberjack,
   stockFailsPrune, stockFailsAdd, needsForestTrip, isForestBiome, forestTriedPrune, forestTriedAdd, pickForestCell,
 };

@@ -159,6 +159,24 @@ function planIntermediates(item, inventory, opts) {
   return { known: true, ok: true, steps };
 }
 
+/**
+ * PUR (23/10) — nombre de fournées à lancer quand `count` fournées ne tiennent pas dans UNE essence.
+ * Vécu NethBot2 : but `sticks` (4 fournées = 8 planches d'une essence) avec birch 6 + oak 2 → plan
+ * `no_wood:planks` en boucle (×8 en 10 min) alors que 3 fournées tenaient en bouleau. On redescend à
+ * UNE fournée (toute recette tient alors dans n'importe quelle essence — `bot.craft` prend recipes[0],
+ * pas forcément la plus fournie) : le but progresse et le planner re-dérive le reste. Inchangé si le
+ * plan complet passe, si le manque n'est pas du bois, ou si même une fournée ne tient pas.
+ */
+function woodCountFallback(item, inventory, opts) {
+  const o = opts || {};
+  const count = Number(o.count) > 0 ? Math.floor(Number(o.count)) : 1;
+  if (count <= 1) return count;
+  const full = planIntermediates(item, inventory, Object.assign({}, o, { count }));
+  if (!full.known || full.ok || !/^no_wood:/.test(String(full.reason))) return count;
+  const one = planIntermediates(item, inventory, Object.assign({}, o, { count: 1 }));
+  return (one.known && one.ok) ? 1 : count;
+}
+
 /** PUR — signature de la matière de craft (change ⇔ un craft raté mérite d'être retenté). */
 function craftSignature(inventory) {
   const inv = toCounts(inventory);
@@ -199,6 +217,6 @@ function createCraftBackoff({ baseMs = BACKOFF_BASE_MS, maxMs = BACKOFF_MAX_MS }
 }
 
 module.exports = {
-  planIntermediates, craftSignature, createCraftBackoff, toCounts, logBase: _logBase,
+  planIntermediates, woodCountFallback, craftSignature, createCraftBackoff, toCounts, logBase: _logBase,
   RECIPES, PLANKS_PER_LOG, STICKS_PER_CRAFT, TABLE_PLANKS, BACKOFF_BASE_MS, BACKOFF_MAX_MS,
 };
