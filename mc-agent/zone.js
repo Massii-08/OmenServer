@@ -698,6 +698,50 @@ function zoneStateAfterFailedMigration(state, now, target) {
   });
 }
 
+// ─── MIGRATION INTERROMPUE ≠ MIGRATION RATÉE (live 23/10, NethBot1 session 397) ─────────────────
+// `zone_migration_start` (bois, cible à 106 blocs) → remontée par /home safe → 2ᵉ alerte PV au home →
+// `death_camp_ban` → `fleeDeathCamp` prenait la main (`taskCtl.begin('death_camp_flee')`) et la
+// migration mourait 658 ms après son départ (`cancelled:true legs:1`). Le cas était traité comme un
+// échec du trek : cooldown armé, cible écartée 45 min — puis `stay cooldown`, la nuit, la zone rasée.
+// Une préemption ne dit RIEN de la zone ni de la cible : pas de cooldown, pas de mise à l'écart. Si
+// c'est une urgence vitale, un respawn ou une évasion qui a pris la main, la migration REPREND dès que
+// le planner a de nouveau le bot ; un ordre joueur, lui, l'abandonne (le joueur décide).
+
+/** Préempteurs (`taskCtl.active` au moment de l'annulation) qui ne reprennent PAS la migration. */
+const MIGRATION_NO_RESUME = new Set(['follow', 'come', 'goto', 'guard', 'take', 'mineDown', 'pvp', 'loiter',
+  'lumberjack_switch']);
+const MIGRATION_RESUME_TTL_MS = 15 * 60 * 1000;   // au-delà, le verdict re-jugera depuis la position réelle
+// Interruptions CONSÉCUTIVES d'une même migration (reprises comprises) au-delà desquelles ce n'est plus
+// un accident : le trek tue le bot (mort → respawn → reprise → mort…) → échec réel, cooldown COURT (5 min).
+const MIGRATION_MAX_INTERRUPTS = 3;
+
+/** Effet d'une migration ANNULÉE par une autre tâche. (PUR)
+ *  `preemptedBy` = nom de la tâche active (null/undefined = `taskCtl.cancel()` : évasion, garde de spawn). */
+function migrationCancelEffect({ preemptedBy = null, interrupts = 0 } = {}) {
+  const by = preemptedBy == null ? null : String(preemptedBy);
+  if (by && MIGRATION_NO_RESUME.has(by)) return { armCooldown: false, resume: false };
+  if (Number.isFinite(interrupts) && interrupts >= MIGRATION_MAX_INTERRUPTS) return { armCooldown: true, resume: false };
+  return { armCooldown: false, resume: true };
+}
+
+/** Reprendre une migration interrompue ? (PUR) → 'none' | 'wait' | 'resume' | 'drop'.
+ *  Reprise seulement quand le planner autonome a de nouveau le bot (l'urgence a rendu la main), hors
+ *  migration en cours, et pas de nuit (même gate que le verdict ; `isNight` null = heure inconnue). */
+function migrationResumeDecision({ pending, now, activeTask, isNight = null, migrating = false } = {}) {
+  if (!pending) return 'none';
+  if (!Number.isFinite(pending.at) || !Number.isFinite(now) || now - pending.at > MIGRATION_RESUME_TTL_MS) return 'drop';
+  if (migrating) return 'wait';
+  if (activeTask !== 'autonomous') return 'wait';
+  if (isNight === true) return 'wait';
+  return 'resume';
+}
+
+/** Un camp de mort fraîchement banni pendant une migration : la migration EST la fuite (elle quitte
+ *  la zone) — on ne la remplace pas par 90 blocs au hasard, sauf si sa cible tombe dans le camp. (PUR) */
+function deathCampDefersToMigration({ activeTask, targetBanned = false } = {}) {
+  return activeTask === 'migration' && targetBanned !== true;
+}
+
 // ─── Quel échec accuse la ZONE, et pas le bot ? (PUR) ───────────────────────────────────────────
 // Mesuré live le 27/07 sur `world_mn9`, et c'est toute la cascade que voyait Massii :
 //   zone rasée → plus de bois → plus de bâtons → PLUS DE PIOCHE → le bot passe devant des veines
@@ -765,6 +809,7 @@ module.exports = {
   zoneVerdict, verdictTelemetry, pickMigrationTarget, migrationLeg, legHeading, LEG_STUCK_MIN, legDigRetry, legIsGood, isWetBiome, minDistFor, zoneFailureKind, zoneFailureWeight, WOOD_TIMEOUT_WEIGHT,
   ironUnits, ironSampleGain,
   zoneStateInit, zoneStateLoad, zoneStateAfterMigration, zoneStateAfterFailedMigration,
+  migrationCancelEffect, migrationResumeDecision, deathCampDefersToMigration, MIGRATION_RESUME_TTL_MS, MIGRATION_MAX_INTERRUPTS,
   migrationEarlyExitOk, pruneFailedTargets, FAR_EARLY_EXIT_FRACTION, MIGRATE_ARRIVED_RADIUS,
   migrationArrivalOk, ARRIVAL_DEPLETED_RADIUS,
   depletedForZone, DEPLETED_ZONE_MAX_AGE_MS, migrationKeepWalking, MIGRATION_EXTRA_LEGS,

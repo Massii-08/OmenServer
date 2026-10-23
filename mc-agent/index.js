@@ -110,6 +110,7 @@ const {
   zoneVerdict, verdictTelemetry, pickMigrationTarget, migrationLeg, legHeading, LEG_STUCK_MIN, legDigRetry, legIsGood, minDistFor,
   ironUnits, ironSampleGain,
   zoneFailureKind, zoneFailureWeight, zoneStateInit, zoneStateLoad, zoneStateAfterMigration, MAX_LEGS, MIGRATE_MIN_PROGRESS, LOADED_RADIUS,
+  migrationCancelEffect, migrationResumeDecision, deathCampDefersToMigration,
   LOGS_NOT_FOUND_MAX, windowAdd, windowSum, windowPrune, ZONE_WINDOW_MS,
   zoneStateAfterFailedMigration, migrationEarlyExitOk, pruneFailedTargets, migrationArrivalOk,
   depletedForZone, migrationKeepWalking, migrationConfineGraceMs,
@@ -619,6 +620,22 @@ async function awaitWarp(opts = {}) {
 // Fire-and-forget depuis le watchdog imminent — best-effort, les réflexes couvrent la course.
 async function fleeDeathCamp(fromPos) {
   const now = Date.now();
+  // MIGRATION EN COURS (live 23/10, NethBot1 session 397) : la fuite prenait la main
+  // (`taskCtl.begin('death_camp_flee')`) et tuait la migration 658 ms après son départ
+  // (`zone_migration_failed cancelled:true legs:1`) — pour partir 90 blocs au HASARD alors que la
+  // migration quittait déjà la zone. Elle EST la fuite : on la laisse marcher (et surtout pas de
+  // /home safe qui ramènerait le marcheur en arrière), sauf si sa cible tombe dans le camp banni.
+  {
+    const t = _migrationTarget;
+    let targetBanned = false;
+    try {
+      targetBanned = !!(t && Number.isFinite(t.x) && (deathzones.isBanned(_dzones, t.x, t.z, now) || deathSpots.isBanned(t.x, t.z)));
+    } catch (e) { targetBanned = false; }
+    if (deathCampDefersToMigration({ activeTask: taskCtl.active, targetBanned })) {
+      emit({ type: 'death_camp_flee', via: 'migration', toX: t ? t.x : null, toZ: t ? t.z : null });
+      return;
+    }
+  }
   // HOME CAMPÉ (19/10) : fuir un camp VERS un autre camp n'est pas une fuite → à pied, comme sans home.
   if (_safeHomePos && !deathzones.isBanned(_dzones, _safeHomePos.x, _safeHomePos.z, now)
       && !deathSpots.isBanned(_safeHomePos.x, _safeHomePos.z) && !safeHomeVeto('death_camp_flee')) {
@@ -672,9 +689,13 @@ async function fleeDeathCamp(fromPos) {
 /** Fin de fleeDeathCamp (22/10) : attendre (borné) que l'ancien planner ait rendu la main, puis le
  *  rallumer — seulement si la fuite a coupé le PLANNER et que personne ne l'a préemptée depuis. */
 async function restartPlannerAfterFlee(tok, prevTask, evType = 'death_camp_flee_done') {
-  if (!tok || prevTask !== 'autonomous') return false;
+  // Une MIGRATION coupée par la fuite (cible dans le camp) est une tâche du planner : on rallume le
+  // planner, et la reprise de migration (maybeResumeMigration) repart de lui. Sans ça, plus rien
+  // n'avait la main après la fuite (`prevTask` 'migration' ≠ 'autonomous').
+  if (!tok || (prevTask !== 'autonomous' && prevTask !== 'migration')) return false;
   const w0 = Date.now();
-  while ((_skillInFlight > 0 || _autoRunners > 0) && !tok.cancelled && Date.now() - w0 < MIGRATION_PREEMPT_WAIT_MS) {
+  const migUnwinding = () => prevTask === 'migration' && _migrating;   // la migration coupée finit de se dérouler
+  while ((_skillInFlight > 0 || _autoRunners > 0 || migUnwinding()) && !tok.cancelled && Date.now() - w0 < MIGRATION_PREEMPT_WAIT_MS) {
     await sleep(250);
   }
   if (tok.cancelled || _migrating || _ljSwitching) return false;     // un autre maître a la main
@@ -4107,6 +4128,12 @@ let _lastZoneVerdictReason = null; // dedup télémétrie : dernière raison de 
 let _confineGraceUntil = 0;
 let _migrating = false;       // marche de migration en cours → l'enforcement confine est SUSPENDU
 let _migrationLegs = 0;       // jambes déjà parcourues (marche à l'aveugle)
+// Cible de la migration EN COURS (lue par fleeDeathCamp : la fuite cède à la migration si sa cible est
+// hors du camp) et reprise d'une migration INTERROMPUE par une urgence ({reason, at}, lue par le timer
+// de reprise). ⚠️ NIVEAU MODULE : lues par des timers et par fleeDeathCamp (piège #56).
+let _migrationTarget = null;
+let _migrationResume = null;
+let _migrationInterrupts = 0;  // interruptions consécutives de la migration en cours (zone.MIGRATION_MAX_INTERRUPTS)
 // Migrations (leur jeton `tok`) qui ont déjà émis `zone_migration_leg_dig` : l'event dit « cette
 // migration a dû creuser pour sortir », une fois, pas à chaque jambe. WeakSet : un jeton par migration,
 // libéré avec elle. Niveau MODULE (lu par migrationLegTo, piège #56).
@@ -4326,6 +4353,8 @@ async function migrateZone(reason) {
   if (!from) return;
   _migrating = true;
   _migrationLegs = 0;
+  _migrationResume = null;      // une migration (re)part : la reprise en attente est consommée
+  _migrationTarget = null;
   const t0 = Date.now();
   // PRÉEMPTION : `begin` annule le jeton du planner (cleanup = stopMotion) et nous rend le NÔTRE,
   // capturé LOCALEMENT. On ne lit JAMAIS le global : une tâche lancée pendant la migration (mort →
@@ -4346,8 +4375,12 @@ async function migrateZone(reason) {
     }
     if (tok.cancelled) {
       // Préemptés AVANT d'avoir fait un pas (mort, ordre) : ce n'est pas un échec du trek → pas de
-      // cooldown, le prochain verdict re-jugera depuis la position réelle.
-      emit({ type: 'zone_migration_aborted', reason, phase: 'preempt_wait', waited_ms: Date.now() - w0 });
+      // cooldown ; une urgence → reprise dès que le planner a de nouveau la main.
+      const eff = migrationCancelEffect({ preemptedBy: taskCtl.active, interrupts: _migrationInterrupts });
+      if (eff.resume) { _migrationResume = { reason, at: Date.now() }; _migrationInterrupts += 1; }
+      else { _migrationInterrupts = 0; if (eff.armCooldown) noteMigrationFailed(null); }
+      emit({ type: 'zone_migration_aborted', reason, phase: 'preempt_wait', waited_ms: Date.now() - w0,
+        by: taskCtl.active || null, resume: eff.resume });
       return;
     }
     const waitedMs = Date.now() - w0;
@@ -4372,6 +4405,7 @@ async function migrateZone(reason) {
     });
     // Claim PARTAGÉ : si un coéquipier a déjà fixé la cible, on adopte la sienne — l'escouade doit
     // atterrir au MÊME endroit même si les cartes divergent d'un bot à l'autre.
+    _migrationTarget = target ? { x: target.x, z: target.z } : null;
     if (target && _teamClaims) {
       const key = 'migration:' + Math.round(target.x / 128) + ',' + Math.round(target.z / 128);
       try { _teamClaims.tryClaim(key); } catch (e) { /* best-effort */ }
@@ -4596,11 +4630,7 @@ async function migrateZone(reason) {
     // par-dessus la tâche qui a pris la main. C'est un échec du trek (les morts en route faisaient
     // échouer la migration, fix 18/08) : cooldown court + cible écartée, comme les autres échecs.
     if (tok.cancelled) {
-      noteMigrationFailed(target);
-      emit({
-        type: 'zone_migration_failed', reason, cancelled: true, legs: _migrationLegs,
-        toX: target ? target.x : null, toZ: target ? target.z : null,
-      });
+      onMigrationCancelled(reason, target, 'walk');
       return;
     }
     const p2 = bot.entity && bot.entity.position;
@@ -4648,6 +4678,7 @@ async function migrateZone(reason) {
       bot._mcaExploreBounds = { x: base.x, z: base.z, radius: Math.max(_confineDyn.radius * 2, 128) };
       _workSet = false;                            // l'ancien chantier est à l'autre bout du monde
       // `_zoneStateNow()` en 2e argument : les cibles RATÉES survivent au déménagement (45 min).
+      _migrationInterrupts = 0;
       _applyZoneState(zoneStateAfterMigration(Date.now(), _zoneStateNow()));
       _descendWaterFails = 0;
       persistZoneState();
@@ -4666,6 +4697,7 @@ async function migrateZone(reason) {
       // (5 min, fix 18/08) et vers une AUTRE cible : 20 min puis la même cellule = re-échec garanti.
       // Exception : un arrêt de NUIT ne prouve rien contre la cible (on s'est arrêté, on n'a pas
       // échoué à l'atteindre) → cooldown court, mais pas de mise à l'écart de 45 min.
+      _migrationInterrupts = 0;
       noteMigrationFailed(nightStopped ? null : target);
       const goneFail = p2 ? Math.hypot(p2.x - travelFrom.x, p2.z - travelFrom.z) : NaN;
       const graceMs = migrationConfineGraceMs({ reason, gone: goneFail, minDist, anchored: false });
@@ -4682,6 +4714,7 @@ async function migrateZone(reason) {
       });
     }
   } catch (e) {
+    _migrationInterrupts = 0;
     noteMigrationFailed(target);
     emit({
       type: 'zone_migration_failed', reason, error: String((e && e.message) || e),
@@ -4689,6 +4722,7 @@ async function migrateZone(reason) {
     });
   } finally {
     _migrating = false;
+    _migrationTarget = null;
     // RELANCE DU PLANNER : la migration l'a préempté, c'est donc à elle de le rallumer (succès comme
     // échec) — SAUF si une autre tâche nous a préemptés à notre tour (mort → onSpawn, ordre, évasion) :
     // celle-là gère la suite. Re-vérifié au déclenchement : on peut être préemptés pendant les 500 ms.
@@ -4703,6 +4737,44 @@ async function migrateZone(reason) {
     }
   }
 }
+
+/**
+ * Migration ANNULÉE en route par une autre tâche (live 23/10, NethBot1 session 397 : fuite de camp
+ * de mort 658 ms après le départ). Ce n'est PAS un verdict sur la zone ni sur la cible : ni cooldown ni
+ * mise à l'écart (avant : noteMigrationFailed → `stay cooldown` puis la nuit, cible bannie 45 min).
+ * Urgence vitale / respawn / évasion → reprise dès que le planner a de nouveau la main
+ * (maybeResumeMigration) ; ordre joueur → abandon (le joueur décide). Décision : zone.migrationCancelEffect.
+ */
+function onMigrationCancelled(reason, target, phase) {
+  const by = taskCtl.active || null;
+  const eff = migrationCancelEffect({ preemptedBy: by, interrupts: _migrationInterrupts });
+  if (eff.resume) { _migrationResume = { reason, at: Date.now() }; _migrationInterrupts += 1; }
+  else { _migrationResume = null; _migrationInterrupts = 0; }
+  if (eff.armCooldown) noteMigrationFailed(target);   // interrompue encore et encore : le trek tue le bot
+  emit({
+    type: 'zone_migration_failed', reason, cancelled: true, legs: _migrationLegs, phase,
+    by, resume: eff.resume, interrupts: _migrationInterrupts, gave_up: eff.armCooldown,
+    toX: target ? target.x : null, toZ: target ? target.z : null,
+  });
+}
+
+/** Reprise d'une migration interrompue (timer 10 s + verdict de zone). Bypass VOLONTAIRE du verdict :
+ *  il a déjà tranché « migrer », l'interruption n'a rien prouvé. Décision : zone.migrationResumeDecision. */
+function maybeResumeMigration() {
+  const pending = _migrationResume;
+  const night = (bot && bot.time && bot.time.timeOfDay != null) ? isNight(bot) : null;
+  const d = migrationResumeDecision({ pending, now: Date.now(), activeTask: taskCtl.active, isNight: night, migrating: _migrating });
+  if (d === 'drop') {
+    _migrationResume = null;
+    emit({ type: 'zone_migration_resume_dropped', reason: pending && pending.reason });
+  } else if (d === 'resume') {
+    _migrationResume = null;
+    emit({ type: 'zone_migration_resume', reason: pending.reason, after_s: Math.round((Date.now() - pending.at) / 1000) });
+    migrateZone(pending.reason).catch(() => {});
+  }
+  return d;
+}
+setInterval(() => { try { if (!IS_MAPPER) maybeResumeMigration(); } catch (e) { /* watchdog : ne crash jamais */ } }, 10000);
 
 /** Migration ratée : cooldown COURT, cible écartée 45 min, horloge de zone intacte — persisté. */
 function noteMigrationFailed(target) {
@@ -7683,7 +7755,7 @@ async function _skelRush(shooter) {
     emit(ev);
     // Rendre la main : relancer le planner qu'on a préempté (ou qui a voulu repartir pendant la charge).
     if (tok && !tok.cancelled) {
-      const wasPlanner = prevTask === 'autonomous' || _skelPlannerPending;
+      const wasPlanner = prevTask === 'autonomous' || prevTask === 'migration' || _skelPlannerPending;   // migration coupée : le planner la reprendra
       _skelPlannerPending = false;
       if (wasPlanner) {
         restartPlannerAfterFlee(tok, 'autonomous', 'skeleton_rush_planner_restart')
