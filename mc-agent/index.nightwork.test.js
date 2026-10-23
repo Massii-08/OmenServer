@@ -232,6 +232,8 @@ test('bûcheron, tranche mine : descente de 28 blocs puis branch-mine borné au 
     finishFurnaceJob: async () => { calls.push(['finish']); },
     homewarp: { goHome: (bot, name, o) => { calls.push(['home', name, o.ctx]); return true; } },
     HOME_WORK: 'work', awaitWarp: async () => {}, Math,
+    ljMineDetour: L.ljMineDetour, isWaterFailReason: L.isWaterFailReason, _drownedSites: [], _drownedOffsetSeed: 0,
+    Date,
   };
   vm.createContext(sb);
   run(sb, fnSrc('ljMineSlice') + '\n' + fnSrc('ljMineReturn') + '\nthis.s = ljMineSlice; this.r = ljMineReturn;');

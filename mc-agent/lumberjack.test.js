@@ -469,3 +469,56 @@ test('woodGoalShortage : buts de craft bois (planches / table / bâtons / pioche
   assert.strictEqual(L.woodGoalShortage({ goalName: 'wooden_pickaxe', inv: { oak_planks: 2, stick: 2 }, hasTable: true }), true);
   assert.strictEqual(L.woodGoalShortage({ goalName: 'iron_deep', inv: {} }), false);
 });
+
+// ─── TRANCHE 'mine' NOYÉE (23/10, NethBot1 : `water_ahead` en 7 s toutes les ~37 s, même départ) ───
+test('ljSliceRetryMs : 20 s, puis délai doublé par tranche ratée, plafond 10 min', () => {
+  assert.strictEqual(L.ljSliceRetryMs(0), L.LJ_IRON_RETRY_MS);
+  assert.strictEqual(L.ljSliceRetryMs(1), 2 * L.LJ_IRON_RETRY_MS);
+  assert.strictEqual(L.ljSliceRetryMs(3), 8 * L.LJ_IRON_RETRY_MS);
+  assert.strictEqual(L.ljSliceRetryMs(50), L.LJ_SLICE_RETRY_MAX_MS);
+  assert.strictEqual(L.ljSliceRetryMs(undefined), L.LJ_IRON_RETRY_MS);
+});
+
+test('ljIronSlicePlan : retryMs remplace le répit fixe', () => {
+  const sig = { hasStonePick: true, canMine: true, now: NOW, lastSliceAt: NOW - 60000 };
+  assert.strictEqual(L.ljIronSlicePlan(sig), 'mine');
+  assert.strictEqual(L.ljIronSlicePlan({ ...sig, retryMs: 160000 }), null);
+  assert.strictEqual(L.ljIronSlicePlan({ ...sig, now: NOW + 100000, retryMs: 160000 }), 'mine');
+});
+
+test('ljSliceFailsAfter : +1 sur une tranche sans fer, 0 dès qu\'elle rapporte, inchangé si coupée par une demande de bois', () => {
+  assert.strictEqual(L.ljSliceFailsAfter(2, { ok: false, reason: 'water_ahead', raw: 0, ingots: 0 }), 3);
+  assert.strictEqual(L.ljSliceFailsAfter(2, { ok: true, reason: null, raw: 0, ingots: 0 }), 3);
+  assert.strictEqual(L.ljSliceFailsAfter(4, { ok: true, raw: 3, ingots: 0 }), 0);
+  assert.strictEqual(L.ljSliceFailsAfter(4, { ok: true, raw: 0, ingots: 4 }), 0);
+  assert.strictEqual(L.ljSliceFailsAfter(2, { ok: false, reason: 'wood_request', raw: 0, ingots: 0 }), 2);
+  assert.strictEqual(L.ljSliceFailsAfter(2, { ok: false, reason: 'cancelled', raw: 0, ingots: 0 }), 2);
+});
+
+test('isWaterFailReason', () => {
+  assert.strictEqual(L.isWaterFailReason('water_ahead'), true);
+  assert.strictEqual(L.isWaterFailReason('flooded'), true);
+  assert.strictEqual(L.isWaterFailReason('lava_ahead'), false);
+  assert.strictEqual(L.isWaterFailReason(null), false);
+});
+
+test('ljMineDetour : départ sur un site noyé → cible à 30-50 blocs, hors de tout site banni ; cap qui tourne', () => {
+  const W = require('./workDrown');
+  const site = { x: -412, z: 114 };
+  const sites = W.noteDrownedSite([], site, NOW);
+  assert.strictEqual(L.ljMineDetour({ pos: { x: 0, z: 0 }, drownedSites: sites, seed: 1, now: NOW }), null);
+  const d1 = L.ljMineDetour({ pos: { x: -410, z: 112 }, drownedSites: sites, seed: 1, now: NOW });
+  assert.ok(d1);
+  const dist = Math.hypot(d1.x - (-410), d1.z - 112);
+  assert.ok(dist >= 14 && dist <= 66, 'décalage ~30-50 depuis le départ : ' + dist);
+  assert.strictEqual(W.isDrownedNear(sites, d1, NOW), false);
+  assert.ok(d1.seed > 1);
+  const d2 = L.ljMineDetour({ pos: { x: -410, z: 112 }, drownedSites: sites, seed: d1.seed, now: NOW });
+  assert.notDeepStrictEqual([d2.x, d2.z], [d1.x, d1.z], 'le cap tourne entre deux essais');
+  // banni expiré (> 30 min) : plus de détour
+  assert.strictEqual(L.ljMineDetour({ pos: { x: -410, z: 112 }, drownedSites: sites, seed: 1, now: NOW + W.DROWNED_SITE_TTL_MS + 1 }), null);
+  // la cible elle-même retombe dans un site banni → on repousse
+  const many = [site, { x: d1.x, z: d1.z }].reduce((acc, s) => W.noteDrownedSite(acc, s, NOW), []);
+  const d3 = L.ljMineDetour({ pos: { x: -410, z: 112 }, drownedSites: many, seed: 1, now: NOW });
+  assert.strictEqual(W.isDrownedNear(many, d3, NOW), false);
+});

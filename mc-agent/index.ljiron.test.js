@@ -33,6 +33,7 @@ function sandbox(o = {}) {
     isNight: () => !!o.night,
     ironCaveCtx: () => (o.cave === false ? null : { key: 'c1' }),
     ljIronSlicePlan: L.ljIronSlicePlan, LJ_IRON_SLICE_MS: L.LJ_IRON_SLICE_MS, LJ_MINE_COBBLE: L.LJ_MINE_COBBLE,
+    ljSliceRetryMs: L.ljSliceRetryMs, ljSliceFailsAfter: L.ljSliceFailsAfter,
     isInWater: () => false, ljMineReturn: async () => { sb.calls.push('mine_return'); },
     // tranche 'mine' (21/10) : mine 1 fer toutes les 15 s tant que le jeton CAPTURÉ n'est pas annulé
     ljMineSlice: async () => {
@@ -66,7 +67,7 @@ function sandbox(o = {}) {
     bot: { time: { timeOfDay: 6000 }, inventory: { items: () => sb.items.filter((i) => i.count > 0) } },
   };
   vm.createContext(sb);
-  vm.runInContext("'use strict';\n" + letSrc('_ljIronSliceAt'), sb);
+  vm.runInContext("'use strict';\n" + letSrc('_ljIronSliceAt') + letSrc('_ljSliceFails'), sb);
   for (const f of ['ljIronSliceStep', '_ljCaveAvailable', 'ljIronSlice']) vm.runInContext("'use strict';\n" + fnSrc(f), sb);
   vm.runInContext('globalThis.__get = (n) => eval(n);', sb);
   return sb;
@@ -143,4 +144,21 @@ test('aucune grappe connue mais pioche + 8 cobble → tranche de branch-mine, co
 
 test('aucune grappe, pioche mais < 8 cobble → pas de tranche mine (attente historique)', async () => {
   assert.strictEqual(await run(sandbox({ items: [PICK, { name: 'cobblestone', count: 7 }], cave: false }), 'ljIronSliceStep()'), null);
+});
+
+test('tranches ratées d\'affilée (water_ahead, 0 fer) → répit doublé ; une tranche qui rapporte le remet à 20 s', async () => {
+  const sb = sandbox({ items: [PICK, { name: 'cobblestone', count: 8 }], cave: false });
+  sb.ljMineSlice = async () => ({ ok: false, reason: 'water_ahead' });
+  await run(sb, 'ljIronSliceStep()');
+  assert.strictEqual(sb.__get('_ljSliceFails'), 1);
+  assert.strictEqual(sb.events.filter((e) => e.phase === 'end').pop().retry_s, 40);
+  sb.clock.t += L.LJ_IRON_RETRY_MS + 1000;
+  assert.strictEqual(await run(sb, 'ljIronSliceStep()'), null, '20 s ne suffisent plus');
+  sb.clock.t += L.LJ_IRON_RETRY_MS;
+  await run(sb, 'ljIronSliceStep()');
+  assert.strictEqual(sb.__get('_ljSliceFails'), 2);
+  sb.ljMineSlice = async () => { sb.items.push({ name: 'raw_iron', count: 3 }); return { ok: true }; };
+  sb.clock.t += 4 * L.LJ_IRON_RETRY_MS + 1000;
+  await run(sb, 'ljIronSliceStep()');
+  assert.strictEqual(sb.__get('_ljSliceFails'), 0);
 });

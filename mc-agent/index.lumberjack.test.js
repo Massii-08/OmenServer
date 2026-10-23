@@ -73,6 +73,7 @@ function sandbox(o = {}) {
     markWorkBeforeTrip: (why) => { sb.calls.push('markWork:' + why); return true; },
     homewarp: { bookmark: (b, n) => { sb.calls.push('sethome:' + n); return true; } },
     isInWater: () => false,
+    isDrownedNear: require('./workDrown').isDrownedNear, _drownedSites: o.drownedSites || [],
     _botXZ: () => ({ x: 0, z: 0 }),
     _workSet: false, _workPos: null,
     HOME_SAFE: 'safe', HOME_WORK: 'work', SAFE_HOME_MIN_Y: 50,

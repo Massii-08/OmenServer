@@ -170,6 +170,7 @@ const {
   woodShortForFailure, woodGoalShortage, giftBatchFor, pickArmorTargetForLumberjack,
   stockFailsPrune, stockFailsAdd, needsForestTrip, forestTriedAdd, pickForestCell, LJ_FOREST_TRIP_MS,
   ljIronSlicePlan, LJ_IRON_SLICE_MS, LJ_IRON_CHECK_MS, LJ_MINE_COBBLE, ljMineTargetY,
+  ljSliceRetryMs, ljSliceFailsAfter, isWaterFailReason, ljMineDetour,
 } = require('./lumberjack');
 const { tierRank } = require('./tools');
 const { createTeleportWatcher, wireTeleportDetection } = require('./teleport');
@@ -1537,6 +1538,11 @@ function bookmarkCuttingSpot(why) {
     if (!p || isInWater(bot)) return false;
     // Sous terre ce n'est pas un spot de coupe : on garde le chantier existant (comportement historique).
     if (p.y < SAFE_HOME_MIN_Y) return markWorkBeforeTrip(why);
+    // Jamais de coin de coupe dans une zone prouvée NOYÉE (23/10) : chaque tranche 'mine' y repartirait.
+    if (isDrownedNear(_drownedSites, { x: p.x, z: p.z }, Date.now())) {
+      emit({ type: 'work_bookmark_refused', why, reason: 'drowned_site', x: Math.round(p.x), z: Math.round(p.z) });
+      return false;
+    }
     if (!homewarp.bookmark(bot, HOME_WORK)) return false;
     _workSet = true; _workPos = _botXZ();
     emit({ type: 'work_bookmarked', why });
@@ -1624,6 +1630,8 @@ async function lumberjackIdleSkill() {
 // garde coupe la tranche dès qu'une demande de bois arrive (même test que l'attente historique) ou au
 // bout de LJ_IRON_SLICE_MS : `withTimeout` n'annulerait rien, le jeton, si. ⚠️ NIVEAU MODULE (#56).
 let _ljIronSliceAt = 0;
+// Tranches ratées d'affilée (23/10) : le répit entre tranches double (lumberjack.ljSliceRetryMs). NIVEAU MODULE.
+let _ljSliceFails = 0;
 
 /** Plan + exécution ; null si rien d'utile (l'attente historique reprend). */
 async function ljIronSliceStep() {
@@ -1641,7 +1649,7 @@ async function ljIronSliceStep() {
       canMine: items.some((i) => i && /^(stone|iron|diamond|netherite)_pickaxe$/.test(i.name))
         && n('cobblestone') >= LJ_MINE_COBBLE && !(function () { try { return isInWater(bot); } catch (e) { return false; } })(),
       nightLock: worn < 2 && bot.time && bot.time.timeOfDay != null && isNight(bot),
-      now: Date.now(), lastSliceAt: _ljIronSliceAt,
+      now: Date.now(), lastSliceAt: _ljIronSliceAt, retryMs: ljSliceRetryMs(_ljSliceFails),
     });
     if (!act) return null;
     return await ljIronSlice(act);
@@ -1654,14 +1662,34 @@ async function ljIronSliceStep() {
  * `work` : le bûcheron garde le sien au coin de coupe.
  */
 async function ljMineSlice() {
-  const p = bot.entity && bot.entity.position;
+  let p = bot.entity && bot.entity.position;
   if (!p) return { ok: false, reason: 'no_pos' };
+  // DÉPART NOYÉ (23/10, NethBot1 : 44 tranches `water_ahead` en 7 s au même coin) : marcher d'abord
+  // 30-50 blocs sur un cap qui tourne (workDrown), hors de tout départ banni. Jeton de la tranche :
+  // une demande de bois coupe la marche (stopMotion du chien de garde → goto rejeté).
+  const det = ljMineDetour({ pos: { x: p.x, z: p.z }, drownedSites: _drownedSites, seed: _drownedOffsetSeed, now: Date.now() });
+  if (det) {
+    _drownedOffsetSeed = det.seed;
+    emit({ type: 'lj_mine_relocate', fromX: Math.round(p.x), fromZ: Math.round(p.z), x: det.x, z: det.z });
+    try { await withTimeout(bot.pathfinder.goto(new pfGoals.GoalNearXZ(det.x, det.z, 3)), 60000, () => { try { stopMotion(); } catch (e) {} }); } catch (e) { /* on descend d'où l'on est */ }
+    if (taskToken.cancelled) return { ok: false, reason: 'cancelled' };
+    p = bot.entity && bot.entity.position;
+    if (!p) return { ok: false, reason: 'no_pos' };
+  }
+  const start = { x: p.x, z: p.z };                       // COPIE : la position est un Vec3 muté en place
   const targetY = ljMineTargetY(p.y);
   if (p.y > targetY + 2) {
     const d = await descendDiagonal(bot, { targetY, maxDepth: 60, onSurvivalTick: descentSurvivalTick }, taskToken);
     if (taskToken.cancelled) return { ok: false, reason: 'cancelled' };
     const q = bot.entity && bot.entity.position;
-    if (!q || q.y > targetY + 6) return { ok: false, reason: (d && d.reason) || 'descent' };
+    if (!q || q.y > targetY + 6) {
+      const reason = (d && d.reason) || 'descent';
+      if (isWaterFailReason(reason)) {
+        _drownedSites = noteDrownedSite(_drownedSites, start, Date.now());
+        emit({ type: 'lj_mine_drowned', x: Math.round(start.x), z: Math.round(start.z), reason });
+      }
+      return { ok: false, reason };
+    }
   }
   return branchMine(bot, {
     torchEvery: TORCH_EVERY, onSurvivalTick: branchSurvivalTick, survivalEvery: 4,
@@ -1733,9 +1761,12 @@ async function ljIronSlice(act) {
     if (act === 'mine') await ljMineReturn();          // four de mine ramassé, puis /home work (coin de coupe)
     _ljIronSliceAt = Date.now();                       // le répit anti boucle chaude part de la FIN
   }
-  emit({ type: 'lj_iron_slice', phase: 'end', act, ok: !!(r && r.ok),
-    reason: why || (r && r.reason) || null, raw: count('raw_iron') - raw0, ingots: count('iron_ingot') - ing0,
-    took_s: Math.round((Date.now() - t0) / 1000) });
+  const _end = { ok: !!(r && r.ok), reason: why || (r && r.reason) || null,
+    raw: count('raw_iron') - raw0, ingots: count('iron_ingot') - ing0 };
+  if (parent && parent.cancelled && !_end.reason) _end.reason = 'cancelled';
+  _ljSliceFails = ljSliceFailsAfter(_ljSliceFails, _end);
+  emit({ type: 'lj_iron_slice', phase: 'end', act, ok: _end.ok, reason: _end.reason, raw: _end.raw, ingots: _end.ingots,
+    took_s: Math.round((Date.now() - t0) / 1000), fails: _ljSliceFails, retry_s: Math.round(ljSliceRetryMs(_ljSliceFails) / 1000) });
   if (parent && parent.cancelled) return { ok: false, reason: 'cancelled' };
   // Rien n'est un échec du rôle : le planner re-dérive (une demande de bois passe en tête de chaîne).
   return { ok: true };

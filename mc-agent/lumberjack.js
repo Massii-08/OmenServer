@@ -520,7 +520,8 @@ function ljIronSlicePlan(sig = {}) {
   const raw = Math.max(0, Number(sig.rawIron) || 0);
   const ingots = Math.max(0, Number(sig.ingots) || 0);
   const now = Number(sig.now) || 0;
-  if (now - (Number(sig.lastSliceAt) || 0) < LJ_IRON_RETRY_MS) return null;
+  const retry = Number.isFinite(sig.retryMs) ? sig.retryMs : LJ_IRON_RETRY_MS;
+  if (now - (Number(sig.lastSliceAt) || 0) < retry) return null;
   // Fondre d'abord : quelques secondes de four, et c'est ce qui débloque les forges. Par lot de 4 (la
   // pièce la moins chère) tant qu'une grotte reste à miner : chaque fonte brûle du stock de bois.
   const canSmelt = sig.hasFurnace || (Number(sig.cobble) || 0) >= FURNACE_COBBLE;
@@ -534,6 +535,52 @@ function ljIronSlicePlan(sig = {}) {
   // cobble pour murer la lave ; absent → l'attente historique.
   if (!sig.caveAvailable) return sig.canMine ? 'mine' : null;
   return 'cave';
+}
+
+// ─── TRANCHE 'mine' NOYÉE (23/10) ──────────────────────────────────────────────────────────────────
+// Vécu NethBot1 (bûcheron, 4/4) : 44 `lj_iron_slice act:mine`, toutes `water_ahead` en ~7 s, 0 fer. La
+// tranche partait TOUJOURS du coin de coupe (`/home work` à la fin de chaque tranche), la descente
+// perçait la même nappe, et 20 s plus tard on recommençait — 37 s de cycle pendant des heures.
+// (1) l'échec EAU bannit le départ (workDrown : rayon 16, 30 min) et la tranche suivante marche d'abord
+// 30-50 blocs sur un cap qui TOURNE ; (2) le délai entre tranches ratées double (20 s → 10 min) ;
+// (3) le coin de coupe n'est jamais re-posé dans une zone noyée (câblage : bookmarkCuttingSpot).
+const LJ_SLICE_RETRY_MAX_MS = 10 * 60 * 1000;
+const _WATER_REASON_RE = /water|flood|drown|noy/i;
+
+/** PUR — répit avant la prochaine tranche après `fails` tranches ratées d'affilée. */
+function ljSliceRetryMs(fails) {
+  const n = Math.max(0, Math.floor(Number(fails) || 0));
+  return Math.min(LJ_SLICE_RETRY_MAX_MS, LJ_IRON_RETRY_MS * Math.pow(2, Math.min(n, 20)));
+}
+
+/** PUR — compteur de tranches ratées après une fin de tranche {ok, reason, raw, ingots}. Une tranche
+ *  coupée par une demande de bois / une annulation n'est pas un échec du terrain : inchangé. */
+function ljSliceFailsAfter(fails, end = {}) {
+  const n = Math.max(0, Math.floor(Number(fails) || 0));
+  if ((Number(end.raw) || 0) > 0 || (Number(end.ingots) || 0) > 0) return 0;
+  if (end.reason === 'wood_request' || end.reason === 'cancelled') return n;
+  return n + 1;
+}
+
+/** PUR — une raison d'échec qui accuse l'EAU. */
+function isWaterFailReason(reason) { return typeof reason === 'string' && _WATER_REASON_RE.test(reason); }
+
+/**
+ * PUR — départ de tranche sur un site prouvé noyé ? → {x, z, seed} = où marcher d'abord (30-50 blocs,
+ * cap qui tourne avec `seed`, repoussé hors de tout site banni). null si le départ est sain.
+ */
+function ljMineDetour({ pos, drownedSites, seed = 0, now } = {}) {
+  const W = require('./workDrown');
+  if (!pos || !Number.isFinite(pos.x) || !Number.isFinite(pos.z)) return null;
+  const t = Number.isFinite(now) ? now : Date.now();
+  if (!W.isDrownedNear(drownedSites, pos, t)) return null;
+  let k = (Number.isFinite(seed) ? seed : 0) + 1;
+  let tgt = W.offsetFromDrowned(pos, k);
+  for (let i = 0; i < 8 && W.isDrownedNear(drownedSites, tgt, t); i++) {
+    k += 1;
+    tgt = W.offsetFromDrowned(pos, k);
+  }
+  return { x: tgt.x, z: tgt.z, seed: k };
 }
 
 // ─── BASCULE DE RÔLE : QUI PEUT-ON PRÉEMPTER ? (22/10, NethBot1 session 239) ──────────────────────
@@ -559,7 +606,7 @@ function ljSwitchBlock({ active, migrating, switching, inProgress } = {}) {
 
 module.exports = {
   ljSwitchBlock, LJ_PREEMPTIBLE, LJ_SAFETY_TASKS,
-  ljIronSlicePlan, LJ_MINE_COBBLE, LJ_MINE_DEPTH, ljMineTargetY, LJ_IRON_TARGET, LJ_IRON_SLICE_MS, LJ_IRON_RETRY_MS, LJ_IRON_CHECK_MS,
+  ljIronSlicePlan, ljSliceRetryMs, ljSliceFailsAfter, isWaterFailReason, ljMineDetour, LJ_SLICE_RETRY_MAX_MS, LJ_MINE_COBBLE, LJ_MINE_DEPTH, ljMineTargetY, LJ_IRON_TARGET, LJ_IRON_SLICE_MS, LJ_IRON_RETRY_MS, LJ_IRON_CHECK_MS,
   WOOD_REQUEST_TTL_MS, WOOD_REQUEST_COOLDOWN_MS, WOOD_UNDERGROUND_Y, LUMBERJACK_FRESH_MS, WOOD_WANT_MIN, WOOD_WANT_MAX,
   LUMBERJACK_STOCK, LUMBERJACK_RESERVE, WOOD_MIN_GIFT,
   isWoodGoal, woodWantFor, logCount, activeLumberjack, woodWaitDecision, preferredLumberjack,
