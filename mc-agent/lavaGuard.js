@@ -109,6 +109,30 @@ function installLavaGuard(moves, blockAt, opts = {}) {
         return orig.call(this, block);
       };
     }
+    // CHUTES (23/10 soir, NethBot3 mort en plein trajet de ~115 blocs à travers les grottes, garde posée) :
+    // `getMoveDropDown` / `getMoveDown` ne passent JAMAIS par exclusionStep pour leur case d'atterrissage —
+    // une chute de 1 à 4 blocs au bord d'une mare coûtait comme ailleurs. On pénalise après coup chaque
+    // mouvement qu'ils ajoutent (sans le rejeter : dernier recours, comme le reste de la garde).
+    for (const meth of ['getMoveDropDown', 'getMoveDown']) {
+      const base = moves[meth];
+      if (typeof base !== 'function') continue;
+      moves[meth] = function landingLavaPenalty(...args) {
+        const neighbors = args[args.length - 1];
+        const before = Array.isArray(neighbors) ? neighbors.length : 0;
+        const out = base.apply(this, args);
+        try {
+          if (Array.isArray(neighbors)) {
+            for (let i = before; i < neighbors.length; i++) {
+              const mv = neighbors[i];
+              if (mv && Number.isFinite(mv.cost)) {
+                mv.cost += lavaStepPenalty(blockAt, { position: { x: mv.x, y: mv.y, z: mv.z } }, { adjacent, now: now() });
+              }
+            }
+          }
+        } catch (e) { /* jamais d'exception dans l'A* */ }
+        return out;
+      };
+    }
     moves[GUARDED] = true;
     return true;
   } catch (e) {

@@ -184,6 +184,41 @@ test('VRAIE Movements : safeToBreak refuse un bloc qui retient la lave, même av
   assert.strictEqual(t.safeToBreak(nextToLava), false);
 });
 
+test('VRAIE Movements : une CHUTE (dropDown / descente) qui atterrit au bord de la lave est pénalisée', { skip: SKIP }, () => {
+  // Le pas de chute de la lib ne passe JAMAIS par exclusionStep pour sa case d'atterrissage : sans
+  // enveloppe, un saut de 3 blocs au fond d'une grotte à côté d'une mare coûtait comme ailleurs.
+  const w = makeWorld();
+  w.fill(-5, 0, -5, 0, 20, 5, 'stone');       // plateau x ≤ 0, sol y=20 → on marche à y=21
+  w.fill(1, 0, -5, 10, 17, 5, 'stone');       // fond x ≥ 1, sol y=17 → atterrissage à y=18
+  w.fill(1, 18, 1, 1, 18, 1, 'lava');         // une case de lave à côté de l'atterrissage (1,18,0)
+  const bot = makeBot(w);
+  const plain = new real.Movements(bot);
+  const guarded = new real.Movements(bot);
+  lg.installLavaGuard(guarded, w.blockAt);
+  const land = (m) => m.getNeighbors(new real.Move(0, 21, 0, 0, 0)).find((mv) => mv.x === 1 && mv.y === 18 && mv.z === 0);
+  const a = land(plain); const b = land(guarded);
+  assert.ok(a && b, 'la chute existe dans les deux cas (jamais rejetée : dernier recours)');
+  assert.strictEqual(Math.round(b.cost - a.cost), lg.LAVA_STEP_PENALTY);
+  // loin de la lave : aucune différence
+  const far = (m) => m.getNeighbors(new real.Move(0, 21, -3, 0, 0)).find((mv) => mv.x === 1 && mv.y === 18 && mv.z === -3);
+  assert.strictEqual(far(guarded).cost, far(plain).cost);
+});
+
+test('VRAIE Movements : descente verticale (getMoveDown) au bord de la lave pénalisée aussi', { skip: SKIP }, () => {
+  const w = makeWorld();
+  w.fill(-5, 0, -5, 5, 15, 5, 'stone');       // sol y=15
+  w.fill(0, 16, 0, 0, 18, 0, 'air');          // puits : le bot à y=19 sur… rien, landing y=16
+  w.fill(1, 16, 0, 1, 16, 0, 'lava');
+  const bot = makeBot(w);
+  const plain = new real.Movements(bot);
+  const guarded = new real.Movements(bot);
+  lg.installLavaGuard(guarded, w.blockAt);
+  const down = (m) => m.getNeighbors(new real.Move(0, 19, 0, 0, 0)).find((mv) => mv.x === 0 && mv.z === 0 && mv.y < 19);
+  const a = down(plain); const b = down(guarded);
+  assert.ok(a && b);
+  assert.strictEqual(Math.round(b.cost - a.cost), lg.LAVA_STEP_PENALTY);
+});
+
 // ─── Câblage (un test qui injecte ne prouve pas qu'on BRANCHE, pièges #61/#68b) ───────────────
 const fs = require('node:fs');
 const path = require('node:path');
