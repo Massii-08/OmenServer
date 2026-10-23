@@ -1987,6 +1987,7 @@ def _oom_capture_cmd(monkeypatch):
 def test_cmd_capture_oom_options_node_avant_le_script(monkeypatch):
     """OOM 23/10 : instantané du tas près de la limite, écrit dans le dossier des logs. Les options
     node doivent précéder index.js (après, elles partiraient au script, pas à node)."""
+    monkeypatch.setenv("MC_AGENT_HEAPSNAP", "1")
     cmd = _oom_capture_cmd(monkeypatch)
     script = cmd.index(str(mgr.MC_AGENT_DIR / "index.js"))
     assert "--heapsnapshot-near-heap-limit=1" in cmd
@@ -2000,6 +2001,7 @@ def test_cmd_capture_oom_options_node_avant_le_script(monkeypatch):
 
 def test_cmd_capture_oom_coupee_au_quota_d_instantanes(monkeypatch):
     """Un instantané ≈ la taille du tas : au-delà de HEAPSNAP_MAX fichiers, plus de capture."""
+    monkeypatch.setenv("MC_AGENT_HEAPSNAP", "1")
     mgr.LOGS_DIR.mkdir(parents=True, exist_ok=True)
     for i in range(mgr.HEAPSNAP_MAX):
         (mgr.LOGS_DIR / f"Heap.{i}.heapsnapshot").write_text("x")
@@ -2007,3 +2009,11 @@ def test_cmd_capture_oom_coupee_au_quota_d_instantanes(monkeypatch):
     assert not any(c.startswith("--heapsnapshot-near-heap-limit") for c in cmd)
     assert not any(c.startswith("--diagnostic-dir") for c in cmd)
     assert f"--max-old-space-size={mgr.NODE_HEAP_MB}" in cmd  # le plafond, lui, reste
+
+
+def test_cmd_capture_oom_desarmee_par_defaut(monkeypatch):
+    """23/10 : l'instantané a fait swapper l'Omen 4 h — sans MC_AGENT_HEAPSNAP=1, aucune capture."""
+    monkeypatch.delenv("MC_AGENT_HEAPSNAP", raising=False)
+    cmd = _oom_capture_cmd(monkeypatch)
+    assert not any(c.startswith("--heapsnapshot-near-heap-limit") for c in cmd)
+    assert f"--max-old-space-size={mgr.NODE_HEAP_MB}" in cmd

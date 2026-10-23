@@ -56,6 +56,10 @@ HEAPSNAP_MAX = 3
 
 def _heapsnap_flags(logs_dir):
     """Options node de capture OOM (à placer AVANT le script). [] si le quota d'instantanés est atteint."""
+    # DÉSARMÉ par défaut (23/10) : l'écriture de l'instantané (~1,5 Go) a fait swapper l'Omen
+    # 4 h (load 430, fichier resté à 0 octet). Ne l'armer qu'à la main : MC_AGENT_HEAPSNAP=1.
+    if os.environ.get("MC_AGENT_HEAPSNAP") != "1":
+        return []
     try:
         n = sum(1 for _ in Path(logs_dir).glob("*.heapsnapshot"))
     except OSError:
