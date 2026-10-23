@@ -810,3 +810,39 @@ test('branchMine : la phase repasse à idle en sortie (même en bail)', async ()
   assert.ok(phases.includes('enter'));
   assert.strictEqual(currentPhase().name, 'idle');
 });
+
+// ── LAVE SUR PLUSIEURS FACES (23/10 : 5 morts de mineurs en 30 min, dont 2 en serpentin à y≈14) ──
+test('branchMine : lave sur DEUX faces du bloc à creuser → les deux sont murées avant le coup de pioche', async () => {
+  // Bloc (2,-54,0) sur le chemin (yaw est = +x) : lave devant (3,-54,0) ET dessous (2,-55,0).
+  const world = { '3,-54,0': 'lava', '2,-55,0': 'lava' };
+  const { bot, calls } = makeBot({ y: -54, world });
+  await branchMine(bot, { targetY: -54, mainLength: 6, branchSpacing: 999, branchLength: 0 });
+  assert.notStrictEqual(world['3,-54,0'], 'lava', 'face avant murée');
+  assert.notStrictEqual(world['2,-55,0'], 'lava', 'face dessous murée aussi (avant : seule la 1re face)');
+  // aucun bloc creusé alors qu'il touchait encore de la lave
+  for (const b of calls.dig) {
+    const { x, y, z } = b.position;
+    for (const [dx, dy, dz] of [[1,0,0],[-1,0,0],[0,1,0],[0,-1,0],[0,0,1],[0,0,-1]]) {
+      assert.notStrictEqual(world[`${x + dx},${y + dy},${z + dz}`], 'lava', `dig de ${x},${y},${z} contre la lave`);
+    }
+  }
+});
+
+test('floodFillVein : un bloc de la veine qui touche la lave (sans de quoi murer) est LAISSÉ', async () => {
+  // veine de 2 charbons : (5,-54,0) sûr, (6,-54,0) contre une lave en (7,-54,0) ; aucun bloc de murage.
+  const world = { '5,-54,0': 'deepslate_coal_ore', '6,-54,0': 'deepslate_coal_ore', '7,-54,0': 'lava' };
+  const { bot, calls } = makeBot({ y: -54, world, inv: [{ name: 'iron_pickaxe', count: 1, type: 'pickaxe' }] });
+  const mined = await floodFillVein(bot, { x: 5, y: -54, z: 0 }, null);
+  assert.strictEqual(mined, 1);
+  assert.strictEqual(world['6,-54,0'], 'deepslate_coal_ore', 'le charbon qui retient la lave reste en place');
+  assert.strictEqual(world['7,-54,0'], 'lava');
+  assert.deepStrictEqual(calls.gather, ['coal']);
+});
+
+test('floodFillVein : avec du cobble, la lave contre la veine est murée puis le bloc miné', async () => {
+  const world = { '5,-54,0': 'deepslate_coal_ore', '6,-54,0': 'deepslate_coal_ore', '7,-54,0': 'lava' };
+  const { bot } = makeBot({ y: -54, world });
+  const mined = await floodFillVein(bot, { x: 5, y: -54, z: 0 }, null);
+  assert.strictEqual(mined, 2);
+  assert.strictEqual(world['7,-54,0'], 'cobblestone');
+});

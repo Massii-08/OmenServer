@@ -32,6 +32,17 @@ const { createMemory } = require('./memory');
 const { bestWeapon, bestToolFor } = require('./tools');
 const { shouldSprint, applyPathfinderBounds, withTempMovements } = require('./movement');   // sprint « vrai joueur » ON par défaut (Massii 2026-06-22) + bornage A* (anti-OOM 2026-07-25)
 const { installBridgeGuard } = require('./bridges');   // pas de pont au-dessus d'une vallée / de l'eau (Massii 19/10)
+const lavaGuard = require('./lavaGuard');   // lave : ni creuser un bloc qui la retient, ni longer son bord (23/10)
+// `lava_avoided {where}` : au plus un par lieu toutes les 10 s (NIVEAU MODULE : appelé depuis des timers).
+const _lavaAvoidedOk = lavaGuard.createAvoidedThrottle(10000);
+function lavaAvoided(where, pos, extra) {
+  try {
+    if (!_lavaAvoidedOk(where)) return;
+    const ev = { type: 'lava_avoided', where };
+    if (pos) { ev.x = Math.floor(pos.x); ev.y = Math.floor(pos.y); ev.z = Math.floor(pos.z); }
+    emit(Object.assign(ev, extra || {}));
+  } catch (e) { /* jamais bloquant */ }
+}
 const { copySafetySettings, createMovesKeeper } = require('./pluginMoves');   // fuite de Movements des plugins collect/pvp (19/10)
 const { createGoalTrace, installGoalTrace } = require('./goalTrace');   // DIAG GoalChanged : qui pose un but pendant un goto ? (aucun effet sur le bot)
 const vec3Lib = require('vec3'); // watchdog anti-jam (blocs barrants)
@@ -7979,7 +7990,16 @@ async function _skelRush(shooter) {
         const alive = shooter && shooter.isValid !== false && bot.entities && bot.entities[shooter.id];
         if (!alive || !me || Date.now() - t0 > SKEL_RUSH_MS) return;
         const far = Math.hypot(shooter.position.x - me.x, shooter.position.z - me.z) > 3;
-        const want = far && bot.entity.onGround ? zigzagSide(Date.now() - t0, 400) : null;
+        let want = far && bot.entity.onGround ? zigzagSide(Date.now() - t0, 400) : null;
+        // ⚠️ PAS LATÉRAL DANS LA LAVE (23/10 : « tried to swim in lava to escape Skeleton ») : le pas de
+        // zigzag est un contrôle brut, sans pathfinder — rien ne l'empêchait de sortir du couloir vers
+        // une mare. Case latérale (ou son sol, ou ce qu'il y a sous un sol vide) en lave/feu → pas de pas,
+        // on charge droit (le GoalFollow de pvp, lui, passe par la Movements gardée).
+        if (want) {
+          let hz = null;
+          try { hz = lavaGuard.lateralHazard((q) => bot.blockAt(q), me, bot.entity.yaw, want); } catch (e) { hz = null; }
+          if (hz) { lavaAvoided('zigzag', me, { hazard: hz, side: want }); want = null; }
+        }
         if (want !== side) {
           if (side) bot.setControlState(side, false);
           if (want) bot.setControlState(want, true);
@@ -10664,6 +10684,18 @@ async function onSpawn() {
         try { on[who] = installBridgeGuard(m, bridgeAt); } catch (e) { on[who] = false; }
       }
       emit(Object.assign({ type: 'bridge_guard_on' }, on));
+      // LAVE (23/10 : 5 morts de mineurs en 30 min) : pas de pas au bord de la lave (pénalité, stricte en
+      // fuite) et `safeToBreak` qui refuse de casser un bloc qui la retient — y compris dans la Movements de
+      // collectBlock, qui remet `dontCreateFlow` à false à chaque collect. Mêmes 3 Movements que les ponts.
+      const lavaOn = {};
+      for (const [who, m] of [
+        ['nominal', moves],
+        ['collectBlock', bot.collectBlock && bot.collectBlock.movements],
+        ['pvp', bot.pvp && bot.pvp.movements],
+      ]) {
+        try { lavaOn[who] = lavaGuard.installLavaGuard(m, bridgeAt); } catch (e) { lavaOn[who] = false; }
+      }
+      emit(Object.assign({ type: 'lava_guard_on' }, lavaOn));
     }
     // LA FUITE DE MOVEMENTS (19/10, décision : on la corrige) : `collectBlock.collect` et `pvp.attack`
     // posent LEUR Movements d'usine et ne rendent JAMAIS la nôtre — après la 1re récolte, tous les
@@ -12179,6 +12211,10 @@ setInterval(async () => {
         if (!_reachable()) continue;                     // inatteignable : on ne le gaspille pas
       }
       if (!scopeNow().run) break;                        // migration lancée pendant l'equip : pas de dig sous ses jambes
+      // ⚠️ JAMAIS UN MINERAI QUI RETIENT LA LAVE (23/10, NethBot2 : `ore_grabbed` coal à y=13 puis brûlé
+      // 0,3 s plus tard). Le casser ouvre la poche : la lave coule sur le bot. On le laisse en place —
+      // le serpentin, lui, sait murer avant de creuser.
+      if (lavaGuard.lavaAdjacent((q) => bot.blockAt(q), blk.position)) { lavaAvoided('ore_grab', blk.position, { ore: blk.name }); continue; }
       // Un autre a commencé à creuser pendant nos `await` (escalier, abri…) : lancer le nôtre AVORTERAIT
       // le sien (mineflayer : un seul dig, cf. oregrab.mayStartDig — dig_failed ×8 du 23/10).
       if (!oregrab.mayStartDig(bot.targetDigBlock)) break;
@@ -12696,6 +12732,7 @@ function creeperTick() {
       if (now - _creeperFlee.lastSetAt < CREEPER_REPLAN_MS) return;
       const dest2 = creeperAwayPoint(self, best.position, CREEPER_FLEE_KEEP);
       if (!dest2) return;
+      lavaGuard.strictFor(CREEPER_REPLAN_MS + 1000, now);
       holdSetGoal(bot.pathfinder, _creeperHold, new pfGoals.GoalNearXZ(dest2.x, dest2.z, 1), false);
       _creeperFlee.lastSetAt = now;
       return;
@@ -12711,6 +12748,9 @@ function creeperTick() {
     if (bot.pvp && bot.pvp.target) { try { bot.pvp.stop(); } catch (e) {} }
     if (bot.targetDigBlock && typeof bot.stopDigging === 'function') { try { bot.stopDigging(); } catch (e) {} }
     holdGoal(_creeperHold, now + CREEPER_FLEE_MAX_MS, 'creeper');
+    // Fuite : la lave bordière devient un DERNIER recours dans l'A* (23/10 : creeper_flee puis la lave 0,5 s
+    // après, NethBot2 ×2). Un sprint au bord d'une mare finit dedans au moindre écart.
+    lavaGuard.strictFor(CREEPER_FLEE_MAX_MS + 1000, now);
     // But XZ (jamais 3D à l'altitude courante, piège #72b), figé (dynamic=false), POSÉ À TRAVERS le verrou.
     holdSetGoal(bot.pathfinder, _creeperHold, new pfGoals.GoalNearXZ(dest.x, dest.z, 1), false);
     try { if (typeof bot.setControlState === 'function') bot.setControlState('sprint', true); } catch (e) {}

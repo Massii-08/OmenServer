@@ -2,6 +2,7 @@
 const { goals } = require('mineflayer-pathfinder');
 const { Vec3 } = require('vec3');
 const { MELEE_HOSTILES } = require('../reflexes');
+const lavaGuard = require('../lavaGuard');
 // Fuit le HOSTILE le plus proche : destination CONCRÈTE à FLEE_DIST blocs à l'opposé, visée en but XZ
 // (jamais de GoalInvert, cf. fleeFrom). Avant : fuyait N'IMPORTE quel mob — y compris une vache
 // (fuite absurde, vécu diagnostic).
@@ -99,6 +100,9 @@ function losBlockedOnWorld(bot, a, b) {
 function fleeFrom(bot) {
   const threat = bot.nearestEntity((e) => e && e.position && isFleeHostile(e));
   if (!threat) return false;
+  // Fuite = sprint sans regarder où l'on met les pieds : pendant 8 s, la lave bordière n'est plus qu'un
+  // dernier recours dans l'A* (23/10 : « tried to swim in lava to escape Skeleton », lavaGuard).
+  try { lavaGuard.strictFor(8000); } catch (e) { /* best-effort */ }
   // Un TIREUR à portée dicte la fuite (cap en biais / derrière un couvert) même si un mob de mêlée est
   // plus près — en écartant les caps qui finissent dans ses bras.
   try {

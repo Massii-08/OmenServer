@@ -57,6 +57,7 @@ function sandbox({ entities = [], held = null, items = [], digging = false, usin
     vec3Lib: (x, y, z) => ({ x, y, z }),
     pfGoals: { GoalNearXZ: function (x, z, r) { this.x = x; this.z = z; this.r = r; } },
     _shelterInFlight: shelter, _stillBusy: false,
+    lavaGuard: require('./lavaGuard'),   // fuite creeper : fenêtre stricte anti-lave (23/10)
   };
   vm.createContext(sb);
   for (const c of ['AURA_EVENT_EVERY_MS', 'CREEPER_SCAN_RADIUS', 'CREEPER_FLEE_MAX_MS', 'CREEPER_REPLAN_MS', '_creeperHold']) run(sb, constSrc(c));

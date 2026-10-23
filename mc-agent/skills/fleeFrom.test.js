@@ -56,3 +56,21 @@ test('fleeFrom : squelette à portée → but XZ en biais (pas dans l\'axe) ; zo
   F.fleeFrom(b.bot);
   assert.ok(Math.abs(b.goals[0].x) < 1e-6 && b.goals[0].z > 10, 'plein dos face à la mêlée seule');
 });
+
+test('fleeFrom : ouvre la fenêtre stricte anti-lave (la bordure de lave devient un dernier recours)', () => {
+  const lg = require('../lavaGuard');
+  lg._resetStrict();
+  const zombie = { name: 'zombie', kind: 'Hostile mobs', position: new Vec3(0, 70, -5) };
+  const bot = {
+    entity: { position: new Vec3(0, 70, 0) }, entities: { 1: zombie },
+    nearestEntity: (f) => (f(zombie) ? zombie : null),
+    blockAt: () => ({ boundingBox: 'empty' }), pathfinder: { setGoal() {} },
+  };
+  assert.strictEqual(lg.isStrict(), false);
+  F.fleeFrom(bot);
+  assert.strictEqual(lg.isStrict(), true);
+  lg._resetStrict();
+  // sans hostile : pas de fuite, pas de fenêtre
+  F.fleeFrom({ entity: bot.entity, nearestEntity: () => null, pathfinder: { setGoal() {} } });
+  assert.strictEqual(lg.isStrict(), false);
+});

@@ -108,6 +108,14 @@ const COBBLE_TARGET_INIT = 16;
 const WALL_BLOCKS = ['cobblestone', 'cobbled_deepslate'];
 
 function isLava(name) { return name === 'lava' || name === 'flowing_lava'; }
+// `lava_avoided {where}` limité à un par lieu / 10 s (NIVEAU MODULE, piège #56).
+const _lavaAvoidedOk = require('../lavaGuard').createAvoidedThrottle(10000);
+function lavaAvoidedEmit(where, at) {
+  try {
+    if (!_lavaAvoidedOk(where)) return;
+    _emit({ type: 'lava_avoided', where, x: Math.floor(at.x), y: Math.floor(at.y), z: Math.floor(at.z) });
+  } catch (e) { /* jamais bloquant */ }
+}
 function isWater(name) { return name === 'water' || name === 'flowing_water'; }
 
 function countItem(bot, name) {
@@ -368,6 +376,17 @@ async function floodFillVein(bot, start, token, maxVein = 64) {
     seen.add(k);
     const b = bot.blockAt(p(x, y, z));
     if (!b || !ORE_NAMES.has(b.name) || oreFamily(b.name) !== fam) continue;
+    // VEINE AU BORD DE LA LAVE (23/10, NethBot1 : brûlé 0,5 s après la fin d'une collecte en serpentin) :
+    // seul le 1er bloc de la veine passait par la garde lave — les suivants étaient minés à l'aveugle.
+    // On mure ce qu'on peut ; s'il reste de la lave contre le bloc, on le laisse (le filon attendra).
+    if (neighborsHaveLava(bot, { x, y, z })) {
+      let left = neighborsHaveLava(bot, { x, y, z });
+      for (let pass = 0; left && pass < 6; pass++) {
+        if (!(await wallLava(bot, left.ahead))) break;
+        left = neighborsHaveLava(bot, { x, y, z });
+      }
+      if (left) { lavaAvoidedEmit('vein', { x, y, z }); continue; }
+    }
     // ⚠️ ÉQUIPER LA PIOCHE — `collectBlock.collect` n'équipe RIEN (limite connue, déjà corrigée
     // pour la reprise de blocs mais jamais ici). Sans ça le bot minait le filon avec ce qu'il avait
     // en main : Massii a filmé le 26/07 un bot frappant un diamant de deepslate AVEC UN BOUCLIER —
@@ -416,8 +435,20 @@ async function safeDigAndOpportunism(bot, target, token, debug, loopOpts) {
   try { lava = neighborsHaveLava(bot, target); }
   catch (e) { if (debug) dbg('safeDig', { phase: 'safeDig:neighborsThrew', err: String(e && e.message || e).slice(0,200) }); return { ok: false, reason: 'neighbor_err' }; }
   if (lava) {
-    const walled = await wallLava(bot, lava.ahead);
-    if (!walled) return { ok: false, walled: false, reason: 'lava_unwallable' };
+    // TOUTES les faces (23/10 : mort en serpentin à y≈14) : l'ancienne garde ne murait que la PREMIÈRE
+    // face de lave trouvée — une mare touche souvent le bloc par deux côtés (devant + dessous, côté +
+    // plafond) et la seconde coulait dans la galerie dès le coup de pioche. On mure, on relit, jusqu'à
+    // ce que plus aucune face ne soit de la lave (≤ 6 passes) ; sinon on ne creuse pas.
+    let left = lava;
+    for (let pass = 0; left && pass < 6; pass++) {
+      const walled = await wallLava(bot, left.ahead);
+      if (!walled) break;
+      try { left = neighborsHaveLava(bot, target); } catch (e) { left = null; }
+    }
+    if (left) {
+      lavaAvoidedEmit('branch_dig', target);
+      return { ok: false, walled: false, reason: 'lava_unwallable' };
+    }
   }
   // Anti-EAU (aquifères à profondeur diamant, frein #1 live) : sceller l'eau voisine AVANT de miner.
   // Sinon le tunnel se noie → réflexe anti-noyade → surface → water_rescue → warp → re-descend →
