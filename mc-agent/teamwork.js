@@ -194,17 +194,57 @@ function pickMapperToEquip({ selfName, selfStatus, mates, claimed, now, opts = {
     && m.name && m.name !== selfName
     && m.role === 'mapper'
     && (t - (m.at || 0)) <= freshMs                    // présence périmée = mort/déconnecté
-    && (m.armor === undefined ? 0 : m.armor) < 4       // statut inconnu = considéré NU (on n'abandonne pas sur une supposition)
+    && mapperUnserved(m)                               // statut inconnu = considéré NU (on n'abandonne pas sur une supposition)
     && !taken.has(m.name));
   if (!cands.length) return null;
   let best = null;
   for (const m of cands) {
-    const armor = m.armor === undefined ? 0 : m.armor;
-    if (!best || armor < best.armor || (armor === best.armor && m.name < best.to)) {
-      best = { to: m.name, armor };
+    const worn = mapperWorn(m);
+    if (!best || worn < best.worn || (worn === best.worn && m.name < best.to)) {
+      best = { to: m.name, armor: m.armor === undefined ? 0 : m.armor, worn };
     }
   }
-  return best;
+  return best ? { to: best.to, armor: best.armor } : null;
+}
+
+// ── CARTOGRAPHE « SERVI » = 4 PIÈCES PORTÉES (Massii 24/10) ─────────────────────────────────────
+// `armor` (heartbeat) compte les pièces ACQUISES, poche comprise ; `worn` les pièces fer-ou-mieux
+// PORTÉES. Un cartographe est servi sur la base de ce qu'il PORTE. Une présence sans `worn` (process
+// d'avant le champ) retombe sur `armor` — même règle que lumberjack._wornOf.
+// Exception : `missing` publié VIDE alors que worn < 4 = il a les pièces EN POCHE et `armorUp(0)` de
+// son périodique les enfile dans la minute — lui en forger une autre serait un double.
+function mapperWorn(m) {
+  if (m && m.worn !== undefined && m.worn !== null && Number.isFinite(Number(m.worn))) return Number(m.worn);
+  return Number(m && m.armor) || 0;
+}
+function mapperUnserved(m) {
+  if (!m) return false;
+  if (mapperWorn(m) >= 4) return false;
+  if (Array.isArray(m.missing) && m.missing.length === 0) return false;
+  return true;
+}
+
+/**
+ * PUR — phase d'ÉQUIPE (Massii 24/10) : 'miners_armor' tant qu'un mineur (tout rôle ≠ mapper, bûcheron
+ * compris, soi compris) frais porte < 4 pièces ; puis 'mappers_armor' tant qu'un cartographe frais n'est
+ * pas servi (mapperUnserved) ; puis 'diamond'. Présences périmées ignorées (mort/déconnecté).
+ * @param {{selfName?:string, selfRole?:string, selfWorn?:number, mates:Array, now?:number, freshMs?:number}} p
+ * @returns {{phase:string, miners:number, minersArmored:number, mappers:number, mappersServed:number}}
+ */
+function teamPhase({ selfName, selfRole, selfWorn, mates, now, freshMs } = {}) {
+  const t = now || Date.now();
+  const fm = freshMs || FRESH_MS;
+  const fresh = (mates || []).filter((m) => m && m.name && m.name !== selfName && (t - (m.at || 0)) <= fm);
+  const minerWorn = fresh.filter((m) => m.role !== 'mapper').map(mapperWorn);
+  if (selfName && selfRole !== 'mapper' && selfWorn !== undefined) minerWorn.push(Number(selfWorn) || 0);
+  const mappers = fresh.filter((m) => m.role === 'mapper');
+  if (selfName && selfRole === 'mapper') mappers.push({ name: selfName, worn: Number(selfWorn) || 0 });
+  const minersArmored = minerWorn.filter((w) => w >= 4).length;
+  const mappersServed = mappers.filter((m) => !mapperUnserved(m)).length;
+  let phase = 'diamond';
+  if (minersArmored < minerWorn.length) phase = 'miners_armor';
+  else if (mappersServed < mappers.length) phase = 'mappers_armor';
+  return { phase, miners: minerWorn.length, minersArmored, mappers: mappers.length, mappersServed };
 }
 
 /**
@@ -243,12 +283,12 @@ function allMappersArmored(mates, opts = {}) {
   const t = opts.now || Date.now();
   const mappers = (mates || []).filter((m) => m && m.name && m.role === 'mapper'
     && (t - (m.at || 0)) <= (opts.freshMs || FRESH_MS));
-  return mappers.every((m) => (m.armor || 0) >= 4);
+  return mappers.every((m) => !mapperUnserved(m));
 }
 
 module.exports = {
   teamStatus, pickDonation, allArmored, pickMobAssist,
-  pickMapperToEquip, giftSetPlan, allMappersArmored,
+  pickMapperToEquip, giftSetPlan, allMappersArmored, mapperWorn, mapperUnserved, teamPhase,
   PIECES, INGOTS_PER_PIECE, MIN_GIFT, AID_RANGE, ASSIST_RANGE, THREAT_RADIUS, ASSIST_MIN_HEALTH,
   SET_INGOTS,
 };

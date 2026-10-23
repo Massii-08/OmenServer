@@ -344,12 +344,70 @@ function ownArmorAction({ worn, pocket, ingots } = {}) {
   return null;
 }
 
+// ─── CARTOGRAPHES : PLASTRON D'ABORD (Massii 24/10) ───────────────────────────────────────────────
+// Vécu (logs 23-24/10) : le bûcheron livrait `gift_batch pieces:[iron_boots]` puis `[iron_boots,
+// iron_helmet]` — la moins chère d'abord, avec ce que ses lingots permettaient sur le moment. Bottes +
+// casque = 4 points d'armure sur 15 : le cartographe restait quasiment nu. Pour un cartographe, l'ordre
+// est celui de la PROTECTION (plastron 6, jambières 5, casque 2, bottes 2) et il est STRICT : tant que le
+// plastron manque et qu'on n'a pas ses 8 lingots, on ne forge rien d'autre pour lui (on continue de
+// miner) — sinon les petites pièces passeraient toujours devant. Une pièce SAINE déjà en poche reste
+// gratuite et part quel que soit son rang. Les MINEURS gardent l'ordre historique (_armorPlanFor).
+const MAPPER_GIFT_ORDER = [
+  { slot: 'chestplate', name: 'iron_chestplate', ingots: 8 },
+  { slot: 'leggings', name: 'iron_leggings', ingots: 7 },
+  { slot: 'helmet', name: 'iron_helmet', ingots: 5 },
+  { slot: 'boots', name: 'iron_boots', ingots: 4 },
+];
+
+/** PUR — pièces qu'il faut encore à `m` (cartographe) : son `missing` publié, ou tout s'il est à 0. null = inconnu. */
+function _mapperNeedSet(m) {
+  if (Array.isArray(m.missing)) return new Set(m.missing);
+  if (!(m.armor > 0) && !(Number(m.worn) > 0)) return new Set(MAPPER_GIFT_ORDER.map((p) => p.name));
+  return null;                                       // statut d'avant le champ `missing` : on ne devine pas
+}
+
+/** PUR — plan STRICT plastron-d'abord pour un cartographe (cf. MAPPER_GIFT_ORDER). */
+function _mapperPlanFor(m, { ingots, inPocket, broken }) {
+  const need = _mapperNeedSet(m);
+  if (!need) return null;
+  let budget = Math.max(0, Number(ingots) || 0);
+  let spent = 0;
+  let blocked = false;                               // une pièce plus protectrice n'est pas abordable
+  const pieces = [];
+  for (const p of MAPPER_GIFT_ORDER) {
+    if (!need.has(p.name) || broken.has(p.name)) continue;
+    if (inPocket.has(p.name)) { pieces.push(p.name); continue; }
+    if (!blocked && budget >= p.ingots) { pieces.push(p.name); budget -= p.ingots; spent += p.ingots; continue; }
+    blocked = true;
+  }
+  return pieces.length ? { pieces, ingots: spent } : null;
+}
+
 /**
- * PUR — quel cartographe armer, avec quelles pièces ? Le plus NU d'abord (nom ASC en départage), présence
- * fraîche, pas déjà servi (`skip`). Ses pièces manquantes viennent de `missing` (publié dans sa présence) ;
- * sans ce champ on ne sait quoi forger que s'il est à 0 pièce. Plan glouton la moins chère d'abord : une
- * pièce saine déjà en poche (`pocket`) est gratuite, sinon elle coûte des lingots. Une pièce dont un
- * exemplaire USÉ traîne en poche (`brokenPocket`) n'est pas planifiée : le don jette tout ce qui porte ce nom.
+ * PUR — lingots encore à réunir pour finir `m` (cartographe) : coût des pièces manquantes qui ne sont
+ * pas déjà en poche saine. Statut inconnu → set complet (24). Sert de cible aux buts de mine/fonte de
+ * MAPPER_ARMOR_CHAIN (au lieu de 24 fixes : un cartographe à qui il ne manque que les bottes = 4).
+ */
+function mapperGiftNeed(m, pocket) {
+  if (!m) return 0;
+  const need = _mapperNeedSet(m) || new Set(MAPPER_GIFT_ORDER.map((p) => p.name));
+  const inPocket = new Set(pocket || []);
+  return MAPPER_GIFT_ORDER.reduce((s, p) => s + ((need.has(p.name) && !inPocket.has(p.name)) ? p.ingots : 0), 0);
+}
+
+const _mWorn = (m) => (m && m.worn !== undefined && m.worn !== null && Number.isFinite(Number(m.worn)))
+  ? Number(m.worn) : (Number(m && m.armor) || 0);
+/** PUR — même règle que teamwork.mapperUnserved (copie locale : lumberjack.js ne dépend de rien). */
+function _mapperUnserved(m) {
+  if (!m || _mWorn(m) >= 4) return false;
+  return !(Array.isArray(m.missing) && m.missing.length === 0);
+}
+
+/**
+ * PUR — quel cartographe armer, avec quelles pièces ? Le moins équipé (pièces PORTÉES) d'abord, nom ASC
+ * en départage, présence fraîche, pas déjà servi (`skip`). Plan STRICT plastron d'abord (_mapperPlanFor).
+ * Une pièce dont un exemplaire USÉ traîne en poche (`brokenPocket`) n'est pas planifiée : le don jette
+ * tout ce qui porte ce nom.
  * @returns {{to, armor, pieces: string[], ingots: number}|null}
  */
 function pickMapperForLumberjack({ mates, selfName, now, ingots, pocket, brokenPocket, skip,
@@ -358,22 +416,11 @@ function pickMapperForLumberjack({ mates, selfName, now, ingots, pocket, brokenP
   const inPocket = new Set(pocket || []);
   const broken = new Set(brokenPocket || []);
   const cands = (mates || []).filter((m) => m && m.name && m.name !== selfName && m.role === 'mapper'
-    && _fresh(m, t, freshMs) && (m.armor || 0) < 4 && !(skip && skip.has(m.name)))
-    .sort((a, b) => ((a.armor || 0) - (b.armor || 0)) || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+    && _fresh(m, t, freshMs) && _mapperUnserved(m) && !(skip && skip.has(m.name)))
+    .sort((a, b) => (_mWorn(a) - _mWorn(b)) || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
   for (const m of cands) {
-    let need;
-    if (Array.isArray(m.missing)) need = new Set(m.missing);
-    else if (!(m.armor > 0)) need = new Set(ARMOR_ORDER.map((p) => p.name));
-    else continue;                                   // statut d'avant le champ `missing` : on ne devine pas
-    let budget = Math.max(0, Number(ingots) || 0);
-    let spent = 0;
-    const pieces = [];
-    for (const p of ARMOR_ORDER) {
-      if (!need.has(p.name) || broken.has(p.name)) continue;
-      if (inPocket.has(p.name)) { pieces.push(p.name); continue; }
-      if (budget >= p.ingots) { pieces.push(p.name); budget -= p.ingots; spent += p.ingots; }
-    }
-    if (pieces.length) return { to: String(m.name), armor: m.armor || 0, pieces, ingots: spent };
+    const plan = _mapperPlanFor(m, { ingots, inPocket, broken });
+    if (plan) return { to: String(m.name), armor: m.armor || 0, pieces: plan.pieces, ingots: plan.ingots };
   }
   return null;
 }
@@ -736,6 +783,18 @@ function ljSwitchBlock({ active, migrating, switching, inProgress } = {}) {
   return 'order';
 }
 
+// ─── FIN DU RÔLE DE BÛCHERON : PHASE DIAMANT (Massii 24/10) ─────────────────────────────────────
+// « Après avoir tout donné, les bots s'entraînent à miner du diamant — y compris le bûcheron une fois son
+// rôle fini, s'il y a assez de bois en stock. » Phase d'équipe 'diamond' (mineurs ET cartographes 4/4
+// portés) + stock de bois plein → il rend le rôle et part au diamant ; tant que le stock n'est pas plein
+// il le termine (lj_stock) : c'est ce stock qui dépannera les coéquipiers (peerWoodSupplier, woodStock).
+// En phase diamant personne ne PREND le rôle (sinon l'élection le redonnerait aussitôt au mieux armé).
+/** PUR — {retire, block} : retire = le bûcheron rend le rôle ; block = personne ne doit le prendre. */
+function lumberjackRetireForDiamond({ phase, amLumberjack, logs, stock = LUMBERJACK_STOCK } = {}) {
+  if (phase !== 'diamond') return { retire: false, block: false };
+  return { retire: !!amLumberjack && (Number(logs) || 0) >= stock, block: true };
+}
+
 module.exports = {
   ljSwitchBlock, LJ_PREEMPTIBLE, LJ_SAFETY_TASKS,
   ljIronSlicePlan, ljSliceRetryMs, ljSliceFailsAfter, isWaterFailReason, ljMineDetour, LJ_SLICE_RETRY_MAX_MS, LJ_MINE_COBBLE, LJ_MINE_DEPTH, ljMineTargetY, LJ_IRON_TARGET, LJ_IRON_SLICE_MS, LJ_IRON_RETRY_MS, LJ_IRON_CHECK_MS,
@@ -747,6 +806,7 @@ module.exports = {
   PEER_DONOR_MIN, PEER_GIFT_LOGS, PEER_GIFT_PLANKS, woodEquiv, peerWoodSupplier, peerDonorSafe, pickPeerWoodGift,
   woodGiftTossPlan, pickWoodedMate, ljWoodMigrationDue, LJ_NOTFOUND_FOR_MIGRATION, LJ_WOOD_MIGRATION_COOLDOWN_MS,
   ARMOR_ORDER, MIN_PIECE_INGOTS, missingIronPieces, ownArmorAction, pickMapperForLumberjack, ljGiftReady,
+  MAPPER_GIFT_ORDER, mapperGiftNeed, lumberjackRetireForDiamond,
   LJ_STOCK_FAIL_WINDOW_MS, LJ_STOCK_FAILS_FOR_TRIP, LJ_FOREST_TRIP_MS, LJ_FOREST_MIN_DIST, LJ_FOREST_MAX_DIST,
   LJ_FOREST_ANCHOR_MAX, LJ_FOREST_AVOID_MS,
   craftWoodShortage, woodShortForFailure, woodGoalShortage, giftBatchFor, pickArmorTargetForLumberjack,

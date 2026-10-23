@@ -65,7 +65,7 @@ const { equipItem, eat } = require('./skills/equip');
 const { loiter } = require('./skills/loiter');
 const fs = require('fs');
 const { runPlanner } = require('./planner');
-const { chainFor, buildCtxInv, firstUnmet, armorNeed, chainAfterDone, wantsOpportunisticArmor, GIFT_SET_INGOTS, objectiveForStart } = require('./goals');
+const { chainFor, buildCtxInv, firstUnmet, armorNeed, chainAfterDone, wantsOpportunisticArmor, GIFT_SET_INGOTS, objectiveForStart, diamondTargetOf } = require('./goals');
 const { isForbiddenCheat } = require('./nogive');
 const homewarp = require('./homewarp');
 const voidGuard = require('./voidGuard'); // anti-vide : sol sous les homes/spawnpoint, descente loin de la base, rattrapage post-TP // couche warp LÉGITIME sans-give (/sethome+/home ; goSpawn=/home safe)
@@ -176,13 +176,13 @@ const { pickRegroupTarget, squadTarget, isMiningGoal, mateNearby } = require('./
 const lawnMine = require('./lawnMine');
 // ENTRAIDE D'ÉQUIPE (Massii 25/07 : « qu'ils s'aident entre eux, et quand ils ont l'armure
 // fer ils se séparent »). Décisions PURES ; l'exécution (marche + toss) est ci-dessous.
-const { teamStatus, pickDonation, allArmored, pickMobAssist, pickMapperToEquip, giftSetPlan } = require('./teamwork');
+const { teamStatus, pickDonation, allArmored, pickMobAssist, pickMapperToEquip, giftSetPlan, teamPhase } = require('./teamwork');
 const {
   isWoodGoal, woodWantFor, logCount, activeLumberjack, woodWaitDecision, WOOD_UNDERGROUND_Y, preferredLumberjack,
   lumberjackVerdict, pickWoodRequest, tossPlan, WOOD_REQUEST_TTL_MS, WOOD_MIN_GIFT, LUMBERJACK_STOCK,
   wornIronCount, LUMBERJACK_MIN_WORN, ljSwitchBlock,
   missingIronPieces, ownArmorAction, pickMapperForLumberjack, ljGiftReady,
-  woodShortForFailure, woodGoalShortage, giftBatchFor, pickArmorTargetForLumberjack,
+  woodShortForFailure, woodGoalShortage, giftBatchFor, pickArmorTargetForLumberjack, mapperGiftNeed, lumberjackRetireForDiamond,
   stockFailsPrune, stockFailsAdd, needsForestTrip, forestTriedAdd, pickForestCell, LJ_FOREST_TRIP_MS,
   ljIronSlicePlan, LJ_IRON_SLICE_MS, LJ_IRON_CHECK_MS, LJ_MINE_COBBLE, ljMineTargetY,
   ljSliceRetryMs, ljSliceFailsAfter, isWaterFailReason, ljMineDetour,
@@ -1210,7 +1210,7 @@ function ctxExtra() {
   if (!onGiftChain && !ljGiftNow && _giftTarget) releaseGiftTarget(_giftTarget);
   const gift = onGiftChain ? _giftContext()
     : (ljGiftNow ? { target: ljGiftNow.to, ready: ljGiftNow.ready } : { target: null, ready: false });
-  if (!onGiftChain) _giftBatch = null;   // un lot n'a de sens que dans la chaîne mapper_armor
+  if (!onGiftChain) { _giftBatch = null; _giftNeed = null; }   // un lot n'a de sens que dans la chaîne mapper_armor
   // noWood : le bois est PROUVÉ rare dans cette zone (même seuil que le verdict « zone rasée »).
   // Rend `plank_buffer` non bloquant → un ouvrier remonté en surface d'un wood-desert peut enfin
   // redescendre miner son fer au lieu de boucler gatherLog→not_found (deadlock world_mn12, 28/07).
@@ -1235,6 +1235,7 @@ function ctxExtra() {
     ...bedCtx,
     hasTable: !!_nearestTable(bot), y: pos ? pos.y : undefined, worn: [..._wornArmor()], offhand,
     mapperTarget: gift.target, giftReady: gift.ready, giftBatch: !!gift.batch, noWood, passiveNear,
+    giftNeed: (gift.target && Number.isFinite(gift.need)) ? gift.need : undefined,
     // Fer en grotte : la grappe EXPOSÉE la plus rentable (null → but `iron_cave` sauté). Caché 30 s.
     // …et seulement à ≥ 12 PV (caveIron.caveHpOk, chrono 22/10) : blessé, on mine en galerie.
     ironCave: ironCaveForPlanner(),
@@ -1271,6 +1272,9 @@ const _giftDone = new Map();     // nom -> instant de livraison (anti double-ser
 // tout de suite au lieu de redescendre miner 24 lingots). { to, pieces, ingots } ou null. Niveau module :
 // lu par craftGiftSet / deliverMapperArmor (skills) et recalculé par _giftContext.
 let _giftBatch = null;
+// Lingots encore à réunir pour le cartographe réservé (24/10, lumberjack.mapperGiftNeed) — null = inconnu
+// (set complet). Niveau module : lu par ctxExtra (but GN) et par le branch-mine (stopOre en mapper_armor).
+let _giftNeed = null;
 const GIFT_BATCH_REDO_MS = 90000;   // après un lot livré : le cartographe redevient servable dès que son
                                     // heartbeat (60 s) a publié ses nouvelles pièces manquantes
 
@@ -1314,7 +1318,8 @@ function _giftContext() {
     if (!isAllowed('/tpa x', whitelist)) { _giftTarget = null; _giftBatch = null; return { target: null, ready }; }
     const now = Date.now();
     if (now - _giftAt < GIFT_CACHE_MS) {
-      return { target: _giftTarget, ready: readyNow(), batch: !!(_giftBatch && _giftBatch.to === _giftTarget && _giftTarget) };
+      return { target: _giftTarget, ready: readyNow(), batch: !!(_giftBatch && _giftBatch.to === _giftTarget && _giftTarget),
+        need: _giftTarget ? _giftNeed : null };
     }
     _giftAt = now;
     for (const [name, at] of _giftDone) { if (now - at > GIFT_DONE_TTL_MS) _giftDone.delete(name); }
@@ -1340,8 +1345,9 @@ function _giftContext() {
         _giftTarget = pick.to;
         const mate = (mates || []).find((m) => m && m.name === pick.to) || null;
         const batch = _refreshGiftBatch(mate, now);
+        try { _giftNeed = mate ? mapperGiftNeed(mate, _giftPocket().good) : null; } catch (e) { _giftNeed = null; }
         ready = readyNow();
-        return { target: pick.to, ready, batch: !!batch };
+        return { target: pick.to, ready, batch: !!batch, need: _giftNeed };
       }
       skip.add(pick.to);
     }
@@ -1978,7 +1984,8 @@ async function switchLumberjack(toLumberjack, why) {
     } else {
       // Rôle rendu pour cause d'armure incomplète (usure/perte) : on REFORGE d'abord — la chaîne
       // iron_armor rend la main à la suite (iron_help → mapper_armor → diamant) une fois 4/4.
-      to = why === 'unarmored' ? 'iron_armor' : (st.lumberjackPrev || 'iron_armor');
+      // Phase diamant (24/10) : le rôle est FINI, on part miner les 3 piles (pas l'objectif d'avant).
+      to = why === 'unarmored' ? 'iron_armor' : (why === 'team_diamond' ? 'diamond' : (st.lumberjackPrev || 'iron_armor'));
       _ljResignCleanup();
     }
     setObjective(world, { type: to, status: 'in_progress' });
@@ -2008,6 +2015,74 @@ function _ljResignCleanup() {
   _ljReleaseGift();                                          // le cartographe réservé redevient libre pour les ouvriers
 }
 
+// ── PHASE D'ÉQUIPE (Massii 24/10) ────────────────────────────────────────────────────────────────
+// miners_armor → mappers_armor → diamond (teamwork.teamPhase, pur). Tick 60 s : `team_phase` émis au
+// changement, `diamond_progress {have, target}` toutes les 2 min sur l'objectif diamant, et le RETOUR
+// diamant → mapper_armor : la chaîne diamant ne « finit » jamais (192), donc sans ce tick un mineur parti
+// au diamant pendant qu'un coéquipier tenait la réservation du cartographe ne revenait jamais l'armer
+// (vécu 23-24/10 : bûcheron seul à livrer, bottes + casque, mineurs au diamant).
+// ⚠️ NIVEAU MODULE (piège #56) : variables lues par le timer.
+const TEAM_PHASE_TICK_MS = 60000;
+const DIAMOND_PROGRESS_EVERY_MS = 120000;
+const TEAM_SWITCH_COOLDOWN_MS = 180000;   // anti va-et-vient diamant ↔ mapper_armor
+let _teamPhaseLast = null;
+let _diamondProgressAt = 0;
+let _teamSwitchAt = 0;
+let _objSwitching = false;
+
+/** Bascule d'objectif PRÉEMPTANTE (même mécanique que switchLumberjack). true si faite. */
+async function switchObjective(to, why) {
+  const active = taskCtl.active;
+  const block = ljSwitchBlock({ active, migrating: _migrating, switching: _ljSwitching || _objSwitching,
+    inProgress: !!(world.objective && world.objective.status === 'in_progress') });
+  if (block) { emit({ type: 'objective_switch_refused', to, why, block, active: active || null }); return false; }
+  _objSwitching = true;
+  try {
+    const from = world.objective.type;
+    const tok = taskCtl.begin('objective_switch', stopMotion);
+    const w0 = Date.now();
+    while ((_skillInFlight > 0 || _autoRunners > 0) && !tok.cancelled && Date.now() - w0 < MIGRATION_PREEMPT_WAIT_MS) {
+      await sleep(250);
+    }
+    if (tok.cancelled) { emit({ type: 'objective_switch_refused', to, why, block: 'preempted' }); return false; }
+    taskToken = tok;
+    setObjective(world, { type: to, status: 'in_progress' });
+    saveWorld(worldFile, world);
+    emit({ type: 'objective_switch', from, to, why });
+    startAutonomous(null).catch((e) => emit({ type: 'error', message: String((e && e.message) || e) }));
+    return true;
+  } finally { _objSwitching = false; }
+}
+
+async function teamPhaseTick() {
+  if (!presence || !bot || !bot.entity) return null;
+  const now = Date.now();
+  let mates = [];
+  try { mates = presence.list(); } catch (e) { mates = []; }
+  const selfWorn = wornIronCount([..._wornArmor()]);
+  const ph = teamPhase({ selfName: bot.username, selfRole: IS_MAPPER ? 'mapper' : 'worker', selfWorn, mates, now });
+  if (ph.phase !== _teamPhaseLast) {
+    emit({ type: 'team_phase', phase: ph.phase, from: _teamPhaseLast,
+      miners: ph.minersArmored + '/' + ph.miners, mappers: ph.mappersServed + '/' + ph.mappers });
+    _teamPhaseLast = ph.phase;
+  }
+  const objT = world.objective && world.objective.type;
+  if (objT === 'diamond' && now - _diamondProgressAt >= DIAMOND_PROGRESS_EVERY_MS) {
+    _diamondProgressAt = now;
+    emit({ type: 'diamond_progress', have: buildCtxInv(bot).diamond || 0, target: diamondTargetOf(world.objective) });
+  }
+  if (IS_MAPPER || objT !== 'diamond' || ph.phase !== 'mappers_armor') return ph.phase;
+  if (now - _teamSwitchAt < TEAM_SWITCH_COOLDOWN_MS) return ph.phase;
+  if (!isAllowed('/tpa x', whitelist)) return ph.phase;        // personne ne peut être servi
+  const target = freshGiftTarget();                             // 4/4 soi-même + réservation `marmor:`
+  if (!target) return ph.phase;
+  _teamSwitchAt = now;
+  const ok = await switchObjective('mapper_armor', 'team_mappers_armor');
+  if (!ok) releaseGiftTarget(target);
+  else emit({ type: 'team_mapper_armor_return', to: target });
+  return ph.phase;
+}
+
 /** Tick d'élection (30 s). Rend le verdict (pour les tests / l'observation). */
 async function lumberjackTick() {
   if (IS_MAPPER || !presence || !_teamClaims || _ljSwitching) return null;
@@ -2028,6 +2103,18 @@ async function lumberjackTick() {
   const selfEligible = selfWorn >= LUMBERJACK_MIN_WORN;
   let mates = [];
   try { mates = presence.list(); } catch (e) { mates = []; }
+  // PHASE DIAMANT (Massii 24/10) : mineurs + cartographes 4/4 portés → le bûcheron finit son stock puis
+  // rend le rôle et part au diamant ; personne ne le reprend tant que la phase dure (lumberjack.js).
+  try {
+    const ph = teamPhase({ selfName: bot.username, selfRole: 'worker', selfWorn, mates, now }).phase;
+    const ret = lumberjackRetireForDiamond({ phase: ph, amLumberjack: amLj, logs: logCount(buildCtxInv(bot)) });
+    if (ret.retire) {
+      try { _teamClaims.release(LJ_CLAIM); } catch (e) {}
+      await switchLumberjack(false, 'team_diamond');
+      return 'release';
+    }
+    if (ret.block && !amLj) return 'follower';
+  } catch (e) { /* best-effort : élection historique */ }
   const preferred = preferredLumberjack({ selfName: bot.username, selfArmor, selfWorn, mates, now });
   const holder = _teamClaims.peek(LJ_CLAIM);
   const v = lumberjackVerdict({ selfName: bot.username, holder, preferred, amLumberjack: amLj, selfEligible });
@@ -3833,6 +3920,14 @@ async function runGoalSkill(goal, gen) {
     // pour que le bot remonte fondre/forger par paliers au lieu de tout jouer sur une descente.
     let stopOre = goal.args && goal.args.stopOre;
     const _obj = (world.objective && world.objective.type) || '';
+    // mapper_armor (24/10) : on remonte dès que le fer des pièces MANQUANTES du cartographe est réuni.
+    if (!stopOre && _obj === 'mapper_armor' && Number.isFinite(_giftNeed) && _giftNeed > 0) {
+      try {
+        const inv0 = buildCtxInv(bot);
+        const left = _giftNeed - (inv0.raw_iron || 0) - (inv0.iron_ingot || 0);
+        if (left > 0) stopOre = { items: ['raw_iron', 'iron_ingot'], count: Math.min(left, 16) };
+      } catch (e) { /* best-effort */ }
+    }
     if (!stopOre && (_obj === 'iron_armor' || _obj === 'diamond_armor')) {
       try {
         const besoin = armorNeed({ inv: buildCtxInv(bot), worn: [..._wornArmor()] }, 3);
@@ -5426,6 +5521,25 @@ function nightUndergroundNow() {
 }
 
 /** Planner (opts.skip) : but de surface différé à l'aube quand le bot travaille sous terre de nuit. */
+// ── BUTS OPTIONNELS (24/10, pioche de rechange de la chaîne diamant) ─────────────────────────────
+// Un but `optional:true` qui échoue est mis de côté OPTIONAL_GOAL_HOLD_MS : firstUnmet passe au suivant
+// (diamond_caves) au lieu de laisser le planner caler dessus (stall → retry 90 s → même échec, à vie).
+// ⚠️ NIVEAU MODULE (piège #56) : lu par le skip du planner.
+const OPTIONAL_GOAL_HOLD_MS = 10 * 60 * 1000;
+const _optionalFailAt = new Map();
+function optionalGoalHeld(g) {
+  if (!g || !g.optional) return false;
+  const at = _optionalFailAt.get(g.name);
+  return !!at && Date.now() - at < OPTIONAL_GOAL_HOLD_MS;
+}
+function noteOptionalGoalResult(g, r) {
+  if (!g || !g.optional) return;
+  if (r && r.ok === false) {
+    _optionalFailAt.set(g.name, Date.now());
+    emit({ type: 'optional_goal_held', goal: g.name, reason: (r && r.reason) || null, for_s: OPTIONAL_GOAL_HOLD_MS / 1000 });
+  } else if (r && r.ok) _optionalFailAt.delete(g.name);
+}
+
 function nightSkipGoal(g) {
   let lockdown = false;
   try { lockdown = nightLockdownNow(); } catch (e) { lockdown = false; }
@@ -10711,12 +10825,20 @@ async function runAutonomousBody(sender, objType, myTok) {
   if (myTok.cancelled) return;
   if (objType === 'mapper') return startMapper(); // rôle continu : jamais « done »
   if (objType === 'resource') return startResource(); // mine les ores EXPOSÉS de la carte du groupe
-  const chain = chainFor(objType);               // pioche pierre (MVP) ou pioche fer (IRON_CHAIN)
+  // Cible diamant (24/10) : 192 par défaut, surchargée par l'objectif persisté (`target`).
+  const chain = chainFor(objType, { diamondTarget: diamondTargetOf(world.objective) });
   const runChain = () => runPlanner(bot, {
     chain,
-    skip: nightSkipGoal,   // NUIT AU TRAVAIL : les buts de surface attendent l'aube, la chaîne continue
+    // NUIT AU TRAVAIL : les buts de surface attendent l'aube, la chaîne continue.
+    // + buts `optional` (pioche de rechange du diamant) ratés < 10 min : sautés, jamais un stall.
+    skip: (g, ctx) => optionalGoalHeld(g) || nightSkipGoal(g, ctx),
     // Avant chaque but : déposer le kit de secours si c'est le moment (1 relevé/min, jamais de throw).
-    runSkill: async (g) => { try { await stashKitIfReady(); } catch (e) { /* best-effort */ } return runSkillWithTelemetry(g); },
+    runSkill: async (g) => {
+      try { await stashKitIfReady(); } catch (e) { /* best-effort */ }
+      const r = await runSkillWithTelemetry(g);
+      noteOptionalGoalResult(g, r);
+      return r;
+    },
     ctxExtra,
     onStep: (g) => { _lastGoalAt = Date.now(); emit({ type: 'goal', name: g.name }); },
   }, myTok);
@@ -10889,8 +11011,10 @@ async function onSpawn() {
         // le premier dans l'alphabet flânait, toute la squad remontait le rejoindre au lieu de
         // descendre miner (Massii, 27/07 : « ils se tp aux bots en surface donc ils ne descendent
         // jamais »). Ajoutés APRÈS le spread de `st` pour qu'ils ne puissent pas être écrasés.
+        let _dia = 0;
+        try { _dia = buildCtxInv(bot).diamond || 0; } catch (e) { _dia = 0; }
         presence.beat(Math.round(pB.x), Math.round(pB.z), role,
-          Object.assign({}, st || {}, { y: Math.round(pB.y), ironZone: _zoneIronMined }));
+          Object.assign({}, st || {}, { y: Math.round(pB.y), ironZone: _zoneIronMined, diamonds: _dia }));
       } catch (e) { /* best-effort */ }
     };
     _beatNow = _beat;
@@ -10898,6 +11022,8 @@ async function onSpawn() {
     setInterval(_beat, 60000);
     // BÛCHERON D'ÉQUIPE : élection / maintien de la claim `lumberjack` (cf. lumberjackTick).
     if (!IS_MAPPER && _teamClaims) setInterval(() => { lumberjackTick().catch(() => {}); }, LJ_TICK_MS);
+    // PHASE D'ÉQUIPE (24/10) : team_phase / diamond_progress / retour diamant → mapper_armor.
+    setInterval(() => { teamPhaseTick().catch(() => {}); }, TEAM_PHASE_TICK_MS);
 
     // ── ÉCLAIRAGE (capture réelle 26/07) : les humains posent 3-5 torches/min sous terre, le bot
     // n'éclairait que son tunnel de branch-mine. Or block-light 0 est la condition EXACTE

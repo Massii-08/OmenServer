@@ -282,7 +282,7 @@ function giftSb(o = {}) {
     _wornArmor: () => new Set(['iron_helmet', 'iron_chestplate', 'iron_leggings', 'iron_boots']),
     presence: { list: () => o.mates || [] },
     _teamClaims: { tryClaim: (k) => { if (claims[k]) return false; claims[k] = 1; return true; }, release: (k) => { delete claims[k]; } },
-    _giftTarget: null, _giftAt: 0, _giftDone: new Map(), _giftBatch: null,
+    _giftTarget: null, _giftAt: 0, _giftDone: new Map(), _giftBatch: null, _giftNeed: null, mapperGiftNeed: L.mapperGiftNeed,
     GIFT_CACHE_MS: 15000, GIFT_DONE_TTL_MS: 300000,
     GIFT_PIECES: ['iron_helmet', 'iron_chestplate', 'iron_leggings', 'iron_boots'],
     craftSmart: async ({ name }) => { sb.items.push({ name, count: 1 }); sb.crafted.push(name); return { ok: true }; },
@@ -298,18 +298,19 @@ const MATES = [
   { name: 'MapBot1', role: 'mapper', at: T0 - 1000, armor: 1, missing: ['iron_helmet', 'iron_leggings', 'iron_chestplate'] },
 ];
 
-test('_giftContext : 11 lingots (positions-943e2c réel) → lot bottes + casque pour MapBot2, pas de mine', async () => {
+test('_giftContext : 11 lingots (positions-943e2c réel) → lot PLASTRON pour MapBot2 (24/10), pas de mine', async () => {
   const sb = giftSb({ items: [{ name: 'iron_ingot', count: 11 }], mates: MATES });
   const c = run(sb, '_giftContext()');
   assert.strictEqual(c.target, 'MapBot2');
   assert.strictEqual(c.batch, true);
   assert.strictEqual(c.ready, false);
-  assert.deepStrictEqual(run(sb, '_giftBatch').pieces, ['iron_boots', 'iron_helmet']);
+  assert.strictEqual(c.need, 24);                         // lingots du set restant (rien en poche)
+  assert.deepStrictEqual(run(sb, '_giftBatch').pieces, ['iron_chestplate']);
   const ev = sb.events.find((e) => e.type === 'gift_batch');
-  assert.deepStrictEqual([ev.to, ev.ingots], ['MapBot2', 9]);
+  assert.deepStrictEqual([ev.to, ev.ingots], ['MapBot2', 8]);
   const r = await run(sb, 'giftBatchCraftSkill()');
   assert.strictEqual(r.ok, true);
-  assert.deepStrictEqual(sb.crafted, ['iron_boots', 'iron_helmet']);
+  assert.deepStrictEqual(sb.crafted, ['iron_chestplate']);
   sb.clock.t += 1000;                                     // dans la fenêtre de cache : `ready` est relu
   const c2 = run(sb, '_giftContext()');
   assert.strictEqual(c2.ready, true);

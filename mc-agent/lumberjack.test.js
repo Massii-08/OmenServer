@@ -188,12 +188,14 @@ test('pickMapperForLumberjack : le cartographe le plus nu, les pièces qu\'il n\
     mate('MapBot1', { role: 'mapper', armor: 1, missing: ['iron_boots', 'iron_leggings', 'iron_chestplate'] }),
     mate('NethBot1', { armor: 2 }),
   ];
-  // 10 lingots → bottes (4) + casque (5) pour MapBot2 (le plus nu)
+  // 10 lingots → le PLASTRON (8) pour MapBot2 (le plus nu) — plastron d'abord (Massii 24/10), strict
   assert.deepStrictEqual(L.pickMapperForLumberjack({ mates, selfName: 'NethBot3', now: NOW, ingots: 10 }),
-    { to: 'MapBot2', armor: 0, pieces: ['iron_boots', 'iron_helmet'], ingots: 9 });
-  // MapBot2 déjà servi → MapBot1 : il a le casque, on ne lui en forge pas un deuxième
-  assert.deepStrictEqual(L.pickMapperForLumberjack({ mates, selfName: 'NethBot3', now: NOW, ingots: 12, skip: new Set(['MapBot2']) }),
-    { to: 'MapBot1', armor: 1, pieces: ['iron_boots', 'iron_leggings'], ingots: 11 });
+    { to: 'MapBot2', armor: 0, pieces: ['iron_chestplate'], ingots: 8 });
+  // MapBot2 déjà servi → MapBot1 : il a le casque, on ne lui en forge pas un deuxième ; 15 = plastron + jambières
+  assert.deepStrictEqual(L.pickMapperForLumberjack({ mates, selfName: 'NethBot3', now: NOW, ingots: 15, skip: new Set(['MapBot2']) }),
+    { to: 'MapBot1', armor: 1, pieces: ['iron_chestplate', 'iron_leggings'], ingots: 15 });
+  // 7 lingots, plastron manquant : on ne forge PAS les petites pièces devant lui
+  assert.strictEqual(L.pickMapperForLumberjack({ mates, selfName: 'NethBot3', now: NOW, ingots: 7 }), null);
   // une pièce DÉJÀ en poche ne coûte rien
   assert.deepStrictEqual(L.pickMapperForLumberjack({ mates, selfName: 'NethBot3', now: NOW, ingots: 0, pocket: ['iron_chestplate'] }),
     { to: 'MapBot2', armor: 0, pieces: ['iron_chestplate'], ingots: 0 });
@@ -204,14 +206,14 @@ test('pickMapperForLumberjack : le cartographe le plus nu, les pièces qu\'il n\
 test('pickMapperForLumberjack : statut inconnu, présence périmée, pièce usée en poche', () => {
   // armure > 0 sans `missing` publié (process d'avant) : on ne sait pas QUOI forger → on passe
   assert.strictEqual(L.pickMapperForLumberjack({ mates: [mate('M', { role: 'mapper', armor: 2 })], selfName: 'A', now: NOW, ingots: 24 }), null);
-  // armure 0 sans `missing` : tout manque, c'est certain
-  assert.deepStrictEqual(L.pickMapperForLumberjack({ mates: [mate('M', { role: 'mapper', armor: 0 })], selfName: 'A', now: NOW, ingots: 4 }).pieces, ['iron_boots']);
+  // armure 0 sans `missing` : tout manque, c'est certain (plastron d'abord)
+  assert.deepStrictEqual(L.pickMapperForLumberjack({ mates: [mate('M', { role: 'mapper', armor: 0 })], selfName: 'A', now: NOW, ingots: 8 }).pieces, ['iron_chestplate']);
   // présence périmée
   assert.strictEqual(L.pickMapperForLumberjack({ mates: [mate('M', { role: 'mapper', armor: 0, at: NOW - L.LUMBERJACK_FRESH_MS - 1 })], selfName: 'A', now: NOW, ingots: 24 }), null);
   // cartographe complet
   assert.strictEqual(L.pickMapperForLumberjack({ mates: [mate('M', { role: 'mapper', armor: 4, missing: [] })], selfName: 'A', now: NOW, ingots: 24 }), null);
   // une pièce USÉE du même nom traîne en poche : giveItem lancerait aussi celle-là → on ne la planifie pas
-  assert.deepStrictEqual(L.pickMapperForLumberjack({ mates: [mate('M', { role: 'mapper', armor: 0 })], selfName: 'A', now: NOW, ingots: 9, brokenPocket: ['iron_boots'] }).pieces, ['iron_helmet']);
+  assert.deepStrictEqual(L.pickMapperForLumberjack({ mates: [mate('M', { role: 'mapper', armor: 0, missing: ['iron_boots', 'iron_helmet'] })], selfName: 'A', now: NOW, ingots: 9, brokenPocket: ['iron_boots'] }).pieces, ['iron_helmet']);
 });
 
 test('ljGiftReady : prêt quand toutes les pièces prévues sont en poche', () => {
@@ -298,13 +300,13 @@ test('woodShortForFailure : cas réel NethBot2 session 312 (1 acacia_planks, 0 b
   assert.strictEqual(woodShortForFailure({ reason: 'pick_recovery:no_sticks', goalName: 'gift_pick', inv: { oak_log: 3 } }), false);
 });
 
-test('giftBatchFor : 11 lingots, MapBot2 nu → bottes + casque (9), plus cher reporté', () => {
+test('giftBatchFor : 11 lingots, MapBot2 nu → le plastron (8) d\'abord, pas bottes + casque', () => {
   const now = 1_800_000_000_000;
   const target = { name: 'MapBot2', role: 'mapper', at: now, armor: 0,
     missing: ['iron_boots', 'iron_helmet', 'iron_leggings', 'iron_chestplate'] };
   const b = giftBatchFor({ target, ingots: 11, pocket: [], now });
-  assert.deepStrictEqual(b.pieces, ['iron_boots', 'iron_helmet']);
-  assert.strictEqual(b.ingots, 9);
+  assert.deepStrictEqual(b.pieces, ['iron_chestplate']);
+  assert.strictEqual(b.ingots, 8);
   assert.strictEqual(b.to, 'MapBot2');
 });
 
@@ -425,7 +427,7 @@ test('pickArmorTargetForLumberjack : tous les mineurs 4/4 portés → le cartogr
     mapperM('MapBot2', { armor: 0, worn: 0, missing: ['iron_boots', 'iron_helmet', 'iron_leggings', 'iron_chestplate'] }),
   ];
   assert.deepStrictEqual(L.pickArmorTargetForLumberjack({ mates, selfName: 'NethBot1', now: NOW, ingots: 9 }),
-    { to: 'MapBot2', armor: 0, pieces: ['iron_boots', 'iron_helmet'], ingots: 9, role: 'mapper' });
+    { to: 'MapBot2', armor: 0, pieces: ['iron_chestplate'], ingots: 8, role: 'mapper' });
 });
 
 test('pickArmorTargetForLumberjack : 4 pièces ACQUISES mais pas portées (worn 3) = toujours un mineur à servir → cartographe bloqué', () => {

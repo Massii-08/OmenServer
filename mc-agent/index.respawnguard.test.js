@@ -558,7 +558,7 @@ test('index.js : onSpawn reprend le kit APRÈS guardSpawn ; le planner passe par
   const r = body.indexOf('await restoreStashIfUseful()');
   assert.ok(g > 0 && r > g, 'retrait du kit après la décision de spawn');
   assert.ok(body.indexOf('loadDeathDebt()') > r && body.indexOf('startAutonomous(null)') > r);
-  assert.match(SRC, /runSkill: async \(g\) => \{ try \{ await stashKitIfReady\(\); \} catch \(e\) \{ \/\* best-effort \*\/ \} return runSkillWithTelemetry\(g\); \},/);
+  assert.match(SRC, /runSkill: async \(g\) => \{\n\s+try \{ await stashKitIfReady\(\); \} catch \(e\) \{ \/\* best-effort \*\/ \}\n\s+const r = await runSkillWithTelemetry\(g\);/);
   assert.match(SRC, /^let _lastRespawnPos = null;/m);
 });
 

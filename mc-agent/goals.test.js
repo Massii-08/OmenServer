@@ -116,6 +116,7 @@ test('DIAMOND_CHAIN contient les 12 buts IRON + 3 buts diamant en queue', () => 
     ['logs', 'planks', 'crafting_table', 'sticks', 'wooden_pickaxe',
      'cobble_pick', 'stone_pickaxe', 'cobble_furnace', 'furnace',
      'iron_ore', 'iron_ingot', 'iron_pickaxe',
+     'dia_spare_sticks', 'dia_spare_smelt', 'dia_spare_pick',
      'cobble_buffer', 'descend_y54', 'diamond_caves'],
   );
 });
@@ -153,7 +154,8 @@ test('DIAMOND monotonie : diamond:1 satisfait tout l AMONT (outils/bois consomme
   // doit se rouvrir. Seuls les 3 buts de queue (cobble/descente/chasse) restent ouverts, car la
   // cible est desormais CONTINUE — c'est precisement ce qui empeche le bot de s'arreter au 1er.
   // Les buts d'OUTIL sont exclus eux aussi : une pioche casse, un diamant ne la remplace pas.
-  const ctx = { inv: { diamond: 1 }, y: -54 };
+  // 24/10 : le raccourci amont exige AUSSI une pioche fer+ en poche (sinon pioche cassée → stall à vie).
+  const ctx = { inv: { diamond: 1, iron_pickaxe: 1 }, y: -54 };
   const queue = ['cobble_buffer', 'descend_y54', 'diamond_caves',
                  'wooden_pickaxe', 'stone_pickaxe', 'iron_pickaxe'];
   for (const goal of DIAMOND_CHAIN) {

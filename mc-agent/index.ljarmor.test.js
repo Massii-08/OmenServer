@@ -121,16 +121,16 @@ test('forge ratée → 10 min sans réessayer (le but est sauté, pas de boucle)
 });
 
 // ─── Puis un cartographe ──────────────────────────────────────────────────────────────────────────
-test('bûcheron complet + 10 lingots → réserve le cartographe le plus nu et prévoit bottes + casque', () => {
+test('bûcheron complet + 10 lingots → réserve le cartographe le plus nu et prévoit le PLASTRON (24/10)', () => {
   const sb = sandbox({ worn: ['iron_helmet', 'iron_boots', 'iron_leggings', 'iron_chestplate'],
     items: [{ name: 'iron_ingot', count: 10 }],
     mates: [mapper('MapBot1', { armor: 1, missing: ['iron_boots', 'iron_leggings', 'iron_chestplate'] }),
       mapper('MapBot2', { missing: ['iron_boots', 'iron_helmet', 'iron_leggings', 'iron_chestplate'] })] });
   const c = run(sb, '_ljArmorContext()');
-  assert.deepStrictEqual(plain(c), { own: null, gift: { to: 'MapBot2', pieces: ['iron_boots', 'iron_helmet'], ready: false } });
+  assert.deepStrictEqual(plain(c), { own: null, gift: { to: 'MapBot2', pieces: ['iron_chestplate'], ready: false } });
   assert.ok(sb._teamClaims.map['marmor:MapBot2'], 'même réservation que les ouvriers en mapper_armor');
   assert.strictEqual(sb.__get('_giftTarget'), 'MapBot2', 'deliverMapperArmor (réutilisé) lit _giftTarget');
-  assert.deepStrictEqual(plain(run(sb, 'ljGiftPiecesFor("MapBot2")')), ['iron_boots', 'iron_helmet']);
+  assert.deepStrictEqual(plain(run(sb, 'ljGiftPiecesFor("MapBot2")')), ['iron_chestplate']);
 });
 
 test('cartographe déjà réservé par un ouvrier → le suivant', () => {
@@ -147,7 +147,7 @@ test('ljCraftGiftSkill forge les pièces prévues manquantes, puis le but est pr
   run(sb, '_ljArmorContext()');
   const r = await run(sb, 'ljCraftGiftSkill()');
   assert.deepStrictEqual(plain(r), { ok: true });
-  assert.deepStrictEqual(sb.calls, ['craft:iron_boots', 'craft:iron_helmet']);
+  assert.deepStrictEqual(sb.calls, ['craft:iron_chestplate']);
   assert.strictEqual(run(sb, '_ljArmorContext()').gift.ready, true);
   run(sb, 'ljAfterGift("MapBot2", 2)');
   assert.strictEqual(sb.__get('_ljGift'), null);

@@ -206,7 +206,7 @@ test('câblage : holdForNight tente la nuit au travail et lit nightUndergroundNo
   const h = fnSrc('holdForNight');
   assert.match(h, /await tryNightWork\(\)/);
   assert.match(h, /underground: nightUndergroundNow\(\)/);
-  assert.match(SRC, /skip: nightSkipGoal/);
+  assert.match(SRC, /skip: \(g, ctx\) => optionalGoalHeld\(g\) \|\| nightSkipGoal\(g, ctx\)/);
   assert.match(fnSrc('maybeNightShelter'), /underground: nightUndergroundNow\(\)/);
   assert.match(fnSrc('branchSurvivalTick'), /furnaceJobTick\(\)/);
   assert.match(fnSrc('smeltWithFurnace'), /if \(_furnaceJob && furnaceJobNear\(\)\) return \{ ok: false, reason: 'furnace_job_running' \}/);

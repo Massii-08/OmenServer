@@ -144,36 +144,78 @@ const IRON_CHAIN = [
 // CIBLE CONTINUE (Massii, live 26/07 : « il ne doivent pas s'arreter a seulement quelque diamant,
 // ils doivent continuer a en prendre en continu »). Le predicat final valait `diamond >= 1` : le
 // bot s'arretait au PREMIER diamant, objectif accompli.
-const DIAMOND_TARGET = 64;                                  // une pile : « en continu » en pratique
+// 3 PILES (Massii 24/10 : « après avoir tout donné, je veux que les bots s'entraînent à miner du
+// diamant, beaucoup, comme si on leur donnait l'ordre d'en miner 3 stacks »). Défaut 192, surchargeable
+// par l'objectif persisté (`world.objective.target`, cf. chainFor/diamondTargetOf).
+const DIAMOND_TARGET = 192;
 const D = (c) => invCount(c.inv, 'diamond') >= 1;           // gating AMONT : un diamant prouve que
                                                             // bois/outils/four sont derriere nous
-const DT = (c) => invCount(c.inv, 'diamond') >= DIAMOND_TARGET;   // vraie fin de l'objectif
 function withFinal(goal, final) {
   return Object.assign({}, goal, { met: (c) => goal.met(c) || final(c) });
 }
+// Pioches capables de récolter le DIAMANT (fer ou mieux) en poche.
+const DIAMOND_PICKS = ['iron_pickaxe', 'diamond_pickaxe', 'netherite_pickaxe'];
+const diamondPickCount = (c) => DIAMOND_PICKS.reduce((s, n) => s + invCount(c.inv, n), 0);
 // ⚠️ `withFinal(g, D)` NE S'APPLIQUE PAS aux buts d'OUTIL. Un diamant en poche prouve qu'on a su
 // fabriquer une pioche — pas qu'on en a encore une : ça CASSE. Vécu live 26/07 (Massii : « 4 et 5
 // il creuse sans pioche ») : le bot croyait son outillage complet, descendait, ne pouvait plus
 // rien miner, et `caveHunt` sortait sur `no_pick` sans rien émettre — panne invisible.
+// ⚠️ BIS (24/10, cible 192 = des heures au fond) : le raccourci amont `D` rendait aussi « faits » le
+// minerai et les lingots de fer — une pioche fer cassée après le 1er diamant laissait `iron_pickaxe`
+// seul non satisfait, craft impossible (no_iron) → stall, retry 90 s, stall… à vie. Le raccourci amont
+// exige donc AUSSI une pioche fer+ en poche : sans elle la chaîne fer se rouvre (minerai → lingots →
+// pioche). Les buts `dia_spare_*` ci-dessous évitent d'en arriver là (pioche de rechange).
+const DI = (c) => D(c) && diamondPickCount(c) >= 1;
 const _TOOL_GOALS = new Set(['wooden_pickaxe', 'stone_pickaxe', 'iron_pickaxe']);
-const DIAMOND_CHAIN = [
-  ...IRON_CHAIN.map((g) => (_TOOL_GOALS.has(g.name) ? g : withFinal(g, D))),
-  // 16 cobble = ~stack/2 : assez pour murer 2-3 nappes de lave + bridging. Monotone via D.
-  { name: 'cobble_buffer', met: (c) => invCount(c.inv, 'cobblestone') >= 16 || DT(c),
-    skill: 'gather',       args: { name: 'stone', count: 16 } },
-  // Y cible -54 : juste au-dessus de la nappe de lave (Y=-55→-63, cf. spec). On accepte y<=-52
-  // (marge de tolérance — l'escalier descend par paliers, on s'arrête dès qu'on franchit le seuil).
-  { name: 'descend_y54',   met: (c) => (c.y !== undefined && c.y <= -52) || DT(c),
-    skill: 'descendDiagonal', args: { targetY: -54 } },
-  // CAVE-FIRST (Massii, live 26/07 : « les diamants il les allait chercher dans les cave = pas de
-  // tunnel où ils creusent en continu, l'unique moment où ils creusent c'est quand ils passent
-  // d'une cave a l'autre » + « cave first mais jamais celle inondée c'est important »).
-  // Remplace un branch-mine de 48 blocs × 16 galeries — un tunnel continu, la stratégie inverse.
-  // `caveHunt` ne cible que des minerais MAPPÉS, EXPOSÉS et SECS ; quand il n'en reste plus, le
-  // dispatch enchaîne un tunnel COURT (le trajet vers la grotte suivante), jamais un strip.
-  { name: 'diamond_caves', met: (c) => DT(c),
-    skill: 'caveHunt',     args: { material: 'diamond', count: 8, targetY: -54 } },
-];
+const _diamondChains = new Map();
+/** Chaîne diamant pour une cible donnée (mémoïsée : la chaîne est un tableau stable par cible). */
+function diamondChain(target) {
+  const T = (Number.isFinite(Number(target)) && Number(target) >= 1) ? Math.floor(Number(target)) : DIAMOND_TARGET;
+  if (_diamondChains.has(T)) return _diamondChains.get(T);
+  const DT = (c) => invCount(c.inv, 'diamond') >= T;       // vraie fin de l'objectif
+  const chain = [
+    ...IRON_CHAIN.map((g) => (_TOOL_GOALS.has(g.name) ? g : withFinal(g, DI))),
+    // PIOCHE DE RECHANGE (24/10) : des heures à -54, une pioche fer dure ~250 blocs. On n'y consacre que
+    // ce qui est DÉJÀ en poche (fer brut / lingots ramassés en route, bâtons, bois) : buts SAUTABLES
+    // (`optional` : un échec les met de côté 10 min, cf. index.js), jamais une remontée.
+    { name: 'dia_spare_sticks', optional: true,
+      met: (c) => DT(c) || diamondPickCount(c) >= 2 || invCount(c.inv, 'stick') >= 2
+        || (anyPlanks(c.inv) < 2 && anyLog(c.inv) < 1)
+        || (invCount(c.inv, 'iron_ingot') + invCount(c.inv, 'raw_iron')) < 3,
+      skill: 'craft', args: { name: 'stick', count: 1 } },
+    { name: 'dia_spare_smelt', optional: true,
+      met: (c) => DT(c) || diamondPickCount(c) >= 2 || invCount(c.inv, 'iron_ingot') >= 3
+        || invCount(c.inv, 'raw_iron') < 3 || !F(c) || fuelUnits(c) < 3,
+      skill: 'smeltIron', args: { count: 3 } },
+    { name: 'dia_spare_pick', optional: true,
+      met: (c) => DT(c) || diamondPickCount(c) >= 2 || invCount(c.inv, 'iron_ingot') < 3
+        || invCount(c.inv, 'stick') < 2
+        || (invCount(c.inv, 'crafting_table') < 1 && !c.hasTable && anyPlanks(c.inv) < 4 && anyLog(c.inv) < 1),
+      skill: 'craft', args: { name: 'iron_pickaxe', count: 1 } },
+    // 16 cobble = ~stack/2 : assez pour murer 2-3 nappes de lave + bridging. Monotone via DT.
+    { name: 'cobble_buffer', met: (c) => invCount(c.inv, 'cobblestone') >= 16 || DT(c),
+      skill: 'gather',       args: { name: 'stone', count: 16 } },
+    // Y cible -54 : juste au-dessus de la nappe de lave (Y=-55→-63, cf. spec). On accepte y<=-52
+    // (marge de tolérance — l'escalier descend par paliers, on s'arrête dès qu'on franchit le seuil).
+    { name: 'descend_y54',   met: (c) => (c.y !== undefined && c.y <= -52) || DT(c),
+      skill: 'descendDiagonal', args: { targetY: -54 } },
+    // CAVE-FIRST (Massii, live 26/07 : « les diamants il les allait chercher dans les cave = pas de
+    // tunnel où ils creusent en continu, l'unique moment où ils creusent c'est quand ils passent
+    // d'une cave a l'autre » + « cave first mais jamais celle inondée c'est important »).
+    // `caveHunt` ne cible que des minerais MAPPÉS, EXPOSÉS et SECS ; quand il n'en reste plus, le
+    // dispatch enchaîne un tunnel COURT (le trajet vers la grotte suivante), jamais un strip.
+    { name: 'diamond_caves', met: (c) => DT(c),
+      skill: 'caveHunt',     args: { material: 'diamond', count: 8, targetY: -54 } },
+  ];
+  _diamondChains.set(T, chain);
+  return chain;
+}
+const DIAMOND_CHAIN = diamondChain(DIAMOND_TARGET);
+/** PUR — cible diamant d'un objectif persisté ({type:'diamond', target?}) ; défaut DIAMOND_TARGET. */
+function diamondTargetOf(objective) {
+  const t = objective && Number(objective.target);
+  return (Number.isFinite(t) && t >= 1) ? Math.floor(t) : DIAMOND_TARGET;
+}
 
 // --- Chaînes ARMURE (run nether 2026-07-13) : T1 = armure FER complète auto-craftée (24 lingots),
 // T2 = armure DIAMANT complète (24💎). RÈGLE ABSOLUE du run : ZÉRO /give — tout est miné/fondu/crafté.
@@ -559,12 +601,16 @@ const GIFT_SET_INGOTS = 24;   // 5 (casque) + 8 (plastron) + 7 (jambières) + 4 
 // complet de 24). `c.giftBatch` = un lot ABORDABLE avec la poche actuelle (pièces manquantes du cartographe
 // réservé, la moins chère d'abord — lumberjack.giftBatchFor) : tous les buts de mine/fonte sont alors
 // sautés, gift_craft forge le lot et gift_deliver le livre ; la chaîne repart ensuite pour la suite.
+// Lingots à réunir pour le cartographe réservé (24/10) : `c.giftNeed` = coût de SES pièces manquantes
+// (lumberjack.mapperGiftNeed, calculé par ctxExtra) ; inconnu → set complet. Un cartographe à qui il ne
+// manque que les bottes ne fait plus miner 24 lingots.
+const GN = (c) => (Number.isFinite(c.giftNeed) && c.giftNeed >= 0) ? c.giftNeed : GIFT_SET_INGOTS;
 const MAPPER_ARMOR_CHAIN = [
   // Même garde pioche que IRON_HELP_CHAIN (piège world_mn8 27/07) : sans lui, un worker chargé
   // d'armer un cartographe bouclait iron_deep → no_pickaxe. Sautable si pas de cible, si une pioche
   // fer-capable est là, ou si le fer en poche suffit déjà pour le set (plus rien à miner).
   { name: 'gift_pick',    met: (c) => !c.mapperTarget || !!c.giftBatch || canMineIron(c)
-      || (invCount(c.inv, 'raw_iron') + invCount(c.inv, 'iron_ingot')) >= GIFT_SET_INGOTS,
+      || (invCount(c.inv, 'raw_iron') + invCount(c.inv, 'iron_ingot')) >= GN(c),
     skill: 'ensurePick' },
   // BUFFER PLANCHES pré-descente (mirror EXACT de IRON_ARMOR_CHAIN.plank_buffer — le frein n°1
   // « churn bois↔profondeur »). La chaîne descendait AVANT de sécuriser du bois (contrairement à T1
@@ -581,33 +627,33 @@ const MAPPER_ARMOR_CHAIN = [
   { name: 'gift_planks',  met: (c) => !c.mapperTarget || !!c.giftBatch
       || (c.y !== undefined && c.y <= 30)
       || (anyPlanks(c.inv) + anyLog(c.inv) * 4 >= 24)
-      || invCount(c.inv, 'iron_ingot') >= GIFT_SET_INGOTS
+      || invCount(c.inv, 'iron_ingot') >= GN(c)
       || !!c.noWood,
     skill: 'gatherLog',    args: { count: 6 } },
   { name: 'gift_descend', met: (c) => !c.mapperTarget || !!c.giftBatch
-      || (c.y !== undefined && c.y <= 18) || invCount(c.inv, 'iron_ingot') >= GIFT_SET_INGOTS,
+      || (c.y !== undefined && c.y <= 18) || invCount(c.inv, 'iron_ingot') >= GN(c),
     skill: 'descendDiagonal', args: { targetY: 16 } },
   { name: 'gift_iron',    met: (c) => !c.mapperTarget || !!c.giftBatch
-      || invCount(c.inv, 'raw_iron') + invCount(c.inv, 'iron_ingot') >= GIFT_SET_INGOTS,
+      || invCount(c.inv, 'raw_iron') + invCount(c.inv, 'iron_ingot') >= GN(c),
     skill: 'branchMine',   args: { targetY: 16, mainLength: 48, branchSpacing: 3, branchLength: 8, serpentine: true, allowDeeper: true } },
   // COMBUSTIBLE avant la fonte (fix veille 27/07, meme cause que iron_surplus) : sans but
   // combustible, gift_smelt bouclait no_fuel sous terre. On mine le charbon de la strate fer.
-  { name: 'gift_coal',    met: (c) => !c.mapperTarget || !!c.giftBatch || fuelUnits(c) >= GIFT_SET_INGOTS
-                                       || invCount(c.inv, 'iron_ingot') >= GIFT_SET_INGOTS
+  { name: 'gift_coal',    met: (c) => !c.mapperTarget || !!c.giftBatch || fuelUnits(c) >= GN(c)
+                                       || invCount(c.inv, 'iron_ingot') >= GN(c)
                                        || (c.y === undefined || c.y > 40),
     skill: 'gather',       args: { name: ['coal_ore', 'deepslate_coal_ore'], count: 4 } },
-  { name: 'gift_fuel',    met: (c) => !c.mapperTarget || !!c.giftBatch || fuelUnits(c) >= GIFT_SET_INGOTS
-                                       || invCount(c.inv, 'iron_ingot') >= GIFT_SET_INGOTS,
+  { name: 'gift_fuel',    met: (c) => !c.mapperTarget || !!c.giftBatch || fuelUnits(c) >= GN(c)
+                                       || invCount(c.inv, 'iron_ingot') >= GN(c),
     skill: 'gatherLog',    args: { count: 4 } },
   // FOUR avant la fonte (fix world_mn9 27/07, meme cause que gift_pick/gift_coal) : sans but four,
   // gift_smelt bouclait no_furnace des qu'un worker avait laisse son four derriere. Mirror exact de
   // IRON_ARMOR_CHAIN. Sautable si pas de cible, four deja en poche, ou fer deja fondu suffisant.
   { name: 'gift_cobble',  met: (c) => !c.mapperTarget || !!c.giftBatch || invCount(c.inv, 'cobblestone') >= 8 || F(c)
-                                       || invCount(c.inv, 'iron_ingot') >= GIFT_SET_INGOTS,
+                                       || invCount(c.inv, 'iron_ingot') >= GN(c),
     skill: 'gather',       args: { name: 'stone', count: 8 } },
-  { name: 'gift_furnace', met: (c) => !c.mapperTarget || !!c.giftBatch || F(c) || invCount(c.inv, 'iron_ingot') >= GIFT_SET_INGOTS,
+  { name: 'gift_furnace', met: (c) => !c.mapperTarget || !!c.giftBatch || F(c) || invCount(c.inv, 'iron_ingot') >= GN(c),
     skill: 'craft',        args: { name: 'furnace', count: 1 } },
-  { name: 'gift_smelt',   met: (c) => !c.mapperTarget || !!c.giftBatch || invCount(c.inv, 'iron_ingot') >= GIFT_SET_INGOTS,
+  { name: 'gift_smelt',   met: (c) => !c.mapperTarget || !!c.giftBatch || invCount(c.inv, 'iron_ingot') >= GN(c),
     skill: 'smeltIron',    args: { count: GIFT_SET_INGOTS } },
   // Forge les 4 pièces EN POCHE (le worker porte déjà les siennes : les slots d'armure ne sont
   // pas dans inventory.items(), une pièce en poche est donc bien du surplus livrable).
@@ -637,6 +683,7 @@ const MAPPER_ARMOR_CHAIN = [
 // `ljOwnArmor` / `ljForestTrip` sont calculés par ctxExtra (index.js) ; null/false hors rôle.
 // FORÊT : au 2e échec `lj_stock` en 10 min, expédition vers la forêt connue la plus proche (lj_forest).
 const { LUMBERJACK_STOCK, LUMBERJACK_MIN_WORN, wornIronCount } = require('./lumberjack');
+const { mapperUnserved } = require('./teamwork');
 const _giftGoal = (n) => MAPPER_ARMOR_CHAIN.find((g) => g.name === n);
 const LUMBERJACK_CHAIN = [
   { name: 'lj_deliver', met: (c) => !c.woodRequest, skill: 'deliverWood' },
@@ -679,8 +726,9 @@ function nextObjectiveAfter(objective, mates, opts = {}) {
   // NB : `needy` n'est VOLONTAIREMENT pas gaté — l'entraide entre workers est livrée À PIED par le
   // périodique team_gift (pathfinder.goto vers le coéquipier), elle ne dépend d'aucune commande.
   const canGift = opts.canGift !== false;
+  // « Servi » = 4 pièces PORTÉES (Massii 24/10) : teamwork.mapperUnserved (worn, repli armor).
   const mappersNaked = canGift
-    && (mates || []).some((m) => m && m.role === 'mapper' && (m.armor || 0) < 4);
+    && (mates || []).some((m) => m && m.role === 'mapper' && mapperUnserved(m));
   // 1re passe : dès qu'un coéquipier est en manque, on va l'AIDER en priorité (intent Massii).
   if (objective === 'iron_armor') {
     if (needy) return 'iron_help';
@@ -809,8 +857,8 @@ function objectiveForStart(objective, ctx) {
   return IA(ctx) ? objective : 'iron_armor';
 }
 
-function chainFor(objective) {
-  if (objective === 'diamond') return DIAMOND_CHAIN;
+function chainFor(objective, opts) {
+  if (objective === 'diamond') return (opts && opts.diamondTarget) ? diamondChain(opts.diamondTarget) : DIAMOND_CHAIN;
   if (objective === 'iron_help') return IRON_HELP_CHAIN;
   if (objective === 'mapper_armor') return MAPPER_ARMOR_CHAIN;
   if (objective === 'iron_pickaxe') return IRON_CHAIN;
@@ -841,4 +889,4 @@ function firstUnmet(chain, ctx, skip) {
 
 module.exports = {
   BED_GOAL, nextObjectiveAfter, chainAfterDone, objectiveForStart, POST_IRON_ARMOR_OBJECTIVES, CHAIN_EMPTY_WINDOW_MS, CHAIN_BASE_DELAY_MS, CHAIN_BACKOFF_MS, CHAIN_FALLBACK,
-  IRON_HELP_CHAIN, HELP_STOCK, MAPPER_ARMOR_CHAIN, LUMBERJACK_CHAIN, GIFT_SET_INGOTS, DIAMOND_TARGET, hasShield, posableCount, hasSword, hasAxe, buildCtxInv, invCount, anyLog, anyPlanks, MVP_CHAIN, IRON_CHAIN, DIAMOND_CHAIN, IRON_ARMOR_CHAIN, DIAMOND_ARMOR_CHAIN, MAPPER_KIT, chainFor, firstUnmet, armorNeed, armorWornOk, wantsOpportunisticArmor, ARMOR_FORGE_OBJECTIVES };
+  IRON_HELP_CHAIN, HELP_STOCK, MAPPER_ARMOR_CHAIN, LUMBERJACK_CHAIN, GIFT_SET_INGOTS, DIAMOND_TARGET, diamondChain, diamondTargetOf, diamondPickCount, hasShield, posableCount, hasSword, hasAxe, buildCtxInv, invCount, anyLog, anyPlanks, MVP_CHAIN, IRON_CHAIN, DIAMOND_CHAIN, IRON_ARMOR_CHAIN, DIAMOND_ARMOR_CHAIN, MAPPER_KIT, chainFor, firstUnmet, armorNeed, armorWornOk, wantsOpportunisticArmor, ARMOR_FORGE_OBJECTIVES };
