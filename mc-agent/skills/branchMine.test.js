@@ -938,3 +938,38 @@ test('jeton annulé (mort) : comportement historique conservé (ok:true cancelle
   assert.ok(rig.calls.goto.length <= 3, `au plus un goto après l'annulation (got ${rig.calls.goto.length})`);
   assert.deepStrictEqual(stales, []);
 });
+
+// ─── OOM 23/10 : jamais de collect sans outil RÉCOLTANT (cf. ../toolGuard.js) ──────────────────────
+// Sans pioche de fer, `collectBlock.collect` d'un diamant faisait boucler mineflayer-tool à l'infini
+// (récursion en microtâches → OOM sans un event, re-crash au même endroit à la relance).
+test('floodFillVein (OOM 23/10) : diamant + pioche de PIERRE seule → aucun collect, le bloc reste', async () => {
+  const ore = { name: 'deepslate_diamond_ore', position: { x: 0, y: -54, z: 0 } };
+  let collects = 0;
+  const bot = {
+    registry: { blocksByName: {} },
+    inventory: { items: () => [{ name: 'stone_pickaxe', type: 820, count: 1 }] },
+    heldItem: null,
+    blockAt: (q) => ((q.x === 0 && q.y === -54 && q.z === 0) ? ore : null),
+    equip: async () => {},
+    collectBlock: { collect: async () => { collects++; } },
+  };
+  const n = await floodFillVein(bot, { x: 0, y: -54, z: 0 });
+  assert.strictEqual(collects, 0, 'pas de collect sans outil qui récolte');
+  assert.strictEqual(n, 0);
+});
+
+test('floodFillVein (OOM 23/10) : fer + pioche de pierre → miné normalement', async () => {
+  const ore = { name: 'iron_ore', position: { x: 0, y: 12, z: 0 } };
+  let collects = 0;
+  const bot = {
+    registry: { blocksByName: {} },
+    inventory: { items: () => [{ name: 'stone_pickaxe', type: 820, count: 1 }] },
+    heldItem: null,
+    blockAt: (q) => ((q.x === 0 && q.y === 12 && q.z === 0) ? ore : null),
+    equip: async () => {},
+    collectBlock: { collect: async () => { collects++; } },
+  };
+  const n = await floodFillVein(bot, { x: 0, y: 12, z: 0 });
+  assert.strictEqual(collects, 1);
+  assert.strictEqual(n, 1);
+});

@@ -97,6 +97,8 @@ const { pickTier, stoneBatchWant, stoneStairPlan } = require('./stoneDig');
 const { pickWornOutToReport } = require('./wornOut');
 const { branchMine: _branchMineRaw, floodFillVein, currentPhase: bmCurrentPhase } = require('./skills/branchMine');   // gardé plus bas (disjoncteur OOM)
 const heapGuard = require('./heapGuard');   // OOM « au même endroit » du branch-mine (23/10)
+const { installToolGuard } = require('./toolGuard');   // OOM 23/10 : récursion sans fin de mineflayer-tool
+const loopGuard = require('./loopGuard');   // sync_loop_capped + loop_lag (gels de l'event loop)
 const { caveHunt } = require('./skills/caveHunt');   // cave-first diamant (Massii 26/07)
 const { caveIron: caveIronSkill } = require('./skills/caveIron');   // fer en grotte (Massii 20/10)
 const caveIronPick = require('./caveIron');
@@ -589,6 +591,7 @@ let _bmMarkWriteAt = null;        // dernière écriture de la marque de positio
 let _bmCrashChecked = false;      // contrôle « crash au même endroit » : une fois par process
 let _bmCrashHits = 0;             // crashs consécutifs au même endroit (repris de la marque)
 let _heapHighAt = null;           // dernier event heap_high (throttle 5 s)
+let _toolGuardSaid = false;       // garde mineflayer-tool posée (toolGuard.js), une fois par process
 setInterval(() => {
   try {
     const mu = process.memoryUsage();
@@ -613,6 +616,21 @@ setInterval(() => {
       phase: _bmPhase, bm: bmPh, pos });
   } catch (e) { /* diagnostic : ne crash jamais */ }
 }, 2000);
+
+// GELS DE L'EVENT LOOP (23/10, cf. loopGuard.js). NIVEAU MODULE (piège #56) : lu par des timers.
+// `_capReport` : rapport différé `sync_loop_capped {where, count}` des boucles coupées par une garde.
+// `loop_lag {ms, phase}` : retard du tick d'1 s au-delà de 2 s — chiffre chaque gel qui rend la main
+// (une boucle infinie, elle, finit en OOM sans que ce timer puisse parler : c'est la garde qui la coupe).
+const _capReport = loopGuard.createCapReporter({ emit });
+const _loopLag = loopGuard.createLoopLagWatch({
+  onLag: (e) => emit(Object.assign({ type: 'loop_lag' }, e)),
+  phase: () => {
+    let goal = null;
+    try { goal = (_curGoal && _curGoal.name) || null; } catch (e) { goal = null; }
+    return _bmPhase ? `bm:${_bmPhase}` : goal;
+  },
+});
+setInterval(() => { _loopLag.tick(); }, loopGuard.LAG_INTERVAL_MS);
 
 setInterval(() => {
   try {
@@ -2273,7 +2291,8 @@ async function reclaimBlock(pos, blockName = 'crafting_table') {
       }
       if (!b) return;                              // plus de bloc posé → déjà repris
       // ⚠️ ÉQUIPER LE BON OUTIL (vécu Surv5 : un FOUR cassé sans pioche en main NE DROP PAS →
-      // four perdu en boucle). collectBlock n'équipe rien (mineflayer-tool non chargé).
+      // four perdu en boucle). collectBlock passe bien par mineflayer-tool (equipForBlock, cf. toolGuard.js) ;
+      // on garde l'équipement explicite d'avant, il ne coûte rien.
       const tool = bestToolFor(bot, b);
       if (tool) { try { await bot.equip(tool, 'hand'); } catch (e) {} }
       // BORNÉ (22/10, NethBot3 session 246 : `crafting_table` timeout ×4 = 6 min) — collectBlock
@@ -11182,6 +11201,15 @@ async function onSpawn() {
         pvpWatch = _movesKeeper.watchPvp(bot);
       } catch (e) { /* best-effort : sans gardien, on retombe sur l'ancien comportement */ }
       emit({ type: 'moves_keeper_on', collect, pvp: pvpWatch, copied });
+    }
+    // OOM 23/10 (toolGuard.js) : collectBlock fait `bot.tool.equipForBlock(…, { getFromChest: true })` à
+    // chaque bloc ; sans outil récoltant ET sans coffre, mineflayer-tool se rappelle à l'infini en
+    // microtâches → tas plein en ~10 s, aucun timer, aucun event, process tué. La garde le fait lever NoItem.
+    // `bot.tool` est créé par collectBlock (setTimeout 0 après l'injection) : présent au spawn. Idempotent.
+    if (bot.tool && !_toolGuardSaid) {
+      let ok = false;
+      try { ok = installToolGuard(bot.tool, { onCapped: (i) => _capReport.report(i.where, { reason: i.reason, block: i.block }) }); } catch (e) { ok = false; }
+      if (ok) { _toolGuardSaid = true; emit({ type: 'tool_guard_on', ok }); }
     }
     // BUTIN APRÈS COMBAT : posé APRÈS le gardien de Movements (watchPvp ci-dessus) — les écouteurs d'un
     // même event s'exécutent dans l'ordre d'enregistrement, la nominale est donc déjà rendue quand on

@@ -380,6 +380,23 @@ const NEIGH_FACES = [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0
 // FLOOD-FILL d'une veine (§1.6/§3.G — minage HUMAIN, jamais X-ray) : dès qu'un ore est exposé, on vide
 // TOUTE la veine connectée du même type (BFS 6-FACES orthogonales) avant de reprendre la branche — un
 // mineur humain SUIT la veine face par face ; un X-rayer casse à travers les coins. Borné (maxVein).
+// OUTIL RÉCOLTANT AVANT LE COLLECT (OOM 23/10, cf. ../toolGuard.js) : sans pioche de palier suffisant
+// (diamant/or/redstone à la pioche de pierre, pioche cassée au milieu du filon), `collectBlock.collect`
+// faisait boucler mineflayer-tool à l'infini (récursion en microtâches → tas plein, process tué, re-crash
+// au même endroit à la relance : le minerai est toujours là). Un joueur laisse le bloc : il attendra la
+// bonne pioche. Inventaire illisible (tests, bot pas prêt) → on ne bloque rien.
+const _veinNoToolOk = require('../lavaGuard').createAvoidedThrottle(10000);
+const _capRep = require('../loopGuard').createCapReporter({ emit: (e) => _emit(e) });
+function _canHarvestVeinBlock(bot, b) {
+  try {
+    if (!bot || !bot.inventory || typeof bot.inventory.items !== 'function') return true;
+    let tool = null;
+    try { tool = bestToolFor(bot, b); } catch (e) { tool = null; }
+    const held = (tool && tool.name) || (bot.heldItem && bot.heldItem.name) || null;
+    return canHarvestWith(b.name, held);
+  } catch (e) { return true; }
+}
+
 async function floodFillVein(bot, start, token, maxVein = 64) {
   try { _phase = { name: 'vein', at: Date.now(), target: { x: start.x, y: start.y, z: start.z } }; } catch (e) {}
   const b0 = bot.blockAt(p(start.x, start.y, start.z));
@@ -388,8 +405,12 @@ async function floodFillVein(bot, start, token, maxVein = 64) {
   const seen = new Set();
   const queue = [[start.x, start.y, start.z]];
   let mined = 0;
+  // Borne DURE d'itérations (garde générique, `sync_loop_capped {where:'floodFillVein'}`) : une veine de
+  // `maxVein` blocs ouvre au plus 6 faces par bloc — au-delà, la file ne décrit plus une veine.
+  const over = require('../loopGuard').loopCap(maxVein * 8, 'floodFillVein', _capRep);
   while (queue.length && mined < maxVein) {
     if (token && token.cancelled) break;
+    if (over()) break;
     const [x, y, z] = queue.shift();
     const k = x + ',' + y + ',' + z;
     if (seen.has(k)) continue;
@@ -412,6 +433,10 @@ async function floodFillVein(bot, start, token, maxVein = 64) {
     // en main : Massii a filmé le 26/07 un bot frappant un diamant de deepslate AVEC UN BOUCLIER —
     // vitesse mains nues (le bloc semble increvable), et aucun drop même s'il finit par céder.
     try { await equipCached(bot, bestToolFor(bot, b)); } catch (e) { /* best-effort */ }
+    if (!_canHarvestVeinBlock(bot, b)) {
+      try { if (_veinNoToolOk(b.name)) _emit({ type: 'vein_no_tool', ore: b.name, x, y, z }); } catch (e) { /* télémétrie */ }
+      continue;
+    }
     // collectBlock.collect(b) = mine CE bloc précis (positionnel, ≠ gather qui prend le plus proche)
     // + ramasse le drop. Borné (un collect peut geler, piège #42). Échec → on saute ce bloc.
     try { await withTimeout(bot.collectBlock.collect(b), 30000); mined++; }
