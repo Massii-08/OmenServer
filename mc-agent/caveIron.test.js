@@ -254,3 +254,116 @@ test('caveHpOk : grotte seulement à ≥ 12 PV ; PV inconnus → on ne bloque pa
   assert.strictEqual(C.caveHpOk(null), true);
   assert.strictEqual(C.caveHpOk(NaN), true);
 });
+
+// ── BUDGET DE GROTTES (23/10, chrono NethBot2 : 25 iron_cave, 20 ratés, 1 seul fer en 77 min) ──
+const MIN = 60000;
+const T = 10_000_000;
+
+test('caveBudgetRecord : ignore cancelled / claimed / no_cave_target, garde le reste avec start et iron', () => {
+  let b = C.caveBudgetRecord(null, { why: 'cancelled', took_s: 50 }, T);
+  b = C.caveBudgetRecord(b, { why: 'claimed' }, T);
+  b = C.caveBudgetRecord(b, { why: 'no_cave_target' }, T);
+  assert.strictEqual(b.attempts.length, 0);
+  b = C.caveBudgetRecord(b, { why: 'unreachable', took_s: 120, iron: 0 }, T);
+  assert.deepStrictEqual(b.attempts, [{ at: T, start: T - 120000, why: 'unreachable', iron: 0 }]);
+});
+
+test('caveBudgetCheck : 3 ratés en 15 min (toute raison) → coupure 12 min', () => {
+  let b = null;
+  b = C.caveBudgetRecord(b, { why: 'unreachable', took_s: 100 }, T);
+  b = C.caveBudgetRecord(b, { why: 'interrupted', took_s: 60 }, T + 4 * MIN);
+  assert.strictEqual(C.caveBudgetCheck(b, T + 5 * MIN), null);
+  b = C.caveBudgetRecord(b, { why: 'hidden', took_s: 164 }, T + 9 * MIN);
+  const v = C.caveBudgetCheck(b, T + 9 * MIN);
+  assert.ok(v);
+  assert.strictEqual(v.fails, 3);
+  assert.strictEqual(v.until, T + 9 * MIN + C.CAVE_BUDGET_OFF_MS);
+  assert.strictEqual(C.CAVE_BUDGET_OFF_MS, 12 * MIN);
+});
+
+test('caveBudgetCheck : 3 ratés étalés sur plus de 15 min → pas de coupure par les échecs', () => {
+  let b = null;
+  b = C.caveBudgetRecord(b, { why: 'unreachable', took_s: 10, iron: 0 }, T);
+  b = C.caveBudgetRecord(b, { why: 'done', took_s: 10, iron: 3 }, T + 1 * MIN);       // du fer : remet l'horloge
+  b = C.caveBudgetRecord(b, { why: 'unreachable', took_s: 10 }, T + 8 * MIN);
+  b = C.caveBudgetRecord(b, { why: 'unreachable', took_s: 10 }, T + 17 * MIN);
+  assert.strictEqual(C.caveBudgetCheck(b, T + 17 * MIN), null);
+});
+
+test('caveBudgetCheck : un essai qui RAPPORTE du fer ne compte pas comme raté', () => {
+  let b = null;
+  b = C.caveBudgetRecord(b, { why: 'unreachable', took_s: 10 }, T);
+  b = C.caveBudgetRecord(b, { why: 'done', took_s: 10, iron: 2 }, T + MIN);
+  b = C.caveBudgetRecord(b, { why: 'timeout', took_s: 10, iron: 1 }, T + 2 * MIN);   // timeout mais fer obtenu
+  b = C.caveBudgetRecord(b, { why: 'unreachable', took_s: 10 }, T + 3 * MIN);
+  assert.strictEqual(C.caveBudgetCheck(b, T + 3 * MIN), null);
+});
+
+test('caveBudgetCheck : aucun fer depuis 20 min avec ≥ 2 trajets tentés → coupure (minutesNoIron)', () => {
+  let b = null;
+  b = C.caveBudgetRecord(b, { why: 'unreachable', took_s: 175 }, T);                 // start = T - 175 s
+  b = C.caveBudgetRecord(b, { why: 'done', took_s: 300, iron: 0 }, T + 16 * MIN);   // « fini » sans fer
+  assert.strictEqual(C.caveBudgetCheck(b, T + 16 * MIN), null);
+  const v = C.caveBudgetCheck(b, T + 18 * MIN);
+  assert.ok(v, 'premier départ à T-175 s → 20 min passées à T+18 min');
+  assert.ok(v.minutesNoIron >= 20);
+  assert.strictEqual(v.fails, 1);
+});
+
+test('caveBudgetCheck : un seul trajet sans fer ne suffit pas à couper', () => {
+  const b = C.caveBudgetRecord(null, { why: 'unreachable', took_s: 100 }, T);
+  assert.strictEqual(C.caveBudgetCheck(b, T + 40 * MIN), null);
+});
+
+test('caveBudgetNoteIron : du fer obtenu ailleurs (branch-mine) remet l\'horloge « sans fer » à zéro', () => {
+  let b = null;
+  b = C.caveBudgetRecord(b, { why: 'unreachable', took_s: 10 }, T);
+  b = C.caveBudgetRecord(b, { why: 'interrupted', took_s: 10 }, T + 2 * MIN);
+  b = C.caveBudgetNoteIron(b, T + 10 * MIN);
+  assert.strictEqual(C.caveBudgetCheck(b, T + 25 * MIN), null);
+  assert.strictEqual(b.lastIronAt, T + 10 * MIN);
+});
+
+test('caveBudgetTrip / caveBudgetUntil : coupure active puis expirée, compteurs remis à zéro', () => {
+  let b = null;
+  for (let i = 0; i < 3; i++) b = C.caveBudgetRecord(b, { why: 'unreachable', took_s: 10 }, T + i * MIN);
+  const v = C.caveBudgetCheck(b, T + 2 * MIN);
+  b = C.caveBudgetTrip(b, v);
+  assert.strictEqual(C.caveBudgetUntil(b, T + 5 * MIN), v.until);
+  assert.strictEqual(b.attempts.length, 0, 'sinon les 3 mêmes échecs re-couperaient dès la fin du repos');
+  assert.strictEqual(C.caveBudgetCheck(b, T + 5 * MIN), null, 'pendant la coupure : pas de nouveau verdict');
+  assert.strictEqual(C.caveBudgetUntil(b, v.until + 1), 0);
+  assert.strictEqual(C.caveBudgetCheck(b, v.until + 1), null);
+});
+
+test('caveBudget : état corrompu / futur toléré, élagage à 60 min, plafond', () => {
+  assert.strictEqual(C.caveBudgetUntil({ until: 'x' }, T), 0);
+  assert.strictEqual(C.caveBudgetUntil({ until: T + 99 * 60 * MIN }, T), 0, 'une coupure absurde (> 12 min) est ignorée');
+  let b = { attempts: [null, { at: 'a' }, { at: T + MIN, start: T, why: 'x', iron: 0 }, { at: T - 61 * MIN, start: T - 62 * MIN, why: 'x', iron: 0 }] };
+  b = C.caveBudgetPrune(b, T);
+  assert.strictEqual(b.attempts.length, 0);
+  for (let i = 0; i < 100; i++) b = C.caveBudgetRecord(b, { why: 'x', took_s: 0 }, T + i);
+  assert.ok(b.attempts.length <= C.CAVE_BUDGET_CAP);
+});
+
+// ── PORTÉE (23/10) : au-delà, le branch-mine local rapporte plus qu'un trajet de 100-175 s ──
+test('caveInReach : ≤ 48 blocs 3D, ou ≤ 64 avec ≥ 6 minerais', () => {
+  const from = { x: 0, y: 64, z: 0 };
+  assert.strictEqual(C.caveInReach({ x: 48, y: 64, z: 0, count: 3 }, from), true);
+  assert.strictEqual(C.caveInReach({ x: 49, y: 64, z: 0, count: 5 }, from), false);
+  assert.strictEqual(C.caveInReach({ x: 40, y: 30, z: 0, count: 5 }, from), false, '3D : 40 à plat + 34 de dénivelé');
+  assert.strictEqual(C.caveInReach({ x: 60, y: 64, z: 0, count: 6 }, from), true);
+  assert.strictEqual(C.caveInReach({ x: 65, y: 64, z: 0, count: 9 }, from), false);
+  assert.strictEqual(C.caveInReach(null, from), false);
+  assert.strictEqual(C.caveInReach({ x: 1, y: 1, z: 1, count: 3 }, null), false);
+});
+
+test('pickReachableCave : première grappe à portée du classement, sinon tooFar = la meilleure', () => {
+  const from = { x: 0, y: 64, z: 0 };
+  const far = { key: 'a', x: 90, y: 64, z: 0, count: 12 };
+  const near = { key: 'b', x: 20, y: 64, z: 0, count: 3 };
+  assert.deepStrictEqual(C.pickReachableCave([far, near], from), { cave: near, tooFar: far });
+  assert.deepStrictEqual(C.pickReachableCave([near, far], from), { cave: near, tooFar: null });
+  assert.deepStrictEqual(C.pickReachableCave([far], from), { cave: null, tooFar: far });
+  assert.deepStrictEqual(C.pickReachableCave([], from), { cave: null, tooFar: null });
+});

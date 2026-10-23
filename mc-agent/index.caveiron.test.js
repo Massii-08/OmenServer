@@ -69,6 +69,8 @@ function sandbox(o = {}) {
     letSrc('_caveCooldownEmitted'), letSrc('_caveDisabledEmitted'),
     letSrc('_tpCount'), letSrc('_caveTripBusy'), letSrc('_caveInterrupts'), constSrc('CAVE_INTERRUPT_WINDOW_MS'),
     constSrc('CAVE_PULLED_AWAY'), fnSrc('caveTravelVerdict'),
+    letSrc('_caveLastRawIron'), letSrc('_caveTooFarEmitAt'),
+    fnSrc('_caveRawIron'), fnSrc('_caveBudgetBlocks'), fnSrc('_caveBudgetRecord'),
     fnSrc('_caveInvTier'), fnSrc('_caveWorld'), fnSrc('_caveWorldOres'), fnSrc('loadCaveFails'), fnSrc('noteCaveTried'),
     fnSrc('ironCaveCtx'), fnSrc('runCaveIron'),
     'this.ironCaveCtx = ironCaveCtx; this.runCaveIron = runCaveIron; this.noteCaveTried = noteCaveTried;',
@@ -181,7 +183,9 @@ test('runCaveIron : sondes passées au skill (état du minerai, vue, home work)'
 });
 
 // ── 21/10 : accès plausible + escalade du disjoncteur ──
-const DEEP = [ore(20, 20, 0), ore(22, 20, 0), ore(24, 21, 1)];          // 44 blocs sous le bot (y 64)
+// 44 blocs sous le bot (y 64). 23/10 : rapprochée de 10 blocs à plat (centre à ~46 blocs 3D) — à x≈22
+// elle était à 49 blocs 3D, hors de la portée de 48 (caveIron.caveInReach), qui n'est pas l'objet de ce test.
+const DEEP = [ore(10, 20, 0), ore(12, 20, 0), ore(14, 21, 1)];
 
 test('ironCaveCtx : grappe PROFONDE ciblable sans entrée de grotte connue (22/10 : escalier dirigé ; 943e2c n\'a que 3 entrées)', () => {
   const c = sandbox({ ores: DEEP }).ironCaveCtx();
@@ -221,4 +225,78 @@ test('dispatch : runGoalSkill route caveIron, armure avant la grotte, timeout d�
   assert.match(rgs, /goal\.skill === 'caveIron'\) return await runCaveIron\(\)/);
   assert.match(rgs, /goal\.skill === 'branchMine' \|\| goal\.skill === 'caveIron'/);
   assert.match(constSrc('SKILL_TIMEOUTS'), /caveIron: \d+/);
+});
+
+
+// ── BUDGET DE GROTTES + PORTÉE (23/10, chrono NethBot2 : 25 iron_cave, 20 ratés, 1 fer en 77 min) ──
+test('ironCaveCtx : grappe à > 48 blocs 3D écartée → cave_too_far ; une plus proche passe devant', () => {
+  const FAR = [ore(60, 64, 0), ore(62, 64, 0), ore(64, 64, 0)];             // 3 minerais à ~62 blocs
+  const sb = sandbox({ ores: FAR });
+  assert.strictEqual(sb.ironCaveCtx(), null);
+  const ev = sb.events.find((e) => e.type === 'cave_too_far');
+  assert.ok(ev);
+  assert.deepStrictEqual([ev.ores, ev.dist3d, ev.fallback], [3, 62, false]);
+  const BIG = [0, 2, 4, 6, 8, 10].map((d) => ore(52 + d, 64, 0));             // 6 minerais à ~57 blocs
+  assert.ok(sandbox({ ores: BIG }).ironCaveCtx(), 'grosse grappe (≥ 6) : portée 64');
+  const both = sandbox({ ores: FAR.concat([ore(30, 64, 0), ore(32, 64, 0), ore(34, 64, 0)]) });
+  assert.strictEqual(both.ironCaveCtx().x, 32);
+});
+
+test('runCaveIron + ironCaveCtx : 3 essais ratés en 15 min → cave_budget_exhausted, coupé 12 min, PERSISTÉ (fusion)', async () => {
+  const MIN = 60_000;
+  // Trois grappes distinctes : une grappe ratée est mise de côté 30 min (caveFails), la suivante est visée.
+  const ores = GRAPPE.concat([ore(0, 50, 20), ore(2, 50, 20), ore(4, 50, 20)], [ore(-20, 50, 0), ore(-22, 50, 0), ore(-24, 50, 0)]);
+  const sb = sandbox({ ores, base: { keep: 1 } });
+  for (const why of ['unreachable', 'hidden', 'stair_missed']) {
+    sb.resetCache();
+    sb.caveIronSkill = async () => ({ ok: false, reason: why, mined: 0, iron_got: 0, took_s: 100 });
+    const r = await sb.runCaveIron();
+    assert.strictEqual(r.reason, why, 'chaque essai a bien lancé le skill');
+    sb.clock.t += 3 * MIN;
+  }
+  sb.resetCache();
+  assert.strictEqual(sb.ironCaveCtx(), null, 'budget épuisé → pas de grotte, la chaîne passe au branch-mine');
+  const ev = sb.events.find((e) => e.type === 'cave_budget_exhausted');
+  assert.ok(ev);
+  assert.strictEqual(ev.fails, 3);
+  assert.strictEqual(ev.until, sb.clock.t + 12 * MIN);
+  assert.strictEqual(sb.base.keep, 1, 'mémo base FUSIONNÉ');
+  assert.strictEqual(sb.base.caveBudget.until, ev.until);
+  // Survit au self-healing : un process neuf (nouveau bac à sable) relit le mémo base.
+  const fresh = sandbox({ ores: [ore(-20, 64, 30), ore(-22, 64, 30), ore(-24, 64, 30)], base: sb.base });
+  fresh.clock.t = sb.clock.t + 5 * MIN;
+  assert.strictEqual(fresh.ironCaveCtx(), null);
+  fresh.clock.t = sb.clock.t + 13 * MIN;
+  fresh.resetCache();
+  assert.ok(fresh.ironCaveCtx(), 'après 12 min, iron_cave revient');
+});
+
+test('ironCaveCtx : du raw_iron gagné ailleurs remet l\'horloge « sans fer » à zéro', () => {
+  const MIN = 60_000;
+  const att = (agoMin) => ({ at: T0 - agoMin * MIN, start: T0 - (agoMin + 2) * MIN, why: 'unreachable', iron: 0 });
+  const base = { caveBudget: { attempts: [att(19), att(17)] } };              // 21 min sans fer, 2 trajets
+  const sb = sandbox({ ores: GRAPPE, base });
+  sb.ironCaveCtx();                                                            // 1re lecture = calibrage
+  assert.ok(sb.events.some((e) => e.type === 'cave_budget_exhausted' && e.minutesNoIron >= 20));
+  const sb2 = sandbox({ ores: GRAPPE, base: { caveBudget: { attempts: [att(19), att(17)] } } });
+  sb2.clock.t -= 10 * MIN;                                                     // 11 min sans fer : OK
+  run(sb2, 'this.resetCache();');
+  assert.ok(sb2.ironCaveCtx());
+  sb2.items = sb2.items.concat([{ name: 'raw_iron', count: 3 }]);              // branch-mine : du fer
+  sb2.clock.t += 10 * MIN;
+  sb2.resetCache();
+  assert.ok(sb2.ironCaveCtx(), 'le fer gagné entre-temps annule le verdict « 20 min sans fer »');
+  assert.ok(Number.isFinite(sb2.base.caveBudget.lastIronAt));
+});
+
+test('runCaveIron : claim refusée → cave_failed porte iron_got 0 (mesure)', async () => {
+  const sb = sandbox({ ores: GRAPPE });
+  const c = sb.ironCaveCtx();
+  sb.resetCache();
+  sb._teamClaims.peek = () => null;
+  sb.claims[c.key] = { by: 'NethBot9', at: T0 };
+  await sb.runCaveIron();
+  const ev = sb.events.find((e) => e.type === 'cave_failed');
+  assert.deepStrictEqual([ev.why, ev.iron_got], ['claimed', 0]);
+  assert.ok(!sb.base.caveBudget, 'claimed n\'est pas un trajet : non compté');
 });

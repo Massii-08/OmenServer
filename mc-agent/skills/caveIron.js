@@ -29,7 +29,8 @@ const TORCH_EVERY_ORES = 3;          // une torche tous les 3 minerais traités 
  *   markWork()          → bool   pose le home work à l'entrée (best-effort)
  *   refreshClaim()      → void
  *   emit, now, maxMs
- * @returns {Promise<{ok:boolean, reason?:string, mined:number, gone:number, hidden:number, took_s:number}>}
+ * @returns {Promise<{ok:boolean, reason?:string, mined:number, gone:number, hidden:number, took_s:number,
+ *   travel_s:number, mine_s:number, iron_got:number}>}
  */
 async function caveIron(o = {}, token = null) {
   const emit = typeof o.emit === 'function' ? o.emit : () => {};
@@ -38,9 +39,16 @@ async function caveIron(o = {}, token = null) {
   const stats = { mined: 0, gone: 0, hidden: 0, unreached: 0 };
   const t0 = now();
   const took = () => Math.round((now() - t0) / 1000);
+  // MESURE (23/10) : combien de l'essai part en TRAJET et combien en MINAGE, et combien de fer il
+  // rapporte — chrono NethBot2 : 25 essais, 98-175 s de trajet chacun, 1 seul minerai de fer.
+  let tTravel = null;                              // instant de fin du trajet (null = trajet pas fini)
+  const travelS = () => Math.round(((tTravel === null ? now() : tTravel) - t0) / 1000);
+  const mineS = () => (tTravel === null ? 0 : Math.round((now() - tTravel) / 1000));
+  const meas = () => ({ took_s: took(), travel_s: travelS(), mine_s: mineS(), iron_got: stats.mined });
   const fail = (why) => {
-    emit({ type: 'cave_failed', why, x: cave && cave.x, y: cave && cave.y, z: cave && cave.z, took_s: took() });
-    return Object.assign({ ok: false, reason: why, took_s: took() }, stats);
+    const m = meas();
+    emit(Object.assign({ type: 'cave_failed', why, x: cave && cave.x, y: cave && cave.y, z: cave && cave.z }, m));
+    return Object.assign({ ok: false, reason: why }, m, stats);
   };
   if (!cave || !Array.isArray(cave.ores) || !cave.ores.length) return fail('no_cave_target');
   let deadline = t0 + (Number.isFinite(o.maxMs) ? o.maxMs : CAVE_MAX_MS);
@@ -49,6 +57,7 @@ async function caveIron(o = {}, token = null) {
 
   emit({ type: 'cave_target', x: cave.x, y: cave.y, z: cave.z, ores: cave.count || cave.ores.length, dist: cave.dist });
   const reached = await safe(() => o.travel(cave), false);
+  tTravel = now();
   if (cancelled()) return fail('cancelled');
   // `travel` peut rendre une RAISON (22/10) : 'interrupted' (TP, but pathfinder volé, bot emmené ailleurs)
   // ou 'stair_missed' (l'escalier dirigé n'a pas atteint la couche) — jamais dans le disjoncteur `unreachable`.
@@ -91,8 +100,9 @@ async function caveIron(o = {}, token = null) {
     emit({ type: 'ore_gone', world: o.world, x: ore.x, y: ore.y, z: ore.z });
   }
   function done() {
-    emit({ type: 'cave_mined', ores: stats.mined, took_s: took(), gone: stats.gone, hidden: stats.hidden });
-    return Object.assign({ ok: true, took_s: took() }, stats);
+    const m = meas();
+    emit(Object.assign({ type: 'cave_mined', ores: stats.mined, gone: stats.gone, hidden: stats.hidden }, m));
+    return Object.assign({ ok: true }, m, stats);
   }
 }
 

@@ -345,6 +345,127 @@ function pickIronCave(ores, from, o = {}) {
   return r.length ? r[0] : null;
 }
 
+// ── BUDGET DE GROTTES (23/10, chrono zéro→armure fer, 77 min) ─────────────────────────────────────
+// NethBot2 a lancé `iron_cave` 25 fois pour 1 SEUL minerai de fer : 20 `cave_failed` (unreachable
+// 98-175 s de trajet, hidden 164 s, interrupted ×3+), `descend_y16` lancé 7 fois seulement — pendant que
+// NethBot3, une fois au fond, faisait 3 pièces en 5 min au branch-mine. Le disjoncteur existant ne
+// comptait que les `unreachable` CONSÉCUTIFS : hidden / interrupted / stair_missed / timeout le
+// contournaient. Un joueur qui rate trois grottes renonce et creuse. Donc :
+//   (a) ≥ CAVE_BUDGET_FAILS essais SANS FER (toute raison sauf cancelled) en CAVE_BUDGET_FAIL_WINDOW_MS, ou
+//   (b) aucun fer obtenu (grotte OU ailleurs) depuis CAVE_BUDGET_NOIRON_MS alors qu'au moins
+//       CAVE_BUDGET_NOIRON_MIN_TRIPS trajets de grotte ont été tentés depuis le dernier fer,
+// ⇒ `iron_cave` coupé CAVE_BUDGET_OFF_MS (la chaîne passe au branch-mine Y16). État persisté dans le
+// mémo base (`caveBudget` {until, lastIronAt, attempts:[{at,start,why,iron}]}) : survit au self-healing.
+// ⚠️ `claimed` et `no_cave_target` ne sont pas des trajets (aucun pas fait) : non comptés.
+const CAVE_BUDGET_FAILS = 3;
+const CAVE_BUDGET_FAIL_WINDOW_MS = 15 * 60 * 1000;
+const CAVE_BUDGET_NOIRON_MS = 20 * 60 * 1000;
+const CAVE_BUDGET_NOIRON_MIN_TRIPS = 2;
+const CAVE_BUDGET_OFF_MS = 12 * 60 * 1000;
+const CAVE_BUDGET_KEEP_MS = 60 * 60 * 1000;
+const CAVE_BUDGET_CAP = 30;
+const CAVE_BUDGET_IGNORED = new Set(['cancelled', 'claimed', 'no_cave_target']);
+
+/** PUR — état de budget bien formé, essais élagués (> 60 min, futurs, mal formés), plafonné. */
+function caveBudgetPrune(b, now) {
+  const t = Number.isFinite(now) ? now : Date.now();
+  const src = (b && typeof b === 'object') ? b : {};
+  const attempts = (Array.isArray(src.attempts) ? src.attempts : [])
+    .filter((a) => a && Number.isFinite(a.at) && a.at <= t && t - a.at < CAVE_BUDGET_KEEP_MS)
+    .map((a) => ({ at: a.at, start: Number.isFinite(a.start) && a.start <= a.at ? a.start : a.at,
+      why: String(a.why || 'failed'), iron: Number.isFinite(a.iron) && a.iron > 0 ? a.iron : 0 }))
+    .slice(-CAVE_BUDGET_CAP);
+  const out = { attempts };
+  if (Number.isFinite(src.lastIronAt) && src.lastIronAt <= t) out.lastIronAt = src.lastIronAt;
+  if (Number.isFinite(src.until)) out.until = src.until;
+  return out;
+}
+
+/** PUR — enregistre la fin d'un essai `iron_cave` ({why, iron, took_s}). Nouvel état. */
+function caveBudgetRecord(b, r, now) {
+  const t = Number.isFinite(now) ? now : Date.now();
+  const st = caveBudgetPrune(b, t);
+  const why = String((r && r.why) || 'failed');
+  if (CAVE_BUDGET_IGNORED.has(why)) return st;
+  const iron = Number.isFinite(r && r.iron) && r.iron > 0 ? r.iron : 0;
+  const took = Number.isFinite(r && r.took_s) && r.took_s > 0 ? r.took_s : 0;
+  st.attempts.push({ at: t, start: t - took * 1000, why, iron });
+  st.attempts = st.attempts.slice(-CAVE_BUDGET_CAP);
+  if (iron > 0) st.lastIronAt = t;
+  return st;
+}
+
+/** PUR — du fer obtenu hors grotte (branch-mine, ramassage) : remet l'horloge « sans fer » à zéro. */
+function caveBudgetNoteIron(b, now) {
+  const t = Number.isFinite(now) ? now : Date.now();
+  const st = caveBudgetPrune(b, t);
+  st.lastIronAt = t;
+  return st;
+}
+
+/** PUR — fin de la coupure en cours (ms), ou 0. Une coupure plus longue que CAVE_BUDGET_OFF_MS = corrompue. */
+function caveBudgetUntil(b, now) {
+  const t = Number.isFinite(now) ? now : Date.now();
+  const u = b && b.until;
+  if (!Number.isFinite(u) || u <= t || u - t > CAVE_BUDGET_OFF_MS) return 0;
+  return u;
+}
+
+/**
+ * PUR — verdict : null (on peut viser une grotte) ou {fails, minutesNoIron, until} (budget épuisé, à
+ * appliquer par caveBudgetTrip). Jamais de verdict pendant une coupure active.
+ */
+function caveBudgetCheck(b, now) {
+  const t = Number.isFinite(now) ? now : Date.now();
+  const st = caveBudgetPrune(b, t);
+  if (caveBudgetUntil(st, t)) return null;
+  const lastIron = Number.isFinite(st.lastIronAt) ? st.lastIronAt : -Infinity;
+  const recentFails = st.attempts.filter((a) => a.iron === 0 && t - a.at <= CAVE_BUDGET_FAIL_WINDOW_MS && a.at > lastIron);
+  const sinceIron = st.attempts.filter((a) => a.at > lastIron);
+  const firstStart = sinceIron.length ? Math.min(...sinceIron.map((a) => a.start)) : null;
+  const noIronMs = firstStart === null ? 0 : t - Math.max(firstStart, lastIron);
+  const minutesNoIron = Math.round(noIronMs / 60000);
+  const byFails = recentFails.length >= CAVE_BUDGET_FAILS;
+  const byTime = sinceIron.length >= CAVE_BUDGET_NOIRON_MIN_TRIPS && noIronMs >= CAVE_BUDGET_NOIRON_MS;
+  if (!byFails && !byTime) return null;
+  return { fails: recentFails.length, minutesNoIron, until: t + CAVE_BUDGET_OFF_MS };
+}
+
+/**
+ * PUR — applique un verdict : coupure jusqu'à `v.until`, essais VIDÉS (sinon les trois mêmes échecs
+ * re-couperaient dès la fin du repos, sans qu'un seul nouveau trajet ait été tenté).
+ */
+function caveBudgetTrip(b, v) {
+  const st = caveBudgetPrune(b, v && Number.isFinite(v.until) ? v.until - CAVE_BUDGET_OFF_MS : Date.now());
+  return Object.assign({}, st, { attempts: [], until: v && Number.isFinite(v.until) ? v.until : st.until });
+}
+
+// ── PORTÉE (23/10) : une grappe lointaine coûte 100-175 s de trajet pour souvent rien ─────────────
+// On ne vise une grappe exposée que si son centre est à ≤ CAVE_REACH_3D blocs (3D) du bot, ou à
+// ≤ CAVE_REACH_BIG_3D si elle compte ≥ CAVE_REACH_BIG_ORES minerais. Au-delà : branch-mine local.
+const CAVE_REACH_3D = 48;
+const CAVE_REACH_BIG_3D = 64;
+const CAVE_REACH_BIG_ORES = 6;
+
+/** PUR — la grappe `c` ({x,y,z,count}) est-elle à portée de `from` ? */
+function caveInReach(c, from) {
+  if (!_valid(c) || !_valid(from)) return false;
+  const d = Math.hypot(c.x - from.x, c.y - from.y, c.z - from.z);
+  const n = Number.isFinite(c.count) ? c.count : (Array.isArray(c.ores) ? c.ores.length : 0);
+  return d <= (n >= CAVE_REACH_BIG_ORES ? CAVE_REACH_BIG_3D : CAVE_REACH_3D);
+}
+
+/**
+ * PUR — dans un classement (rankIronCaves), la première grappe à portée. `tooFar` = la meilleure du
+ * classement quand elle a été écartée pour la distance (pour l'event `cave_too_far`), sinon null.
+ */
+function pickReachableCave(ranked, from) {
+  const list = Array.isArray(ranked) ? ranked : [];
+  const cave = list.find((c) => caveInReach(c, from)) || null;
+  const tooFar = list.length && list[0] !== cave ? list[0] : null;
+  return { cave, tooFar };
+}
+
 module.exports = {
   IRON_ORES, CAVE_LINK, CAVE_MIN_ORES, CAVE_MAX_DIST, CAVE_MAX_DROP, CAVE_FAIL_TTL_MS, CAVE_FAIL_NEAR, CAVE_CELL,
   DEPTH_K, WET_SHARE_MAX, CAVE_FAILS_CAP,
@@ -355,4 +476,8 @@ module.exports = {
   STAIR_MIN_DROP, yawOf, stairPlan, STAIR_ARRIVE_DY, STAIR_ARRIVE_NEAR, stairArrived, stairOvershot,
   CAVE_ESCALATE_WINDOW_MS, CAVE_DISABLE_MS, caveBreakerNote, caveDisabledUntil,
   CAVE_MIN_HP, caveHpOk,
+  CAVE_BUDGET_FAILS, CAVE_BUDGET_FAIL_WINDOW_MS, CAVE_BUDGET_NOIRON_MS, CAVE_BUDGET_NOIRON_MIN_TRIPS,
+  CAVE_BUDGET_OFF_MS, CAVE_BUDGET_CAP, caveBudgetPrune, caveBudgetRecord, caveBudgetNoteIron,
+  caveBudgetUntil, caveBudgetCheck, caveBudgetTrip,
+  CAVE_REACH_3D, CAVE_REACH_BIG_3D, CAVE_REACH_BIG_ORES, caveInReach, pickReachableCave,
 };

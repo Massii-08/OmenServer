@@ -5938,6 +5938,55 @@ let _caveCooldownEmitted = 0;        // `until` déjà annoncé : un event par e
 let _caveDisabledEmitted = 0;        // idem pour la désactivation 2 h (escalade, 21/10)
 let _caveTorchAt = 0;
 let _caveTorchPos = null;
+// BUDGET DE GROTTES + PORTÉE (23/10, cf. caveIron.caveBudget* / caveInReach). Niveau MODULE (piège #56) :
+// lus par ironCaveCtx à chaque pas du planner. L'état du budget vit dans le mémo base (`caveBudget`).
+let _caveLastRawIron = -1;           // -1 = pas encore lu : la 1re lecture calibre, elle ne « gagne » rien
+let _caveTooFarEmitAt = 0;
+
+function _caveRawIron() {
+  return ((bot && bot.inventory && bot.inventory.items()) || [])
+    .reduce((s, i) => s + (i.name === 'raw_iron' ? i.count : 0), 0);
+}
+
+/**
+ * Budget de grottes : du fer gagné depuis la dernière lecture (n'importe quelle source) remet l'horloge
+ * « sans fer » à zéro ; coupure active ou budget épuisé → true (pas de grotte, branch-mine Y16).
+ * Persiste dans le mémo base en FUSIONNANT (saveBaseState n'en fait rien lui-même).
+ */
+function _caveBudgetBlocks(now) {
+  const st = loadBaseState() || {};
+  let b = st.caveBudget;
+  let dirty = false;
+  const raw = _caveRawIron();
+  if (_caveLastRawIron >= 0 && raw > _caveLastRawIron) { b = caveIronPick.caveBudgetNoteIron(b, now); dirty = true; }
+  _caveLastRawIron = raw;
+  let blocked = !!caveIronPick.caveBudgetUntil(b, now);
+  if (!blocked) {
+    const v = caveIronPick.caveBudgetCheck(b, now);
+    if (v) {
+      b = caveIronPick.caveBudgetTrip(b, v);
+      dirty = true;
+      blocked = true;
+      emit({ type: 'cave_budget_exhausted', fails: v.fails, minutesNoIron: v.minutesNoIron, until: v.until });
+    }
+  }
+  if (dirty) saveBaseState(Object.assign({}, loadBaseState() || {}, { caveBudget: b }));
+  return blocked;
+}
+
+/** Fin d'un essai `iron_cave` → budget (mémo base, fusion). Jamais de throw. */
+function _caveBudgetRecord(r) {
+  try {
+    if (!r) return;
+    const now = Date.now();
+    const st = loadBaseState() || {};
+    const why = r.ok ? 'done' : String(r.reason || 'failed');
+    const iron = Number(r.iron_got != null ? r.iron_got : r.mined) || 0;
+    const b = caveIronPick.caveBudgetRecord(st.caveBudget, { why, iron, took_s: r.took_s }, now);
+    saveBaseState(Object.assign({}, st, { caveBudget: b }));
+    _caveLastRawIron = _caveRawIron();         // ce fer-là est déjà compté par l'essai
+  } catch (e) { /* best-effort */ }
+}
 // INTERRUPTIONS (22/10, chrono world_oct22) : sur 9 `cave_failed unreachable` de NethBot2/3, la plupart
 // n'étaient PAS des grappes inatteignables mais des trajets coupés — /tpa de regroupement en route,
 // fuite d'un squelette, exploration fantôme qui changeait le but du pathfinder (« The goal was changed »,
@@ -6037,9 +6086,10 @@ function ironCaveCtx() {
           _caveDisabledEmitted = off;
           emit({ type: 'cave_disabled', until: off, breaks: breaks.length });
         }
-      } else {
+      } else if (!_caveBudgetBlocks(now)) {
         const w = _caveWorld();
-        cave = caveIronPick.pickIronCave((w && Array.isArray(w.ores)) ? w.ores : [], { x: p.x, y: p.y, z: p.z }, {
+        const from = { x: p.x, y: p.y, z: p.z };   // COPIE : bot.entity.position est muté en place
+        const ranked = caveIronPick.rankIronCaves((w && Array.isArray(w.ores)) ? w.ores : [], from, {
           now,
           fails,
           isClaimed: (k) => { const c = _teamClaims && _teamClaims.peek(k); return !!(c && c.by !== bot.username); },
@@ -6048,6 +6098,15 @@ function ironCaveCtx() {
           // une grappe à > 24 blocs en vertical n'est visée que si une entrée ouverte mène à elle.
           caves: (w && Array.isArray(w.caves)) ? w.caves : [],
         });
+        // PORTÉE (23/10) : ≤ 48 blocs 3D (≤ 64 si ≥ 6 minerais) — au-delà, le branch-mine local paie mieux.
+        const pick = caveIronPick.pickReachableCave(ranked, from);
+        cave = pick.cave;
+        if (pick.tooFar && (now - _caveTooFarEmitAt >= 60000 || now < _caveTooFarEmitAt)) {
+          _caveTooFarEmitAt = now;
+          const f = pick.tooFar;
+          emit({ type: 'cave_too_far', x: f.x, y: f.y, z: f.z, ores: f.count,
+            dist3d: Math.round(Math.hypot(f.x - from.x, f.y - from.y, f.z - from.z)), fallback: !!cave });
+        }
       }
     }
   } catch (e) { cave = null; }
@@ -6170,7 +6229,7 @@ async function runCaveIron() {
   _ironCaveCache = { at: 0, cave: null };
   if (!cave) return { ok: false, reason: 'no_cave_target' };
   if (_teamClaims && !_teamClaims.tryClaim(cave.key)) {
-    emit({ type: 'cave_failed', why: 'claimed', x: cave.x, y: cave.y, z: cave.z });
+    emit({ type: 'cave_failed', why: 'claimed', x: cave.x, y: cave.y, z: cave.z, took_s: 0, travel_s: 0, mine_s: 0, iron_got: 0 });
     return { ok: false, reason: 'claimed' };
   }
   const tok = taskToken;                            // CAPTURÉ : une préemption ne nous le vole pas
@@ -6248,6 +6307,10 @@ async function runCaveIron() {
     _caveTripBusy = false;
     try { if (_teamClaims) _teamClaims.release(cave.key); } catch (e) {}
   }
+  // BUDGET (23/10) : tout essai sauf cancelled compte (interrupted compris : ses minutes sont perdues
+  // aussi) — cf. caveIron.caveBudgetRecord. Le verdict est rendu au prochain ironCaveCtx (cache vidé).
+  _caveBudgetRecord(r);
+  _ironCaveCache = { at: 0, cave: null };
   // Une préemption (migration, combat, nuit) n'est pas un verdict sur la grotte.
   if (r && r.reason === 'interrupted') {
     const now = Date.now();

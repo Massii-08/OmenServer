@@ -108,6 +108,8 @@ function caveSandbox(o = {}) {
   run(sb, [constSrc('IRON_CAVE_CACHE_MS'), letSrc('_ironCaveCache'), constSrc('IRON_CAVE_OBJECTIVES'),
     letSrc('_caveCooldownEmitted'), letSrc('_caveDisabledEmitted'),
     letSrc('_tpCount'), letSrc('_caveTripBusy'), letSrc('_caveInterrupts'), constSrc('CAVE_INTERRUPT_WINDOW_MS'),
+    letSrc('_caveLastRawIron'), letSrc('_caveTooFarEmitAt'),
+    fnSrc('_caveRawIron'), fnSrc('_caveBudgetBlocks'), fnSrc('_caveBudgetRecord'),
     fnSrc('_caveInvTier'), fnSrc('_caveWorld'), fnSrc('loadCaveFails'), fnSrc('noteCaveTried'),
     fnSrc('ironCaveCtx'), fnSrc('runCaveIron'),
     'this.runCaveIron = runCaveIron; this.busy = () => _caveTripBusy;'].join('\n'));

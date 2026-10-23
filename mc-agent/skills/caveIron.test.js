@@ -146,3 +146,28 @@ test('minerai non lu (unknown) après approche : pas miné, compté inatteint', 
   assert.strictEqual(r.unreached, 3);
   assert.strictEqual(r.reason, 'nothing_mined');
 });
+
+// ── MESURE trajet vs minage (23/10) : iron_got + travel_s / mine_s sur la fin de chaque essai ──
+test('cave_mined porte iron_got, travel_s et mine_s (horloge injectée)', async () => {
+  let t = 0;
+  const d = deps({ over: {
+    now: () => t,
+    travel: async () => { t += 90000; return true; },
+    mineVein: async () => { t += 10000; return 2; },
+  } });
+  const r = await caveIron(Object.assign({ cave: cave(3) }, d));
+  const end = d.events.at(-1);
+  assert.strictEqual(end.type, 'cave_mined');
+  assert.deepStrictEqual([end.iron_got, end.travel_s, end.mine_s, end.took_s], [6, 90, 30, 120]);
+  assert.deepStrictEqual([r.iron_got, r.travel_s, r.mine_s], [6, 90, 30]);
+});
+
+test('cave_failed porte iron_got = 0 et le temps de trajet perdu', async () => {
+  let t = 0;
+  const d = deps({ over: { now: () => t, travel: async () => { t += 175000; return false; } } });
+  const r = await caveIron(Object.assign({ cave: cave(3) }, d));
+  const end = d.events.at(-1);
+  assert.deepStrictEqual([end.type, end.why, end.iron_got, end.travel_s, end.mine_s, end.took_s],
+    ['cave_failed', 'unreachable', 0, 175, 0, 175]);
+  assert.strictEqual(r.iron_got, 0);
+});
