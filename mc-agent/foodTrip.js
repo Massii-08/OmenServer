@@ -244,7 +244,17 @@ function foodTripLeg({ from, to, stuck = 0, legDist = LEG_DIST } = {}) {
   return { x: Math.round(fx + len * Math.cos(heading)), z: Math.round(fz + len * Math.sin(heading)), last: false };
 }
 
+/**
+ * PUR — le propriétaire de la tâche active est-il un ORDRE direct (follow, guard, take, migration…) ?
+ * 'autonomous' (planner, mappeur) et 'food_run' (la sortie nourriture qui a préempté le planner, 23/10)
+ * ne le sont pas : l'expédition peut partir.
+ */
+function isOrderOwner(owner) {
+  return !!(owner && owner !== 'autonomous' && owner !== 'food_run');
+}
+
 module.exports = {
+  isOrderOwner,
   GRAZING_BIOMES,
   FOOD_TRIP_POINTS, FOOD_TRIP_MIN_Y, FOOD_TRIP_MS, FOOD_TRIP_YIELD_MAX_MS, FOOD_TRIP_MAX_DIST, FOOD_TRIP_MIN_DIST,
   FOOD_TRIP_NEAR, FOOD_TRIP_ARRIVED, FOOD_TRIP_MIN_LEFT_MS, FOOD_TRIP_AVOID_MS, FOOD_TRIP_AVOID_CAP,

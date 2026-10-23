@@ -160,7 +160,7 @@ test('index.js : le trajet de grotte passe par l\'escalier dirigé puis l\'appro
   assert.match(body, /if \(stair && stair\.teleported\) return 'interrupted';/);
   assert.ok(body.indexOf('await _caveStairTo(e, tok)') < body.indexOf('_caveGotoOre(e, tok, errs)'));
   assert.match(SRC, /_floatSettleUntil = Date\.now\(\) \+ 15000; _tpCount\+\+; \}/, 'onTeleport compte les TP');
-  assert.match(SRC, /_caveTripBusy \|\| _craftDepth > 0( \|\| _skelRushBusy)?;\n  const pick = squadTarget\(/, 'trySquad respecte le trajet de grotte');
+  assert.match(SRC, /_caveTripBusy \|\| _craftDepth > 0( \|\| _skelRushBusy)?( \|\| _huntCookBusy > 0)?;\n  const pick = squadTarget\(/, 'trySquad respecte le trajet de grotte');
 });
 
 // ═════════════════════ 3. escalier dirigé ══════════════════════════════════════════════════════════

@@ -397,9 +397,10 @@ function ensureGlue(over = {}) {
     ENSURE_SKIP_POINTS: F.ENSURE_SKIP_POINTS,
     NO_GIVE: w.NO_GIVE,
     markWorkBeforeTrip: (why) => { w.marks = (w.marks || []).concat([why]); return true; },
+    sleep: async (ms) => { w.settles = (w.settles || []).concat([ms]); },
   };
   const names = Object.keys(env);
-  const factory = new Function(...names, `let _surfaceTripBusy = false;\nlet _foodSurfaceTripAt = 0;\n${src}\nreturn ensureFood;`);
+  const factory = new Function(...names, `let _surfaceTripBusy = false;\nlet _foodSurfaceTripAt = 0;\nconst SURFACE_TRIP_SETTLE_MS = 1500;\n${src}\nreturn ensureFood;`);
   w.ensureFood = factory(...names.map((n) => env[n]));
   return w;
 }
@@ -537,7 +538,7 @@ function huntGlue(over = {}) {
   };
   w.bot.inventory = { items: () => Object.keys(w.items).map((name) => ({ name, count: w.items[name] })) };
   const names = Object.keys(env);
-  const factory = new Function(...names, `${src}\nreturn huntCookGoal;`);
+  const factory = new Function(...names, `let _huntCookBusy = 0;\n${src}\nreturn huntCookGoal;`);
   w.huntCookGoal = factory(...names.map((n) => env[n]));
   return w;
 }
@@ -983,4 +984,13 @@ test('huntCookGoal (câblage) : en SÉANCE la pêche vise la berge à 48 blocs e
     perCatchMs: 32000, gotoMs: 20000, maxMisses: 3,
   }]);
   assert.strictEqual(w.timeouts[w.timeouts.length - 1][0], F.FISH_SESSION_MS + 3000);
+});
+
+test('ensureFood (câblage) : après le warp /home safe, on laisse arriver le TP (1,5 s) AVANT de chasser (23/10)', async () => {
+  const w = ensureGlue();
+  w.bot.entity.position.y = 12;
+  await w.ensureFood();
+  await w.captured.surfaceTrip({ ms: 30000, y: 12, food: 4 });
+  assert.deepStrictEqual(w.warps, ['safe']);
+  assert.deepStrictEqual(w.settles, [1500], 'sinon onTeleport → stopMotion annule le premier goto de la chasse');
 });

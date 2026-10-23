@@ -55,3 +55,50 @@ test('descentFoodGate : chasse ratée SUR du gibier vu (noPrey faux/absent) → 
   assert.strictEqual(G.descentFoodGate({ points: 0, y: 70, refusals: [], now: T, noPrey: false }).allow, false);
   assert.strictEqual(G.descentFoodGate({ points: 0, y: 70, refusals: [], now: T }).allow, false);
 });
+
+// ── 23/10 (NethBot1 « starved to death » 15:40 UTC, NethBot3 15:45) : `food_gate need:6 points:0 allow:false`
+// puis `allow:true reason:gate_spent` → descente à 0 point → mort de faim au fond, alors que `herds_seen`
+// rapportait 6-12 bêtes toutes les 30 s. Un troupeau CONNU à ≤ 200 blocs = une vraie chance de manger :
+// à 0 point, la porte ne se « dépense » plus (ni gate_spent, ni no_prey).
+test('descentFoodGate : 0 point + troupeau connu à portée → JAMAIS gate_spent, on reste chercher à manger', () => {
+  const r = G.descentFoodGate({ points: 0, y: 70, refusals: [T - 60000, T - 30000], now: T, herdNear: true });
+  assert.deepStrictEqual([r.allow, r.reason], [false, 'herd_known']);
+});
+
+test('descentFoodGate : 0 point + troupeau connu → même une chasse « sans proie » ne fait pas descendre', () => {
+  const r = G.descentFoodGate({ points: 0, y: 70, refusals: [], now: T, noPrey: true, herdNear: true });
+  assert.deepStrictEqual([r.allow, r.reason], [false, 'herd_known']);
+});
+
+test('descentFoodGate : troupeau connu MAIS des points en poche, ou sous terre → règle d avant', () => {
+  const spent = { y: 70, refusals: [T - 60000, T - 30000], now: T, herdNear: true };
+  assert.deepStrictEqual([G.descentFoodGate(Object.assign({ points: 3 }, spent)).allow, G.descentFoodGate(Object.assign({ points: 3 }, spent)).reason], [true, 'gate_spent']);
+  assert.strictEqual(G.descentFoodGate({ points: 0, y: 20, refusals: [], now: T, herdNear: true }).reason, 'underground');
+  assert.strictEqual(G.descentFoodGate({ points: 0, y: 70, refusals: [T - 60000, T - 30000], now: T, herdNear: false }).reason, 'gate_spent');
+});
+
+test('descentFoodGate : refus « troupeau connu » horodatés (traçables) sans jamais ouvrir la porte', () => {
+  const r = G.descentFoodGate({ points: 0, y: 70, refusals: [T - 1000, T - 2000, T - 3000], now: T, herdNear: true });
+  assert.strictEqual(r.allow, false);
+  assert.ok(r.refusals.length >= 3);
+});
+
+// ── borne de la porte « troupeau connu » (pas d'arrêt d'1 h en surface devant une bête injoignable) ──
+test('descentFoodGate : 6 refus en 10 min → la porte troupeau s ouvre (herd_gate_spent)', () => {
+  const refusals = [1, 2, 3, 4, 5, 6].map((k) => T - k * 30000);
+  const r = G.descentFoodGate({ points: 0, y: 70, refusals, now: T, herdNear: true });
+  assert.deepStrictEqual([r.allow, r.reason], [true, 'herd_gate_spent']);
+  assert.strictEqual(G.HERD_GATE_MAX_REFUSALS, 6);
+  const r5 = G.descentFoodGate({ points: 0, y: 70, refusals: refusals.slice(0, 5), now: T, herdNear: true });
+  assert.deepStrictEqual([r5.allow, r5.reason], [false, 'herd_known']);
+});
+
+test('descentFoodGate : refus vieux de plus de 10 min ne comptent pas', () => {
+  const refusals = [1, 2, 3, 4, 5, 6].map((k) => T - G.GATE_WINDOW_MS - k * 1000);
+  assert.strictEqual(G.descentFoodGate({ points: 0, y: 70, refusals, now: T, herdNear: true }).reason, 'herd_known');
+});
+
+test('descentFoodGate : le troupeau visé est déjà marqué raté → herd_gate_spent (on descend avec ce qu on a)', () => {
+  const r = G.descentFoodGate({ points: 0, y: 70, refusals: [], now: T, herdNear: true, herdTried: true });
+  assert.deepStrictEqual([r.allow, r.reason], [true, 'herd_gate_spent']);
+});

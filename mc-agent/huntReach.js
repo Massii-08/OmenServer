@@ -148,7 +148,30 @@ function pickHerd(list, from, { minDist = HERD_MIN_DIST, maxDist = HERD_MAX_DIST
   return best;
 }
 
+// La porte de descente (foodGate) : « reste-t-il un troupeau CONNU à portée de marche ? ». Pas de distance
+// minimale ici (≠ pickHerd, qui vise ce qu'on ne voit PAS d'ici) : une bête à 30 blocs est une chance de
+// manger tout autant. 200 blocs ≈ ce que l'expédition couvre en 75 s de marche.
+const KNOWN_HERD_GATE_DIST = 200;
+
+/** Le troupeau connu le plus proche à ≤ maxDist (TTL et cellules ratées respectés). → { x, z, n, dist } | null */
+function knownHerdNear(list, from, { maxDist = KNOWN_HERD_GATE_DIST, avoid = null, now = Date.now() } = {}) {
+  return pickHerd(list, from, { minDist: 0, maxDist, avoid, now });
+}
+
+// Chasse ratée sur une bête VUE : la cellule de troupeau la plus proche à < 64 blocs (celle que la chasse
+// n'a pas pu atteindre) est marquée ratée — l'expédition (pickHerd, ≥ 64) et la porte de descente visent
+// alors le suivant. Au-delà de 64, c'est l'expédition elle-même qui marque sa cible à l'arrivée bredouille.
+const HERD_FAIL_MARK_DIST = 64;
+
+/** → le troupeau le plus proche à < HERD_FAIL_MARK_DIST, hors cellules déjà ratées | null */
+function herdToMarkAfterFail(list, from, { avoid = null, now = Date.now() } = {}) {
+  const h = pickHerd(list, from, { minDist: 0, maxDist: HERD_FAIL_MARK_DIST - 1e-9, avoid, now });
+  return h && h.dist < HERD_FAIL_MARK_DIST ? h : null;
+}
+
 module.exports = {
+  HERD_FAIL_MARK_DIST, herdToMarkAfterFail,
+  KNOWN_HERD_GATE_DIST, knownHerdNear,
   HUNT_REACH_RADIUS, HUNT_MAX_DY, PASSIVE_NAMES,
   HERD_MEMO_KEY, HERD_CELL, HERD_TTL_MS, HERD_CAP, HERD_MAX_DIST, HERD_MIN_DIST, HERD_FORGET_RADIUS,
   isReachablePrey, herdSightings, herdsPrune, herdsLoad, herdsMerge, herdsObserve, herdsForget, herdsChanged, pickHerd,

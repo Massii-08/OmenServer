@@ -787,7 +787,7 @@ function slice(from, to) {
   return SRC.slice(a, b);
 }
 const TRIP_SRC = slice('// ── EXPÉDITION VERS LE GIBIER', '// PÊCHE — plan B nourriture');
-const FLAG_NAMES = ['_migrating', '_imminentBusy', 'panicInFlight', '_armorBusy', '_baseBusy', '_escaping', '_deathDebtBusy', '_foodTripBusy'];
+const FLAG_NAMES = ['_migrating', '_imminentBusy', 'panicInFlight', '_armorBusy', '_baseBusy', '_escaping', '_deathDebtBusy', '_foodTripBusy', '_huntCookBusy'];
 
 function tripGlue(over = {}) {
   const w = {
@@ -862,7 +862,9 @@ function tripGlue(over = {}) {
     stopMotion: () => { w.stops++; },
     // huntCookGoal
     taskToken: w.taskToken,
-    runHuntCook: async (d, t, o) => { w.runCaptured = d; w.runArgs = [t, o]; return { ok: true }; },
+    runHuntCook: async (d, t, o) => { w.runCaptured = d; w.runArgs = [t, o]; if (w.runHuntCookImpl) return w.runHuntCookImpl(d, t, o); return { ok: true }; },
+    isOrderOwner: T.isOrderOwner,
+    herdToMarkAfterFail: HR.herdToMarkAfterFail,
     buildCtxInv: () => ({}),
     nearestPassive: () => null,
     HUNT_SIGHT_RADIUS: F.HUNT_SIGHT_RADIUS,
@@ -883,7 +885,7 @@ function tripGlue(over = {}) {
   const names = Object.keys(env);
   const decl = FLAG_NAMES.map((n) => `let ${n} = false;`).join('\n');
   const setter = `const __flags = { set(n, v) { switch (n) { ${FLAG_NAMES.map((n) => `case '${n}': ${n} = v; break;`).join(' ')} } }, get(n) { switch (n) { ${FLAG_NAMES.map((n) => `case '${n}': return ${n};`).join(' ')} } } };`;
-  const factory = new Function(...names, `${decl}\n${setter}\n${TRIP_SRC}\nreturn { foodTripState, foodTripCell, foodTripLock, foodTripUnlock, foodTripMark, foodTripWalk, foodTripYield, huntCookGoal, herdScanTick, __flags };`);
+  const factory = new Function(...names, `${decl}\n${setter}\n${TRIP_SRC}\nreturn { foodTripState, foodTripCell, foodTripLock, foodTripUnlock, foodTripMark, foodTripMarkNearHerd, foodTripWalk, foodTripYield, huntCookGoal, herdScanTick, __flags };`);
   Object.assign(w, factory(...names.map((n) => env[n])));
   return w;
 }
@@ -904,7 +906,7 @@ test('index.js : le confine ET le squad comptent l expédition comme « occupé 
   assert.strictEqual(lines.length, 2, 'les deux gardes busy historiques (confine + squad)');
   // (le squad ajoute `|| _craftDepth > 0` depuis le 20/10 : un /tpa pendant un craft abandonnait la table,
   //  et `|| _caveTripBusy` depuis le 22/10 : un /tpa en plein trajet de grotte = faux `unreachable`)
-  for (const l of lines) assert.match(l, /_migrating \|\| _escaping \|\| _foodTripBusy \|\| _exploreBusy( \|\| _caveTripBusy)?( \|\| _craftDepth > 0)?( \|\| _skelRushBusy)?;/, l);
+  for (const l of lines) assert.match(l, /_migrating \|\| _escaping \|\| _foodTripBusy \|\| _exploreBusy( \|\| _caveTripBusy)?( \|\| _craftDepth > 0)?( \|\| _skelRushBusy)?( \|\| _huntCookBusy > 0)?;/, l);
 });
 
 // ⚠️ Mesure live (run « zéro → fer » 21/10, 20:44-23:44) : NethBot1 (bûcheron élu) n'a obtenu AUCUNE
@@ -1429,4 +1431,153 @@ test('bout en bout : gibier introuvable à l arrivée → la cellule est écart�
   assert.strictEqual(w.memo.foodTrips.length, 1, 'la cellule ratée est dans le mémo de base');
   const next = w.foodTripCell();
   assert.ok(next && next.biome === 'meadow', 'au prochain passage on tente une AUTRE cellule');
+});
+
+// ── 23/10 : CHASSE RATÉE SUR DU GIBIER VU → l'expédition vers le troupeau CONNU prend le relais ──
+// Mesure (6 h, mineurs NethBot1-3) : 42 `no_prey:hunt_failed`, dont 37 avec un `herds_seen animals>0`
+// dans les 2 min d'avant. La bête « en vue » (≤ 96 blocs) était injoignable — et comme elle était en vue,
+// l'expédition (qui ne part que SANS gibier en vue) ne partait jamais : le bot restait à 0 point.
+function failedHuntWorld(over = {}) {
+  const w = tripWorld(Object.assign({ passive: true, passiveAfterWalk: true }, over));
+  let n = 0;
+  w.deps.hunt = async (o) => {
+    n++;
+    w.calls.push(['hunt', { count: o.count, ms: o.ms, token: o.token }]);
+    w.heldDuring['hunt' + n] = w.lockHeld;
+    w.clock.advance(Math.min(300, o.ms));
+    if (n === 1 || w.secondHuntFails) return { ok: false, kills: 0 };
+    w.inv.beef = (w.inv.beef || 0) + 3;
+    return { ok: true, kills: 2 };
+  };
+  w.cell = { x: 160, z: 0, biome: 'herd', dist: 160, herd: true, n: 4 };
+  return w;
+}
+
+test('chasse ratée (bête vue mais injoignable) → marche vers le troupeau connu, PUIS une seconde chasse sur place', async () => {
+  const w = failedHuntWorld();
+  const r = await runHuntCook(w.deps, 6);
+  assert.deepStrictEqual(callNames(w), ['hunt', 'cell', 'lock', 'walk', 'hunt', 'unlock']);
+  assert.strictEqual(r.ok, true);
+  assert.strictEqual(w.heldDuring.hunt2, true, 'le verrou couvre la chasse sur place (confine/squad ne la coupent pas)');
+  const done = w.events.find((e) => e.type === 'hunt_cook_done');
+  assert.strictEqual(done.trip, 'went_after_fail');
+});
+
+test('chasse ratée → la marche n est PAS coupée par la bête injoignable encore « en vue »', async () => {
+  const w = failedHuntWorld();
+  await runHuntCook(w.deps, 6);
+  const walk = w.calls.find((c) => c[0] === 'walk')[1];
+  assert.strictEqual(walk.token.cancelled, true, 'coupé APRÈS la marche (fin de vague)');
+  // pendant la marche, le prédicat d'arrêt ne lit pas « gibier en vue » : on vérifie en rejouant
+  const w2 = failedHuntWorld();
+  let cutDuringWalk = null;
+  w2.deps.tripWalk = async (o) => { w2.calls.push(['walk', {}]); cutDuringWalk = o.token.cancelled; return { ok: true, arrived: true, legs: 2 }; };
+  await runHuntCook(w2.deps, 6);
+  assert.strictEqual(cutDuringWalk, false);
+});
+
+test('chasse ratée, de NUIT → pas de marche, le bilan dit pourquoi (trip:night)', async () => {
+  const w = failedHuntWorld();
+  w.state.isDay = false;
+  const r = await runHuntCook(w.deps, 6);
+  assert.deepStrictEqual(callNames(w), ['hunt']);
+  assert.strictEqual(r.reason, 'no_prey:hunt_failed');
+  assert.strictEqual(w.events.find((e) => e.type === 'hunt_cook_done').trip, 'night');
+});
+
+test('chasse ratée deux fois (avant et après la marche) → cellule écartée 20 min, échec hunt_failed', async () => {
+  const w = failedHuntWorld({ secondHuntFails: true });
+  const r = await runHuntCook(w.deps, 6);
+  assert.strictEqual(r.reason, 'no_prey:hunt_failed');
+  assert.strictEqual(w.tried.length, 1);
+  assert.strictEqual(callNames(w).filter((n) => n === 'hunt').length, 2, 'jamais plus d une seconde chance');
+});
+
+test('expédition DÉJÀ faite au départ (rien en vue) puis chasse ratée → pas de seconde marche', async () => {
+  const w = tripWorld({ passive: false, passiveAfterWalk: true });
+  w.deps.hunt = async (o) => { w.calls.push(['hunt', {}]); return { ok: false, kills: 0 }; };
+  await runHuntCook(w.deps, 6);
+  assert.strictEqual(callNames(w).filter((n) => n === 'walk').length, 1);
+});
+
+test('foodTripState : une sortie nourriture qui a PRÉEMPTÉ le planner (owner food_run) n est pas un ordre direct', () => {
+  const w = tripGlue();
+  w.owner = 'food_run';
+  assert.strictEqual(w.foodTripState().ordered, false);
+  assert.strictEqual(T.isOrderOwner('food_run'), false);
+  assert.strictEqual(T.isOrderOwner('autonomous'), false);
+  assert.strictEqual(T.isOrderOwner('follow'), true);
+  assert.strictEqual(T.isOrderOwner(null), false);
+});
+
+// ── 23/10 : LA CHASSE POSSÈDE LE PATHFINDER ──
+// Mesure : sur 42 `hunt_failed`, 36 fenêtres `goal_trace` montrent `_approach@hunt.js` en collision avec
+// un autre goto (collectblock, oreGrabGoto, descendDiagonal, branchMine approach, onTeleport…) — 14 échecs
+// en < 2 s : la marche vers la bête était annulée (GoalChanged) avant d'avoir fait un pas.
+test('huntCookGoal tient _huntCookBusy pendant TOUTE la sortie, rendu même si elle jette', async () => {
+  const w = tripGlue();
+  let during = null;
+  w.runHuntCookImpl = async () => { during = w.__flags.get('_huntCookBusy'); return { ok: true }; };
+  await w.huntCookGoal(4);
+  assert.ok(during > 0, `pendant : ${during}`);
+  assert.ok(!(w.__flags.get('_huntCookBusy') > 0), 'rendu après');
+  w.runHuntCookImpl = async () => { throw new Error('boum'); };
+  await assert.rejects(() => w.huntCookGoal(4));
+  assert.ok(!(w.__flags.get('_huntCookBusy') > 0), 'rendu après une exception');
+});
+
+test('foodTripYield : une CHASSE en cours (sans expédition) fait aussi céder le planner', async () => {
+  const w = tripGlue();
+  w.__flags.set('_huntCookBusy', 1);
+  let n = 0;
+  w.onSleep = () => { if (++n === 3) w.__flags.set('_huntCookBusy', 0); };
+  await w.foodTripYield();
+  assert.deepStrictEqual(w.sleeps, [500, 500, 500]);
+});
+
+test('index.js : _huntCookBusy est au NIVEAU MODULE, et lu par le confine, le squad, le ramassage de minerai et le timer nourriture', () => {
+  assert.match(SRC, /^let _huntCookBusy = 0;/m);
+  const lines = SRC.split('\n').filter((l) => /const busy = !!bot\.targetDigBlock/.test(l));
+  for (const l of lines) assert.match(l, /_huntCookBusy > 0/, l);
+  const squadPeriodic = slice('if (opts && opts.periodic) {', 'if (longTask');
+  assert.match(squadPeriodic, /_huntCookBusy > 0/);
+  const ore = slice('setInterval(async () => {\n  if (_oreGrabBusy) return;', 'digging: !!bot.targetDigBlock');
+  assert.match(ore, /_huntCookBusy > 0/);
+  assert.match(ore, /_foodTripBusy/);
+  const tick = slice('async function foodRunTick() {', 'setInterval(() => { foodRunTick()');
+  assert.match(tick, /_huntCookBusy > 0/, 'une chasse déjà en vol (hook de descente) : pas de 2e sortie par-dessus');
+});
+
+test('chasse ratée → la cellule de troupeau proche (< 64) est marquée ratée AVANT de choisir la destination', async () => {
+  const w = failedHuntWorld();
+  w.deps.huntFailed = () => { w.calls.push(['marked']); };
+  await runHuntCook(w.deps, 6);
+  assert.deepStrictEqual(callNames(w).slice(0, 3), ['hunt', 'marked', 'cell']);
+});
+
+test('chasse ratée de nuit → la cellule proche est quand même marquée (la porte et la prochaine sortie visent le suivant)', async () => {
+  const w = failedHuntWorld();
+  w.state.isDay = false;
+  let n = 0;
+  w.deps.huntFailed = () => { n++; };
+  await runHuntCook(w.deps, 6);
+  assert.strictEqual(n, 1);
+});
+
+test('huntCookGoal câble huntFailed sur foodTripMarkNearHerd', async () => {
+  const w = tripGlue();
+  await w.huntCookGoal(4);
+  assert.strictEqual(typeof w.runCaptured.huntFailed, 'function');
+});
+
+test('foodTripMarkNearHerd : marque dans le mémo de base la cellule du troupeau proche, en préservant le reste', () => {
+  const now = 5_000_000;
+  const w = tripGlue({ memo: { base: { x: 1 }, [HR.HERD_MEMO_KEY]: [{ x: 30, z: 0, n: 2, at: now - 1000 }, { x: 150, z: 0, n: 1, at: now - 1000 }] } });
+  const h = w.foodTripMarkNearHerd();
+  assert.deepStrictEqual([h.x, h.z], [30, 0]);
+  assert.deepStrictEqual(w.memo.base, { x: 1 });
+  assert.strictEqual(T.triedCellsLoad(w.memo, now).length, 1);
+  // la cellule ratée n est plus « troupeau connu » pour la porte, et l expédition vise le suivant
+  assert.strictEqual(HR.knownHerdNear(HR.herdsLoad(w.memo, now), { x: 0, z: 0 }, { now, avoid: T.triedCellsLoad(w.memo, now) }).x, 150);
+  assert.strictEqual(w.foodTripMarkNearHerd(), null, 'déjà marquée : plus rien à marquer à < 64');
 });

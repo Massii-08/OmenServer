@@ -22,6 +22,7 @@
 const DESCENT_MIN_POINTS = 6;          // ~1 steak, 3 chairs de zombie : de quoi tenir une descente
 const GATE_WINDOW_MS = 10 * 60 * 1000;
 const GATE_MAX_REFUSALS = 2;
+const HERD_GATE_MAX_REFUSALS = 6;    // porte « troupeau connu » : au plus 6 refus / 10 min
 const SURFACE_Y = 45;                  // même plancher que caution.FOOD_SURFACE_Y
 const UNDER_HUNGER = 8;
 const UNDER_TRIP_COOLDOWN_MS = 4 * 60 * 1000;
@@ -40,8 +41,10 @@ function _times(arr, now, windowMs) {
 
 /**
  * PUR — peut-on descendre ?
- * s = { points, y, refusals: number[] (horodatages persistés), now, noPrey: bool (la chasse d'avant n'a vu aucune proie) }
- * → { allow, reason: 'stocked'|'underground'|'no_prey'|'gate'|'gate_spent', refusals: number[] (à persister), need }
+ * s = { points, y, refusals: number[] (horodatages persistés), now, noPrey: bool (la chasse d'avant n'a vu aucune proie),
+ *       herdNear: bool (un troupeau connu à ≤ 200 blocs),
+ *       herdTried: bool (ce troupeau est déjà marqué raté) }
+ * → { allow, reason: 'stocked'|'underground'|'herd_known'|'herd_gate_spent'|'no_prey'|'gate'|'gate_spent', refusals: number[] (à persister), need }
  * Sous la surface on ne bloque jamais (il n'y a plus rien à chasser : c'est la porte 2 qui s'en occupe).
  */
 function descentFoodGate(s = {}) {
@@ -51,6 +54,17 @@ function descentFoodGate(s = {}) {
   const points = Number(s.points) || 0;
   if (points >= need) return { allow: true, reason: 'stocked', refusals, need };
   if (!(Number.isFinite(s.y) && s.y >= SURFACE_Y)) return { allow: true, reason: 'underground', refusals, need };
+  // 23/10 : ZÉRO point en poche et un troupeau CONNU à portée de marche (`herdNear`, huntReach.knownHerdNear
+  // ≤ 200 blocs) → descendre, c'est mourir de faim au fond (NethBot1 15:40, NethBot3 15:45 : `gate_spent`
+  // puis « starved to death » alors que `herds_seen` rapportait 6-12 bêtes). La porte ne se dépense plus :
+  // le planner retente, et chaque nouvelle tentative rejoue la chasse et l'expédition vers ce troupeau.
+  // Borné par la mémoire des troupeaux elle-même (TTL 1 h, oubli à l'arrivée bredouille, cellule ratée 20 min).
+  // BORNÉE : 6 refus en 10 min, ou troupeau visé déjà marqué raté (une chasse ne l'a pas atteint) → on
+  // descend avec ce qu'on a (sinon un bot devant une bête injoignable restait jusqu'à 1 h en surface).
+  if (points <= 0 && s.herdNear === true) {
+    if (s.herdTried === true || refusals.length >= HERD_GATE_MAX_REFUSALS) return { allow: true, reason: 'herd_gate_spent', refusals, need };
+    return { allow: false, reason: 'herd_known', refusals: refusals.concat([now]), need };
+  }
   if (s.noPrey === true) return { allow: true, reason: 'no_prey', refusals, need };
   if (refusals.length >= GATE_MAX_REFUSALS) return { allow: true, reason: 'gate_spent', refusals, need };
   return { allow: false, reason: 'gate', refusals: refusals.concat([now]), need };
@@ -82,5 +96,5 @@ function foodGateLoad(st) {
 
 module.exports = {
   descentFoodGate, undergroundFoodTripDue, foodGateLoad,
-  DESCENT_MIN_POINTS, GATE_WINDOW_MS, GATE_MAX_REFUSALS, SURFACE_Y, UNDER_HUNGER, UNDER_TRIP_COOLDOWN_MS,
+  DESCENT_MIN_POINTS, GATE_WINDOW_MS, GATE_MAX_REFUSALS, HERD_GATE_MAX_REFUSALS, SURFACE_Y, UNDER_HUNGER, UNDER_TRIP_COOLDOWN_MS,
 };

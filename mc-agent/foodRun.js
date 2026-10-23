@@ -174,46 +174,53 @@ async function runHuntCook(d, target, opts = {}) {
     //    foodTrip.shouldFoodTrip), UNE marche vers la cellule à animaux la plus proche CONNUE, puis la
     //    chasse ci-dessous rejoue sur place. La marche a son propre plafond (75 s) : elle n'est PAS
     //    facturée au budget de chasse, qu'on recrée avec ce qu'il restait AVANT de partir.
-    if (_tripWired(d) && !cancelled() && !safe(d.passiveInView, false)) {
+    //    `afterFail` (23/10) : la chasse vient d'échouer sur une bête VUE mais injoignable (derrière l'eau,
+    //    sur une falaise, au fond d'un ravin) — 37 des 42 `hunt_failed` de 6 h avaient un troupeau connu.
+    //    La marche ne s'arrête alors PAS sur « gibier en vue » (c'est la bête injoignable qu'on verrait).
+    const tryTrip = async (afterFail) => {
+      if (!_tripWired(d) || cancelled() || trip) return false;
+      if (!afterFail && safe(d.passiveInView, false)) return false;
       let world = {};
       try { world = d.tripState() || {}; } catch (e) { world = {}; }   // monde illisible → heure inconnue → on reste
       const verdict = TRIP.shouldFoodTrip(Object.assign({}, world, {
         points: points(), passiveInView: false, leftMs: budget.left(),
       }));
       tripReason = verdict.reason;
-      if (verdict.go) {
-        let cell = null;
-        try { cell = d.grazingCell() || null; } catch (e) { cell = null; }
-        if (!cell) tripReason = 'no_cell';
-        else if (typeof d.tripLock === 'function' && d.tripLock() === false) tripReason = 'trip_busy';
-        else {
-          tripReason = 'went';
-          trip = {
-            cell, t0: now(), pts0: points(), kills0: stats.kills,
-            locked: typeof d.tripLock === 'function', closed: false, arrived: false, legs: null,
-          };
-          emit({
-            type: 'food_trip', toX: cell.x, toZ: cell.z, biome: cell.biome,
-            dist: Math.round(Number(cell.dist) || 0), points: trip.pts0,
-          });
-          const leftBefore = budget.left();
-          // Le jeton se coupe tout seul dès qu'un gibier est en vue (la marche s'arrête à sa jambe
-          // et on chasse) ou que le but est atteint ; il suit aussi la tâche (annulée = on s'arrête).
-          const ctl = F.boundedToken(parent, () => safe(d.passiveInView, false) || points() >= goal);
-          let r = null;
-          try { r = await d.tripWalk({ cell, ms: TRIP.FOOD_TRIP_MS, token: ctl.token, cancel: ctl.cancel }); } catch (e) { r = null; }
-          ctl.cancel();
-          trip.arrived = !!(r && r.arrived);
-          trip.legs = r && r.legs != null ? r.legs : null;
-          budget = F.createBudget(leftBefore, now);
-          // (tâche annulée PENDANT la marche : la boucle de chasse ci-dessous s'arrête sur `cancelled()`)
-        }
-      }
-    }
+      if (!verdict.go) return false;
+      let cell = null;
+      try { cell = d.grazingCell() || null; } catch (e) { cell = null; }
+      if (!cell) { tripReason = 'no_cell'; return false; }
+      if (typeof d.tripLock === 'function' && d.tripLock() === false) { tripReason = 'trip_busy'; return false; }
+      tripReason = afterFail ? 'went_after_fail' : 'went';
+      trip = {
+        cell, t0: now(), pts0: points(), kills0: stats.kills,
+        locked: typeof d.tripLock === 'function', closed: false, arrived: false, legs: null,
+      };
+      emit({
+        type: 'food_trip', toX: cell.x, toZ: cell.z, biome: cell.biome,
+        dist: Math.round(Number(cell.dist) || 0), points: trip.pts0, ...(afterFail ? { after_fail: true } : {}),
+      });
+      const leftBefore = budget.left();
+      // Le jeton se coupe tout seul dès qu'un gibier est en vue (la marche s'arrête à sa jambe
+      // et on chasse) ou que le but est atteint ; il suit aussi la tâche (annulée = on s'arrête).
+      const ctl = F.boundedToken(parent, afterFail
+        ? () => points() >= goal
+        : () => safe(d.passiveInView, false) || points() >= goal);
+      let r = null;
+      try { r = await d.tripWalk({ cell, ms: TRIP.FOOD_TRIP_MS, token: ctl.token, cancel: ctl.cancel }); } catch (e) { r = null; }
+      ctl.cancel();
+      trip.arrived = !!(r && r.arrived);
+      trip.legs = r && r.legs != null ? r.legs : null;
+      budget = F.createBudget(leftBefore, now);
+      // (tâche annulée PENDANT la marche : la boucle de chasse ci-dessous s'arrête sur `cancelled()`)
+      return true;
+    };
+    await tryTrip(false);
 
     // 1) CHASSE — une vague, SEULEMENT si une proie est EN VUE. Le jeton dérivé s'arrête tout seul dès
     //    que le but est atteint (huntPassive le relit à chaque proie) et est coupé à la fin de la vague :
     //    rien ne court en fond après nous.
+    let retried = false;
     for (let wave = 0; wave < waves; wave++) {
       if (cancelled()) return finish({ ok: false, reason: 'cancelled' });
       if (points() >= goal) break;
@@ -228,7 +235,16 @@ async function runHuntCook(d, target, opts = {}) {
       ctl.cancel();
       if (cancelled()) return finish({ ok: false, reason: 'cancelled' });
       if (r && r.kills) stats.kills += r.kills;
-      if (!r || !r.ok) { why = 'hunt_failed'; break; }
+      if (!r || !r.ok) {
+        why = 'hunt_failed';
+        // La cellule de troupeau proche que la chasse n'atteint pas est marquée ratée (20 min) : la marche
+        // ci-dessous, la prochaine sortie et la porte de descente visent le SUIVANT.
+        if (typeof d.huntFailed === 'function') { try { d.huntFailed(); } catch (e) { /* best-effort */ } }
+        // Bête vue mais injoignable : UNE seconde chance, après la marche vers le troupeau connu le plus
+        // proche (jamais si une expédition a déjà eu lieu dans cette sortie — un seul trajet lointain).
+        if (!retried && await tryTrip(true)) { retried = true; wave--; continue; }
+        break;
+      }
     }
 
     // 2) CUISSON — un four EN POCHE, ≥ 2 crus du même type, du temps ET un but pas encore atteint : cuire
@@ -331,4 +347,21 @@ function _tripWired(d) {
   return typeof d.tripState === 'function' && typeof d.grazingCell === 'function' && typeof d.tripWalk === 'function';
 }
 
-module.exports = { runEnsureFood, runHuntCook };
+/**
+ * PUR (23/10) — la sortie nourriture du TIMER doit-elle préempter le planner ?
+ * Mesure : 36 des 42 `hunt_failed` de 6 h montrent la marche vers la bête annulée par un autre goto
+ * (collectBlock, branchMine, descendDiagonal, ramassage de minerai…) — le planner continuait de miner EN
+ * PARALLÈLE de la chasse (le pathfinder n'a qu'UN but ; même classe que la migration, piège #72a).
+ * s = { active, inProgress, migrating, switching, huntBusy } → bool
+ * Seulement quand c'est LE PLANNER qui a la main (jamais par-dessus un ordre direct, une migration, une
+ * bascule de rôle) et qu'aucune chasse n'est déjà en vol (le hook de descente chasse DANS le planner).
+ */
+function foodRunPreempt(s = {}) {
+  if (!s || s.active !== 'autonomous') return false;
+  if (!s.inProgress) return false;
+  if (s.migrating || s.switching) return false;
+  if (s.huntBusy) return false;
+  return true;
+}
+
+module.exports = { runEnsureFood, runHuntCook, foodRunPreempt };

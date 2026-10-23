@@ -147,7 +147,7 @@ function squadSandbox(opts = {}) {
     presence: { list: () => [{ name: 'NethBot1', role: 'worker', x: 300, y: 70, z: 0, at: T0 }] },
     armorNeed: () => 1, buildCtxInv: () => ({}),
     _stillBusy: false, _imminentBusy: false, _smeltOppBusy: false, _armorBusy: false,
-    _migrating: false, _escaping: false, _foodTripBusy: false, _exploreBusy: false, _skelRushBusy: false, _zoneIronMined: 0, _craftDepth: 0,
+    _migrating: false, _escaping: false, _foodTripBusy: false, _exploreBusy: false, _skelRushBusy: false, _zoneIronMined: 0, _craftDepth: 0, _huntCookBusy: 0,
     _caveTripBusy: false, isMiningGoal: R.isMiningGoal,
     _lastSquadAt: 0, _lastRegroupAt: 0, _curGoal: null, _squadSkipWhy: null, _squadSkipAt: 0,
     isLumberjackObjective: () => false,   // bûcheron d'équipe (20/10) : hors sujet ici
@@ -641,6 +641,7 @@ function foodSandbox(opts = {}) {
   const log = { ensure: 0 };
   const sb = sandbox(Object.assign({
     _foodRunBusy: false, _imminentBusy: false, panicInFlight: false, _armorBusy: false, _baseBusy: false,
+    _huntCookBusy: 0, foodRunTakeover: async () => null, foodRunRelease: () => false,
     foodStock: () => 0, foodRunNeeded: C.foodRunNeeded, foodRunCooldownAfter: C.foodRunCooldownAfter,
     _lastFoodRunAt: 0, _foodRunCooldownMs: C.FOOD_RUN_COOLDOWN_MS,
     withTimeout: (p) => p, FOOD_RUN_TIMEOUT_MS: 70000, FOOD_TRIP_MS: 75000, stopMotion() {},
@@ -743,7 +744,7 @@ test('index.js : desync / rappel confine respectent la retenue de nuit ; ramassa
   const confine = SRC.split('\n').filter((l) => /const busy = !!bot\.targetDigBlock/.test(l));
   assert.strictEqual(confine.length, 2);
   assert.ok(confine.some((l) => /_nightHold/.test(l)), 'le rappel confine (/home) ne tire pas un bot retenu par la nuit');
-  assert.match(SRC, /busy: _imminentBusy \|\| panicInFlight \|\| _armorBusy \|\| _smeltOppBusy \|\| _baseBusy \|\| !!_shelterInFlight,/);
+  assert.match(SRC, /busy: _imminentBusy \|\| panicInFlight \|\| _armorBusy \|\| _smeltOppBusy \|\| _baseBusy \|\| !!_shelterInFlight( \|\| _huntCookBusy > 0 \|\| _foodTripBusy)?,/);
   assert.match(SRC, /if \(_imminentBusy \|\| panicInFlight \|\| _armorBusy \|\| _baseBusy \|\| _migrating \|\| _shelterInFlight\) return;/);
 });
 

@@ -145,7 +145,7 @@ test('craftSmart : PV sains → aucun impact (non-régression)', async () => {
 
 test('index.js : l aura et le /tpa de squad respectent un craft en cours', () => {
   assert.match(fnSrc('auraTick'), /if \(_craftDepth > 0\) return;/);
-  assert.match(SRC, /_foodTripBusy \|\| _exploreBusy( \|\| _caveTripBusy)? \|\| _craftDepth > 0( \|\| _skelRushBusy)?;\n  const pick = squadTarget\(/);
+  assert.match(SRC, /_foodTripBusy \|\| _exploreBusy( \|\| _caveTripBusy)? \|\| _craftDepth > 0( \|\| _skelRushBusy)?( \|\| _huntCookBusy > 0)?;\n  const pick = squadTarget\(/);
 });
 
 // ─── 22/10 : refus à PV critiques → RÉCUPÉRER, pas réessayer ─────────────────────────────────

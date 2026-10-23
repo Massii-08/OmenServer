@@ -304,6 +304,7 @@ function foodTickSandbox({ y = 15, food = 6, points = 0, tripAt = null, base = {
     Date: { now: () => clock.t }, Object, Math,
     bot: { food, entity: { position: { x: 0, y, z: 0 } }, inventory: { items: () => [] } },
     _foodRunBusy: false, _imminentBusy: false, panicInFlight: false, _armorBusy: false, _baseBusy: false,
+    _huntCookBusy: 0, foodRunTakeover: async () => null, foodRunRelease: () => false,
     foodStock: () => 0, foodRunNeeded: C.foodRunNeeded, foodRunCooldownAfter: C.foodRunCooldownAfter,
     _lastFoodRunAt: clock.t - 60000, _foodRunCooldownMs: 900000,           // sourdine 15 min, posée il y a 1 min
     nightLockdownNow: () => false, nightGateNote: () => {},

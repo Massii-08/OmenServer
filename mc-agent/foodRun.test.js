@@ -795,3 +795,92 @@ test('huntCook + cookLot : une dep qui jette n interrompt pas la chaîne', async
   assert.strictEqual(r.ok, true);
   assert.ok(w.events.some((e) => e.type === 'hunt_cook_done'));
 });
+
+// ── 23/10 : la sortie nourriture du timer PRÉEMPTE le planner (le pathfinder n'a qu'un but) ──
+test('foodRunPreempt : planner aux commandes, objectif en cours → on prend la main', () => {
+  const { foodRunPreempt } = require('./foodRun');
+  assert.strictEqual(foodRunPreempt({ active: 'autonomous', inProgress: true }), true);
+});
+
+test('foodRunPreempt : jamais par-dessus un ordre, une migration, une bascule de rôle, une chasse déjà en vol', () => {
+  const { foodRunPreempt } = require('./foodRun');
+  for (const active of ['follow', 'migration', 'dig_out', 'food_run', null, undefined]) {
+    assert.strictEqual(foodRunPreempt({ active, inProgress: true }), false, String(active));
+  }
+  assert.strictEqual(foodRunPreempt({ active: 'autonomous', inProgress: false }), false, 'pas d objectif : rien à rallumer');
+  assert.strictEqual(foodRunPreempt({ active: 'autonomous', inProgress: true, migrating: true }), false);
+  assert.strictEqual(foodRunPreempt({ active: 'autonomous', inProgress: true, switching: true }), false);
+  assert.strictEqual(foodRunPreempt({ active: 'autonomous', inProgress: true, huntBusy: true }), false, 'le hook de descente chasse DANS le planner');
+  assert.strictEqual(foodRunPreempt(), false);
+});
+
+function takeoverGlue(over = {}) {
+  const w = Object.assign({ active: 'autonomous', objective: { status: 'in_progress' }, begins: [], starts: 0, events: [], sleeps: 0 }, over);
+  const src = slice('async function foodRunTakeover() {', 'setInterval(() => { foodRunTick()');
+  const taskCtl = {
+    get active() { return w.active; },
+    begin(name) { w.begins.push(name); w.active = name; w.tok = { cancelled: false }; return w.tok; },
+  };
+  const env = {
+    world: { get objective() { return w.objective; } }, taskCtl,
+    foodRunPreempt: require('./foodRun').foodRunPreempt,
+    _migrating: false, _ljSwitching: false, _huntCookBusy: 0, MIGRATION_PREEMPT_WAIT_MS: 30000,
+    stopMotion: () => {}, emit: (e) => w.events.push(e),
+    sleep: async () => { w.sleeps++; if (w.onSleep) w.onSleep(w); },
+    startAutonomous: async () => { w.starts++; },
+  };
+  const names = Object.keys(env);
+  const factory = new Function(...names, `let taskToken = { cancelled: true };\nlet _autoRunners = 0;\nlet _skillInFlight = ${Number(w.inFlight) || 0};\n${src}\nreturn { foodRunTakeover, foodRunRelease, getTok: () => taskToken, done: () => { _skillInFlight = 0; } };`);
+  Object.assign(w, factory(...names.map((n) => env[n])));
+  return w;
+}
+
+test('foodRunTakeover : un skill en vol → on attend qu il rende la main avant de chasser', async () => {
+  const w = takeoverGlue({ inFlight: 1 });
+  w.onSleep = (ww) => { if (ww.sleeps === 3) ww.done(); };
+  const tok = await w.foodRunTakeover();
+  assert.ok(tok && !tok.cancelled);
+  assert.strictEqual(w.sleeps, 3);
+});
+
+test('foodRunTakeover : prend la tâche, attend (borné) que le skill en vol rende la main, remplace le jeton global', async () => {
+  const w = takeoverGlue();
+  const tok = await w.foodRunTakeover();
+  assert.ok(tok && !tok.cancelled);
+  assert.deepStrictEqual(w.begins, ['food_run']);
+  assert.strictEqual(w.getTok(), tok, 'huntCookGoal capturera CE jeton');
+  assert.ok(w.events.some((e) => e.type === 'food_run_preempt'));
+  assert.strictEqual(w.foodRunRelease(tok), true, 'fin de sortie : le planner est rallumé');
+  assert.strictEqual(w.starts, 1);
+});
+
+test('foodRunTakeover : un ordre / une migration a la main → aucune préemption, rien à rallumer', async () => {
+  const w = takeoverGlue({ active: 'follow' });
+  assert.strictEqual(await w.foodRunTakeover(), null);
+  assert.deepStrictEqual(w.begins, []);
+  assert.strictEqual(w.foodRunRelease(null), false);
+  assert.strictEqual(w.starts, 0);
+});
+
+test('foodRunRelease : un autre maître a pris la main pendant la sortie → on ne rallume PAS le planner par-dessus', async () => {
+  const w = takeoverGlue();
+  const tok = await w.foodRunTakeover();
+  w.active = 'migration'; tok.cancelled = true;
+  assert.strictEqual(w.foodRunRelease(tok), false);
+  assert.strictEqual(w.starts, 0);
+});
+
+test('index.js : foodRunTick passe par foodRunTakeover AVANT ensureFood et rend la main dans le finally', () => {
+  const body = slice('async function foodRunTick() {', 'async function foodRunTakeover() {');
+  const iTake = body.indexOf('_foodTok = await foodRunTakeover();');
+  const iEnsure = body.indexOf('await withTimeout(ensureFood()');
+  assert.ok(iTake > 0 && iEnsure > iTake, 'préemption avant la sortie');
+  assert.match(body, /finally \{\n\s+_foodRunBusy = false;\n\s+foodRunRelease\(_foodTok\);/);
+});
+
+test('index.js : la porte de descente lit la mémoire des troupeaux (knownHerdNear) et passe herdNear', () => {
+  const body = slice('function descentFoodGateCheck(opts = {}) {', 'function huntSawNoPrey(res)');
+  assert.match(body, /knownHerdNear\(herdsLoad\(st, now\)/);
+  assert.match(body, /herdNear: !!herd/);
+  assert.match(body, /herdTried/);
+});

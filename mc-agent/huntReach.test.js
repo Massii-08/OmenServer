@@ -84,3 +84,36 @@ test('herdsForget / herdsChanged', () => {
   assert.strictEqual(H.herdsChanged(l, [l[0]]), true);
   assert.strictEqual(H.herdsChanged(l, [l[0], Object.assign({}, l[1], { n: 4 })]), true);
 });
+
+// ── 23/10 : la porte de descente doit savoir s'il reste un troupeau CONNU à portée de marche ──
+test('knownHerdNear : le troupeau connu le plus proche à ≤ 200 blocs, sans distance MINIMALE (la porte, pas l expédition)', () => {
+  const now = 1000;
+  const list = [
+    { x: 30, z: 0, n: 1, at: now },          // tout près : compte (≠ pickHerd, qui l'écarte)
+    { x: 150, z: 0, n: 2, at: now },
+    { x: 900, z: 0, n: 9, at: now },         // trop loin
+  ];
+  const h = H.knownHerdNear(list, { x: 0, z: 0 }, { now });
+  assert.deepStrictEqual([h.x, h.z, Math.round(h.dist)], [30, 0, 30]);
+  assert.strictEqual(H.knownHerdNear([{ x: 250, z: 0, n: 1, at: now }], { x: 0, z: 0 }, { now }), null, 'au-delà de 200 → rien');
+  assert.strictEqual(H.KNOWN_HERD_GATE_DIST, 200);
+});
+
+test('knownHerdNear : périmé (TTL), écarté (cellule ratée), entrée illisible → ignoré', () => {
+  const now = 10 * 3600000;
+  assert.strictEqual(H.knownHerdNear([{ x: 10, z: 0, n: 1, at: now - H.HERD_TTL_MS - 1 }], { x: 0, z: 0 }, { now }), null);
+  assert.strictEqual(H.knownHerdNear([{ x: 100, z: 0, n: 1, at: now }], { x: 0, z: 0 }, { now, avoid: [{ x: 110, z: 5 }] }), null);
+  assert.strictEqual(H.knownHerdNear(null, { x: 0, z: 0 }, { now }), null);
+  assert.strictEqual(H.knownHerdNear([{ x: 10, z: 0, n: 1, at: now }], null, { now }), null);
+});
+
+test('herdToMarkAfterFail : la cellule de troupeau la plus proche à < 64 blocs, hors cellules déjà ratées', () => {
+  const now = 1000;
+  const list = [{ x: 55, z: 0, n: 2, at: now }, { x: 10, z: 5, n: 1, at: now }, { x: 100, z: 0, n: 3, at: now }];
+  const h = H.herdToMarkAfterFail(list, { x: 0, z: 0 }, { now });
+  assert.deepStrictEqual([h.x, h.z], [10, 5]);
+  const h2 = H.herdToMarkAfterFail(list, { x: 0, z: 0 }, { now, avoid: [{ x: 12, z: 4 }] });
+  assert.deepStrictEqual([h2.x, h2.z], [55, 0]);
+  assert.strictEqual(H.herdToMarkAfterFail([{ x: 100, z: 0, n: 3, at: now }], { x: 0, z: 0 }, { now }), null, '≥ 64 : c est l expédition qui s en charge');
+  assert.strictEqual(H.HERD_FAIL_MARK_DIST, 64);
+});

@@ -240,19 +240,19 @@ const {
   FISH_SESSION_RADIUS, FISH_SESSION_GOTO_MS, FISH_SESSION_CATCH_MS, FISH_SESSION_MISSES, STRING_HUNT_RADIUS,
   COMBAT_LOOT_RADIUS, COMBAT_LOOT_ITEMS, COMBAT_LOOT_MS, COMBAT_LOOT_HOSTILE_RADIUS, COMBAT_LOOT_SETTLE_MS,
 } = require('./food');
-const { runEnsureFood, runHuntCook } = require('./foodRun');
+const { runEnsureFood, runHuntCook, foodRunPreempt } = require('./foodRun');
 const { isRawMeat, rawEatAllowed, ateFields, cookLotPlan, ironFuelReserve, COOK_LOT_MAX_MS, COOK_LOT_HARD_MS, COOK_FAIL_COOLDOWN_MS } = require('./cookMeat');
 // L'EXPÉDITION VERS LE GIBIER (19/10) : à vraie faim, de jour, en surface, sans aucun passif à ≤ 32 blocs,
 // UNE marche vers la cellule à animaux la plus proche connue de la carte du groupe. Les décisions pures
 // (où, faut-il partir, quelle jambe, quelles cellules écarter) sont dans foodTrip.js, l'ordre des
 // phases dans foodRun.runHuntCook ; le câblage sur le bot (foodTrip*) est juste avant huntCookGoal.
 const {
-  pickGrazingCell, foodTripLeg, triedCellsLoad, triedCellsAdd, FOOD_TRIP_MEMO_KEY,
+  pickGrazingCell, foodTripLeg, triedCellsLoad, triedCellsAdd, FOOD_TRIP_MEMO_KEY, isOrderOwner,
   FOOD_TRIP_MS, FOOD_TRIP_YIELD_MAX_MS, FOOD_TRIP_NEAR, FOOD_TRIP_ARRIVED, FOOD_TRIP_LEG_MS, FOOD_TRIP_LEG_MIN_MS, FOOD_TRIP_MAX_LEGS, FOOD_TRIP_STUCK_MAX,
 } = require('./foodTrip');
 // TROUPEAUX VUS (22/10, huntReach.js) : chaque animal de bot.entities (jusqu'à 96 blocs) est noté par
 // cellule de 32 dans le mémo de base ; l'expédition vise le troupeau connu le plus proche AVANT les biomes.
-const { herdSightings, herdsLoad, herdsObserve, herdsForget, herdsChanged, pickHerd, HERD_MEMO_KEY } = require('./huntReach');
+const { herdSightings, herdsLoad, herdsObserve, herdsForget, herdsChanged, pickHerd, knownHerdNear, herdToMarkAfterFail, HERD_MEMO_KEY, HERD_CELL } = require('./huntReach');
 const { shelterCraftThrottled } = require('./lowhp');
 
 function parseArgs(argv) {
@@ -396,6 +396,12 @@ let _skelRushYieldBy = null;                    // chemin VITAL qui a repris la 
 // le squad et la décision elle-même (une seule expédition à la fois). Sans elle, l'ancre ou le chef
 // ramèneraient le bot en /home ou /tpa au milieu de la marche — et l'expédition n'aboutirait jamais.
 let _foodTripBusy = false;
+// CHASSE EN COURS (huntCookGoal : chasse → cuisson → pêche, avec ou sans expédition). COMPTEUR de niveau
+// MODULE (piège #56) — le hook de descente (planner) et le timer nourriture peuvent en lancer chacun une.
+// 23/10 : 36 des 42 `hunt_failed` de 6 h = la marche vers la bête annulée par un autre goto (collectBlock,
+// branchMine, oreGrab, descendDiagonal…). Lu par foodTripYield (le planner cède), le confine, le squad,
+// le ramassage de minerai et foodRunTick.
+let _huntCookBusy = 0;
 // EXPLORATION DE SURFACE EN COURS (gather{explore:true} : lj_stock/logs et la chaîne autonome
 // minerai/bois). Garde de niveau MODULE (piège #56), même famille que `_foodTripBusy` : `explore()`
 // (skills/explore.js) est AUTORISÉ par `bot._mcaExploreBounds` à voyager jusqu'à 2× le rayon confine
@@ -786,7 +792,7 @@ setInterval(() => {
     // 160 blocs) ; l'enforcement la ramènerait en /home au milieu de la marche ou de la chasse.
     // `_nightHold` idem (discipline de nuit, 19/10 soir) : un /home de rappel arracherait le bot nu à
     // l'abri qu'il est en train de reprendre — la nuit, c'est la discipline qui possède le bot.
-    const busy = !!bot.targetDigBlock || _stillBusy || _imminentBusy || _smeltOppBusy || _armorBusy || _nightHold || _migrating || _escaping || _foodTripBusy || _exploreBusy || _skelRushBusy;
+    const busy = !!bot.targetDigBlock || _stillBusy || _imminentBusy || _smeltOppBusy || _armorBusy || _nightHold || _migrating || _escaping || _foodTripBusy || _exploreBusy || _skelRushBusy || _huntCookBusy > 0;
     // `_confineGraceUntil` (fix run10) : un trek lointain arrivé noyé/sous terre n'a pas posé sa base ;
     // le rappeler à l'ancre le renverrait dans la zone morte qu'il vient de quitter (18 cas mesurés).
     const graceHold = Date.now() < _confineGraceUntil;
@@ -908,7 +914,7 @@ async function tryRegroup(opts = {}) {
   if (_caveTripBusy || _skelRushBusy) return { ok: false, reason: 'busy' };
   if (opts && opts.periodic) {
     const longTask = _stillBusy || _imminentBusy || _smeltOppBusy || _armorBusy || _migrating || !!bot.targetDigBlock
-      || _escaping || _foodTripBusy || _exploreBusy || _caveTripBusy || _craftDepth > 0;
+      || _escaping || _foodTripBusy || _exploreBusy || _caveTripBusy || _craftDepth > 0 || _huntCookBusy > 0;
     if (longTask || isMiningGoal(_curGoal)) return { ok: false, reason: 'busy' };
   }
   if (await regroupNightGuard()) return { ok: false, reason: 'night_shelter' };
@@ -971,7 +977,7 @@ async function trySquad() {
   // ramènerait au chef au milieu de la marche (ou de la chasse sur place) sans qu'il ait mangé.
   // `_craftDepth` (fix 20/10) : un /tpa tiré pendant un craft à la table laissait la table à 100 blocs
   // (`squad_join` → `table_abandoned` → `t1_sword craft_failed`, NethBot2 session 278).
-  const busy = !!bot.targetDigBlock || _stillBusy || _imminentBusy || _smeltOppBusy || _armorBusy || _migrating || _escaping || _foodTripBusy || _exploreBusy || _caveTripBusy || _craftDepth > 0 || _skelRushBusy;
+  const busy = !!bot.targetDigBlock || _stillBusy || _imminentBusy || _smeltOppBusy || _armorBusy || _migrating || _escaping || _foodTripBusy || _exploreBusy || _caveTripBusy || _craftDepth > 0 || _skelRushBusy || _huntCookBusy > 0;
   const pick = squadTarget({
     // `y`/`ironZone` de SOI : sans eux un mineur productif se croirait « rien du tout » et
     // remonterait rejoindre un flâneur resté en surface — l'inverse exact du but.
@@ -2909,7 +2915,7 @@ function foodTripState() {
     isDay: (bot.time && bot.time.timeOfDay != null) ? !isNight(bot) : null,
     y: p ? p.y : NaN,
     migrating: _migrating,
-    ordered: !!(owner && owner !== 'autonomous'),
+    ordered: isOrderOwner(owner),   // 'food_run' (sortie qui a préempté le planner) n'est pas un ordre
     // Mêmes gardes que le ramassage après combat (lootAfterCombat) : la survie passe devant, et un
     // combat en cours (bot.pvp.target) n'est pas le moment de partir marcher.
     busy: !!(_imminentBusy || panicInFlight || _armorBusy || _baseBusy || _escaping || _deathDebtBusy || inWater
@@ -2957,7 +2963,7 @@ function foodTripUnlock() { _foodTripBusy = false; }
  */
 async function foodTripYield() {
   const t0 = Date.now();
-  while (_foodTripBusy && !taskToken.cancelled && Date.now() - t0 < FOOD_TRIP_YIELD_MAX_MS) await sleep(500);
+  while ((_foodTripBusy || _huntCookBusy > 0) && !taskToken.cancelled && Date.now() - t0 < FOOD_TRIP_YIELD_MAX_MS) await sleep(500);
 }
 
 /**
@@ -2977,6 +2983,23 @@ function foodTripMark(cell) {
     patch[HERD_MEMO_KEY] = herdsForget(herdsLoad(st, now), cell);
   }
   saveBaseState(Object.assign({}, st, patch));
+}
+
+/**
+ * Chasse ratée sur une bête VUE (23/10) : la cellule de troupeau la plus proche à < 64 blocs est marquée
+ * ratée (mémo de base, fusion) — l'expédition et la porte de descente visent alors le suivant.
+ * → le troupeau marqué | null.
+ */
+function foodTripMarkNearHerd() {
+  const p = bot.entity && bot.entity.position;
+  if (!p) return null;
+  const now = Date.now();
+  const st = loadBaseState() || {};
+  const avoid = triedCellsLoad(st, now);
+  const h = herdToMarkAfterFail(herdsLoad(st, now), { x: p.x, z: p.z }, { avoid, now });
+  if (!h) return null;
+  saveBaseState(Object.assign({}, st, { [FOOD_TRIP_MEMO_KEY]: triedCellsAdd(avoid, h, now) }));
+  return h;
 }
 
 // ── TROUPEAUX VUS (22/10) : le serveur envoie les animaux jusqu'à 96 blocs ; un bot qui passe près d'un
@@ -3089,66 +3112,70 @@ async function huntCookGoal(target, opts = {}) {
   // la main pendant la chasse, le relire donnerait le jeton VIVANT de la migration — et la chasse
   // repartirait par-dessus ses jambes.
   const tok = taskToken;
-  return runHuntCook({
-    token: tok,
-    inventory: () => buildCtxInv(bot),
-    passiveInView: () => { try { return !!nearestPassive(bot, HUNT_SIGHT_RADIUS); } catch (e) { return false; } },
-    // Le plafond est RÉEL : à l'expiration `cancel()` coupe le jeton dérivé que huntPassive relit à
-    // chaque proie (withTimeout seul rend la main mais laisse la chasse tourner en fond).
-    hunt: ({ count, token, ms, cancel }) => withTimeout(
-      huntPassive(bot, { count, maxDistance: HUNT_SIGHT_RADIUS }, token),
-      ms, () => { try { cancel(); } catch (e) {} try { stopMotion(); } catch (e) {} }),
-    // Piles de viande crue, la plus abondante d'abord : le four se pose (puis se reprend) une fois par
-    // TYPE de viande, on cuit donc le plus gros tas en premier.
-    rawStacks: () => Object.entries(RAW2COOKED)
-      .map(([name, out]) => ({ name, out, count: _invTotal((i) => i.name === name) }))
-      .filter((st) => st.count > 0)
-      .sort((a, b) => b.count - a.count),
-    // Cuisson du LOT (23/10, cookMeat.js) : remplace l'étape « cuire pour atteindre le but » — on cuit
-    // ≥ 3 crus quel que soit le but, hors du budget de 60 s (plafond propre ~45 s).
-    cookLot: () => cookMeatLot('hunt'),
-    hasFurnace: () => _invTotal((i) => i.name === 'furnace') > 0,
-    cook: async ({ name, out, count, maxMs }) => {
-      // Sans combustible, la fonte est impossible : ne pas poser puis reprendre un four (~5-8 s) pour
-      // rien. Même mesure que `smelt` (fuelUnits : charbon 8, bois 1,5).
-      let fuel = 0;
-      try { fuel = fuelUnits(bot.inventory.items(), fuelNames()); } catch (e) { fuel = 0; }
-      if (!(fuel >= 1)) return 0;
-      const r = await smeltWithFurnace(name, out, count, undefined, { maxMs });
-      return (r && (r.got || (r.ok ? count : 0))) || 0;
-    },
-    hasRod: () => _invTotal((i) => i.name === 'fishing_rod') > 0,
-    // PÊCHE DURABLE (22/10, cf. food.js §4) : une canne FABRICABLE compte (fishCatch la fabrique avec
-    // craftSmart), la ficelle se prend à une araignée EN VUE (≤ 24 blocs, ≤ 30 s), et une chasse
-    // bredouille ouvre une SÉANCE de 75 s jusqu'à 48 blocs de berge.
-    canCraftRod: () => { try { return rodPlan(bot.inventory.items()).craft === true; } catch (e) { return false; } },
-    fishSession: true,
-    spiderInView: () => { try { return !!nearestSpider(bot, STRING_HUNT_RADIUS); } catch (e) { return false; } },
-    stringCount: () => _invTotal((i) => i.name === 'string'),
-    health: () => bot.health,
-    huntString: ({ ms, token, cancel }) => withTimeout(
-      huntSpidersGoal({ token, totalMs: ms, maxDistance: STRING_HUNT_RADIUS, count: 2 }),
-      ms + 3000, () => { try { cancel(); } catch (e) {} try { stopMotion(); } catch (e) {} }),
-    // Pêche d'appoint LOCALE : eau à ≤ FISH_RADIUS (sinon `no_water` aussitôt, sans voyage), trajet vers
-    // la berge ≤ 12 s, une prise ≤ 20 s, le tout ≤ ms. En SÉANCE : berge ≤ 48 blocs (≤ 20 s de marche,
-    // décomptés de la séance), une touche ≤ 32 s (vanilla : 30 s au plus), 3 lancers morts avant d'abandonner.
-    fish: ({ ms, token, cancel, session, target }) => withTimeout(
-      fishGoal(session ? (target || FISH_TARGET) : FISH_TARGET, session
-        ? { token, maxDistance: FISH_SESSION_RADIUS, totalMs: Math.max(FISH_MIN_MS, ms - FISH_SESSION_GOTO_MS),
-          perCatchMs: FISH_SESSION_CATCH_MS, gotoMs: FISH_SESSION_GOTO_MS, maxMisses: FISH_SESSION_MISSES }
-        : { token, maxDistance: FISH_RADIUS, totalMs: ms, perCatchMs: 20000, gotoMs: 12000 }),
-      ms + 3000, () => { try { cancel(); } catch (e) {} try { stopMotion(); } catch (e) {} }),
-    // EXPÉDITION VERS LE GIBIER (cf. foodTrip* plus haut) : aucun passif à ≤ 32 blocs + vraie faim +
-    // jour + surface → une marche vers la cellule à animaux la plus proche connue, puis la chasse
-    // ci-dessus rejoue sur place. Toujours câblée : TOUS les appelants (timer, kit, descente, mappeur) y passent.
-    tripState: () => foodTripState(),
-    grazingCell: () => foodTripCell(),
-    tripLock: () => foodTripLock(),
-    tripUnlock: () => foodTripUnlock(),
-    tripWalk: (o) => foodTripWalk(o),
-    tripTried: (cell) => foodTripMark(cell),
-    emit,
-  }, target, opts);
+  _huntCookBusy++;
+  try {
+    return await runHuntCook({
+      token: tok,
+      inventory: () => buildCtxInv(bot),
+      passiveInView: () => { try { return !!nearestPassive(bot, HUNT_SIGHT_RADIUS); } catch (e) { return false; } },
+      // Le plafond est RÉEL : à l'expiration `cancel()` coupe le jeton dérivé que huntPassive relit à
+      // chaque proie (withTimeout seul rend la main mais laisse la chasse tourner en fond).
+      hunt: ({ count, token, ms, cancel }) => withTimeout(
+        huntPassive(bot, { count, maxDistance: HUNT_SIGHT_RADIUS }, token),
+        ms, () => { try { cancel(); } catch (e) {} try { stopMotion(); } catch (e) {} }),
+      // Piles de viande crue, la plus abondante d'abord : le four se pose (puis se reprend) une fois par
+      // TYPE de viande, on cuit donc le plus gros tas en premier.
+      rawStacks: () => Object.entries(RAW2COOKED)
+        .map(([name, out]) => ({ name, out, count: _invTotal((i) => i.name === name) }))
+        .filter((st) => st.count > 0)
+        .sort((a, b) => b.count - a.count),
+      // Cuisson du LOT (23/10, cookMeat.js) : remplace l'étape « cuire pour atteindre le but » — on cuit
+      // ≥ 3 crus quel que soit le but, hors du budget de 60 s (plafond propre ~45 s).
+      cookLot: () => cookMeatLot('hunt'),
+      hasFurnace: () => _invTotal((i) => i.name === 'furnace') > 0,
+      cook: async ({ name, out, count, maxMs }) => {
+        // Sans combustible, la fonte est impossible : ne pas poser puis reprendre un four (~5-8 s) pour
+        // rien. Même mesure que `smelt` (fuelUnits : charbon 8, bois 1,5).
+        let fuel = 0;
+        try { fuel = fuelUnits(bot.inventory.items(), fuelNames()); } catch (e) { fuel = 0; }
+        if (!(fuel >= 1)) return 0;
+        const r = await smeltWithFurnace(name, out, count, undefined, { maxMs });
+        return (r && (r.got || (r.ok ? count : 0))) || 0;
+      },
+      hasRod: () => _invTotal((i) => i.name === 'fishing_rod') > 0,
+      // PÊCHE DURABLE (22/10, cf. food.js §4) : une canne FABRICABLE compte (fishCatch la fabrique avec
+      // craftSmart), la ficelle se prend à une araignée EN VUE (≤ 24 blocs, ≤ 30 s), et une chasse
+      // bredouille ouvre une SÉANCE de 75 s jusqu'à 48 blocs de berge.
+      canCraftRod: () => { try { return rodPlan(bot.inventory.items()).craft === true; } catch (e) { return false; } },
+      fishSession: true,
+      spiderInView: () => { try { return !!nearestSpider(bot, STRING_HUNT_RADIUS); } catch (e) { return false; } },
+      stringCount: () => _invTotal((i) => i.name === 'string'),
+      health: () => bot.health,
+      huntString: ({ ms, token, cancel }) => withTimeout(
+        huntSpidersGoal({ token, totalMs: ms, maxDistance: STRING_HUNT_RADIUS, count: 2 }),
+        ms + 3000, () => { try { cancel(); } catch (e) {} try { stopMotion(); } catch (e) {} }),
+      // Pêche d'appoint LOCALE : eau à ≤ FISH_RADIUS (sinon `no_water` aussitôt, sans voyage), trajet vers
+      // la berge ≤ 12 s, une prise ≤ 20 s, le tout ≤ ms. En SÉANCE : berge ≤ 48 blocs (≤ 20 s de marche,
+      // décomptés de la séance), une touche ≤ 32 s (vanilla : 30 s au plus), 3 lancers morts avant d'abandonner.
+      fish: ({ ms, token, cancel, session, target }) => withTimeout(
+        fishGoal(session ? (target || FISH_TARGET) : FISH_TARGET, session
+          ? { token, maxDistance: FISH_SESSION_RADIUS, totalMs: Math.max(FISH_MIN_MS, ms - FISH_SESSION_GOTO_MS),
+            perCatchMs: FISH_SESSION_CATCH_MS, gotoMs: FISH_SESSION_GOTO_MS, maxMisses: FISH_SESSION_MISSES }
+          : { token, maxDistance: FISH_RADIUS, totalMs: ms, perCatchMs: 20000, gotoMs: 12000 }),
+        ms + 3000, () => { try { cancel(); } catch (e) {} try { stopMotion(); } catch (e) {} }),
+      // EXPÉDITION VERS LE GIBIER (cf. foodTrip* plus haut) : aucun passif à ≤ 32 blocs + vraie faim +
+      // jour + surface → une marche vers la cellule à animaux la plus proche connue, puis la chasse
+      // ci-dessus rejoue sur place. Toujours câblée : TOUS les appelants (timer, kit, descente, mappeur) y passent.
+      tripState: () => foodTripState(),
+      grazingCell: () => foodTripCell(),
+      tripLock: () => foodTripLock(),
+      tripUnlock: () => foodTripUnlock(),
+      tripWalk: (o) => foodTripWalk(o),
+      tripTried: (cell) => foodTripMark(cell),
+      huntFailed: () => foodTripMarkNearHerd(),
+      emit,
+    }, target, opts);
+  } finally { _huntCookBusy--; }
 }
 
 // PÊCHE — plan B nourriture quand la zone est vidée de ses proies (20+ « starved to death » en 3 h
@@ -7696,6 +7723,7 @@ function foodStock() {
 // deux warps). Niveau MODULE, comme `_baseBusy`/`_armorBusy` (piège #56).
 let _surfaceTripBusy = false;
 let _foodSurfaceTripAt = 0;   // dernière remontée nourriture (lue par foodRunTick pour le retour /home work)
+const SURFACE_TRIP_SETTLE_MS = 1500;   // après le warp /home safe, avant la chasse (cf. surfaceTrip)
 
 // ensureFood — ravitaillement BORNÉ À 60 s AU TOTAL (Massii 19/10 : « l'important c'est la VITESSE »).
 // Avant : balayage de butin 20 s + remontée 90 s + 3 vagues de 120 s + cuisson + pêche jusqu'à 300 s
@@ -7723,6 +7751,9 @@ async function ensureFood() {
           markWorkBeforeTrip('food');
           _foodSurfaceTripAt = Date.now();
           await withTimeout(safeWarpHome(HOME_SAFE), ms, () => { try { stopMotion(); } catch (e) {} });
+          // Laisser arriver le paquet de position du warp : la détection de TP (onTeleport → stopMotion)
+          // tombait sinon PENDANT le premier goto de la chasse et l'annulait (`hunt_failed` en 300 ms, 23/10).
+          await sleep(SURFACE_TRIP_SETTLE_MS);
         } finally { _surfaceTripBusy = false; }
       },
       hunt: ({ budget }) => huntCookGoal(6, { budget, goalPoints: ENSURE_SKIP_POINTS }),   // même seuil que la sortie anticipée
@@ -12144,7 +12175,8 @@ setInterval(async () => {
     const ok = oregrab.shouldGrab({
       // `_shelterInFlight` (discipline de nuit, 19/10 soir) : terré, on ne marche pas vers un minerai et
       // on ne creuse pas la paroi de son propre abri pour un bloc de fer.
-      busy: _imminentBusy || panicInFlight || _armorBusy || _smeltOppBusy || _baseBusy || !!_shelterInFlight,
+      // La chasse / l'expédition possèdent le pathfinder (23/10) : un détour vers un minerai annulait leur goto.
+      busy: _imminentBusy || panicInFlight || _armorBusy || _smeltOppBusy || _baseBusy || !!_shelterInFlight || _huntCookBusy > 0 || _foodTripBusy,
       digging: !!bot.targetDigBlock,
       inWater: (function () { try { return isInWater(bot); } catch (e) { return false; } })(),
       hostilesNear: hostile,
@@ -12393,6 +12425,10 @@ let _foodRunCooldownMs = FOOD_RUN_COOLDOWN_MS;
 async function foodRunTick() {
   if (_foodRunBusy) return;
   if (_imminentBusy || panicInFlight || _armorBusy || _baseBusy) return;   // la survie passe devant
+  // Une chasse déjà en vol (hook de descente du planner, kit…) : pas de 2e sortie par-dessus — elles se
+  // voleraient le pathfinder l'une l'autre (23/10).
+  if (_huntCookBusy > 0) return;
+  let _foodTok = null;   // jeton de la sortie quand elle a PRÉEMPTÉ le planner (cf. foodRun.foodRunPreempt)
   try {
     if (!bot.inventory || !bot.entity) return;
     const stock = foodStock();
@@ -12420,6 +12456,13 @@ async function foodRunTick() {
       y: bot.entity.position ? Math.round(bot.entity.position.y) : null,
       wait_min: Math.round(_foodRunCooldownMs / 60000),
     });
+    // LA SORTIE POSSÈDE LE PATHFINDER (23/10) : le planner minait EN PARALLÈLE de la chasse — 36 des 42
+    // `hunt_failed` de 6 h = la marche vers la bête annulée par collectBlock / branchMine / descendDiagonal
+    // (GoalChanged, 14 échecs en < 2 s). Même remède que la migration (piège #72a) : on prend la tâche, on
+    // attend (borné) que le skill en vol rende la main, la chasse tourne sous NOTRE jeton (huntCookGoal le
+    // capture), puis le planner est rallumé dans le `finally`.
+    _foodTok = await foodRunTakeover();
+    if (_foodTok && _foodTok.cancelled) return;          // un autre maître a pris la main pendant l'attente
     // 70 s (19/10 : « la VITESSE ») et non plus 240 s : ensureFood tient dans un budget de 60 s dont
     // chaque phase est rognée, ces 10 s de marge ne sont qu'un garde-fou d'exécution. + FOOD_TRIP_MS :
     // l'EXPÉDITION vers le gibier (aucun passif en vue, vraie faim, jour) a son propre plafond de 75 s,
@@ -12439,7 +12482,37 @@ async function foodRunTick() {
     // remontée). Rien trouvé là-haut → on reste en surface : la porte de descente décidera (pas de yo-yo).
     if (_foodSurfaceTripAt >= runStartedAt && foodPoints(buildCtxInv(bot)) > 0) await returnToWork('food');
   } catch (e) { /* watchdog : ne crash jamais */ }
-  finally { _foodRunBusy = false; }
+  finally {
+    _foodRunBusy = false;
+    foodRunRelease(_foodTok);
+  }
+}
+
+/**
+ * Prend la main sur le PLANNER pour la sortie nourriture (foodRun.foodRunPreempt) : tâche `food_run`,
+ * attente bornée que le skill en vol rende la main, jeton global remplacé (huntCookGoal le capture).
+ * → le jeton (éventuellement annulé si un autre maître est passé entre-temps) | null (pas de préemption).
+ */
+async function foodRunTakeover() {
+  const inProgress = !!(world.objective && world.objective.status === 'in_progress');
+  if (!foodRunPreempt({ active: taskCtl.active, inProgress, migrating: _migrating, switching: _ljSwitching, huntBusy: _huntCookBusy > 0 })) return null;
+  const tok = taskCtl.begin('food_run', stopMotion);
+  const w0 = Date.now();
+  while ((_skillInFlight > 0 || _autoRunners > 0) && !tok.cancelled && Date.now() - w0 < MIGRATION_PREEMPT_WAIT_MS) {
+    await sleep(250);
+  }
+  if (tok.cancelled) return tok;
+  taskToken = tok;
+  emit({ type: 'food_run_preempt', waited_ms: Date.now() - w0 });
+  return tok;
+}
+
+/** Fin de sortie : planner préempté et personne d'autre n'a pris la main depuis → on le rallume. */
+function foodRunRelease(tok) {
+  if (!tok || tok.cancelled || taskCtl.active !== 'food_run') return false;
+  if (!(world.objective && world.objective.status === 'in_progress')) return false;
+  try { startAutonomous(null).catch((e) => emit({ type: 'error', message: String((e && e.message) || e) })); } catch (e) { return false; }
+  return true;
 }
 setInterval(() => { foodRunTick().catch(() => {}); }, 30000);
 setInterval(() => { herdScanTick(); }, HERD_SCAN_MS);
@@ -12633,10 +12706,23 @@ function descentFoodGateCheck(opts = {}) {
   const st = loadBaseState() || {};
   const p = bot.entity && bot.entity.position;
   const points = foodPoints(buildCtxInv(bot));
-  const r = descentFoodGate({ points, y: p ? p.y : NaN, refusals: foodGateLoad(st).refusals, now: Date.now(), noPrey: !!opts.noPrey });
+  // Troupeau CONNU à ≤ 200 blocs (mémo de base, hors cellules ratées) : à 0 point, la porte ne se dépense pas (23/10).
+  // Le troupeau le plus proche est lu SANS les cellules ratées : s'il est raté, la porte le dit (herdTried →
+  // herd_gate_spent) au lieu de chercher plus loin un troupeau que l'expédition ne visera pas forcément.
+  let herd = null;
+  let herdTried = false;
+  try {
+    if (p) {
+      const now = Date.now();
+      herd = knownHerdNear(herdsLoad(st, now), { x: p.x, z: p.z }, { now });
+      if (herd) herdTried = triedCellsLoad(st, now).some((a) => Math.hypot(a.x - herd.x, a.z - herd.z) <= HERD_CELL);   // même règle que pickHerd({avoid})
+    }
+  } catch (e) { herd = null; herdTried = false; }
+  const r = descentFoodGate({ points, y: p ? p.y : NaN, refusals: foodGateLoad(st).refusals, now: Date.now(), noPrey: !!opts.noPrey, herdNear: !!herd, herdTried });
   if (!r.allow) {
     saveBaseState(Object.assign({}, st, { foodGate: Object.assign({}, st.foodGate || {}, { refusals: r.refusals }) }));
-    emit({ type: 'food_gate', need: r.need, points, allow: false, refusals: r.refusals.length });
+    emit({ type: 'food_gate', need: r.need, points, allow: false, refusals: r.refusals.length, reason: r.reason,
+      herd: herd ? { x: herd.x, z: herd.z, dist: Math.round(herd.dist) } : undefined });
   } else if ((r.reason === 'gate_spent' || r.reason === 'no_prey') && Date.now() - _foodGateEvAt >= 60000) {
     _foodGateEvAt = Date.now();
     emit({ type: 'food_gate', need: r.need, points, allow: true, reason: r.reason });
