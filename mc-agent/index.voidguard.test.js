@@ -79,6 +79,7 @@ function glue({ pos = { x: -343.4, y: 75, z: 358.7 }, inv = [{ name: 'cobbleston
     _voidRescueBusy: false, _spawnOverVoidAt: 0, _spawnOverVoidPos: null, _fallDeaths: [], _lastSpawnAt: 0, _voidReanchorBusy: false,
     _safeHomeSet: true, _safeHomeSurface: true, _safeHomePos: { x: -343, y: 75, z: 359 },
     _workSet: true, _workPos: { x: -344, z: 371 },
+    _stairDepth: 0,   // descendDiagonal gardé : compteur d'escalier en cours (23/10)
     ...extra,
   };
   vm.createContext(sb);

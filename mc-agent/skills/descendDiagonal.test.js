@@ -249,3 +249,67 @@ test('buildGoal : la fin est la COLONNE de la marche — jamais la case creusée
   assert.strictEqual(g.isEnd({ x: 10, y: 63, z: 5 }), false, 'creuser tout droit sous soi : REFUSÉ');
   assert.strictEqual(g.isEnd({ x: 11, y: 64, z: 5 }), false, 'au-dessus de la marche : pas une descente');
 });
+
+// ─── DIG INTERROMPU (23/10, NethBot1 session 408 : `descend_y16 dig_failed` ×8 en 10 min) ───────────
+// Un `bot.dig` lancé par un AUTRE (ramassage opportuniste, fuite de creeper, repas) appelle
+// `stopDigging` → le dig de l'escalier rejette « Digging aborted ». Ce n'est pas une impasse du terrain :
+// on retente (borné) le MÊME bloc, et l'échec final porte l'erreur (`err`) pour la suite.
+test('descendDiagonal : dig « Digging aborted » une fois → retenté, la descente continue', async () => {
+  const { bot, calls, world } = makeBot({ startY: 10 });
+  let aborts = 1;
+  bot.dig = async (block) => {
+    calls.dig.push(block.position);
+    if (aborts > 0) { aborts--; throw new Error('Digging aborted'); }
+    world[`${block.position.x},${block.position.y},${block.position.z}`] = 'air';
+  };
+  const r = await descendDiagonal(bot, { targetY: 5, maxDepth: 20, digRetryMs: 1 });
+  assert.strictEqual(r.ok, true, JSON.stringify(r));
+  const first = calls.dig[0], second = calls.dig[1];
+  assert.deepStrictEqual([second.x, second.y, second.z], [first.x, first.y, first.z], 'même bloc retenté');
+});
+
+test('descendDiagonal : dig toujours avorté → dig_failed BORNÉ (3 essais) avec err', async () => {
+  const { bot, calls } = makeBot({ startY: 10 });
+  bot.dig = async (block) => { calls.dig.push(block.position); throw new Error('Digging aborted'); };
+  const r = await descendDiagonal(bot, { targetY: 5, maxDepth: 20, digRetryMs: 1 });
+  assert.strictEqual(r.ok, false);
+  assert.strictEqual(r.reason, 'dig_failed');
+  assert.strictEqual(r.err, 'Digging aborted');
+  assert.strictEqual(calls.dig.length, 3);
+});
+
+test('descendDiagonal : erreur non transitoire (dig time Infinity) → pas de retry, err transmis', async () => {
+  const { bot, calls } = makeBot({ startY: 10 });
+  bot.dig = async (block) => { calls.dig.push(block.position); throw new Error('dig time for bedrock is Infinity'); };
+  const r = await descendDiagonal(bot, { targetY: 5, maxDepth: 20, digRetryMs: 1 });
+  assert.strictEqual(r.reason, 'dig_failed');
+  assert.match(r.err, /Infinity/);
+  assert.strictEqual(calls.dig.length, 1);
+});
+
+test('descendDiagonal : dig avorté mais le bloc est parti (un autre l\'a miné) → on continue', async () => {
+  const { bot, calls, world } = makeBot({ startY: 10 });
+  let n = 0;
+  bot.dig = async (block) => {
+    calls.dig.push(block.position);
+    world[`${block.position.x},${block.position.y},${block.position.z}`] = 'air';
+    if (n++ === 0) throw new Error('Digging aborted');
+  };
+  const r = await descendDiagonal(bot, { targetY: 5, maxDepth: 20, digRetryMs: 1 });
+  assert.strictEqual(r.ok, true, JSON.stringify(r));
+});
+
+test('descendDiagonal : dig d\'un AUTRE en cours (targetDigBlock) → on attend qu\'il finisse au lieu de l\'avorter', async () => {
+  const { bot, calls, world } = makeBot({ startY: 10 });
+  bot.targetDigBlock = { name: 'coal_ore' };
+  setTimeout(() => { bot.targetDigBlock = null; }, 30);
+  let sawForeign = false;
+  bot.dig = async (block) => {
+    if (bot.targetDigBlock) sawForeign = true;
+    calls.dig.push(block.position);
+    world[`${block.position.x},${block.position.y},${block.position.z}`] = 'air';
+  };
+  const r = await descendDiagonal(bot, { targetY: 5, maxDepth: 20, digRetryMs: 1 });
+  assert.strictEqual(r.ok, true);
+  assert.strictEqual(sawForeign, false, 'le dig de l\'escalier ne démarre pas par-dessus celui d\'un autre');
+});

@@ -30,7 +30,50 @@ function cardinalFromYaw(yaw) {
   return { dx: 1, dz: 0 };
 }
 
-const NO_PROGRESS_STEPS = 8;   // paliers sans gagner 1 bloc de profondeur → `no_progress`
+const NO_PROGRESS_STEPS = 8;
+
+// DIG INTERROMPU (23/10, NethBot1 session 408 : `descend_y16 dig_failed` ×8 en 10 min, 4 d'affilée au
+// MÊME chantier y39, chacun ~0,3 s après le /home work). mineflayer n'a qu'UN dig à la fois : tout autre
+// `bot.dig` (ramassage opportuniste du minerai à portée), une fuite de creeper ou un repas appelle
+// `stopDigging` → le dig de l'escalier rejette « Digging aborted ». Ce n'est pas une impasse du terrain :
+// on attend que la main soit libre et on retente le MÊME bloc, borné. Une erreur non transitoire
+// (bloc incassable → « dig time … is Infinity ») échoue tout de suite. L'échec porte `err`.
+const DIG_ATTEMPTS = 3;
+const FOREIGN_DIG_WAIT_MS = 3000;   // dig d'un autre en cours : on le laisse finir (minerai = ~1-2 s)
+const _sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+function isTransientDigError(msg) { return /aborted/i.test(String(msg || '')); }
+
+/** Attend que personne d'autre ne creuse (borné). */
+async function waitHandFree(bot, maxMs, stepMs) {
+  const t0 = Date.now();
+  while (bot.targetDigBlock && Date.now() - t0 < maxMs) await _sleep(Math.max(1, stepMs));
+}
+
+/** Creuse `t` avec retry borné. → { ok:true } | { ok:false, err, cancelled? } */
+async function digStep(bot, t, token, retryMs) {
+  let lastErr = null;
+  for (let attempt = 0; attempt < DIG_ATTEMPTS; attempt++) {
+    if (token && token.cancelled) return { ok: false, cancelled: true, err: lastErr };
+    await waitHandFree(bot, FOREIGN_DIG_WAIT_MS, Math.min(100, retryMs));
+    // Relu à chaque essai : un autre a pu miner le bloc, ou de l'eau/lave a coulé dedans.
+    const cur = attempt === 0 ? t : bot.blockAt(_at(t.position));
+    if (!cur || VOID.has(cur.name)) return { ok: true };
+    if (attempt > 0) {
+      if (isWater(cur.name) || DANGER.has(cur.name)) return { ok: false, err: lastErr, fluid: cur.name };
+      if (typeof bot.canDigBlock === 'function' && !bot.canDigBlock(cur)) return { ok: false, err: lastErr, why: 'out_of_reach' };
+    }
+    try { await bot.dig(cur); return { ok: true }; }
+    catch (e) {
+      lastErr = (e && e.message) ? String(e.message).slice(0, 80) : String(e);
+      if (!isTransientDigError(lastErr)) return { ok: false, err: lastErr };
+      await _sleep(retryMs);
+    }
+  }
+  // Dernier essai avorté : le bloc a peut-être quand même cédé (dig fini côté serveur entre-temps).
+  const after = bot.blockAt(_at(t.position));
+  if (!after || VOID.has(after.name)) return { ok: true };
+  return { ok: false, err: lastErr };
+}   // paliers sans gagner 1 bloc de profondeur → `no_progress`
 
 function isLava(name) { return name === 'lava' || name === 'flowing_lava'; }
 function isWater(name) { return name === 'water' || name === 'flowing_water'; }
@@ -75,7 +118,7 @@ function buildGoal(x, y, z) {
 // `stopWhen` (optionnel, () => bool, 21/10) : relu avant CHAQUE palier ; vrai → on s'arrête net avec
 // {ok:true, stopped:true}. Sert à l'escalier « pierre » (stoneDig.js) : un joueur qui veut 30 cobble
 // creuse un escalier jusqu'à les avoir, il ne descend pas jusqu'à Y16. Un prédicat qui lève = « non ».
-async function descendDiagonal(bot, { targetY = -54, maxDepth = 200, onSurvivalTick = null, survivalEvery = 4, stopWhen = null } = {}, token = null) {
+async function descendDiagonal(bot, { targetY = -54, maxDepth = 200, onSurvivalTick = null, survivalEvery = 4, stopWhen = null, digRetryMs = 400 } = {}, token = null) {
   let reachedY = bot.entity && bot.entity.position ? bot.entity.position.y : 0;
   if (reachedY <= targetY) return { ok: true, reachedY };
 
@@ -184,7 +227,10 @@ async function descendDiagonal(bot, { targetY = -54, maxDepth = 200, onSurvivalT
       if (tool && !(bot.heldItem && bot.heldItem.name === tool.name)) {
         try { await bot.equip(tool, 'hand'); } catch (e) {}
       }
-      try { await bot.dig(t); } catch (e) { return { ok: false, reachedY, reason: 'dig_failed' }; }
+      const d = await digStep(bot, t, token, digRetryMs);
+      if (d.cancelled) return { ok: true, reachedY, cancelled: true };
+      if (d.fluid) return { ok: false, reachedY, reason: isWater(d.fluid) ? 'water_ahead' : 'lava_ahead' };
+      if (!d.ok) return { ok: false, reachedY, reason: 'dig_failed', err: d.err || d.why || 'unknown' };
     }
 
     // AVANCE : pathfinder.goto vers la marche (devant-bas) — c'est le seul moyen FIABLE de
@@ -202,4 +248,4 @@ async function descendDiagonal(bot, { targetY = -54, maxDepth = 200, onSurvivalT
   return { ok: false, reachedY, reason: 'max_depth' };
 }
 
-module.exports = { descendDiagonal, cardinalFromYaw, NO_PROGRESS_STEPS, buildGoal };
+module.exports = { descendDiagonal, cardinalFromYaw, NO_PROGRESS_STEPS, buildGoal, DIG_ATTEMPTS, isTransientDigError };

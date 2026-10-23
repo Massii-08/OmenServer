@@ -306,3 +306,22 @@ test('détour sans issue : au 2e détour vers la même case, elle est ignorée 1
   const m2 = G.noteDetour(m, 'x', 1000 + G.DETOUR_BAN_MS + 1);
   assert.ok(!(k in m2), 'les entrées expirées sont purgées');
 });
+
+// DESCENTE EN ESCALIER (23/10, NethBot1 session 408 : dig_failed ×8). Entre deux paliers l'escalier n'a
+// AUCUN but posé (dig à la main, puis goto) : le timer se croyait libre, marchait vers le charbon du
+// chantier et lançait son propre dig — qui avortait celui de l'escalier. Pendant une descente : portée de
+// bras seulement, comme pendant tout autre trajet.
+test('grabScope : descente en cours (stair) = un autre trajet, même sans but posé', () => {
+  const s = grabScope({ goal: null, stair: true });
+  assert.strictEqual(s.run, true);
+  assert.strictEqual(s.walk, false);
+  assert.strictEqual(s.drops, false);
+  assert.strictEqual(s.approach, false);
+});
+
+const { mayStartDig } = require('./oregrab');
+test('mayStartDig : jamais par-dessus le dig d\'un autre (mineflayer n\'en a qu\'un, le nouveau avorte l\'ancien)', () => {
+  assert.strictEqual(mayStartDig(null), true);
+  assert.strictEqual(mayStartDig(undefined), true);
+  assert.strictEqual(mayStartDig({ name: 'stone' }), false);
+});

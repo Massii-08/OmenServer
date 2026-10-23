@@ -45,3 +45,38 @@ test('descente : pioche irremplaçable → no_pick_stuck (event + raison), plus 
   assert.match(tail, /reason: 'no_pick_stuck'/);
   assert.match(fnSrc('rebuildPickHere'), /_lastPickRebuildWhy = /);
 });
+
+// dig_failed ×8 de la descente (23/10, session 408) : câblage escalier ↔ ramassage opportuniste.
+test('descente : _stairDepth au NIVEAU MODULE, incrémenté par le descendDiagonal gardé ET le TP /home work', () => {
+  assert.match(SRC, /^let _stairDepth = 0;/m);
+  const f = fnSrc('descendDiagonal');
+  assert.match(f, /_stairDepth\+\+/);
+  assert.match(f, /finally \{ _stairDepth = Math\.max\(0, _stairDepth - 1\); \}/);
+  const g = fnSrc('runGoalSkill');
+  const i = g.indexOf("type: 'descend_via_home_work'");
+  assert.ok(i > 0);
+  assert.match(g.slice(i, i + 600), /_stairDepth\+\+[\s\S]*goHome\(bot, HOME_WORK\)[\s\S]*_stairDepth - 1/);
+});
+
+test('ramassage opportuniste : scope `stair` pendant une descente, jamais de dig par-dessus celui d\'un autre', () => {
+  assert.match(SRC, /stair: _stairDepth > 0,/);
+  const i = SRC.indexOf('oregrab.mayStartDig(bot.targetDigBlock)');
+  const j = SRC.indexOf('await withTimeout(bot.dig(blk)');
+  assert.ok(i > 0 && j > i && j - i < 300, 'garde juste avant le dig du ramassage');
+});
+
+test('goal_failed transmet `err` quand le skill en donne un (dig_failed : quelle erreur ?)', () => {
+  assert.match(SRC, /type: 'goal_failed', name: g\.name, reason: \(r && r\.reason\) \|\| 'unknown' \}, \(r && r\.err\) \? \{ err:/);
+});
+
+test('capFillStacks : jamais dans l\'abri ni dans un espace fermé — vise une case ouverte (tossTarget), sinon attend', () => {
+  const f = fnSrc('capFillStacks');
+  assert.match(f, /if \(_shelterInFlight\) return;/);
+  assert.match(f, /tossTarget\(/);
+  assert.match(f, /type: 'fill_cap_deferred'/);
+  assert.match(f, /bot\.lookAt\(vec3Lib\(aim\.x, aim\.y, aim\.z\), true\)/);
+  assert.doesNotMatch(f, /yaw \+ Math\.PI/, 'plus de jet aveugle « derrière soi »');
+  // le report n'arme pas le throttle : la passe reprend au premier ramassage après la sortie
+  assert.ok(f.indexOf('_fillCapAt = Date.now()') > f.indexOf("type: 'fill_cap_deferred'"));
+  assert.match(SRC, /^let _fillCapDeferAt = 0;/m);
+});

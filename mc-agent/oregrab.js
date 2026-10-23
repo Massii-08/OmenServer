@@ -196,11 +196,13 @@ const REACH_SCAN = ORE_REACH + 2;
  * @returns {{run: boolean, detour: boolean, walk: boolean, drops: boolean, approach: boolean,
  *            maxDist: number, scan: number}} — `maxDist` à passer à oreStepPlan, `scan` à findBlocks
  */
-function grabScope({ migrating = false, goal = null, ownGoal = null } = {}) {
+function grabScope({ migrating = false, goal = null, ownGoal = null, stair = false } = {}) {
   if (migrating) {
     return { run: false, detour: false, walk: false, drops: false, approach: false, maxDist: 0, scan: 0 };
   }
-  const otherTrip = goal != null && goal !== ownGoal;
+  // `stair` (23/10) : une descente en escalier n'a pas de but posé entre deux paliers (dig à la main) —
+  // c'est pourtant un trajet en cours : portée de bras seulement, sinon on avorte ses digs.
+  const otherTrip = !!stair || (goal != null && goal !== ownGoal);
   if (otherTrip) {
     // maxDist = PICKUP_REACH (pas ORE_REACH) : aucun `walk` n'est permis ici (trajet en cours), donc
     // un minerai à portée de bras mais hors portée de ramassage ne doit PAS être miné (drop perdu) —
@@ -232,7 +234,14 @@ function oreGone(before, after) {
   return !!before.name && !!after.name && after.name !== before.name;
 }
 
+/**
+ * Peut-on lancer un dig maintenant ? (PUR) mineflayer n'a qu'UN dig à la fois : `bot.dig` appelle
+ * `stopDigging` sur celui en cours, qui rejette « Digging aborted » (23/10, l'escalier de descente).
+ */
+function mayStartDig(targetDigBlock) { return !targetDigBlock; }
+
 module.exports = {
+  mayStartDig,
   WANTED_ORES, isWantedOre, canHarvest, shouldGrab,
   VALUABLE_DROPS, isValuableDrop, DETOUR_ORES, isDetourWorthy,
   oreStepPlan, ORE_STEP_MAX, ORE_REACH, PICKUP_REACH,

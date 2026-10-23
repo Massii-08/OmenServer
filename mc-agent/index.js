@@ -75,7 +75,7 @@ const { fishCatch, rodPlan } = require('./skills/fish');   // pêche : la nourri
 const { nearestPassive, survivalTick, nearbyHostiles, lavaNearby, armorPoints, weaponDamage } = require('./survival');
 const { loadWorld, saveWorld, setObjective, clearObjective } = require('./worldModel');
 const { _nearestTable, tableKey, tablePlan, TABLE_REACH, TABLE_SEEK, pickJunkToToss } = require('./skills/craft'); // craftItem déjà importé plus haut
-const { fillOverflow, fillCapDue } = require('./fillCap');   // plafond de remblai (23/10)
+const { fillOverflow, fillCapDue, tossTarget } = require('./fillCap');   // plafond de remblai (23/10)
 const { noPickWhy } = require('./noPick');                   // pioche irremplaçable (23/10)
 const { recycleWorthIt, createNoSpaceMemo, stepAsideCells } = require('./tableSpot');
 const { placeBlockNear } = require('./skills/placeBlockNear');
@@ -3356,9 +3356,14 @@ async function runGoalSkill(goal) {
     // → on l'oublie et on re-creuse (qui relocalise au sec via _descendWaterFails).
     if (NO_GIVE && _workSet && bot.entity && bot.entity.position && bot.entity.position.y > 30) {
       emit({ type: 'descend_via_home_work' });
-      try { homewarp.goHome(bot, HOME_WORK); } catch (e) {}
-      await awaitWarp({ maxMs: 8000 }); // atterrissage OU warmup teleport-delay couvert (remplace le sleep aveugle)
-      await sleep(1200);                // settle chunks post-tp
+      // Pendant l'attente du TP + le settle (jusqu'à ~9 s), l'escalier compte déjà comme en cours : le
+      // ramassage opportuniste ne part pas marcher/creuser le charbon du chantier (cf. _stairDepth).
+      _stairDepth++;
+      try {
+        try { homewarp.goHome(bot, HOME_WORK); } catch (e) {}
+        await awaitWarp({ maxMs: 8000 }); // atterrissage OU warmup teleport-delay couvert (remplace le sleep aveugle)
+        await sleep(1200);                // settle chunks post-tp
+      } finally { _stairDepth = Math.max(0, _stairDepth - 1); }
       const _py = (bot.entity && bot.entity.position) ? bot.entity.position.y : 99;
       if (isInWater(bot)) { _workSet = false; try { await escapeWater(bot, { emit }); } catch (e) {} }
       else if (_py <= 20) return { ok: true, viaHome: true };  // arrivé profond & sec → pas de re-creusage
@@ -5489,7 +5494,7 @@ async function runSkillWithTelemetry(g) {
     return { ok: false, reason: 'recovering', wait: true, outcome: rec.outcome };
   }
   if (!r || r.ok === false) {
-    emit({ type: 'goal_failed', name: g.name, reason: (r && r.reason) || 'unknown' });
+    emit(Object.assign({ type: 'goal_failed', name: g.name, reason: (r && r.reason) || 'unknown' }, (r && r.err) ? { err: String(r.err).slice(0, 80) } : {}));
     noteZoneFailure(g.name, r && r.reason);
     noteLumberjackStockFail(g.name, r && r.reason);      // bûcheron : 2 échecs en 10 min → forêt connue
     // Manque de bois pour un craft (bâtons/planches/table) → demande au bûcheron + attente (20/10).
@@ -7304,11 +7309,12 @@ function noPickStuckWhy() {
 }
 
 // ─── PLAFOND DE REMBLAI (23/10, cf. fillCap.js) ──────────────────────────────────────────────────
-// Au ramassage, au-delà de 3 piles de remblai on jette l'excédent DERRIÈRE soi (≤ 1 passe / 20 s).
+// Au ramassage, au-delà de 3 piles de remblai on jette l'excédent vers une case OUVERTE (≤ 1 passe / 20 s).
 // ⚠️ NIVEAU MODULE (piège #56) : lus par le handler de ramassage et le timer différé.
 let _fillCapAt = 0;
 let _fillCapBusy = false;
 let _fillCapTimer = null;
+let _fillCapDeferAt = 0;   // dernier event fill_cap_deferred (≤ 1 / min)
 async function capFillStacks() {
   if (_fillCapBusy || !bot || !bot.inventory) return;
   if (!fillCapDue(Date.now(), _fillCapAt)) return;
@@ -7316,17 +7322,32 @@ async function capFillStacks() {
   // ni d'un coup de pioche (se retourner fausserait la face visée → dig_failed) : on attend le suivant.
   if (_craftDepth > 0 || bot.currentWindow || bot.targetDigBlock) return;
   try { if (craftCombatNow()) return; } catch (err) { /* inconnu → on tente */ }   // ne pas tourner le dos à un mob
+  // MURÉ DANS SON ABRI (23/10, session 420 : la même liste jetée deux fois à 9 min d'écart) : jeté contre
+  // la paroi d'un trou 1×1, l'excédent retombe sur le bot et il le re-ramasse. On attend la sortie (le
+  // prochain ramassage relance la passe ; _fillCapAt n'est pas touché pour ne pas la retarder de 20 s).
+  if (_shelterInFlight) return;
   const out = fillOverflow(bot.inventory.items() || []);
   if (!out.length) return;
+  const e = bot.entity;
+  // Jeter VERS une case ouverte sur 2 blocs (fillCap.tossTarget), jamais contre un mur : sinon l'objet
+  // rebondit à portée de ramassage. Espace fermé (puits, tunnel 1×1 muré) → on attend d'en sortir.
+  let aim = null;
+  try {
+    aim = tossTarget(e && e.position, (q) => bot.blockAt(vec3Lib(q.x, q.y, q.z)));
+  } catch (err) { aim = null; }
+  if (!aim) {
+    if (Date.now() - _fillCapDeferAt >= 60000) { _fillCapDeferAt = Date.now(); emit({ type: 'fill_cap_deferred', why: 'enclosed' }); }
+    return;
+  }
   _fillCapBusy = true;
   _fillCapAt = Date.now();
-  const e = bot.entity;
   const yaw = (e && Number.isFinite(e.yaw)) ? e.yaw : 0;
   const pitch = (e && Number.isFinite(e.pitch)) ? e.pitch : 0;
   let turned = false;
   const tossed = [];
   try {
-    if (typeof bot.look === 'function') { try { await bot.look(yaw + Math.PI, 0, true); turned = true; } catch (err) {} }
+    if (typeof bot.lookAt === 'function') { try { await bot.lookAt(vec3Lib(aim.x, aim.y, aim.z), true); turned = true; } catch (err) {} }
+    if (!turned) return;   // sans viser la case libre, jeter = au hasard (contre un mur) : on attend
     for (const it of out) {
       try {
         if (typeof bot.tossStack === 'function') await bot.tossStack(it);
@@ -7338,7 +7359,7 @@ async function capFillStacks() {
     if (turned) { try { await bot.look(yaw, pitch, true); } catch (err) {} }
     _fillCapBusy = false;
   }
-  if (tossed.length) emit({ type: 'fill_capped', tossed });
+  if (tossed.length) emit({ type: 'fill_capped', tossed, at: { x: Math.round(aim.x), z: Math.round(aim.z) } });
 }
 function installFillCap() {
   if (!bot || bot._fillCapInstalled) return;
@@ -9182,12 +9203,19 @@ async function moveOffAnchorsBeforeDescent(ctx) {
 }
 
 /** descendDiagonal gardé : jamais un escalier/puits qui part dans la colonne de la base. */
+let _stairDepth = 0;   // NIVEAU MODULE (piège #56) : lu par le timer du ramassage opportuniste
+// `_stairDepth` (23/10, NethBot1 session 408 : dig_failed ×8) : > 0 pendant une descente en escalier →
+// le ramassage opportuniste reste à portée de bras (oregrab.grabScope `stair`) : entre deux paliers
+// l'escalier n'a aucun but posé, le timer se croyait libre et lançait son dig, qui avortait le nôtre.
 async function descendDiagonal(b, opts, token) {
-  if (!(await moveOffAnchorsBeforeDescent('descend'))) {
-    const y = b && b.entity && b.entity.position ? b.entity.position.y : 0;
-    return { ok: false, reachedY: y, reason: 'near_base' };
-  }
-  return _descendDiagonalRaw(b, opts, token);
+  _stairDepth++;
+  try {
+    if (!(await moveOffAnchorsBeforeDescent('descend'))) {
+      const y = b && b.entity && b.entity.position ? b.entity.position.y : 0;
+      return { ok: false, reachedY: y, reason: 'near_base' };
+    }
+    return await _descendDiagonalRaw(b, opts, token);
+  } finally { _stairDepth = Math.max(0, _stairDepth - 1); }
 }
 
 /** Persiste la marque de position du branch-mine (mémo base, FUSION). `force` ignore le throttle. */
@@ -11828,6 +11856,7 @@ setInterval(async () => {
       migrating: _migrating,
       goal: bot.pathfinder ? bot.pathfinder.goal : null,
       ownGoal: _oreGrabGoal,
+      stair: _stairDepth > 0,
     });
     let scope = scopeNow();
     if (!scope.run) return;   // migration EXCLUSIVE : ni but posé, ni dig lancé sous ses jambes
@@ -11971,6 +12000,9 @@ setInterval(async () => {
         if (!_reachable()) continue;                     // inatteignable : on ne le gaspille pas
       }
       if (!scopeNow().run) break;                        // migration lancée pendant l'equip : pas de dig sous ses jambes
+      // Un autre a commencé à creuser pendant nos `await` (escalier, abri…) : lancer le nôtre AVORTERAIT
+      // le sien (mineflayer : un seul dig, cf. oregrab.mayStartDig — dig_failed ×8 du 23/10).
+      if (!oregrab.mayStartDig(bot.targetDigBlock)) break;
       try {
         await withTimeout(bot.dig(blk), 12000, () => { try { bot.stopDigging(); } catch (e) {} });
         // ⚠️ withTimeout ne rejette JAMAIS : un dig raté (sorti de portée, interrompu) rendait {ok:false}

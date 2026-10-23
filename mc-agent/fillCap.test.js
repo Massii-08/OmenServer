@@ -53,3 +53,47 @@ test('fillCapDue : au plus une passe / 20 s', () => {
   assert.strictEqual(fillCapDue(100000, 90000), false);
   assert.strictEqual(fillCapDue(110000, 90000), true);
 });
+
+// ─── OÙ JETER (23/10, NethBot1 session 420) ──────────────────────────────────────────────────────────
+// Muré dans son abri de nuit (pit 1×1, `shelter sealed`), le bot jetait « derrière lui » contre la
+// paroi : tout lui retombait dessus et était RE-RAMASSÉ (fill_capped ×2 à 9 min d'écart, même liste).
+// On ne jette que vers une case OUVERTE sur 2 blocs (pieds + tête) ; sinon on attend la sortie.
+const { tossTarget } = require('./fillCap');
+const mkWorld = (open) => (p) => {
+  const k = `${p.x},${p.y},${p.z}`;
+  if (open.has(k)) return { name: 'air', boundingBox: 'empty' };
+  return { name: 'stone', boundingBox: 'block' };
+};
+const at = (x, y, z) => `${x},${y},${z}`;
+
+test('tossTarget : muré (pit 1×1) → null, on ne jette pas', () => {
+  const open = new Set([at(0, 64, 0), at(0, 65, 0)]);
+  assert.strictEqual(tossTarget({ x: 0.5, y: 64, z: 0.5 }, mkWorld(open)), null);
+});
+
+test('tossTarget : une seule case libre devant (le reste muré) → null (il faut 2 blocs ouverts)', () => {
+  const open = new Set([at(0, 64, 0), at(0, 65, 0), at(1, 64, 0), at(1, 65, 0)]);
+  assert.strictEqual(tossTarget({ x: 0.5, y: 64, z: 0.5 }, mkWorld(open)), null);
+});
+
+test('tossTarget : couloir ouvert sur 2 blocs à l\'ouest → vise la case à 2 blocs, hauteur des yeux', () => {
+  const open = new Set([at(0, 64, 0), at(0, 65, 0), at(-1, 64, 0), at(-1, 65, 0), at(-2, 64, 0), at(-2, 65, 0)]);
+  const t = tossTarget({ x: 0.5, y: 64, z: 0.5 }, mkWorld(open));
+  assert.deepStrictEqual(t, { x: -1.5, y: 65.6, z: 0.5 });
+});
+
+test('tossTarget : eau ou chunk non chargé = pas ouvert', () => {
+  const open = new Set([at(0, 64, 0), at(0, 65, 0), at(1, 64, 0), at(1, 65, 0), at(2, 65, 0)]);
+  const bA = (p) => {
+    if (p.x === 2 && p.y === 64 && p.z === 0) return { name: 'water', boundingBox: 'empty' };
+    if (p.x === 0 && p.z === 1) return null;
+    return mkWorld(open)(p);
+  };
+  assert.strictEqual(tossTarget({ x: 0.5, y: 64, z: 0.5 }, bA), null);
+});
+
+test('tossTarget : entrées invalides → null, sans lever', () => {
+  assert.strictEqual(tossTarget(null, () => null), null);
+  assert.strictEqual(tossTarget({ x: 0, y: 64, z: 0 }, null), null);
+  assert.strictEqual(tossTarget({ x: 0, y: 64, z: 0 }, () => { throw new Error('x'); }), null);
+});
