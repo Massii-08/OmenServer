@@ -83,7 +83,7 @@ function sandbox({ worn = 0, timeOfDay = NIGHT, day = 4, pos = { x: 0, y: 70, z:
     nightUnderground: NW.nightUnderground, nightDeferGoal: NW.nightDeferGoal, _nightWork: null,
     _nightDeferReturnAt: {}, NIGHT_DEFER_RETURN_MS: 30000,
     tryNightWork: async () => false,
-    _furnaceJob: null, FURNACE_JOB_KEEP_SKILLS: new Set(), finishFurnaceJob: async () => {},
+    _furnaceJob: null, FURNACE_JOB_KEEP_SKILLS: new Set(), finishFurnaceJob: async () => {}, cookBetweenGoals: async () => {},
     ...extra,
   };
   vm.createContext(sb);

@@ -229,6 +229,7 @@ const {
   COMBAT_LOOT_RADIUS, COMBAT_LOOT_ITEMS, COMBAT_LOOT_MS, COMBAT_LOOT_HOSTILE_RADIUS, COMBAT_LOOT_SETTLE_MS,
 } = require('./food');
 const { runEnsureFood, runHuntCook } = require('./foodRun');
+const { isRawMeat, rawEatAllowed, ateFields, cookLotPlan, ironFuelReserve, COOK_LOT_MAX_MS, COOK_LOT_HARD_MS, COOK_FAIL_COOLDOWN_MS } = require('./cookMeat');
 // L'EXPÉDITION VERS LE GIBIER (19/10) : à vraie faim, de jour, en surface, sans aucun passif à ≤ 32 blocs,
 // UNE marche vers la cellule à animaux la plus proche connue de la carte du groupe. Les décisions pures
 // (où, faut-il partir, quelle jambe, quelles cellules écarter) sont dans foodTrip.js, l'ordre des
@@ -2623,7 +2624,7 @@ const SKILL_TIMEOUT_MS = Number(args.skillTimeout || 90000);
 // (vécu V3Res1/4 : 480s × 4 tentatives = 32 min d'anneaux stériles avant le stall).
 // huntCook + FOOD_TRIP_MS (75 s) : l'EXPÉDITION vers le gibier (marche vers la cellule à animaux la plus
 // proche connue) a son propre plafond, hors du budget de 60 s — un garde-fou de 90 s la couperait en route.
-const SKILL_TIMEOUTS = { descendDiagonal: 900000, branchMine: 900000, caveHunt: 900000, caveIron: 600000, huntCook: 90000 + FOOD_TRIP_MS, ensureBed: 240000, smeltCharcoal: 300000, gather: 480000, gatherLog: 180000, ensurePick: 480000, fish: 300000, deliverWood: 120000, lumberjackIdle: 330000, lumberjackArmor: 160000, lumberjackForestTrip: LJ_FOREST_TRIP_MS + 20000 };
+const SKILL_TIMEOUTS = { descendDiagonal: 900000, branchMine: 900000, caveHunt: 900000, caveIron: 600000, huntCook: 90000 + FOOD_TRIP_MS + COOK_LOT_HARD_MS, ensureBed: 240000, smeltCharcoal: 300000, gather: 480000, gatherLog: 180000, ensurePick: 480000, fish: 300000, deliverWood: 120000, lumberjackIdle: 330000, lumberjackArmor: 160000, lumberjackForestTrip: LJ_FOREST_TRIP_MS + 20000 };
 function timeoutFor(skill) { return SKILL_TIMEOUTS[skill] || SKILL_TIMEOUT_MS; }
 /** Champs « pourquoi » d'un résultat takeCover pour l'event `take_cover` (22/10 : `placed:0 ok:false`
  *  sans raison, session 155 — on ne savait pas si rien n'était posable, refusé, ou expiré). */
@@ -2658,6 +2659,110 @@ const RAW2COOKED = {
 };
 function _invTotal(filter) {
   return bot.inventory.items().filter(filter).reduce((s, i) => s + i.count, 0);
+}
+
+// ─── CUIRE LA VIANDE COMME UN JOUEUR (23/10, cookMeat.js) ─────────────────────────────────────────
+// Live 6 h (NethBot1-3) : 288 viandes CRUES mangées pour 8 cuites, 102 chasses sur 103 à `cooked:0`.
+// Un joueur qui rentre avec 3 pièces et un four les cuit : ici le câblage — après la chasse
+// (foodRun dep `cookLot`), entre deux buts (runSkillWithTelemetry), dans le hook du branch-mine, et le
+// filet anti-faim qui préfère cuire que d'avaler du cru. Le combustible réservé au fer n'est jamais pris.
+// ⚠️ NIVEAU MODULE (piège #56) : lus par le timer du filet.
+let _cookBusy = false;
+let _cookFailUntil = 0;           // cuisson ratée → 3 min sans retenter (le cru redevient mangeable)
+let _rawDeferSince = 0;           // le filet diffère le cru depuis… (0 = pas en attente)
+
+/** Où cuire ? 'pocket' (four en poche, posé à côté), 'placed' (four posé ≤ 24 blocs, ≤ 4 sans marcher), null. */
+function meatCookAccess({ walk = true } = {}) {
+  try {
+    if (!bot.inventory || !bot.registry) return null;
+    // Un four de mine en cours à portée : smeltWithFurnace refuse tout autre four (furnace_job_running).
+    if (_furnaceJob && furnaceJobNear()) return null;
+    if (_invTotal((i) => i.name === 'furnace') > 0) return 'pocket';
+    const fdef = bot.registry.blocksByName && bot.registry.blocksByName.furnace;
+    if (!fdef || typeof bot.findBlocks !== 'function') return null;
+    const job = _furnaceJob && _furnaceJob.pos;
+    const found = bot.findBlocks({ matching: [fdef.id], maxDistance: walk ? 24 : 4, count: 4 }) || [];
+    const ok = found.some((p) => !(job && p.x === job.x && p.y === job.y && p.z === job.z));
+    return ok ? 'placed' : null;
+  } catch (e) { return null; }
+}
+
+/** Le plan de cuisson pour l'instant présent (combustible au-delà de la réserve du fer). */
+function meatCookPlanNow({ walk = true } = {}) {
+  let items = [];
+  try { items = bot.inventory.items().map((i) => ({ name: i.name, count: i.count })); } catch (e) { items = []; }
+  let fuel = 0;
+  try { fuel = fuelUnits(bot.inventory.items(), fuelNames()); } catch (e) { fuel = 0; }
+  let need = 0;
+  try {
+    need = Math.max(0, armorNeed({ inv: buildCtxInv(bot), worn: [..._wornArmor()] }, 3)
+      - _invTotal((i) => i.name === 'iron_ingot'));
+  } catch (e) { need = 0; }
+  const rawIron = items.reduce((s, i) => s + (i.name === 'raw_iron' ? i.count : 0), 0);
+  return cookLotPlan({
+    items, furnace: meatCookAccess({ walk }), fuelUnits: fuel,
+    reserveUnits: ironFuelReserve({ rawIron, smeltNeed: need }),
+  });
+}
+
+/** Entre deux buts : attendre la fin d'une cuisson lancée par le filet, puis cuire le lot s'il y en a un. */
+async function cookBetweenGoals(g) {
+  const w0 = Date.now();
+  while (_cookBusy && Date.now() - w0 < COOK_LOT_HARD_MS) await sleep(500);
+  if (g && g.skill === 'huntCook') return;                   // la chasse cuit son propre lot
+  try { await cookMeatLot('goal'); } catch (e) { /* best-effort */ }
+}
+
+/** Le filet peut-il cuire (sans marcher) plutôt que d'avaler du cru ? */
+function netMeatCookable() {
+  if (Date.now() < _cookFailUntil) return false;
+  try { return meatCookPlanNow({ walk: false }).go === true; } catch (e) { return false; }
+}
+
+/** Le bot est-il libre pour une cuisson lancée depuis un TIMER (rien d'autre ne tient le pathfinder) ? */
+function netCookFree() {
+  if (_cookBusy || _furnaceJobBusy || _skillInFlight > 0) return false;
+  try { if (bot.pvp && bot.pvp.target) return false; } catch (e) {}
+  try { if (bot.pathfinder && typeof bot.pathfinder.isMoving === 'function' && bot.pathfinder.isMoving()) return false; } catch (e) {}
+  return true;
+}
+
+/**
+ * Cuit le lot de viande crue (≥ 3 pièces), borné ~45 s (dur : COOK_LOT_HARD_MS). Rend le nombre cuit.
+ * Toujours tracé (`meat_cooked`), jamais de throw. Un four OUVERT bloque le reste : on borne tout.
+ */
+async function cookMeatLot(tag = 'goal', { walk = true } = {}) {
+  if (_cookBusy) return 0;
+  if (Date.now() < _cookFailUntil) return 0;
+  let plan = null;
+  try { plan = meatCookPlanNow({ walk }); } catch (e) { plan = null; }
+  if (!plan || !plan.go) return 0;
+  _cookBusy = true;
+  const t0 = Date.now();
+  let got = 0;
+  let reason = null;
+  try {
+    const work = (async () => {
+      for (const lot of plan.lots) {
+        if (taskToken && taskToken.cancelled) { reason = 'cancelled'; break; }
+        const left = COOK_LOT_MAX_MS - (Date.now() - t0);
+        const n = Math.min(lot.count, Math.floor((left - 2000) / 10000));
+        if (n < 1) break;
+        const r = await smeltWithFurnace(lot.name, lot.out, n, undefined, { maxMs: n * 10000 + 3000 });
+        const g = Number(r && (r.got != null ? r.got : (r.ok ? n : 0))) || 0;
+        got += g;
+        if (!g) { reason = (r && r.reason) || 'no_output'; break; }
+      }
+    })();
+    const res = await withTimeout(work, COOK_LOT_HARD_MS, () => { try { stopMotion(); } catch (e) {} });
+    if (res && res.reason === 'timeout' && !reason) reason = 'timeout';
+  } catch (e) { reason = 'error'; }
+  finally { _cookBusy = false; }
+  if (!got) _cookFailUntil = Date.now() + COOK_FAIL_COOLDOWN_MS;
+  const ev = { type: 'meat_cooked', count: got, took_ms: Date.now() - t0, via: tag, planned: plan.pieces };
+  if (!got && reason) ev.reason = reason;
+  emit(ev);
+  return got;
 }
 
 // Charbon de bois : s'assure d'avoir `count` bûches (gather+explore au besoin) puis les fond.
@@ -2919,6 +3024,9 @@ async function huntCookGoal(target, opts = {}) {
       .map(([name, out]) => ({ name, out, count: _invTotal((i) => i.name === name) }))
       .filter((st) => st.count > 0)
       .sort((a, b) => b.count - a.count),
+    // Cuisson du LOT (23/10, cookMeat.js) : remplace l'étape « cuire pour atteindre le but » — on cuit
+    // ≥ 3 crus quel que soit le but, hors du budget de 60 s (plafond propre ~45 s).
+    cookLot: () => cookMeatLot('hunt'),
     hasFurnace: () => _invTotal((i) => i.name === 'furnace') > 0,
     cook: async ({ name, out, count, maxMs }) => {
       // Sans combustible, la fonte est impossible : ne pas poser puis reprendre un four (~5-8 s) pour
@@ -3182,7 +3290,7 @@ async function runGoalSkill(goal) {
       const _y = bot.entity && bot.entity.position ? bot.entity.position.y : 0;
       let _hunt = null;
       if (_y >= 45 && foodPoints(buildCtxInv(bot)) < STOCK_POINTS) {
-        try { _hunt = await withTimeout(huntCookGoal(4), HUNT_COOK_TIMEOUT_MS + FOOD_TRIP_MS, () => { try { stopMotion(); } catch (e) {} }); } catch (e) {}
+        try { _hunt = await withTimeout(huntCookGoal(4), HUNT_COOK_TIMEOUT_MS + FOOD_TRIP_MS + COOK_LOT_HARD_MS, () => { try { stopMotion(); } catch (e) {} }); } catch (e) {}
       }
       // PORTE NOURRITURE (run 20/10 : 4 « starved to death », toujours `hunt_cook_done before:0`) :
       // la chasse ci-dessus a eu sa chance ; sans DESCENT_MIN_POINTS en poche on ne descend pas
@@ -5470,6 +5578,10 @@ async function runSkillWithTelemetry(g) {
   // Four de mine en cours et but qui n'est pas du minage : ramasser les lingots d'abord (21/10).
   if (_furnaceJob && !FURNACE_JOB_KEEP_SKILLS.has(g.skill)) { try { await finishFurnaceJob('goal'); } catch (e) {} }
   if (taskToken.cancelled || migrationOwnsBot()) return { ok: false, reason: 'cancelled' };
+  // VIANDE CRUE en poche (≥ 3) entre deux buts : on la cuit comme un joueur (23/10, cookMeat.js). Une
+  // cuisson lancée par le filet (timer) se termine d'abord : un four ouvert ne survit pas à un départ.
+  await cookBetweenGoals(g);
+  if (taskToken.cancelled || migrationOwnsBot()) return { ok: false, reason: 'cancelled' };
   const _t0 = Date.now();
   // `_skillInFlight` encadre l'exécution RÉELLE du skill, à l'intérieur du withTimeout : un skill
   // expiré continue de tourner en fond (withTimeout ne l'annule pas), et migrateZone doit attendre
@@ -5583,7 +5695,7 @@ async function startMapper() {
   // DISCIPLINE DE NUIT (19/10 soir) : cartographe nu de nuit → pas de chasse (mapperNightGuard le terre
   // juste après) ; la faim attendra l'aube, ou la chair de zombie ramassée après un combat.
   if (nightLockdownNow()) nightGateNote('mapper_start_hunt');
-  else { try { await withTimeout(huntCookGoal(6), HUNT_COOK_TIMEOUT_MS + FOOD_TRIP_MS, () => { try { stopMotion(); } catch (e) {} }); } catch (e) {} }
+  else { try { await withTimeout(huntCookGoal(6), HUNT_COOK_TIMEOUT_MS + FOOD_TRIP_MS + COOK_LOT_HARD_MS, () => { try { stopMotion(); } catch (e) {} }); } catch (e) {} }
   emit({ type: 'mapper_started', world: bot._worldKey, sector: mapperSector });
   // ── /locate RETIRÉ (Massii 2026-07-26 : « les bots ne doivent pas utiliser de commandes comme
   // /locate »). C'est une commande d'opérateur qui RÉVÈLE la position de structures qu'un joueur ne
@@ -8050,6 +8162,9 @@ async function branchSurvivalTick() {
   try { await withTimeout(ensureTorches(), 30000, () => { try { stopMotion(); } catch (e) {} }); } catch (e) {}
   // FONDRE EN MINANT (21/10) : poser le four, le charger, continuer de creuser, repasser au retour.
   try { await withTimeout(furnaceJobTick(), 60000, () => { try { stopMotion(); } catch (e) {} }); } catch (e) {}
+  // CUIRE LA VIANDE au fond de la mine (23/10) — APRÈS le four de fer : s'il vient de partir avec le four,
+  // la viande attend (la fonte du fer est prioritaire). Sans marcher (four en poche ou ≤ 4 blocs).
+  try { await cookMeatLot('mine', { walk: false }); } catch (e) {}
 }
 
 // Survie LÉGÈRE pendant la DESCENTE diagonale (bug review #7) : combat/fuite + manger UNIQUEMENT —
@@ -12055,8 +12170,24 @@ async function hungerNetTick(tag = 'net', { sealed = false } = {}) {
       try { td = _nearestThreatDist(); } catch (e) { td = null; }
       if (typeof td === 'number' && td <= 6) return false;
     }
-    const food = pickFood(bot.inventory.items() || []);
+    let food = pickFood(bot.inventory.items() || []);
     if (!food) return false;                             // vraiment rien à manger : ensureFood s'en occupe
+    // CRU (23/10, cookMeat.js) : 286 des 296 `ate via:net` des mineurs étaient du cru (2-3 points au lieu
+    // de 6-8). pickFood prend déjà le cuit d'abord ; le cru n'est mangé qu'à faim ≤ 6, s'il est
+    // impossible de cuire, ou après 90 s d'attente sans occasion. Sinon : on cuit (bot libre) ou on diffère.
+    if (isRawMeat(food.name)) {
+      const deferredMs = _rawDeferSince ? Date.now() - _rawDeferSince : 0;
+      if (!rawEatAllowed({ food: bot.food, canCook: !sealed && netMeatCookable(), deferredMs })) {
+        if (!netCookFree()) { if (!_rawDeferSince) _rawDeferSince = Date.now(); return false; }
+        _hungerBusy = true;
+        await cookMeatLot('net', { walk: false });
+        food = pickFood(bot.inventory.items() || []);
+        if (!food) return false;
+        // cuisson ratée → cooldown armé : netMeatCookable devient faux, le cru se mange tout de suite
+        if (isRawMeat(food.name) && !rawEatAllowed({ food: bot.food, canCook: netMeatCookable(), deferredMs })) return false;
+      }
+    }
+    _rawDeferSince = 0;
     _hungerBusy = true;
     try { bot.stopDigging(); } catch (e) {}               // libère la main (la cause du silence)
     try {
@@ -12065,7 +12196,7 @@ async function hungerNetTick(tag = 'net', { sealed = false } = {}) {
         await bot.consume();
       })(), 8000, () => {});
       ate = true;
-      emit({ type: 'ate', item: food.name, food: bot.food, hp: bot.health, via: tag });
+      emit(Object.assign({ type: 'ate', item: food.name, food: bot.food, hp: bot.health, via: tag }, ateFields(food.name)));
     } catch (e) {
       emit({ type: 'eat_failed', item: food.name, food: bot.food, via: tag, reason: String((e && e.message) || e).slice(0, 60) });
     }
@@ -12131,7 +12262,7 @@ async function foodRunTick() {
     // chaque phase est rognée, ces 10 s de marge ne sont qu'un garde-fou d'exécution. + FOOD_TRIP_MS :
     // l'EXPÉDITION vers le gibier (aucun passif en vue, vraie faim, jour) a son propre plafond de 75 s,
     // HORS du budget — le garde-fou de 70 s la couperait en route et laisserait le reste tourner en fond.
-    await withTimeout(ensureFood(), FOOD_RUN_TIMEOUT_MS + FOOD_TRIP_MS, () => { try { stopMotion(); } catch (e) {} });
+    await withTimeout(ensureFood(), FOOD_RUN_TIMEOUT_MS + FOOD_TRIP_MS + COOK_LOT_HARD_MS, () => { try { stopMotion(); } catch (e) {} });
     // Le VERDICT de la passe : ce qu'on a RAMENÉ, pas ce qu'on a tenté. Tracé, parce qu'un
     // rationnement muet est indistinguable d'un mécanisme mort (#55a). `points` (réserve en points
     // de faim après la passe) et `took_ms` MESURENT la vitesse en live.

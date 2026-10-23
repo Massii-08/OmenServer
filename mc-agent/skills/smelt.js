@@ -54,7 +54,13 @@ async function smelt(bot, { input, output, count = 1, fuel = [], pollMs = 1000, 
   try {
     try { await furnace.putInput(inId, null, want); } catch (e) {}
     const f0 = pickFuel();
-    if (f0) { try { await furnace.putFuel(_itemId(bot, f0.name), null, Math.min(f0.count, want)); } catch (e) {} }
+    // DOSÉ (23/10) : ce qu'il faut pour `want` objets, pas un combustible PAR objet (4 charbons pour 4 steaks
+    // = 28 fontes perdues dans un four posé, prises sur la réserve du fer). La boucle recharge si besoin.
+    if (f0) {
+      const per = burnValue(f0.name) || 1;
+      const qty = Math.max(1, Math.min(f0.count, Math.ceil(want / per)));
+      try { await furnace.putFuel(_itemId(bot, f0.name), null, qty); } catch (e) {}
+    }
 
     const started = Date.now();
     while (got < want) {

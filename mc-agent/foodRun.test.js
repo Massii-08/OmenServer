@@ -746,3 +746,52 @@ test('pêche durable : appelant sans séance (fishSession absent) → pêche d a
   assert.strictEqual(w.lastFish.session, false);
   assert.ok(w.lastFish.ms <= 40000);
 });
+
+// ─── CUISSON DU LOT (23/10, cookMeat.js) ────────────────────────────────────────────────────────
+// Live : 102 `hunt_cook_done` sur 103 à `cooked:0`. Avec la dep `cookLot`, la cuisson n'est plus
+// soumise au but en points ni au budget de 60 s : un joueur qui revient de la chasse avec 3 pièces et un
+// four les cuit. La dep décide (≥ 3 crus, four, combustible hors réserve du fer) et rend le nombre cuit.
+function withCookLot(w, ret = 3) {
+  w.deps.cookLot = async (o) => {
+    w.calls.push(['cookLot', o]);
+    w.clock.advance(30000);
+    const n = Math.min(ret, w.inv.beef || 0);
+    w.inv.beef = (w.inv.beef || 0) - n; w.inv.cooked_beef = (w.inv.cooked_beef || 0) + n;
+    return n;
+  };
+  return w;
+}
+
+test('huntCook + cookLot : le but ATTEINT en cru → on cuit quand même le lot', async () => {
+  const w = withCookLot(huntWorld({ furnace: true, huntGives: { beef: 4 } }));
+  const r = await runHuntCook(w.deps, 4);                      // 12 points en cru = le but
+  assert.strictEqual(r.ok, true);
+  assert.ok(names(w).includes('cookLot'));
+  assert.strictEqual(names(w).includes('cook'), false, 'l ancienne étape cuisson est remplacée');
+  const done = w.events.find((e) => e.type === 'hunt_cook_done');
+  assert.strictEqual(done.cooked, 3);
+});
+
+test('huntCook + cookLot : la cuisson ne mange PAS le budget de la chasse (60 s)', async () => {
+  const w = withCookLot(huntWorld({ huntTakes: 45000, huntGives: { beef: 5 } }));
+  await runHuntCook(w.deps, 6);
+  const c = w.calls.find((x) => x[0] === 'cookLot');
+  assert.ok(c, 'cuisson tentée même avec 15 s de budget restant');
+  assert.ok(c[1] && c[1].token, 'le jeton de la tâche est transmis');
+});
+
+test('huntCook + cookLot : tâche annulée pendant la chasse → pas de cuisson', async () => {
+  const w = withCookLot(huntWorld({ huntGives: { beef: 5 } }));
+  const hunt = w.deps.hunt;
+  w.deps.hunt = async (o) => { const r = await hunt(o); w.parent.cancelled = true; return r; };
+  await runHuntCook(w.deps, 6);
+  assert.strictEqual(names(w).includes('cookLot'), false);
+});
+
+test('huntCook + cookLot : une dep qui jette n interrompt pas la chaîne', async () => {
+  const w = huntWorld({ huntGives: { beef: 5 }, rod: true });
+  w.deps.cookLot = async () => { throw new Error('boom'); };
+  const r = await runHuntCook(w.deps, 6);
+  assert.strictEqual(r.ok, true);
+  assert.ok(w.events.some((e) => e.type === 'hunt_cook_done'));
+});

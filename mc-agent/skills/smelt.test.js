@@ -103,3 +103,26 @@ test('la 1re essence trouvée est choisie (les recettes sont par essence)', () =
   const plan = logsToConvert([{ name: 'spruce_log', count: 2 }], 6);
   assert.strictEqual(plan.name, 'spruce_log');
 });
+
+// ─── Combustible dosé (23/10, cuisson de viande) ─────────────────────────────
+// `putFuel(min(pile, want))` chargeait UN charbon PAR objet : 4 charbons (32 fontes) pour 4 steaks, le
+// reste coincé dans un four posé (perdu) — et c'est le charbon réservé à la fonte du fer.
+test('smelt : charge juste ce qu il faut de combustible (1 charbon fond 8 objets, 1 planche 1,5)', async () => {
+  const put = [];
+  const bot = fakeFurnaceBot({ outputStacks: [4] });
+  const f = await bot.openFurnace();
+  f.putFuel = async (id, meta, n) => { put.push(n); };
+  bot.openFurnace = async () => f;
+  await smelt(bot, { input: 'raw_iron', output: 'iron_ingot', count: 4, fuel: ['coal'], pollMs: 1 });
+  assert.deepStrictEqual(put, [1]);
+
+  const put2 = [];
+  const bot2 = fakeFurnaceBot({ outputStacks: [4] });
+  bot2.registry.itemsByName.oak_planks = { id: 4 };
+  bot2.inventory.items = () => [{ name: 'raw_iron', count: 8 }, { name: 'oak_planks', count: 10 }];
+  const f2 = await bot2.openFurnace();
+  f2.putFuel = async (id, meta, n) => { put2.push(n); };
+  bot2.openFurnace = async () => f2;
+  await smelt(bot2, { input: 'raw_iron', output: 'iron_ingot', count: 4, fuel: ['oak_planks'], pollMs: 1 });
+  assert.deepStrictEqual(put2, [3]);                       // ceil(4 / 1,5)
+});

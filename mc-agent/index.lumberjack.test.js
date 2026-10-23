@@ -330,7 +330,7 @@ test('câblage : runSkillWithTelemetry consulte woodWaitStep APRÈS la nuit et n
     runGoalSkill: async (g) => { skills.push(g.name); return { ok: true }; },
     withTimeout: (p) => p, timeoutFor: () => 1, stopMotion() {}, MINING_GOALS: new Set(), _zoneMiningMs: 0,
     noteZoneFailure() {}, _skillInFlight: 0, _curGoal: null,
-    _furnaceJob: null, FURNACE_JOB_KEEP_SKILLS: new Set(), finishFurnaceJob: async () => {},
+    _furnaceJob: null, FURNACE_JOB_KEEP_SKILLS: new Set(), finishFurnaceJob: async () => {}, cookBetweenGoals: async () => {},
   };
   vm.createContext(sb);
   run(sb, fnSrc('runSkillWithTelemetry'));

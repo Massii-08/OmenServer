@@ -234,7 +234,15 @@ async function runHuntCook(d, target, opts = {}) {
     // 2) CUISSON — un four EN POCHE, ≥ 2 crus du même type, du temps ET un but pas encore atteint : cuire
     //    est un MOYEN d'y arriver (3 → 8 points la pièce), pas un rituel. Le cru qui atteint déjà le but
     //    se mange tel quel. Le plus abondant d'abord ; le nombre de pièces est rogné par le temps restant.
-    {
+    //    23/10 (cookMeat.js) : avec la dep `cookLot`, on cuit le LOT comme un joueur — quel que soit le but
+    //    en points (le cru l'atteignait déjà 13 fois sur 23 et rien ne cuisait) et HORS du budget de 60 s
+    //    (la dep a son propre plafond ~45 s). Elle décide seule (≥ 3 crus, four, combustible hors réserve
+    //    du fer) et rend le nombre de pièces cuites.
+    if (typeof d.cookLot === 'function') {
+      if (cancelled()) return finish({ ok: false, reason: 'cancelled' });
+      try { stats.cooked += Number(await d.cookLot({ token: parent })) || 0; } catch (e) { /* best-effort */ }
+      if (cancelled()) return finish({ ok: false, reason: 'cancelled' });
+    } else {
       let stacks = [];
       try { stacks = d.rawStacks() || []; } catch (e) { stacks = []; }
       for (const st of stacks) {
