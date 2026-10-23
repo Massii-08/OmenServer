@@ -23,9 +23,9 @@ function grab(re, label) {
 const fnSrc = (name) => grab(new RegExp(`^(?:async )?function ${name}\\([^)]*\\) \\{[\\s\\S]*?^\\}$`, 'm'), `function ${name}`);
 const run = (sb, code) => vm.runInContext("'use strict';\n" + code, sb);
 
-const GLUE = ['_groundHere', '_vgBlockAt', 'stepToSafeGround', '_voidAnchors', 'moveOffAnchorsBeforeDescent',
+const GLUE = ['_groundHere', '_vgBlockAt', '_chunkLoadedBelow', 'stepToSafeGround', '_voidAnchors', 'moveOffAnchorsBeforeDescent',
   'descendDiagonal', 'mineDown', '_voidFiller', 'rescueVoidAfterTeleport', 'invalidateVoidHome', 'noteFallDeath',
-  'reanchorAfterVoid', 'anchorSpawnpoint'];
+  'reanchorAfterVoid', 'anchorSpawnpoint', '_campedAt'];
 
 // Monde : puits d'air x=-344,z=358 de y43 à y74 ; plein jusqu'à y74 ailleurs (surface y75).
 function mkWorld() {
@@ -71,7 +71,8 @@ function glue({ pos = { x: -343.4, y: 75, z: 358.7 }, inv = [{ name: 'cobbleston
     },
     loadBaseState: () => (disk.memo ? JSON.parse(JSON.stringify(disk.memo)) : null),
     saveBaseState(st) { disk.memo = JSON.parse(JSON.stringify(st)); return true; },
-    spawnpointVeto: H.spawnpointVeto, _recentDeathPositions: () => [],
+    spawnpointVeto: H.spawnpointVeto, _recentDeathPositions: () => sb.deaths || [], homeCamped: H.homeCamped,
+    respawnEscape: require('./respawnEscape'), _campReanchor: null, _spawnVetoLast: null, SPAWN_VETO_EVENT_EVERY_MS: 60000,
     _descendDiagonalRaw: async () => { sb.raw.push('descend'); return { ok: true }; },
     _mineDownRaw: async () => { sb.raw.push('mineDown'); return { ok: true }; },
     IS_MAPPER: false,
@@ -208,4 +209,42 @@ test('ré-ancrage après vide : bot reparti loin (> 24 blocs) → aucun /spawnpo
   await sb.reanchorAfterVoid();
   assert.ok(!sb.chat.includes('/spawnpoint'));
   assert.strictEqual(sb._spawnOverVoidAt, 0);
+});
+
+// ═══ Seuil « vide » (live 23/10, NethBot1 : réapparition à 4 blocs du sol → /delhome safe à chaque vie) ═══
+test('voidGuard.dangerousDrop : ≤ 4 blocs n est pas du vide ; > 4 ou plafond l est ; illisible = vide seulement chunk chargé', () => {
+  for (const d of [0, 1, 3, 4]) assert.strictEqual(voidGuard.dangerousDrop(d), false, `drop ${d}`);
+  for (const d of [5, 12, 40]) assert.strictEqual(voidGuard.dangerousDrop(d), true, `drop ${d}`);
+  assert.strictEqual(voidGuard.dangerousDrop(null), false, 'chunk pas reçu : pas de verdict');
+  assert.strictEqual(voidGuard.dangerousDrop(null, { chunkLoaded: false }), false);
+  assert.strictEqual(voidGuard.dangerousDrop(null, { chunkLoaded: true }), true);
+  assert.strictEqual(voidGuard.dangerousDrop(NaN), false);
+});
+
+test('/home safe arrivé à 4 blocs au-dessus d un plein (feuilles, marche) → rien : home GARDÉ, physique intacte, aucun event', async () => {
+  // puits de 4 blocs d'air sous les pieds (y71..74), plein à y70
+  const sb = glue({ pos: { x: -344.5, y: 75, z: 358.5 } });
+  const real = sb.bot.blockAt;
+  sb.bot.blockAt = (v) => (v.x === -345 && v.z === 358 && v.y >= 71 && v.y <= 74
+    ? { name: 'air', boundingBox: 'empty', position: v } : (v.x === -345 && v.z === 358 && v.y <= 70 ? { name: 'stone', boundingBox: 'block', position: v } : real(v)));
+  sb.bot._mcaLastHome = { name: 'safe', at: Date.now() };
+  let touched = false;
+  Object.defineProperty(sb.bot, 'physicsEnabled', { get: () => true, set: () => { touched = true; } });
+  assert.strictEqual(voidGuard.dropDepth((q) => sb.bot.blockAt(new vec3Lib.Vec3(q.x, q.y, q.z)), sb.bot.entity.position), 4);
+  await sb.rescueVoidAfterTeleport();
+  assert.strictEqual(touched, false);
+  assert.ok(!sb.chat.includes('/delhome safe'));
+  assert.deepStrictEqual(sb.events, []);
+  assert.strictEqual(sb._spawnOverVoidAt, 0, 'aucun ré-ancrage forcé');
+});
+
+test('/home safe arrivé à 5 blocs au-dessus du sol → toujours traité comme un vide (home invalidé)', async () => {
+  const sb = glue({ pos: { x: -344.5, y: 75, z: 358.5 } });
+  const real = sb.bot.blockAt;
+  sb.bot.blockAt = (v) => (v.x === -345 && v.z === 358 && v.y >= 70 && v.y <= 74
+    ? { name: 'air', boundingBox: 'empty', position: v } : (v.x === -345 && v.z === 358 && v.y <= 69 ? { name: 'stone', boundingBox: 'block', position: v } : real(v)));
+  sb.bot._mcaLastHome = { name: 'safe', at: Date.now() };
+  await sb.rescueVoidAfterTeleport();
+  assert.ok(sb.events.some((e) => e.type === 'tp_void_landing' && e.drop === 5));
+  assert.ok(sb.chat.includes('/delhome safe'));
 });

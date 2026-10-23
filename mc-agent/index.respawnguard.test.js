@@ -70,6 +70,8 @@ function guardSandbox({ appearAtMs = null, dist = 6, worn = 0, night = false, ar
     stopMotion: () => sb.calls.push('stop'),
     hideFromThreat: async (why, d) => { sb.calls.push('hide:' + why + ':' + (d ? d.mob : 'none')); return hideRes; },
     escapeDeathCamp: async () => { sb.calls.push('escape'); return escapeRes; },
+    // camp de réapparition (23/10) : testé dans index.respawncamp.test.js ; ici, pas de camp.
+    respawnCampRescue: async () => null,
   });
   vm.createContext(sb);
   run(sb, constSrc('SPAWN_SENSE_MS'));

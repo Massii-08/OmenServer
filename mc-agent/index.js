@@ -75,6 +75,7 @@ const { SCAFFOLD, pillarUp } = require('./skills/pillarUp');     // blocs sacrif
 // 2 min 27 s, en plein jour, au point de réapparition) — cf. meleePillar.js / respawnCamp.js.
 const meleePillar = require('./meleePillar');
 const respawnCamp = require('./respawnCamp');
+const respawnEscape = require('./respawnEscape');   // sortir d'un point de réapparition campé (23/10)
 const { boundedDig, boundedEquip } = require('./digBound');
 const basecamp = require('./basecamp');                // base personnelle : s'éloigner du spawn du monde puis /sethome
 const oregrab = require('./oregrab');
@@ -8806,7 +8807,12 @@ async function relocateToRegion(opts = {}) {
 // compile, passe les tests, et tue le process au 1er tick).
 const ESCAPE_WALK_TIMEOUT_MS = 20000;   // la fuite est prioritaire mais BORNÉE : le planner attend
 const ESCAPE_THREAT_POLL_MS = 500;      // relevé du danger pendant la course (cf. « MENACE EN ROUTE »)
-async function escapeDeathCamp() {
+const CAMP_ESCAPE_WALK_TIMEOUT_MS = 30000;   // 48-64 blocs au sprint ≈ 10-15 s (+ obstacles)
+async function escapeDeathCamp(opts = {}) {
+  // MODE CAMP DE RÉAPPARITION (23/10, respawnEscape.js) : ≥ 48 blocs, on ne s'arrête PAS au premier zombie
+  // (le camp en a toujours un à 4 blocs : s'arrêter = se terrer DANS le camp), et le /spawnpoint n'est
+  // reposé que par le tick de ré-ancrage (campReanchorTick), loin du camp, au sol plein, au calme.
+  const campMode = !!(opts && opts.camp && Number.isFinite(opts.camp.x));
   const p0 = bot.entity && bot.entity.position;
   // ⚠️ COPIE IMMÉDIATE : `bot.entity.position` est un Vec3 MUTÉ EN PLACE par mineflayer — garder la
   // référence ferait « bouger » le point de départ avec le bot, et la distance parcourue mesurée
@@ -8819,6 +8825,7 @@ async function escapeDeathCamp() {
     noGive: NO_GIVE,
     pos: start,
     hostile: threat && threat.position,
+    ...(campMode ? { minDist: respawnEscape.CAMP_ESCAPE_MIN_DIST, maxDist: respawnEscape.CAMP_ESCAPE_MAX_DIST } : {}),
   });
   if (!plan) { emit({ type: 'death_camp_escape', mode: 'none' }); return { escaped: false }; }
 
@@ -8849,13 +8856,14 @@ async function escapeDeathCamp() {
   // COUPE la fuite : l'appelant (guardSpawn) se terre aussitôt. Armuré : spawnDangerNow rend null → inchangé.
   let enRoute = null;
   const watch = setInterval(() => {
-    if (enRoute) return;
+    if (enRoute || campMode) return;   // camp : courir est la réponse, pas se terrer sur place
     const d = spawnDangerNow();
     if (d) { enRoute = d; try { stopMotion(); } catch (e) {} }
   }, ESCAPE_THREAT_POLL_MS);
   try {
+    try { if (campMode && typeof bot.setControlState === 'function') bot.setControlState('sprint', true); } catch (e) {}
     await withTimeout(bot.pathfinder.goto(new pfGoals.GoalNearXZ(plan.x, plan.z, 4)),
-      ESCAPE_WALK_TIMEOUT_MS, () => { try { stopMotion(); } catch (e) {} });
+      campMode ? CAMP_ESCAPE_WALK_TIMEOUT_MS : ESCAPE_WALK_TIMEOUT_MS, () => { try { stopMotion(); } catch (e) {} });
   } catch (e) { /* NoPath/annulation : c'est la distance PARCOURUE qui tranche, pas ce retour */ }
   // JAMAIS coincé à true (un flag busy figé gèlerait les 2 TP) — mais on ne relâche que si
   // personne n'a pris la main entre-temps, sinon on éteindrait la garde d'une fuite VIVANTE.
@@ -8867,6 +8875,13 @@ async function escapeDeathCamp() {
   }
 
   const p1 = bot.entity && bot.entity.position;
+  if (campMode) {
+    const camp = opts.camp;
+    const d = p1 ? Math.hypot(p1.x - camp.x, p1.z - camp.z) : 0;
+    const out = d >= respawnEscape.CAMP_ESCAPE_MIN_DIST;
+    emit({ type: 'respawn_camp_escape', via: 'foot', escaped: out, dist: Math.round(d), camp: { x: camp.x, z: camp.z } });
+    return { escaped: out, campMode: true };
+  }
   const escaped = escapeReached(start, p1 && { x: p1.x, y: p1.y, z: p1.z });
   let nearestHostileDist = null;
   try {
@@ -9188,6 +9203,24 @@ async function hideFromThreat(why, danger, opts = {}) {
  * bot repartirait travailler à portée d'arc.
  */
 async function guardSpawn() {
+  // POINT DE RÉAPPARITION CAMPÉ (23/10) : /tpa chez un coéquipier armé AVANT tout le reste (pas
+  // d'observation de 4 s, pas d'abri dans le camp). Personne → fuite à pied ≥ 48 blocs, sans abri d'abord.
+  const rescue = await respawnCampRescue();
+  if (rescue && rescue.via === 'tpa') {
+    _escapeOnSpawn = false;
+    return { act: 'tpa', reason: 'respawn_camped', campRescue: true };
+  }
+  if (rescue && rescue.via === 'foot') {
+    _escapeOnSpawn = false;
+    emit({ type: 'spawn_guard', act: 'escape', reason: 'respawn_camped', armed: true, worn: (() => { try { return _wornArmor().size; } catch (e) { return 0; } })() });
+    let rf = null;
+    try { rf = await escapeDeathCamp({ camp: rescue.camp }); } catch (e) { rf = null; }
+    if (!(rf && rf.escaped)) {
+      const d = spawnDangerNow();
+      if (d) await hideFromThreat('escape', d);
+    }
+    return { act: 'escape', reason: 'respawn_camped', campRescue: !!(rf && rf.escaped) };
+  }
   let danger = null;
   try { danger = await senseSpawnDanger(); } catch (e) { danger = null; }
   const armed = _escapeOnSpawn;
@@ -9431,6 +9464,16 @@ function _groundHere(need = 2) {
   } catch (e) { return { ok: null }; }
 }
 
+/** Le chunk sous les pieds est-il reçu ? (un bloc nommé juste dessous). Jamais de throw. */
+function _chunkLoadedBelow() {
+  try {
+    const p = bot.entity && bot.entity.position;
+    if (!p) return false;
+    const b = _vgBlockAt({ x: Math.floor(p.x), y: Math.floor(p.y) - 1, z: Math.floor(p.z) });
+    return !!(b && b.name);
+  } catch (e) { return false; }
+}
+
 /** Lecture de blocs pure pour voidGuard (coordonnées entières → Vec3). */
 function _vgBlockAt(q) {
   try { return bot.blockAt(new vec3Lib.Vec3(q.x, q.y, q.z)); } catch (e) { return null; }
@@ -9628,7 +9671,9 @@ async function rescueVoidAfterTeleport() {
   const p0 = bot.entity && bot.entity.position;
   if (!p0 || typeof bot.blockAt !== 'function') return;
   let drop = voidGuard.dropDepth(_vgBlockAt, p0, 40);
-  if (drop !== null && drop <= 3) return;          // cas normal : rend la main sans rien toucher
+  // ≤ 4 blocs au-dessus d'un plein (feuilles, petite marche) n'est PAS du vide (live 23/10, NethBot1 :
+  // réapparition à 4 blocs du sol → `/delhome safe` à chaque vie). voidGuard.dangerousDrop tranche.
+  if (drop !== null && !voidGuard.dangerousDrop(drop)) return;   // cas normal : rend la main sans rien toucher
   _voidRescueBusy = true;
   const hadPhysics = bot.physicsEnabled !== false;
   const now = Date.now();
@@ -9644,7 +9689,9 @@ async function rescueVoidAfterTeleport() {
       const q = bot.entity && bot.entity.position;
       drop = q ? voidGuard.dropDepth(_vgBlockAt, q, 40) : null;
     }
-    if (drop === null || drop <= 3) return;          // sol sain (ou toujours illisible) : dégel au finally
+    // Toujours illisible : vide seulement si le chunk sous les pieds EST chargé (sinon : pas de verdict).
+    if (drop === null && !voidGuard.dangerousDrop(null, { chunkLoaded: _chunkLoadedBelow() })) return;
+    if (drop !== null && !voidGuard.dangerousDrop(drop)) return;   // sol sain : dégel au finally
     const p = bot.entity.position;
     at = { x: Math.round(p.x), y: Math.round(p.y), z: Math.round(p.z) };
     const filler = _voidFiller();
@@ -9733,6 +9780,15 @@ async function reanchorAfterVoid() {
     // Loin du vide (le bot est reparti travailler) : on ne pose PAS un respawn au hasard, on attend la
     // prochaine arrivée au-dessus du vide (le gel + remblai le garde en vie d'ici là).
     if (_spawnOverVoidPos && Math.hypot(p.x - _spawnOverVoidPos.x, p.z - _spawnOverVoidPos.z) > 24) { _spawnOverVoidAt = 0; return; }
+    // CAMPÉ ICI (live 23/10, NethBot1 session 477 : 100+ `spawnpoint_vetoed camped why:void_reanchor`,
+    // une toutes les 3 s pendant 5 min) : le veto a raison, mais réessayer sur place ne mène nulle part.
+    // On passe la main au ré-ancrage HORS du camp (campReanchorTick) et on lâche ce rattrapage-ci.
+    if (_campedAt({ x: p.x, y: p.y, z: p.z })) {
+      if (!_campReanchor) _campReanchor = { x: Math.round(p.x), z: Math.round(p.z), at: Date.now(), via: 'void' };
+      _spawnOverVoidAt = 0; _spawnOverVoidPos = null;
+      emit({ type: 'void_reanchor_deferred', reason: 'camped', x: Math.round(p.x), z: Math.round(p.z) });
+      return;
+    }
     if (!(await stepToSafeGround('void_reanchor'))) return;
     if (!anchorSpawnpoint('void_reanchor')) return;
     const st = loadBaseState() || {};
@@ -9759,14 +9815,162 @@ function anchorSpawnpoint(reason) {
   catch (e) { v = { veto: true, reason: 'error' }; }
   if (!v.veto && _groundHere().ok === false) v = { veto: true, reason: 'void_below' };   // anti-vide (22/10)
   if (v.veto) {
-    emit({ type: 'spawnpoint_vetoed', reason: v.reason, why: reason, deaths: v.deaths != null ? v.deaths : null,
-      x: pos ? Math.round(pos.x) : null, z: pos ? Math.round(pos.z) : null });
+    // 1 event par (raison, appelant, endroit) et par minute : la session 477 en a émis 100+ (un toutes les 3 s).
+    const now = Date.now();
+    const last = _spawnVetoLast;
+    const same = last && last.reason === v.reason && last.why === reason && pos && last.x != null
+      && Math.hypot(pos.x - last.x, pos.z - last.z) <= 8 && now - last.at < SPAWN_VETO_EVENT_EVERY_MS;
+    if (!same) {
+      _spawnVetoLast = { reason: v.reason, why: reason, x: pos ? pos.x : null, z: pos ? pos.z : null, at: now };
+      emit({ type: 'spawnpoint_vetoed', reason: v.reason, why: reason, deaths: v.deaths != null ? v.deaths : null,
+        x: pos ? Math.round(pos.x) : null, z: pos ? Math.round(pos.z) : null });
+    }
+    // Camp : le veto dit « pas ici » — on note qu'il faudra le poser AILLEURS (campReanchorTick).
+    if (v.reason === 'camped' && pos && !_campReanchor) _campReanchor = { x: Math.round(pos.x), z: Math.round(pos.z), at: now, via: 'veto' };
     return false;
   }
   try { bot.chat('/spawnpoint'); } catch (e) { return false; }
   emit({ type: 'command', command: '/spawnpoint', reason });
+  // Un /spawnpoint posé LOIN du camp en attente règle l'attente, quel que soit l'appelant.
+  const pend = _campReanchor;
+  if (pend && pos) {
+    const d = Math.hypot(pos.x - pend.x, pos.z - pend.z);
+    if (d >= respawnEscape.CAMP_ESCAPE_MIN_DIST) {
+      _campReanchor = null;
+      emit({ type: 'spawn_reanchored', why: reason, x: Math.round(pos.x), y: Math.round(pos.y), z: Math.round(pos.z),
+        camp: { x: pend.x, z: pend.z }, dist: Math.round(d), via: pend.via || null });
+      // 'camped_move' (maybeMoveCampedSafeHome) déplace déjà base + safe lui-même.
+      if (reason !== 'camped_move') moveBaseOutOfCamp(pos, pend);
+    }
+  }
   return true;
 }
+
+/**
+ * Le point de réapparition vient de quitter un camp : si la BASE persistée y est restée (≤ 24 blocs d'un
+ * camp, ou campée/bannie), elle suit — base + home `safe` + confine + bornes d'exploration — sinon le rappel
+ * du confine (/home safe) renvoie le bot au camp. Ouvriers seulement (un cartographe n'a pas de base).
+ * Fusion du mémo (saveBaseState FUSIONNE, piège #61). Jamais de throw. Rend true si la base a bougé.
+ */
+function moveBaseOutOfCamp(to, camp) {
+  try {
+    if (IS_MAPPER || !to || !Number.isFinite(to.x)) return false;
+    const now = Date.now();
+    const st = loadBaseState() || {};
+    const base = st.base;
+    if (!base || !Number.isFinite(base.x)) return false;
+    let flagged = false;
+    try { flagged = _campedAt(base) || deathSpots.isBanned(base.x, base.z) || deathzones.isBanned(_dzones, base.x, base.z, now); } catch (e) { flagged = false; }
+    const camps = [camp].concat(respawnCamp.campedList(st, now));
+    if (!respawnEscape.baseInCamp({ base, camps, flagged })) return false;
+    const nb = { x: Math.round(to.x), y: Math.round(to.y), z: Math.round(to.z) };
+    saveBaseState(Object.assign({}, loadBaseState() || {}, { base: nb }));
+    let safeMoved = false;
+    try { if (homewarp.bookmark(bot, HOME_SAFE)) safeMoved = noteSafeHome(to, 'camped') !== false; } catch (e) { safeMoved = false; }
+    if (CONFINE) CONFINE = { x: nb.x, z: nb.z, radius: CONFINE.radius };
+    if (_confineDyn) _confineDyn = { x: nb.x, z: nb.z, radius: _confineDyn.radius };
+    const conf = CONFINE || _confineDyn;
+    if (conf) bot._mcaExploreBounds = { x: conf.x, z: conf.z, radius: Math.max(conf.radius * 2, 128) };
+    emit({ type: 'base_moved_from_camp', from: { x: base.x, y: base.y, z: base.z }, to: nb, camp: { x: camp.x, z: camp.z }, safe: safeMoved, flagged });
+    return true;
+  } catch (e) { return false; }
+}
+
+// ─── RÉ-ANCRAGE HORS D'UN CAMP DE RÉAPPARITION (23/10, respawnEscape.js) ────────────────────────────
+// ⚠️ NIVEAU MODULE (piège #56) : lus par le timer ci-dessous, par anchorSpawnpoint et par guardSpawn.
+let _campReanchor = null;        // { x, z, at, via } : le point de réapparition est un camp, à reposer ailleurs
+let _spawnVetoLast = null;       // dédup de `spawnpoint_vetoed`
+const SPAWN_VETO_EVENT_EVERY_MS = 60000;
+const CAMP_TPA_WAIT_MS = 12000;  // acceptation (~2 s) + éventuel teleport-delay
+const CAMP_REANCHOR_TICK_MS = 4000;
+let _campReanchorWhy = null;     // dernière raison d'attente tracée (dédup)
+
+/**
+ * Au spawn : ce point de réapparition est-il un camp ? Si oui, l'attente de ré-ancrage est posée, puis
+ * /tpa chez un coéquipier vivant, mineur, armé, loin du camp. Rend null (pas de camp), { via:'tpa' }
+ * (téléporté), { via:'foot', camp } (personne, ou /tpa raté : fuir à pied) ou { via:'dead' }. Jamais de throw.
+ */
+async function respawnCampRescue() {
+  try {
+    const p0 = bot.entity && bot.entity.position;
+    if (!p0) return null;
+    const pos = { x: p0.x, y: p0.y, z: p0.z };   // COPIE (Vec3 muté en place)
+    const now = Date.now();
+    let shortLives = null;
+    try { shortLives = respawnCamp.campedRespawn(respawnCamp.livesLoad(loadBaseState(), now), now); } catch (e) { shortLives = null; }
+    const verdict = respawnEscape.respawnCampVerdict({ spawn: pos, deathPos: _recentDeathPositions(), shortLives, now });
+    if (!verdict) return null;
+    const camp = { x: verdict.x, z: verdict.z };
+    _campReanchor = { x: camp.x, z: camp.z, at: now, via: 'respawn' };
+    const gen = _lifeGen;
+    let mate = null;
+    try {
+      mate = presence ? respawnEscape.pickRescueMate({ camp, self: pos, selfName: bot.username, mates: presence.list(), now }) : null;
+    } catch (e) { mate = null; }
+    if (mate && !isAllowed('/tpa ' + mate.name, whitelist)) { emit({ type: 'respawn_camp_tpa_blocked', to: mate.name }); mate = null; }
+    if (mate) {
+      emit({ type: 'respawn_camp_tpa', to: mate.name, dist: mate.dist, worn: mate.worn, deaths: verdict.deaths, why: verdict.why });
+      try { taskCtl.cancel(); } catch (e) {}
+      try { stopMotion(); } catch (e) {}
+      let r = null;
+      try { bot.chat('/tpa ' + mate.name); r = await awaitWarp({ maxMs: CAMP_TPA_WAIT_MS }); } catch (e) { r = null; }
+      if (gen !== _lifeGen) return { via: 'dead', camp };   // mort pendant l'attente : la vie suivante décide
+      if (r && r.warped) {
+        const t = Date.now();
+        _lastRegroupAt = t; _lastSquadAt = t;            // déjà avec l'équipe : pas de /tpa dans la foulée
+        _confineGraceUntil = Math.max(_confineGraceUntil, t + 10 * 60000);   // pas de rappel /home vers la base (souvent DANS le camp)
+        emit({ type: 'respawn_camp_escape', via: 'tpa', to: mate.name, dist: mate.dist, camp, deaths: verdict.deaths });
+        return { via: 'tpa', camp, to: mate.name };
+      }
+      emit({ type: 'respawn_camp_tpa_failed', to: mate.name, cancelled: !!(r && r.cancelled) });
+    }
+    return { via: 'foot', camp };
+  } catch (e) { return null; }
+}
+
+/** Le timer : sorti du camp, au calme, au sol plein, éclairé → /spawnpoint ICI. Jamais de throw. */
+function campReanchorTick() {
+  try {
+    const pend = _campReanchor;
+    if (!pend) return;
+    const p = bot.entity && bot.entity.position;
+    if (!p || bot.health == null || bot.health <= 0) return;
+    const pos = { x: p.x, y: p.y, z: p.z };
+    const now = Date.now();
+    let hostileDist = null;
+    try {
+      const near = nearbyHostiles(bot, respawnEscape.REANCHOR_CALM_RADIUS);
+      if (near.length) hostileDist = near.reduce((m, e) => Math.min(m, e.position.distanceTo(p)), Infinity);
+    } catch (e) { hostileDist = null; }
+    let camped = false;
+    try { camped = spawnpointVeto({ pos, deaths: _recentDeathPositions(), now }).veto === true; } catch (e) { camped = true; }
+    let blockLight = null, skyLight = null;
+    try {
+      const b = bot.blockAt(p.floored ? p.floored() : new vec3Lib.Vec3(Math.floor(p.x), Math.floor(p.y), Math.floor(p.z)));
+      if (b) { blockLight = Number.isFinite(b.light) ? b.light : null; skyLight = Number.isFinite(b.skyLight) ? b.skyLight : null; }
+    } catch (e) { /* illisible → ne bloque pas */ }
+    let inWater = false;
+    try { inWater = isInWater(bot); } catch (e) { inWater = false; }
+    const busy = !!_escaping || !!_shelterInFlight || !!_meleePillar || !!_voidRescueBusy || !!_voidReanchorBusy || !!bot.vehicle;
+    const r = respawnEscape.reanchorReady({
+      pending: pend, pos, now, busy, inWater,
+      onGround: bot.entity.onGround !== false, groundOk: _groundHere().ok,
+      hostileDist, camped, blockLight, skyLight,
+      night: (bot.time && bot.time.timeOfDay != null) ? isNight(bot) : null,
+    });
+    if (r.expired) { _campReanchor = null; emit({ type: 'spawn_reanchor_expired', camp: { x: pend.x, z: pend.z } }); return; }
+    if (!r.ok) {
+      if (r.reason !== _campReanchorWhy && r.reason !== 'too_close') {
+        _campReanchorWhy = r.reason;
+        emit({ type: 'spawn_reanchor_wait', reason: r.reason, dist: r.dist != null ? Math.round(r.dist) : null });
+      }
+      return;
+    }
+    _campReanchorWhy = null;
+    anchorSpawnpoint('respawn_camp');   // pose + `spawn_reanchored` (qui vide l'attente) ; veto ultime inclus
+  } catch (e) { /* best-effort */ }
+}
+setInterval(campReanchorTick, CAMP_REANCHOR_TICK_MS);
 
 /**
  * Bois sans mourir : un bot NU a-t-il une menace RÉELLE à ≤ 16 blocs MAINTENANT ? (même prédicat
@@ -11361,7 +11565,11 @@ async function onSpawn() {
   // spawn → on se TERRE (puits + toit) au lieu de courir ; de nuit, nu, un camp ne se fuit plus à
   // découvert non plus. guardSpawn observe, décide (unstuck.spawnGuardPlan) et CONSOMME `_escapeOnSpawn`
   // — une seule décision par spawn, quelle que soit la raison (rafale, historique hérité, danger vu).
-  try { await guardSpawn(); } catch (e) { /* best-effort : jamais bloquer le respawn */ }
+  let _guard = null;
+  try { _guard = await guardSpawn(); } catch (e) { /* best-effort : jamais bloquer le respawn */ }
+  // Sorti d'un camp de réapparition (tpa/fuite) : la base est presque toujours DANS ce camp (NethBot1 23/10 :
+  // base 24,-604, camp 5,-605) — le /home safe du retour de base l'y renverrait aussitôt.
+  const _campRescued = !!(_guard && _guard.campRescue);
   // KIT DE SECOURS (run 10) : nu, près de son coffre, zone saine → reprendre le kit AVANT la base, la
   // dette et le planner (qui sinon repartirait au bois). No-op sous keepInventory ON (pioche gardée).
   try { await restoreStashIfUseful(); } catch (e) { /* best-effort */ }
@@ -11415,7 +11623,9 @@ async function onSpawn() {
         pos: bot.entity && bot.entity.position,
         spawn: stB && stB.worldSpawn,
       });
-      if (act === 'return') {
+      if (act === 'return' && _campRescued) {
+        emit({ type: 'base_return_skipped', reason: 'respawn_camp_rescue' });
+      } else if (act === 'return') {
         // goHome passe par le veto du home campé (19/10) : base campée la nuit → on reste où l'on a respawné.
         // ATTENDRE l'atterrissage (live 21/10, NethBot3 session 48) : sans lui le planner partait dans la
         // milliseconde, l'abri de nuit commençait à creuser AU SPAWN, et le téléport 29 ms plus tard laissait

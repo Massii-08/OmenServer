@@ -750,3 +750,16 @@ test('escapeWater : rive inatteignable (goto ne fait pas bouger, bord trop haut)
   assert.strictEqual(gotos, 2);
   assert.strictEqual(climbs.length, 1);
 });
+
+test('escapePlan : bornes surchargeables (camp de réapparition, 23/10 : ≥ 48 blocs) — défaut inchangé', () => {
+  const pos = { x: 0, y: 64, z: 0 };
+  for (const r of [0, 0.5, 0.999]) {
+    const p = escapePlan({ noGive: true, pos, rand: () => r, minDist: 48, maxDist: 64 });
+    assert.ok(p.dist >= 48 && p.dist <= 64, `dist ${p.dist}`);
+    assert.ok(Math.hypot(p.x, p.z) >= 47, 'la cible est vraiment à ≥ 48 blocs');
+  }
+  const d = escapePlan({ noGive: true, pos, rand: () => 0 });
+  assert.strictEqual(d.dist, 30, 'sans option : 30-60 comme avant');
+  const onlyMin = escapePlan({ noGive: true, pos, rand: () => 0.999, minDist: 70 });
+  assert.ok(onlyMin.dist >= 70 && onlyMin.dist <= 70.001, 'min > max par défaut → max relevé au min');
+});

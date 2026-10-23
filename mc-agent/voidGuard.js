@@ -69,6 +69,21 @@ function dropDepth(blockAt, pos, max = 40) {
 }
 
 /**
+ * PUR — une arrivée (respawn, /home, /tpa) au-dessus de `drop` blocs de vide est-elle DANGEREUSE ?
+ * (live 23/10, NethBot1 : réapparition à 4 blocs au-dessus du sol — feuillage, petite marche — lue comme
+ * « au-dessus du vide » : `/delhome safe` et ré-ancrage forcé à CHAQUE vie.) Une chute de ≤ 4 blocs coûte
+ * au plus un cœur : ce n'est pas du vide. Dangereux = > 4 blocs (ou plafond de mesure atteint), ou
+ * profondeur illisible ALORS QUE le chunk est chargé (`chunkLoaded === true`). Illisible faute de chunk →
+ * pas de verdict (false).
+ */
+const SAFE_LANDING_DROP = 4;
+function dangerousDrop(drop, opts = {}) {
+  if (drop === null || drop === undefined) return !!(opts && opts.chunkLoaded === true);
+  if (typeof drop !== 'number' || Number.isNaN(drop)) return false;
+  return drop > SAFE_LANDING_DROP;
+}
+
+/**
  * Case sûre la plus proche (rayon `radius` en X/Z, ±2 en Y) : pieds + tête dégagés, `need` pleins dessous.
  * Rend {x,y,z} (coordonnées de BLOC des pieds) ou null. Ordre déterministe (distance, puis x, z, y).
  */
@@ -182,6 +197,6 @@ function catchBlockPlan(blockAt, pos) {
 }
 
 module.exports = {
-  isSolid, isClear, groundCheck, dropDepth, nearestSafeStand, anchorAbove, descentOffset,
+  isSolid, isClear, groundCheck, dropDepth, dangerousDrop, SAFE_LANDING_DROP, nearestSafeStand, anchorAbove, descentOffset,
   isFallDeathMessage, fallDeathLoop, deathBelowAnchor, catchBlockPlan,
 };

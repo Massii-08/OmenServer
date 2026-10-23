@@ -335,7 +335,11 @@ function escapePlan(opts = {}) {
   }
   if (heading == null) heading = rand() * Math.PI * 2;
 
-  const dist = ESCAPE_MIN_DIST + rand() * (ESCAPE_MAX_DIST - ESCAPE_MIN_DIST);
+  // Bornes surchargeables (camp de RÉAPPARITION, 23/10 : 30-60 blocs ne suffisaient pas, le camp suivait
+  // — respawnEscape.CAMP_ESCAPE_MIN_DIST = 48). Défaut inchangé.
+  const minD = Number.isFinite(opts.minDist) && opts.minDist > 0 ? opts.minDist : ESCAPE_MIN_DIST;
+  const maxD = Number.isFinite(opts.maxDist) && opts.maxDist >= minD ? opts.maxDist : Math.max(ESCAPE_MAX_DIST, minD);
+  const dist = minD + rand() * (maxD - minD);
   return {
     mode: 'walk',
     x: Math.round(pos.x + Math.cos(heading) * dist),

@@ -73,6 +73,7 @@ function glue({ disk = { memo: null }, clock = { t: T0 }, bot: botOver = {}, ...
     _migrating: false, _escaping: false, _baseBusy: false, _imminentBusy: false, _stillBusy: false, _skelRushBusy: false,
     CONFINE: null, _confineDyn: null, _anchorSet: false, IS_MAPPER: true, NO_GIVE: true,
     world: { objective: { type: 'mapper', status: 'in_progress' } },
+    respawnEscape: require('./respawnEscape'), _campReanchor: null, _spawnVetoLast: null, SPAWN_VETO_EVENT_EVERY_MS: 60000,
     ...extra,
   };
   vm.createContext(sb);
