@@ -87,7 +87,7 @@ function sandbox(o = {}) {
     isNight: () => false,
     buildCtxInv, teamStatus,
     _ljReleaseGift: () => sb.calls.push('ljReleaseGift'),   // armure du bûcheron (testée dans index.ljarmor.test.js)
-    isWoodGoal: L.isWoodGoal, woodWantFor: L.woodWantFor, logCount: L.logCount, activeLumberjack: L.activeLumberjack,
+    isWoodGoal: L.isWoodGoal, woodWantFor: L.woodWantFor, logCount: L.logCount, activeLumberjack: L.activeLumberjack, woodEquiv: L.woodEquiv, peerWoodSupplier: L.peerWoodSupplier,
     woodWaitDecision: L.woodWaitDecision, preferredLumberjack: L.preferredLumberjack, lumberjackVerdict: L.lumberjackVerdict,
     wornIronCount: L.wornIronCount, LUMBERJACK_MIN_WORN: L.LUMBERJACK_MIN_WORN,
     pickWoodRequest: L.pickWoodRequest, tossPlan: L.tossPlan, ljSwitchBlock: L.ljSwitchBlock,
@@ -102,13 +102,14 @@ function sandbox(o = {}) {
   for (const c of ['LJ_CLAIM', 'LJ_TICK_MS', 'LJ_CACHE_MS', 'LJ_IDLE_MAX_MS', 'WOOD_DONE_TTL_MS', 'WOOD_FAIL_TTL_MS',
     'WOOD_WAIT_POLL_MS', 'WOOD_WAIT_LJ_CHECK_MS', '_woodDone', '_woodFailed', '_ljEvAt']) run(sb, constSrc(c));
   for (const l of ['_woodReq', '_woodTimedOutAt', '_woodReqLoaded', '_beatNow', '_ljTarget', '_ljAt', '_ljSwitching']) run(sb, letSrc(l));
-  for (const f of ['_ljEmit', 'isLumberjackObjective', 'loadWoodRequest', 'setWoodRequest', 'woodWaitStep', '_ljContext',
+  for (const f of ['_ljEmit', 'isLumberjackObjective', 'loadWoodRequest', 'setWoodRequest', 'woodSupplierNow', '_isLumberjackName', 'woodWaitStep', '_ljContext',
     'bookmarkCuttingSpot', 'tossLogsTo', 'deliverWoodSkill', 'lumberjackIdleSkill', '_ljResignCleanup', 'switchLumberjack', 'lumberjackTick']) run(sb, fnSrc(f));
   // exposer les `let` du contexte (inaccessibles comme propriétés de l'objet global)
   run(sb, 'globalThis.__get = (n) => eval(n); globalThis.__set = (n, v) => eval(n + " = v");');
   return sb;
 }
 
+const plainJ = (x) => JSON.parse(JSON.stringify(x));
 const LJ = (o = {}) => Object.assign({ name: 'NethBot3', role: 'lumberjack', at: T0 - 1000, armor: 4, x: 0, z: 0 }, o);
 const LOGS_GOAL = { name: 'logs', skill: 'gatherLog', args: { count: 6 } };
 
@@ -331,7 +332,7 @@ test('câblage : runSkillWithTelemetry consulte woodWaitStep APRÈS la nuit et n
     _lifeGen: 0, lifeStale: (g) => g != null && g !== sb._lifeGen, dropStaleTask: () => ({ ok: false, reason: 'cancelled', stale: true }),
     holdForNight: async () => ({ held: 0, cancelled: false }), maybeNightShelter: async () => false,
     woodWaitStep: async (g) => (g.skill === 'gatherLog' ? { ok: true } : null),
-    woodGoalRequestStep: async () => null,
+    woodGoalRequestStep: async () => null, peerWoodGiftStep: async () => null, woodMateTpaStep: async () => null,
     runGoalSkill: async (g) => { skills.push(g.name); return { ok: true }; },
     withTimeout: (p) => p, timeoutFor: () => 1, stopMotion() {}, MINING_GOALS: new Set(), _zoneMiningMs: 0,
     noteZoneFailure() {}, _skillInFlight: 0, _curGoal: null,
@@ -474,4 +475,73 @@ test('câblage : startAutonomous nettoie le rôle quand objectiveForStart ramèn
   assert.match(body, /objectiveForStart\(/);
   assert.match(body, /objType === 'lumberjack'[\s\S]*_ljResignCleanup\(\)/);
   assert.match(body, /release\(LJ_CLAIM\)/);
+});
+
+
+// ─── ENTRAIDE BOIS SANS BÛCHERON : câblage exécuté (23/10) ──────────────────────────────────────
+function peerSandbox(o = {}) {
+  const sb = sandbox(o);
+  Object.assign(sb, { pickPeerWoodGift: L.pickPeerWoodGift, peerDonorSafe: L.peerDonorSafe, woodGiftTossPlan: L.woodGiftTossPlan,
+    _migrating: false });
+  Object.assign(sb.bot, { health: o.health != null ? o.health : 20, food: 20, nearestEntity: () => null, time: { timeOfDay: 1000 } });
+  run(sb, constSrc('PEER_GIFT_CHECK_MS'));
+  run(sb, letSrc('_peerGiftCheckAt'));
+  run(sb, fnSrc('peerWoodGiftStep'));
+  return sb;
+}
+const ASKER = (o = {}) => Object.assign({ name: 'NethBot3', role: 'worker', at: T0 - 1000, woodWant: 16, woodAt: T0 - 20000 }, o);
+
+test('sans bûcheron : un mineur avec ≥ 24 bûches /tpa vers le demandeur, jette 16 bûches, rentre au chantier', async () => {
+  const sb = peerSandbox({ name: 'NethBot1', mates: [ASKER()], items: [{ name: 'oak_log', type: 7, count: 30 }] });
+  const r = await run(sb, 'peerWoodGiftStep(0)');
+  assert.deepStrictEqual(plainJ(r), { given: 16 });
+  assert.ok(sb.calls.includes('chat:/tpa NethBot3'));
+  assert.ok(sb.calls.some((c) => Array.isArray(c) && c[0] === 'toss' && c[2] === 16));
+  assert.ok(sb.calls.includes('markWork:peer_wood_gift') && sb.calls.includes('returnToWork:peer_wood_gift'));
+  assert.ok(sb.events.some((e) => e.type === 'wood_delivered' && e.peer === true && e.count === 16));
+  assert.strictEqual(sb._teamClaims.peek('wood:NethBot3'), null, 'réservation relâchée après livraison');
+});
+
+test('donneur unique : la réservation wood:<demandeur> tenue par un autre → pas de second don', async () => {
+  const sb = peerSandbox({ name: 'NethBot1', mates: [ASKER()], items: [{ name: 'oak_log', type: 7, count: 30 }] });
+  sb._teamClaims.map['wood:NethBot3'] = { by: 'NethBot2', at: T0 };
+  assert.strictEqual(await run(sb, 'peerWoodGiftStep(0)'), null);
+  assert.ok(!sb.calls.some((c) => typeof c === 'string' && c.startsWith('chat:')));
+});
+
+test('pas de don : bûcheron actif, stock < 24, danger (PV bas), ou je demande moi-même', async () => {
+  const items = [{ name: 'oak_log', type: 7, count: 30 }];
+  const withLj = peerSandbox({ name: 'NethBot1', mates: [ASKER(), LJ({ name: 'NethBot2' })], items });
+  assert.strictEqual(await run(withLj, 'peerWoodGiftStep(0)'), null);
+  const poor = peerSandbox({ name: 'NethBot1', mates: [ASKER()], items: [{ name: 'oak_log', type: 7, count: 20 }] });
+  assert.strictEqual(await run(poor, 'peerWoodGiftStep(0)'), null);
+  const hurt = peerSandbox({ name: 'NethBot1', mates: [ASKER()], items, health: 8 });
+  assert.strictEqual(await run(hurt, 'peerWoodGiftStep(0)'), null);
+  assert.ok(hurt.events.some((e) => e.type === 'peer_wood_gift_skip' && e.why === 'danger'));
+  const asking = peerSandbox({ name: 'NethBot1', mates: [ASKER()], items });
+  run(asking, '_woodReq = { want: 16, at: Date.now() };');
+  assert.strictEqual(await run(asking, 'peerWoodGiftStep(0)'), null);
+});
+
+test('demandeur sans bûcheron : le coéquipier qui annonce du stock devient le destinataire (demande publiée)', async () => {
+  const sb = sandbox({ mates: [{ name: 'NethBot1', role: 'worker', at: T0 - 1000, woodStock: 40 }], noWoodHere: true,
+    pos: { y: 63 } });
+  sb.onSleep = (t) => { if (t >= T0 + 3000 && !sb.items.length) sb.items.push({ name: 'oak_planks', type: 9, count: 64 }); };
+  const r = await run(sb, 'woodWaitStep(' + JSON.stringify(LOGS_GOAL) + ')');
+  assert.deepStrictEqual(JSON.parse(JSON.stringify(r)), { ok: true }, '64 planches = 16 bûches-équivalent');
+  const req = sb.events.find((e) => e.type === 'wood_request');
+  assert.ok(req && req.lumberjack === 'NethBot1' && req.peer === true);
+});
+
+test('câblage : runSkillWithTelemetry — don entre deux buts AVANT l attente bois, /tpa vers un coéquipier en forêt APRÈS', () => {
+  const src = fnSrc('runSkillWithTelemetry');
+  const gift = src.indexOf('await peerWoodGiftStep(_gen)');
+  const wait = src.indexOf('await woodWaitStep(g)');
+  const mate = src.indexOf('await woodMateTpaStep(g, _gen)');
+  const night = src.indexOf('holdForNight(g)');
+  assert.ok(night > 0 && gift > night && wait > gift && mate > wait);
+  assert.ok(mate < src.indexOf('runGoalSkill(g, _gen)'), 'avant le skill : il coupe LÀ-BAS');
+  assert.match(SRC, /^let _peerGiftCheckAt = 0;/m);
+  assert.match(SRC, /^let _woodMateTpaAt = 0;/m);
+  assert.match(SRC, /^let _lastMigrationReason = null;/m);
 });

@@ -90,6 +90,9 @@ const MIGRATE_MIN_PROGRESS = 64;
 // le bot « déménageait » dans le même secteur vidé. Pour le BOIS, 64 blocs reste correct (on veut
 // la forêt la plus proche, cf. MIGRATE_WOOD_MIN_DIST).
 const FAR_EARLY_EXIT_FRACTION = 0.75;   // un trek « loin » accepte le bon terrain à 3/4 du plancher
+// Bois : « arrivé à la forêt » = dans le rayon des chunks chargés autour de la cellule visée (les arbres
+// d'une cellule de 128 blocs sont alors visibles depuis le bot).
+const WOOD_ARRIVED_RADIUS = 96;
 const MIGRATE_ARRIVED_RADIUS = 48;      // == le « arrivé » de la boucle ciblée d'index.js
 
 /**
@@ -100,6 +103,12 @@ const MIGRATE_ARRIVED_RADIUS = 48;      // == le « arrivé » de la boucle cibl
  */
 function migrationEarlyExitOk({ reason, gone, minDist, distToTarget } = {}) {
   if (!Number.isFinite(gone)) return false;          // position illisible → on continue de marcher
+  // BOIS AVEC UNE CIBLE (23/10, NethBot3) : « des arbres en vue » sortait de la marche à 64 blocs du
+  // départ, 260 blocs AVANT la forêt connue visée — un arbre isolé, coupé en 20 s, puis `logs timeout`
+  // en boucle dans une zone tout aussi pelée. Avec une forêt connue pour cible, on y va vraiment.
+  if (reason === 'wood' && Number.isFinite(distToTarget)) {
+    return gone >= MIGRATE_MIN_PROGRESS && distToTarget <= WOOD_ARRIVED_RADIUS;
+  }
   if (_FAR_REASONS.has(reason)) {
     const floor = Number.isFinite(minDist) && minDist > 0 ? minDist : MIGRATE_FAR_MIN_DIST;
     const dt = Number.isFinite(distToTarget) ? distToTarget : Infinity;
@@ -127,6 +136,10 @@ const ARRIVAL_DEPLETED_RADIUS = 160;
  */
 function migrationArrivalOk({ reason, gone, minDist, distToTarget, arrival, depleted } = {}) {
   if (!Number.isFinite(gone)) return { ok: false, why: 'no_position' };
+  if (reason === 'wood' && Number.isFinite(distToTarget) && distToTarget <= WOOD_ARRIVED_RADIUS
+      && gone >= MIGRATE_MIN_PROGRESS) {
+    return { ok: true, why: 'arrived' };
+  }
   if (!_FAR_REASONS.has(reason)) {
     return gone >= MIGRATE_MIN_PROGRESS ? { ok: true, why: 'moved' } : { ok: false, why: 'too_short' };
   }
@@ -196,7 +209,13 @@ const MIGRATION_EXTRA_LEGS = 12;   // jambes supplémentaires au plus (≈ 768 b
  * @param {{reason, gone, minDist?, arrivalOk:boolean, arrivalWhy?:string, wet?:boolean, extraLegs:number, maxExtra?:number}} o
  */
 function migrationKeepWalking({ reason, gone, minDist, arrivalOk, arrivalWhy, wet = false, extraLegs = 0,
-  maxExtra = MIGRATION_EXTRA_LEGS } = {}) {
+  maxExtra = MIGRATION_EXTRA_LEGS, distToTarget } = {}) {
+  // BOIS (23/10) : tant que la forêt visée n'est pas en vue, on continue d'y marcher (budget borné) —
+  // même si 64 blocs suffisent à « compter » comme déménagement.
+  if (reason === 'wood') {
+    if (!Number.isFinite(gone) || !Number.isFinite(extraLegs) || extraLegs >= maxExtra) return false;
+    return Number.isFinite(distToTarget) && distToTarget > WOOD_ARRIVED_RADIUS;
+  }
   if (!_FAR_REASONS.has(reason)) return false;
   if (!Number.isFinite(gone)) return false;
   if (!Number.isFinite(extraLegs) || extraLegs >= maxExtra) return false;
@@ -370,7 +389,11 @@ function zoneVerdict(s, opts = {}) {
   // Zone prouvée morte AU-DELÀ DE TOUT DOUTE → seuils d'urgence (cf. OVERWHELMING_FACTOR).
   const damning = _num(s.logsNotFound) >= LOGS_NOT_FOUND_MAX * OVERWHELMING_FACTOR
     || _num(s.depletedNear) >= DEPLETED_NEAR_MAX * OVERWHELMING_FACTOR
-    || (_num(s.waterFails) >= WATER_FAILS_MAX * OVERWHELMING_FACTOR && !s.dryCellKnown);
+    || (_num(s.waterFails) >= WATER_FAILS_MAX * OVERWHELMING_FACTOR && !s.dryCellKnown)
+    // ARRIVÉE BOIS SANS ARBRES (23/10, NethBot3) : on vient de migrer POUR le bois et la nouvelle zone
+    // rend déjà `logs` introuvables au seuil normal → c'est la preuve écrasante d'une cible ratée
+    // (`too_soon` 1 min après l'arrivée, puis 20 min de `logs timeout` avant le droit de repartir).
+    || (s.lastMigrationReason === 'wood' && _num(s.logsNotFound) >= LOGS_NOT_FOUND_MAX);
   // ⚠️ UN ÉCHEC NE DOIT PAS COÛTER 20 MIN (fix 18/08 : 917 départs → 72 arrivées, 917 `cooldown`).
   // Le cooldown long protège d'un nomadisme après un VRAI déménagement ; après un échec le bot n'a
   // pas bougé, la zone est toujours aussi morte — on garde juste l'anti-boucle-chaude de 5 min.
@@ -467,9 +490,12 @@ function verdictTelemetry(v, prevReason) {
  */
 function pickMigrationTarget({
   from, biomes, depleted, minDist = MIGRATE_MIN_DIST, maxDist = MIGRATE_MAX_DIST,
-  depletedRadius = DEPLETED_RADIUS, reason, avoid, now = Date.now(),
+  depletedRadius = DEPLETED_RADIUS, reason, avoid, now = Date.now(), finds,
 } = {}) {
   if (!from || !Number.isFinite(from.x) || !Number.isFinite(from.z)) return null;
+  if (reason === 'wood') {
+    return pickWoodMigrationTarget({ from, biomes, finds, depleted, minDist, maxDist, depletedRadius, avoid, now });
+  }
   const list = Array.isArray(biomes) ? biomes : [];
   if (!list.length) return null;
   const avoids = pruneFailedTargets(avoid, now);
@@ -500,6 +526,135 @@ function pickMigrationTarget({
   }
   if (!best) return null;
   return { x: Math.round(best.x), z: Math.round(best.z), source: 'mapped', biome: best.name };
+}
+
+// ─── MIGRATION BOIS : UNE FORÊT CONNUE, JAMAIS UNE CELLULE ARBITRAIRE (23/10) ───────────────────
+// Live NethBot3 (chrono de zéro, 66 min, 0 pièce) : ~50 min bloqué sur `logs timeout`. La migration
+// bois retombait sur « une autre terre » quand aucune cellule boisée n'était dans la fourchette, et la
+// liste des biomes boisés (amorce vanilla) ignorait les variantes (old_growth_birch_forest, snowy_taiga,
+// windswept_forest, swamp…). Règle d'un joueur : on va là où on SAIT qu'il y a des arbres — une
+// cellule de biome boisé, ou un endroit où l'équipe a VU des bûches (`material_found` *_log récent).
+// Rien de connu dans la fourchette → la cellule INEXPLORÉE la plus proche dans la direction des forêts
+// connues ; aucune forêt connue du tout → null (le caller marche à l'aveugle, comme avant).
+const _WOODED_RE = /forest|taiga|jungle|grove|savanna|swamp|pale_garden|wooded|cherry/i;
+const WOOD_FIND_MAX_AGE_MS = 3 * 60 * 60 * 1000;      // une bûche vue il y a 3 h ne prouve plus rien
+const WOOD_DEPLETED_MAX_AGE_MS = 3 * 60 * 60 * 1000;  // forêt pelée (kind:'wood') : les arbres ne repoussent pas vite
+const MAP_CELL = 128;
+
+/** Biome où l'on trouve des arbres (amorce vanilla + variantes). Jamais l'eau. (PUR) */
+function isWoodedBiome(name) {
+  if (typeof name !== 'string' || !name) return false;
+  if (isWetBiome(name)) return false;
+  return vanillaHint('log').includes(name) || _WOODED_RE.test(name);
+}
+
+/**
+ * Endroits où l'équipe SAIT qu'il y a du bois (PUR) : cellules de biome boisé + bûches vues
+ * (`finds` dont le matériau finit par `_log`, datées de moins de `maxAgeMs`).
+ * @returns {Array<{x,z,name,source:'biome'|'logs'}>}
+ */
+function woodSpots({ biomes, finds, now = Date.now(), maxAgeMs = WOOD_FIND_MAX_AGE_MS } = {}) {
+  const out = [];
+  for (const b of Array.isArray(biomes) ? biomes : []) {
+    if (!b || !Number.isFinite(b.x) || !Number.isFinite(b.z) || !isWoodedBiome(b.name)) continue;
+    out.push({ x: b.x, z: b.z, name: b.name, source: 'biome' });
+  }
+  for (const f of Array.isArray(finds) ? finds : []) {
+    if (!f || typeof f.material !== 'string' || !f.material.endsWith('_log')) continue;
+    if (!Number.isFinite(f.x) || !Number.isFinite(f.z)) continue;
+    const at = _depletedAtMs(f.at);
+    if (!Number.isFinite(at) || at > now + DEPLETED_CLOCK_SKEW_MS || (now - at) > maxAgeMs) continue;
+    out.push({ x: f.x, z: f.z, name: f.biome || f.material, source: 'logs' });
+  }
+  return out;
+}
+
+/** Cellules pelées (dépôts `kind:'wood'` récents) — les seules qu'une migration BOIS doit fuir. (PUR) */
+function _woodDepleted(list, now) {
+  const out = [];
+  for (const d of Array.isArray(list) ? list : []) {
+    if (!d || d.kind !== 'wood' || !Number.isFinite(d.x) || !Number.isFinite(d.z)) continue;
+    const at = _depletedAtMs(d.at);
+    if (!Number.isFinite(at) || at > now + DEPLETED_CLOCK_SKEW_MS || (now - at) > WOOD_DEPLETED_MAX_AGE_MS) continue;
+    out.push(d);
+  }
+  return out;
+}
+
+function _cellKey(x, z) { return Math.round(x / MAP_CELL) + ',' + Math.round(z / MAP_CELL); }
+
+/** Cible d'une migration BOIS (PUR, déterministe). Cf. bloc ci-dessus. */
+function pickWoodMigrationTarget({ from, biomes, finds, depleted, minDist = MIGRATE_WOOD_MIN_DIST,
+  maxDist = MIGRATE_MAX_DIST, depletedRadius = DEPLETED_RADIUS, avoid, now = Date.now() } = {}) {
+  if (!from || !Number.isFinite(from.x) || !Number.isFinite(from.z)) return null;
+  const spots = woodSpots({ biomes, finds, now });
+  if (!spots.length) return null;
+  const avoids = pruneFailedTargets(avoid, now);
+  const isAvoided = (x, z) => avoids.some((a) => _horiz(a.x, a.z, x, z) <= FAILED_TARGET_RADIUS);
+  const peeled = _woodDepleted(depleted, now);
+  const isPeeled = (x, z) => peeled.some((d) => _horiz(d.x, d.z, x, z) <= depletedRadius);
+  const usable = spots.filter((sp) => !isAvoided(sp.x, sp.z) && !isPeeled(sp.x, sp.z));
+  let best = null; let bestScore = null;
+  for (const sp of usable) {
+    const d = _horiz(from.x, from.z, sp.x, sp.z);
+    if (d < minDist || d > maxDist) continue;
+    const score = [d, sp.x, sp.z, sp.source === 'logs' ? 0 : 1];
+    if (!bestScore || _lex(score, bestScore) < 0) { best = sp; bestScore = score; }
+  }
+  if (best) return { x: Math.round(best.x), z: Math.round(best.z), source: best.source === 'logs' ? 'logs' : 'mapped', biome: best.name };
+  // Repli : direction de la forêt UTILISABLE la plus proche au-delà du plancher (sinon de n'importe quel
+  // endroit boisé connu), puis la 1re cellule INEXPLORÉE sur ce cap, dans la fourchette.
+  const hintPool = usable.length ? usable : spots;
+  let hint = null; let hintScore = null;
+  for (const sp of hintPool) {
+    const d = _horiz(from.x, from.z, sp.x, sp.z);
+    if (d < minDist) continue;
+    const score = [d, sp.x, sp.z];
+    if (!hintScore || _lex(score, hintScore) < 0) { hint = sp; hintScore = score; }
+  }
+  if (!hint) return null;
+  const known = new Set();
+  for (const b of Array.isArray(biomes) ? biomes : []) {
+    if (b && Number.isFinite(b.x) && Number.isFinite(b.z)) known.add(_cellKey(b.x, b.z));
+  }
+  const heading = Math.atan2(hint.z - from.z, hint.x - from.x);
+  const step = MAP_CELL / 2;
+  for (let dist = Math.max(minDist, step); dist <= maxDist; dist += step) {
+    const x = Math.round((from.x + Math.cos(heading) * dist) / MAP_CELL) * MAP_CELL;
+    const z = Math.round((from.z + Math.sin(heading) * dist) / MAP_CELL) * MAP_CELL;
+    const d = _horiz(from.x, from.z, x, z);
+    if (d < minDist || d > maxDist) continue;
+    if (known.has(_cellKey(x, z)) || isAvoided(x, z) || isPeeled(x, z)) continue;
+    return { x, z, source: 'frontier', biome: null };
+  }
+  return null;
+}
+
+/**
+ * Origine du choix de cible (PUR). Pour le BOIS, la position RÉELLE du bot s'il est en surface : live
+ * NethBot3, la cible (98 blocs de l'ancre) était à 326 blocs du bot, téléporté entre-temps par la
+ * squad — la « forêt la plus proche » doit l'être de lui. Sinon (sous terre : la remontée passe par
+ * /home safe, donc par l'ancre ; autres motifs : déterminisme d'escouade) : l'ancre.
+ */
+function migrationOrigin({ reason, anchor, pos, surfaceMinY = 50 } = {}) {
+  if (reason === 'wood' && pos && Number.isFinite(pos.x) && Number.isFinite(pos.z)
+      && Number.isFinite(pos.y) && pos.y >= surfaceMinY) {
+    return { x: pos.x, z: pos.z };
+  }
+  return anchor || null;
+}
+
+/**
+ * Cibles à écarter pour CETTE migration (PUR, ne mute rien). Une 2ᵉ migration bois partant d'une zone
+ * où l'on avait déjà migré pour le bois : cette zone d'arrivée est prouvée sans arbres → on l'écarte
+ * (rayon FAILED_TARGET_RADIUS), sinon le choix déterministe re-viserait la cellule voisine du même bois rasé.
+ */
+function woodRetryAvoid({ avoid, reason, lastReason, anchor, now = Date.now() } = {}) {
+  const list = Array.isArray(avoid) ? avoid.slice() : [];
+  if (reason === 'wood' && lastReason === 'wood' && anchor && Number.isFinite(anchor.x) && Number.isFinite(anchor.z)) {
+    list.push({ x: Math.round(anchor.x), z: Math.round(anchor.z), at: now });
+  }
+  return list;
 }
 
 /** Comparaison lexicographique de deux tuples numériques (départage 100 % déterministe). */
@@ -629,6 +784,7 @@ function zoneStateInit(now) {
     ironMined: 0, miningMs: 0, lastMigrationAt: 0,
     waterFailsWin: [], logsNotFoundWin: [], ironMinedWin: [],
     lastMigrationFailed: false, failedTargets: [],
+    lastMigrationReason: null,
   };
 }
 
@@ -659,6 +815,9 @@ function zoneStateLoad(saved, now) {
     // Mémo d'avant le fix 18/08 : champs absents → défauts (rétro-compat). Booléen STRICT.
     lastMigrationFailed: saved.lastMigrationFailed === true,
     failedTargets: pruneFailedTargets(saved.failedTargets, now),
+    // Motif de la dernière migration RÉUSSIE (23/10) : `wood` + zone d'arrivée sans arbres = preuve
+    // écrasante (zoneVerdict). Chaîne seulement ; absent/bizarre → null (rétro-compat).
+    lastMigrationReason: typeof saved.lastMigrationReason === 'string' ? saved.lastMigrationReason : null,
   };
 }
 
@@ -668,11 +827,12 @@ function zoneStateLoad(saved, now) {
  * `prev` (optionnel) = l'état d'avant : on en garde les CIBLES RATÉES — une cible ratée reste ratée
  * 45 min, même après un déménagement réussi ailleurs. Sans `prev` (appel historique) : liste vide.
  */
-function zoneStateAfterMigration(now, prev = null) {
+function zoneStateAfterMigration(now, prev = null, reason = null) {
   return Object.assign(zoneStateInit(now), {
     lastMigrationAt: now,
     lastMigrationFailed: false,
     failedTargets: pruneFailedTargets(prev && prev.failedTargets, now),
+    lastMigrationReason: typeof reason === 'string' ? reason : null,
   });
 }
 
@@ -810,7 +970,8 @@ module.exports = {
   ironUnits, ironSampleGain,
   zoneStateInit, zoneStateLoad, zoneStateAfterMigration, zoneStateAfterFailedMigration,
   migrationCancelEffect, migrationResumeDecision, deathCampDefersToMigration, MIGRATION_RESUME_TTL_MS, MIGRATION_MAX_INTERRUPTS,
-  migrationEarlyExitOk, pruneFailedTargets, FAR_EARLY_EXIT_FRACTION, MIGRATE_ARRIVED_RADIUS,
+  migrationEarlyExitOk, pruneFailedTargets, FAR_EARLY_EXIT_FRACTION, MIGRATE_ARRIVED_RADIUS, WOOD_ARRIVED_RADIUS,
+  isWoodedBiome, woodSpots, pickWoodMigrationTarget, migrationOrigin, woodRetryAvoid, WOOD_FIND_MAX_AGE_MS,
   migrationArrivalOk, ARRIVAL_DEPLETED_RADIUS,
   depletedForZone, DEPLETED_ZONE_MAX_AGE_MS, migrationKeepWalking, MIGRATION_EXTRA_LEGS,
   migrationConfineGraceMs, MIGRATION_CONFINE_GRACE_MS,

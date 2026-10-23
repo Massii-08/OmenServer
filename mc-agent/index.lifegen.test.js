@@ -124,7 +124,7 @@ function rstSandbox(o = {}) {
     events: [], skills: [], Date, Promise, Object, Math, Number, taskCtl: createTaskController(),
     migrationOwnsBot: () => false, foodTripYield: async () => {}, settleSurvivalKit: async () => {},
     holdForNight: o.holdForNight || (async () => ({ held: 0, cancelled: false })), maybeNightShelter: async () => false,
-    woodWaitStep: async () => null, woodGoalRequestStep: async () => null,
+    woodWaitStep: async () => null, woodGoalRequestStep: async () => null, peerWoodGiftStep: async () => null, woodMateTpaStep: async () => null,
     runGoalSkill: o.runGoalSkill || (async (g) => { sb.skills.push(g.name); return { ok: true }; }),
     withTimeout: (p) => p, timeoutFor: () => 1, stopMotion() {}, MINING_GOALS: new Set(), _zoneMiningMs: 0,
     noteZoneFailure: () => { sb.events.push({ type: 'zone_failure' }); }, _skillInFlight: 0, _curGoal: null,

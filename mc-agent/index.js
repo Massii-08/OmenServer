@@ -128,6 +128,7 @@ const {
   LOGS_NOT_FOUND_MAX, windowAdd, windowSum, windowPrune, ZONE_WINDOW_MS,
   zoneStateAfterFailedMigration, migrationEarlyExitOk, pruneFailedTargets, migrationArrivalOk,
   depletedForZone, migrationKeepWalking, migrationConfineGraceMs,
+  migrationOrigin, woodRetryAvoid, woodSpots,
 } = require('./zone');
 const { recordWorkDrown, noteDrownedSite, isDrownedNear, offsetFromDrowned } = require('./workDrown'); // chantier adjacent à un aquifère → abandon + BANNISSEMENT du lieu (3a)
 const { createDeathSpots } = require('./deathspots');
@@ -183,6 +184,7 @@ const {
   stockFailsPrune, stockFailsAdd, needsForestTrip, forestTriedAdd, pickForestCell, LJ_FOREST_TRIP_MS,
   ljIronSlicePlan, LJ_IRON_SLICE_MS, LJ_IRON_CHECK_MS, LJ_MINE_COBBLE, ljMineTargetY,
   ljSliceRetryMs, ljSliceFailsAfter, isWaterFailReason, ljMineDetour,
+  woodEquiv, peerWoodSupplier, peerDonorSafe, pickPeerWoodGift, woodGiftTossPlan, pickWoodedMate, ljWoodMigrationDue,
 } = require('./lumberjack');
 const { tierRank } = require('./tools');
 const { createTeleportWatcher, wireTeleportDetection } = require('./teleport');
@@ -1413,6 +1415,22 @@ function setWoodRequest(req) {
 }
 
 /**
+ * Qui peut me livrer du bois ? Le bûcheron actif ; à défaut (personne n'est 4/4 → pas d'élu, 23/10),
+ * un coéquipier mineur dont le heartbeat annonce ≥ 24 bûches-équivalent (lumberjack.peerWoodSupplier).
+ */
+function woodSupplierNow(now) {
+  if (!presence) return null;
+  try {
+    const mates = presence.list();
+    return activeLumberjack({ mates, selfName: bot.username, now }) || peerWoodSupplier({ mates, selfName: bot.username, now });
+  } catch (e) { return null; }
+}
+function _isLumberjackName(name) {
+  if (!name || !presence) return false;
+  try { return presence.list().some((m) => m && m.name === name && m.role === 'lumberjack'); } catch (e) { return false; }
+}
+
+/**
  * Avant un but BOIS (skill gatherLog) d'un ouvrier : demander au bûcheron et ATTENDRE au chantier au
  * lieu de remonter. Retourne null → lancer le skill normalement (pas de bûcheron, timeout, je suis le
  * bûcheron…) ; sinon le résultat à rendre au planner ({ok:true} bois reçu, {ok:false,'cancelled'}).
@@ -1421,8 +1439,7 @@ async function woodWaitStep(g, why) {
   if (!isWoodGoal(g) || !presence) return null;
   loadWoodRequest();
   const now = Date.now();
-  let lj = null;
-  try { lj = activeLumberjack({ mates: presence.list(), selfName: bot.username, now }); } catch (e) { lj = null; }
+  let lj = woodSupplierNow(now);
   const d = woodWaitDecision({
     isLumberjack: isLumberjackObjective(), isMapper: IS_MAPPER, lumberjack: lj,
     request: _woodReq, timedOutAt: _woodTimedOutAt, now,
@@ -1440,12 +1457,13 @@ async function woodWaitStep(g, why) {
   if (d.action === 'request') {
     const want = woodWantFor(g);
     setWoodRequest({ want, at: now });
-    emit({ type: 'wood_request', want, goal: g.name, lumberjack: lj, why: why || 'wood_goal' });
+    emit({ type: 'wood_request', want, goal: g.name, lumberjack: lj, why: why || 'wood_goal', peer: !_isLumberjackName(lj) });
   }
   const req = _woodReq;
   if (!req) return null;
   const deadline = req.at + WOOD_REQUEST_TTL_MS;
-  const before = logCount(buildCtxInv(bot));
+  // Bûches-ÉQUIVALENT (23/10) : un coéquipier peut donner 64 planches au lieu de 16 bûches.
+  const before = woodEquiv(buildCtxInv(bot));
   const enough = Math.min(WOOD_MIN_GIFT, req.want);
   _ljEmit('wood_wait', { goal: g.name, lumberjack: lj, remaining_s: Math.round((deadline - Date.now()) / 1000) }, 60000);
   try { stopMotion(); } catch (e) { /* on reste au chantier */ }
@@ -1461,7 +1479,7 @@ async function woodWaitStep(g, why) {
   while (Date.now() < deadline) {
     if (taskToken.cancelled || migrationOwnsBot()) return { ok: false, reason: 'cancelled' };
     await sleep(WOOD_WAIT_POLL_MS);
-    const have = logCount(buildCtxInv(bot));
+    const have = woodEquiv(buildCtxInv(bot));
     if (have - before >= enough) {
       emit({ type: 'wood_received', count: have - before, goal: g.name, from: lj });
       setWoodRequest(null);
@@ -1469,8 +1487,7 @@ async function woodWaitStep(g, why) {
     }
     if (Date.now() - lastCheck >= WOOD_WAIT_LJ_CHECK_MS) {
       lastCheck = Date.now();
-      let still = null;
-      try { still = activeLumberjack({ mates: presence.list(), selfName: bot.username, now: Date.now() }); } catch (e) { still = null; }
+      const still = woodSupplierNow(Date.now());
       if (!still) {
         emit({ type: 'wood_wait_end', reason: 'no_lumberjack', goal: g.name });
         setWoodRequest(null);
@@ -1515,6 +1532,112 @@ async function woodGoalRequestStep(g) {
     if (!g || isWoodGoal(g) || !WOOD_GOALS.has(g.name) || IS_MAPPER || isLumberjackObjective()) return null;
     if (!woodGoalShortage({ goalName: g.name, inv: buildCtxInv(bot), hasTable: !!_nearestTable(bot) })) return null;
     return await woodWaitStep({ name: g.name, skill: 'gatherLog', args: { count: 16 } }, 'wood_goal_short');
+  } catch (e) { return null; }
+}
+
+// ─── ENTRAIDE BOIS SANS BÛCHERON : LE DONNEUR (23/10, cf. lumberjack.pickPeerWoodGift) ──────────
+// Appelé ENTRE deux buts (runSkillWithTelemetry) : le donneur part de son propre contexte de planner,
+// /tpa vers le demandeur, jette 16 bûches (ou 64 planches), rentre au chantier par /home work.
+// Réservation `wood:<demandeur>` dans les claims PARTAGÉS (la même que le bûcheron) → un seul donneur.
+// ⚠️ NIVEAU MODULE (piège #56) : throttle et Maps lus d'un appel à l'autre.
+const PEER_GIFT_CHECK_MS = 15000;
+let _peerGiftCheckAt = 0;
+async function peerWoodGiftStep(gen) {
+  try {
+    if (IS_MAPPER || isLumberjackObjective() || !presence || !_teamClaims) return null;
+    const now = Date.now();
+    if (now - _peerGiftCheckAt < PEER_GIFT_CHECK_MS) return null;
+    _peerGiftCheckAt = now;
+    if (_migrating || migrationOwnsBot() || _woodReq) return null;      // je demande moi-même : je ne donne pas
+    if (!isAllowed('/tpa x', whitelist)) return null;
+    for (const [n, at] of _woodDone) { if (now - at > WOOD_DONE_TTL_MS) _woodDone.delete(n); }
+    for (const [n, at] of _woodFailed) { if (now - at > WOOD_FAIL_TTL_MS) _woodFailed.delete(n); }
+    const mates = presence.list();
+    const lj = activeLumberjack({ mates, selfName: bot.username, now });
+    const inv = buildCtxInv(bot);
+    let planks = 0;
+    for (const [k, v] of Object.entries(inv)) if (k.endsWith('_planks')) planks += v || 0;
+    const skip = new Set([..._woodDone.keys(), ..._woodFailed.keys()]);
+    const pick = pickPeerWoodGift({ mates, selfName: bot.username, now, logs: logCount(inv), planks, skip, lumberjack: lj });
+    if (!pick) return null;
+    let hostilesNear = 0;
+    try {
+      const h = bot.nearestEntity((x) => x && x.kind === 'Hostile mobs');
+      if (h && bot.entity && h.position.distanceTo(bot.entity.position) <= 12) hostilesNear = 1;
+    } catch (e) { /* best-effort */ }
+    let worn = 0;
+    try { worn = _wornArmor().size; } catch (e) { worn = 0; }
+    const safe = peerDonorSafe({ health: bot.health, food: bot.food, hostilesNear,
+      isNight: (bot.time && bot.time.timeOfDay != null) ? isNight(bot) : false, worn });
+    if (!safe) { _ljEmit('peer_wood_gift_skip', { to: pick.to, why: 'danger' }, 60000); return null; }
+    const key = 'wood:' + pick.to;
+    if (!_teamClaims.tryClaim(key)) return null;                       // un autre donneur (ou le bûcheron) s'en charge
+    const release = () => { try { _teamClaims.release(key); } catch (e) {} };
+    if (!isAllowed('/tpa ' + pick.to, whitelist)) { release(); return null; }
+    try { stopMotion(); } catch (e) {}
+    markWorkBeforeTrip('peer_wood_gift');
+    emit({ type: 'wood_tpa', to: pick.to, amount: pick.logs + pick.planks / 4, logs: pick.logs, planks: pick.planks, peer: true });
+    try { bot.chat('/tpa ' + pick.to); } catch (e) { release(); return null; }
+    const w = await awaitWarp({ maxMs: 20000 });
+    if (lifeStale(gen)) { release(); return null; }
+    if (!w.warped) {
+      _woodFailed.set(pick.to, Date.now());
+      release();
+      emit({ type: 'peer_wood_tpa_failed', to: pick.to, reason: w.cancelled ? 'cancelled' : 'no_warp' });
+      return null;
+    }
+    try {
+      const ent = bot.players[pick.to] && bot.players[pick.to].entity;
+      if (ent && ent.position && bot.lookAt) await bot.lookAt(ent.position.offset(0, 1, 0));
+    } catch (e) { /* on jette quand même : le /tpa nous a posés sur lui */ }
+    let given = 0;
+    for (const st of woodGiftTossPlan((bot.inventory && bot.inventory.items()) || [], pick)) {
+      try { await bot.toss(st.type, null, st.count); given += st.name.endsWith('_planks') ? st.count / 4 : st.count; } catch (e) { /* pile suivante */ }
+    }
+    emit({ type: 'wood_delivered', to: pick.to, count: given, want: pick.want, peer: true });
+    if (given > 0) _woodDone.set(pick.to, Date.now()); else _woodFailed.set(pick.to, Date.now());
+    release();
+    // Retour TOUT DE SUITE (2 s de délai de ramassage : rester sur place nous ferait reprendre le bois).
+    const back = await returnToWork('peer_wood_gift');
+    if (!back && !lifeStale(gen)) { try { await safeWarpHome(HOME_SAFE, { ctx: 'peer_wood_return' }); } catch (e) { /* best-effort */ } }
+    return { given };
+  } catch (e) { return null; }
+}
+
+// ─── SANS BOIS ET SANS DONNEUR : ALLER COUPER CHEZ UN COÉQUIPIER EN FORÊT (23/10) ────────────────
+// But bois, zone prouvée sans arbres, personne pour livrer : /tpa vers le coéquipier frais le plus
+// proche qui se tient en surface près d'un endroit boisé CONNU (cellule de biome boisé ou bûches vues —
+// zone.woodSpots), au lieu de ré-explorer 20 min une zone pelée. Throttle 5 min (NIVEAU MODULE, #56).
+const WOOD_MATE_TPA_MS = 5 * 60000;
+let _woodMateTpaAt = 0;
+async function woodMateTpaStep(g, gen) {
+  try {
+    if (!isWoodGoal(g) || IS_MAPPER || isLumberjackObjective() || !presence) return null;
+    if (!woodNoWoodHere()) return null;
+    const now = Date.now();
+    if (now - _woodMateTpaAt < WOOD_MATE_TPA_MS) return null;
+    if (_migrating || migrationOwnsBot()) return null;
+    const p = bot.entity && bot.entity.position;
+    if (!p) return null;
+    let worn = 0;
+    try { worn = _wornArmor().size; } catch (e) { worn = 0; }
+    if (bot.time && bot.time.timeOfDay != null && isNight(bot) && worn < 2) return null;   // jamais nu dans la nuit d'un autre
+    const cells = loadWorldCells();
+    const spots = woodSpots({ biomes: cells.biomes, finds: cells.finds, now });
+    const pick = pickWoodedMate({ self: { x: p.x, z: p.z }, selfName: bot.username, mates: presence.list(), now, spots });
+    if (!pick) return null;
+    if (!isAllowed('/tpa ' + pick.name, whitelist)) return null;
+    _woodMateTpaAt = now;
+    try { stopMotion(); } catch (e) {}
+    markWorkBeforeTrip('wood_mate_tpa');
+    emit({ type: 'wood_mate_tpa', to: pick.name, dist: pick.dist, goal: g.name });
+    try { bot.chat('/tpa ' + pick.name); } catch (e) { return null; }
+    const w = await awaitWarp({ maxMs: 15000 });
+    if (lifeStale(gen)) return null;
+    emit({ type: 'wood_mate_tpa_result', to: pick.name, warped: !!w.warped });
+    // Nouveau terrain : l'échec bois d'avant ne prouve plus rien ICI (le prochain skill re-cherche).
+    if (w.warped) _needsWoodTrip = false;
+    return { warped: !!w.warped };
   } catch (e) { return null; }
 }
 
@@ -1919,6 +2042,7 @@ let _ljForgeHoldUntil = 0;
 const _ljGiftFailed = new Map();     // nom → instant du /tpa raté
 let _ljStockFails = [];              // instants des échecs `lj_stock` (persistés : survivent aux morts)
 let _ljStockFailsLoaded = false;
+let _ljNotFound = [];                // instants des `lj_stock not_found` (persistés) → migration bois au 3ᵉ (23/10)
 
 /** Poche : pièces d'armure SAINES / USÉES (noms), lingots, tous les noms. */
 function _ljPocketArmor() {
@@ -2061,9 +2185,10 @@ function _ljLoadStockFails() {
   if (_ljStockFailsLoaded) return;
   _ljStockFailsLoaded = true;
   try { _ljStockFails = stockFailsPrune((loadBaseState() || {}).ljStockFails, Date.now()); } catch (e) { _ljStockFails = []; }
+  try { _ljNotFound = stockFailsPrune((loadBaseState() || {}).ljNotFound, Date.now()); } catch (e) { _ljNotFound = []; }
 }
 function _ljSaveStockFails() {
-  try { saveBaseState(Object.assign({}, loadBaseState() || {}, { ljStockFails: _ljStockFails })); } catch (e) { /* best-effort */ }
+  try { saveBaseState(Object.assign({}, loadBaseState() || {}, { ljStockFails: _ljStockFails, ljNotFound: _ljNotFound })); } catch (e) { /* best-effort */ }
 }
 
 /** Appelé par le planner après chaque but raté : compte les échecs `lj_stock` (timeout / not_found). */
@@ -2071,6 +2196,9 @@ function noteLumberjackStockFail(goalName, reason) {
   if (goalName !== 'lj_stock' || (reason !== 'timeout' && reason !== 'not_found')) return;
   _ljLoadStockFails();
   _ljStockFails = stockFailsAdd(_ljStockFails, Date.now());
+  // `not_found` compté À PART (23/10) : 3 en 10 min → migration bois vers une forêt connue (checkZoneVerdict).
+  // L'expédition `lj_forest` consomme _ljStockFails ; ces instants-là, non.
+  if (reason === 'not_found') _ljNotFound = stockFailsAdd(_ljNotFound, Date.now());
   _ljSaveStockFails();
   emit({ type: 'lumberjack_stock_fail', reason, fails: _ljStockFails.length });
 }
@@ -2089,6 +2217,7 @@ function _ljForestNeeded() {
 /** Skill `lumberjackForestTrip` : marche bornée (120 s) vers la forêt connue la plus proche, puis `work`. */
 async function lumberjackForestTripSkill() {
   const tok = taskToken;                             // CAPTURÉ (cf. huntCookGoal) : une migration ne nous le vole pas
+  _ljLoadStockFails();                               // charge aussi _ljNotFound : la sauvegarde ci-dessous ne doit pas l'écraser
   _ljStockFails = [];                                // consommés : réussie ou non, on ne repart pas en boucle
   _ljStockFailsLoaded = true;
   _ljSaveStockFails();
@@ -4363,6 +4492,7 @@ let _lastMigrationAt = 0;     // cooldown anti-nomadisme
 // Persistée dans le mémo de base avec le reste de l'état de zone (le bot meurt toutes les 3 min).
 let _lastMigrationFailed = false; // dernière migration ratée → cooldown 5 min au lieu de 20
 let _failedTargets = [];          // cibles ratées [{x,z,at}] : écartées 45 min (la cible est déterministe)
+let _lastMigrationReason = null;  // motif de la dernière migration RÉUSSIE (persisté) : `wood` + arrivée sans arbres = urgence (23/10)
 let _lastZoneVerdictReason = null; // dedup télémétrie : dernière raison de verdict tracée
 // Délai de grâce du confine après un long trek qui n'a pas pu ancrer (zone.migrationConfineGraceMs).
 // ⚠️ NIVEAU MODULE : lu par le timer d'enforcement (piège #56).
@@ -4445,6 +4575,7 @@ function _applyZoneState(s) {
   // ⚠️ Aller-retour complet (piège #61) : lus ICI, réécrits par _zoneStateNow, relus par zoneStateLoad.
   _lastMigrationFailed = s.lastMigrationFailed === true;
   _failedTargets = Array.isArray(s.failedTargets) ? s.failedTargets : [];
+  _lastMigrationReason = typeof s.lastMigrationReason === 'string' ? s.lastMigrationReason : null;
 }
 
 /** Sérialise l'état de zone courant pour le mémo de base.
@@ -4461,6 +4592,7 @@ function _zoneStateNow() {
     ironMinedWin: windowPrune(_zoneIronWin, now),
     lastMigrationFailed: _lastMigrationFailed,
     failedTargets: pruneFailedTargets(_failedTargets, now),
+    lastMigrationReason: _lastMigrationReason,
   };
 }
 
@@ -4538,8 +4670,8 @@ function loadWorldCells() {
   try {
     const mem = args['world-memory'] ? loadMemory(String(args['world-memory'])) : null;
     const w = (mem && mem.worlds && mem.worlds[bot._worldKey || worldKey(bot, args['world-label'])]) || {};
-    return { biomes: w.biomes || [], depleted: w.depleted || [], ores: w.ores || [] };
-  } catch (e) { return { biomes: [], depleted: [], ores: [] }; }
+    return { biomes: w.biomes || [], depleted: w.depleted || [], ores: w.ores || [], finds: w.finds || [] };
+  } catch (e) { return { biomes: [], depleted: [], ores: [], finds: [] }; }
 }
 
 /** Ancre courante du bot (base persistée, sinon confine, sinon position). */
@@ -4678,9 +4810,13 @@ async function migrateZone(reason) {
     const minDist = minDistFor(reason);
     // `avoid` : les cibles RATÉES depuis < 45 min — la cible est déterministe, sans ça le re-essai
     // visait exactement la cellule qui venait d'échouer (fix 18/08).
+    // BOIS (23/10) : la cible est une forêt CONNUE (biome boisé ou bûches vues), choisie depuis la
+    // position RÉELLE du bot s'il est en surface ; une 2ᵉ migration bois écarte la zone d'arrivée pelée.
+    const pickFrom = migrationOrigin({ reason, anchor: from, pos: bot.entity && bot.entity.position, surfaceMinY: SAFE_HOME_MIN_Y }) || from;
     target = pickMigrationTarget({
-      from, biomes: cells.biomes, depleted: cells.depleted, minDist, reason,
-      avoid: _failedTargets, now: Date.now(),
+      from: pickFrom, biomes: cells.biomes, depleted: cells.depleted, finds: cells.finds, minDist, reason,
+      avoid: woodRetryAvoid({ avoid: _failedTargets, reason, lastReason: _lastMigrationReason, anchor: from, now: Date.now() }),
+      now: Date.now(),
     });
     // Claim PARTAGÉ : si un coéquipier a déjà fixé la cible, on adopte la sienne — l'escouade doit
     // atterrir au MÊME endroit même si les cartes divergent d'un bot à l'autre.
@@ -4865,12 +5001,14 @@ async function migrateZone(reason) {
         });
         if (!migrationKeepWalking({
           reason, gone: goneC, minDist, arrivalOk: verdictC.ok, arrivalWhy: verdictC.why, wet: wetC, extraLegs,
+          distToTarget: target ? Math.hypot(cur.x - target.x, cur.z - target.z) : Infinity,
         })) break;
         if (nightStop()) break;
         // Cap : la direction effectivement suivie depuis le départ (on prolonge la marche) ; si on n'a
         // presque pas bougé, vers la cible, sinon le cap assigné au bot (même que la marche à l'aveugle).
         let baseHeading;
-        if (goneC >= LEG_STUCK_MIN) baseHeading = Math.atan2(cur.z - travelFrom.z, cur.x - travelFrom.x);
+        if (reason === 'wood' && target) baseHeading = Math.atan2(target.z - cur.z, target.x - cur.x);   // vers la forêt visée
+        else if (goneC >= LEG_STUCK_MIN) baseHeading = Math.atan2(cur.z - travelFrom.z, cur.x - travelFrom.x);
         else if (target) baseHeading = Math.atan2(target.z - cur.z, target.x - cur.x);
         else baseHeading = basecamp.headingForName(bot.username, 3);
         const leg = migrationLeg({ from: cur, heading: legHeading(baseHeading, stuckX), legs: 0 });
@@ -4958,7 +5096,7 @@ async function migrateZone(reason) {
       _workSet = false;                            // l'ancien chantier est à l'autre bout du monde
       // `_zoneStateNow()` en 2e argument : les cibles RATÉES survivent au déménagement (45 min).
       _migrationInterrupts = 0;
-      _applyZoneState(zoneStateAfterMigration(Date.now(), _zoneStateNow()));
+      _applyZoneState(zoneStateAfterMigration(Date.now(), _zoneStateNow(), reason));
       _descendWaterFails = 0;
       persistZoneState();
       emit({
@@ -5162,6 +5300,21 @@ function checkZoneVerdict() {
   if (!_zoneAnchoredAt) return;
   sampleZoneIron();
   const now = Date.now();
+  // BÛCHERON SANS ARBRES (23/10) : 3 `lj_stock not_found` en 10 min → migration bois vers une forêt
+  // CONNUE, sans attendre l'hystérésis de zone (pensée pour le minerai) — cf. lumberjack.ljWoodMigrationDue.
+  if (isLumberjackObjective()) {
+    try {
+      _ljLoadStockFails();
+      const night = (bot.time && bot.time.timeOfDay != null) ? isNight(bot) : true;   // heure inconnue → prudence
+      if (ljWoodMigrationDue({ notFound: _ljNotFound, now, isNight: night, lastMigrationAt: _lastMigrationAt, migrating: _migrating })) {
+        emit({ type: 'lumberjack_wood_migration', not_found: _ljNotFound.length });
+        _ljNotFound = [];
+        _ljSaveStockFails();
+        migrateZone('wood').catch(() => {});
+        return;
+      }
+    } catch (e) { /* best-effort : le verdict normal suit */ }
+  }
   const cells = loadWorldCells();
   const from = currentAnchor();
   // Une cellule sèche mappée à portée est une meilleure réponse qu'un trek : le code sait déjà y aller.
@@ -5192,6 +5345,7 @@ function checkZoneVerdict() {
     dryCellKnown,
     lastMigrationAt: _lastMigrationAt,
     lastMigrationFailed: _lastMigrationFailed,   // échec → cooldown 5 min au lieu de 20 (fix 18/08)
+    lastMigrationReason: _lastMigrationReason,   // `wood` + arrivée sans arbres → seuils d'urgence (23/10)
     // Pas de trek de nuit (fix 18/08). `bot.time` peut manquer juste après un spawn : `null` =
     // heure inconnue → pas de gate (comme mapperNightGuard), plutôt que de conclure « il fait jour ».
     isNight: (bot.time && bot.time.timeOfDay != null) ? isNight(bot) : null,
@@ -5733,8 +5887,17 @@ async function runSkillWithTelemetry(g) {
   if (migrationOwnsBot()) return { ok: false, reason: 'cancelled' };   // l'abri peut durer : re-vérifier
   // BÛCHERON D'ÉQUIPE : un but bois → demander au bûcheron et attendre AU CHANTIER (≤ 4 min) au lieu
   // de remonter explorer une zone rasée. null = comportement historique (le skill tourne ci-dessous).
+  // ENTRAIDE BOIS SANS BÛCHERON (23/10) : entre deux buts, un coéquipier qui a du stock dépanne la
+  // demande la plus ancienne (/tpa + toss + retour au chantier), dans le contexte du planner — aucun
+  // conflit de pathfinder avec un but en cours.
+  await peerWoodGiftStep(_gen);
+  if (taskToken.cancelled || lifeStale(_gen) || migrationOwnsBot()) return { ok: false, reason: 'cancelled' };
   const _wood = (await woodWaitStep(g)) || (await woodGoalRequestStep(g));
   if (_wood) return _wood;
+  // Personne pour livrer et pas de bois ici : /tpa vers le coéquipier le plus proche qui est dans une
+  // zone boisée connue, puis le skill coupe LÀ-BAS.
+  await woodMateTpaStep(g, _gen);
+  if (taskToken.cancelled || lifeStale(_gen) || migrationOwnsBot()) return { ok: false, reason: 'cancelled' };
   // Four de mine en cours et but qui n'est pas du minage : ramasser les lingots d'abord (21/10).
   if (_furnaceJob && !FURNACE_JOB_KEEP_SKILLS.has(g.skill)) { try { await finishFurnaceJob('goal'); } catch (e) {} }
   if (taskToken.cancelled || lifeStale(_gen) || migrationOwnsBot()) return { ok: false, reason: 'cancelled' };
@@ -10687,7 +10850,7 @@ async function onSpawn() {
         try {
           loadWoodRequest();
           const invB = buildCtxInv(bot);
-          if (_woodReq && logCount(invB) >= _woodReq.want) {
+          if (_woodReq && woodEquiv(invB) >= _woodReq.want) {
             _woodReq = null;
             const nb = Object.assign({}, loadBaseState() || {}); delete nb.woodRequest; saveBaseState(nb);
           }
@@ -10698,6 +10861,9 @@ async function onSpawn() {
           // `worn` = pièces fer (ou mieux) PORTÉES (21/10) : critère d'éligibilité au rôle de bûcheron.
           // `armor` ne suffit pas — il compte aussi les pièces en poche.
           if (st) st.worn = wornIronCount([..._wornArmor()]);
+          // `woodStock` (23/10) : bûches-équivalent en poche — le demandeur sait qu'un coéquipier peut le
+          // dépanner quand aucun bûcheron n'est élu (lumberjack.peerWoodSupplier).
+          if (st) st.woodStock = woodEquiv(invB);
         } catch (e) {}
         // `y` + `ironZone` : c'est ce qui permet de distinguer un MINEUR AU TRAVAIL d'un bot qui
         // traîne en surface. Sans eux, `squadLeader` ne pouvait trancher qu'à l'alphabet — et si

@@ -81,7 +81,7 @@ function sandbox(o = {}) {
   vm.createContext(sb);
   for (const c of ['GIFT_CACHE_MS', 'GIFT_DONE_TTL_MS', '_giftDone', 'LJ_FORGE_HOLD_MS', 'LJ_GIFT_FAIL_TTL_MS',
     '_LJ_ARMOR_RE', '_ljGiftFailed']) run(sb, constSrc(c));
-  for (const l of ['_giftTarget', '_giftAt', '_ljGift', '_ljGiftAt', '_ljForgeHoldUntil', '_ljStockFails', '_ljStockFailsLoaded']) run(sb, letSrc(l));
+  for (const l of ['_giftTarget', '_giftAt', '_ljGift', '_ljGiftAt', '_ljForgeHoldUntil', '_ljStockFails', '_ljStockFailsLoaded', '_ljNotFound']) run(sb, letSrc(l));
   for (const f of ['releaseGiftTarget', 'isLumberjackObjective', '_ljPocketArmor', '_ljReleaseGift', '_ljArmorContext',
     'ljGiftPiecesFor', 'ljAfterGift', '_ljTossWornArmor', 'lumberjackArmorSkill', 'ljCraftGiftSkill',
     '_ljLoadStockFails', '_ljSaveStockFails', 'noteLumberjackStockFail', '_ljForestNeeded', 'lumberjackForestTripSkill']) run(sb, fnSrc(f));
@@ -287,4 +287,38 @@ test('forge pour un mineur : l\'event gift_craft porte role:worker', async () =>
   run(sb, '_ljArmorContext()');
   await run(sb, 'ljCraftGiftSkill()');
   assert.ok(sb.events.some((e) => e.type === 'gift_craft' && e.to === 'NethBot2' && e.item === 'iron_leggings' && e.role === 'worker'));
+});
+
+
+// ─── Bûcheron sans arbres → migration bois (23/10, live NethBot1 : lj_stock not_found ×12 en 10 min) ──
+test('lj_stock not_found comptés à part, persistés, et survivent à l expédition forestière', async () => {
+  const sb = sandbox({ biomes: FOREST, base: {} });
+  run(sb, 'noteLumberjackStockFail("lj_stock", "timeout")');
+  run(sb, 'noteLumberjackStockFail("lj_stock", "not_found")');
+  run(sb, 'noteLumberjackStockFail("lj_stock", "not_found")');
+  assert.strictEqual(sb.base.ljNotFound.length, 2, 'seuls les not_found');
+  await run(sb, 'lumberjackForestTripSkill()');
+  assert.strictEqual(sb.base.ljStockFails.length, 0, 'échecs de l expédition consommés');
+  assert.strictEqual(sb.base.ljNotFound.length, 2, 'les not_found restent : au 3ᵉ, migration');
+  run(sb, '_ljStockFailsLoaded = false; _ljNotFound = [];');
+  run(sb, '_ljLoadStockFails()');
+  assert.strictEqual(sb.__get('_ljNotFound').length, 2, 'relus après respawn');
+});
+
+test('ljWoodMigrationDue : 3 not_found en 10 min, de jour, hors cooldown', () => {
+  const now = T0;
+  const nf = [now - 60000, now - 30000, now - 1000];
+  assert.strictEqual(L.ljWoodMigrationDue({ notFound: nf, now }), true);
+  assert.strictEqual(L.ljWoodMigrationDue({ notFound: nf.slice(1), now }), false);
+  assert.strictEqual(L.ljWoodMigrationDue({ notFound: nf, now, isNight: true }), false);
+  assert.strictEqual(L.ljWoodMigrationDue({ notFound: nf, now, lastMigrationAt: now - 60000 }), false);
+  assert.strictEqual(L.ljWoodMigrationDue({ notFound: nf, now, migrating: true }), false);
+  assert.strictEqual(L.ljWoodMigrationDue({ notFound: [now - 11 * 60000, now - 1000, now], now }), false, 'fenêtre de 10 min');
+});
+
+test('câblage : checkZoneVerdict migre le bûcheron pour le BOIS quand ljWoodMigrationDue', () => {
+  const src = fnSrc('checkZoneVerdict');
+  const i = src.indexOf('ljWoodMigrationDue(');
+  assert.ok(i > 0 && src.indexOf("migrateZone('wood')", i) > i);
+  assert.ok(i < src.indexOf('const v = zoneVerdict('), 'avant le verdict d hystérésis');
 });

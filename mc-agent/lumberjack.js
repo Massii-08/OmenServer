@@ -185,6 +185,122 @@ function tossPlan(items, amount) {
   return out;
 }
 
+// ─── ENTRAIDE BOIS SANS BÛCHERON (23/10, chrono de zéro) ────────────────────────────────────────
+// Live : NethBot3, 0 pièce d'armure, ~50 min sur `logs timeout` / `pickaxe_missing` pendant que
+// NethBot1 et NethBot2 avaient du bois en poche. Personne n'était 4/4 → pas de bûcheron élu → la demande
+// de bois (woodWaitStep) n'avait AUCUN destinataire et n'était même pas publiée. Comme une équipe de
+// joueurs : n'importe quel coéquipier qui a du stock et n'est pas en danger dépanne (16 bûches, ou
+// 64 planches) par /tpa + toss — même protocole que le bûcheron (demande `woodWant`/`woodAt` dans la
+// présence, réservation `wood:<demandeur>` dans les claims partagés → un seul donneur). Le stock de
+// chacun est publié dans son heartbeat (`woodStock`, bûches-équivalent).
+const PEER_DONOR_MIN = 24;      // en dessous, un mineur garde son bois (table, bâtons, combustible)
+const PEER_GIFT_LOGS = 16;
+const PEER_GIFT_PLANKS = 64;    // = 16 bûches
+const PEER_SAFE_MIN_HEALTH = 14;
+const PEER_SAFE_MIN_FOOD = 6;
+
+/** PUR — bois en bûches-équivalent : bûches + planches/4 (arrondi bas). inv = {nom: nombre}. */
+function woodEquiv(inv) {
+  let logs = 0; let planks = 0;
+  for (const [k, v] of Object.entries(inv || {})) {
+    if (k.endsWith('_log')) logs += v || 0;
+    else if (k.endsWith('_planks')) planks += v || 0;
+  }
+  return logs + Math.floor(planks / 4);
+}
+
+/**
+ * PUR — un coéquipier (ni cartographe, ni bûcheron, ni lui-même demandeur) dont le heartbeat FRAIS
+ * annonce ≥ PEER_DONOR_MIN de bois : la demande a un destinataire. Le plus fourni, nom ASC en départage.
+ * Une présence sans `woodStock` (ancien process) ne compte pas (sens sûr : pas d'attente vaine).
+ */
+function peerWoodSupplier({ mates, selfName, now, minStock = PEER_DONOR_MIN, freshMs = LUMBERJACK_FRESH_MS } = {}) {
+  const t = now || Date.now();
+  let best = null;
+  for (const m of mates || []) {
+    if (!m || !m.name || m.name === selfName || m.role === 'mapper' || m.role === 'lumberjack') continue;
+    if (!_fresh(m, t, freshMs)) continue;
+    if (m.woodWant > 0) continue;
+    const st = Number(m.woodStock);
+    if (!Number.isFinite(st) || st < minStock) continue;
+    if (!best || st > best.st || (st === best.st && m.name < best.name)) best = { name: String(m.name), st };
+  }
+  return best ? best.name : null;
+}
+
+/** PUR — un donneur n'est « pas en danger » : PV et faim corrects, aucun hostile proche, pas nu la nuit. */
+function peerDonorSafe({ health, food, hostilesNear = 0, isNight = false, worn = 0 } = {}) {
+  if (!(Number(health) >= PEER_SAFE_MIN_HEALTH)) return false;
+  if (!(Number(food) >= PEER_SAFE_MIN_FOOD)) return false;
+  if (Number(hostilesNear) > 0) return false;
+  if (isNight === true && Number(worn) < 2) return false;
+  return true;
+}
+
+/**
+ * PUR — en tant que coéquipier (pas bûcheron), dois-je dépanner quelqu'un ? Seulement s'il n'y a PAS
+ * de bûcheron actif (il sert, lui), si j'ai ≥ PEER_DONOR_MIN bûches-équivalent, et pour la demande la
+ * plus ancienne non servie (`skip`). Don : 16 bûches si je les ai, sinon 64 planches, sinon le mélange
+ * (toutes mes bûches + le complément en planches) — toujours satisfiable quand le stock passe le seuil.
+ * @returns {{to, logs, planks, want}|null}
+ */
+function pickPeerWoodGift({ mates, selfName, now, logs = 0, planks = 0, skip, lumberjack = null,
+  minStock = PEER_DONOR_MIN } = {}) {
+  if (lumberjack) return null;
+  const L = Math.max(0, Number(logs) || 0);
+  const P = Math.max(0, Number(planks) || 0);
+  if (L + Math.floor(P / 4) < minStock) return null;
+  const req = pickWoodRequest({ mates, selfName, now, stock: 1e9, reserve: 0, skip });
+  if (!req) return null;
+  let gl = 0; let gp = 0;
+  if (L >= PEER_GIFT_LOGS) gl = PEER_GIFT_LOGS;
+  else if (P >= PEER_GIFT_PLANKS) gp = PEER_GIFT_PLANKS;
+  else { gl = L; gp = Math.min(P, (PEER_GIFT_LOGS - L) * 4); }
+  return { to: req.to, logs: gl, planks: gp, want: req.want };
+}
+
+/** PUR — piles à jeter pour un don {logs, planks}. items = inventory.items(). */
+function woodGiftTossPlan(items, { logs = 0, planks = 0 } = {}) {
+  const out = [];
+  let l = Math.max(0, logs || 0); let p = Math.max(0, planks || 0);
+  for (const it of items || []) {
+    if (!it || !it.name) continue;
+    if (l > 0 && it.name.endsWith('_log')) {
+      const n = Math.min(l, it.count || 0);
+      if (n > 0) { out.push({ type: it.type, name: it.name, count: n }); l -= n; }
+    } else if (p > 0 && it.name.endsWith('_planks')) {
+      const n = Math.min(p, it.count || 0);
+      if (n > 0) { out.push({ type: it.type, name: it.name, count: n }); p -= n; }
+    }
+  }
+  return out;
+}
+
+/**
+ * PUR — sans bois sur place ni donneur : le coéquipier frais le plus proche (ouvrier ou bûcheron, jamais
+ * un cartographe), en surface (y ≥ surfaceMinY quand publié), à plus de `minDist` de moi, et à moins de
+ * `nearRadius` d'un endroit boisé connu (`spots` = zone.woodSpots). /tpa vers lui = on coupe là-bas.
+ * @returns {{name, dist}|null}
+ */
+function pickWoodedMate({ self, selfName, mates, now, spots, nearRadius = 64, minDist = 64,
+  surfaceMinY = WOOD_UNDERGROUND_Y, freshMs = LUMBERJACK_FRESH_MS } = {}) {
+  if (!self || !Number.isFinite(self.x) || !Number.isFinite(self.z)) return null;
+  const sp = (Array.isArray(spots) ? spots : []).filter((s) => s && Number.isFinite(s.x) && Number.isFinite(s.z));
+  if (!sp.length) return null;
+  const t = now || Date.now();
+  let best = null;
+  for (const m of mates || []) {
+    if (!m || !m.name || m.name === selfName || m.role === 'mapper') continue;
+    if (!_fresh(m, t, freshMs) || !Number.isFinite(m.x) || !Number.isFinite(m.z)) continue;
+    if (Number.isFinite(m.y) && m.y < surfaceMinY) continue;
+    const d = Math.hypot(m.x - self.x, m.z - self.z);
+    if (d <= minDist) continue;
+    if (!sp.some((s) => Math.hypot(s.x - m.x, s.z - m.z) <= nearRadius)) continue;
+    if (!best || d < best.dist || (d === best.dist && m.name < best.name)) best = { name: String(m.name), dist: Math.round(d) };
+  }
+  return best;
+}
+
 // ─── ARMURE DU BÛCHERON (20/10 soir) ───────────────────────────────────────────────────────────────
 // Mesure 1 h après la mise en service : cartographes nus = 20 morts sur 36. Avant le bûcheron, c'était
 // l'ouvrier le mieux armé qui forgeait leur armure (chaîne mapper_armor) — et c'est précisément lui
@@ -361,6 +477,22 @@ function stockFailsAdd(list, now) {
   return stockFailsPrune((Array.isArray(list) ? list : []).concat([t]), t);
 }
 function needsForestTrip(list, now) { return stockFailsPrune(list, now).length >= LJ_STOCK_FAILS_FOR_TRIP; }
+
+// MIGRATION BOIS DU BÛCHERON (23/10, live NethBot1 tout juste élu : `lj_stock not_found` ×12 en 10 min —
+// lui non plus ne trouve aucun arbre dans sa zone, et l'expédition `lj_forest` est bornée à 256 blocs et
+// 150 de la base). Au 3ᵉ `not_found` en 10 min (une vraie absence d'arbres, pas un collect lent), il
+// MIGRE vers une forêt CONNUE (zone.pickWoodMigrationTarget, même logique que les mineurs) au lieu de
+// boucler. Jamais de nuit (la migration ne marche pas de nuit), anti-yo-yo de 5 min après une migration.
+const LJ_NOTFOUND_FOR_MIGRATION = 3;
+const LJ_WOOD_MIGRATION_COOLDOWN_MS = 5 * 60 * 1000;
+
+/** PUR — le bûcheron doit-il migrer vers une forêt connue ? `notFound` = instants des `lj_stock not_found`. */
+function ljWoodMigrationDue({ notFound, now, isNight = false, lastMigrationAt = 0, migrating = false } = {}) {
+  const t = _finite(now) ? now : Date.now();
+  if (migrating || isNight === true) return false;
+  if (_finite(lastMigrationAt) && lastMigrationAt > 0 && (t - lastMigrationAt) < LJ_WOOD_MIGRATION_COOLDOWN_MS) return false;
+  return stockFailsPrune(notFound, t).length >= LJ_NOTFOUND_FOR_MIGRATION;
+}
 
 /** PUR — un biome où l'on coupe du bois (jamais l'eau). */
 function isForestBiome(name) {
@@ -612,6 +744,8 @@ module.exports = {
   isWoodGoal, woodWantFor, logCount, activeLumberjack, woodWaitDecision, preferredLumberjack,
   LUMBERJACK_MIN_WORN, wornIronCount,
   lumberjackVerdict, pickWoodRequest, tossPlan,
+  PEER_DONOR_MIN, PEER_GIFT_LOGS, PEER_GIFT_PLANKS, woodEquiv, peerWoodSupplier, peerDonorSafe, pickPeerWoodGift,
+  woodGiftTossPlan, pickWoodedMate, ljWoodMigrationDue, LJ_NOTFOUND_FOR_MIGRATION, LJ_WOOD_MIGRATION_COOLDOWN_MS,
   ARMOR_ORDER, MIN_PIECE_INGOTS, missingIronPieces, ownArmorAction, pickMapperForLumberjack, ljGiftReady,
   LJ_STOCK_FAIL_WINDOW_MS, LJ_STOCK_FAILS_FOR_TRIP, LJ_FOREST_TRIP_MS, LJ_FOREST_MIN_DIST, LJ_FOREST_MAX_DIST,
   LJ_FOREST_ANCHOR_MAX, LJ_FOREST_AVOID_MS,
