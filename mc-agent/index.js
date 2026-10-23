@@ -129,7 +129,7 @@ const { noteDropAhead, turnYaw, shiftTarget } = require('./dropAhead');
 const { canDealWith, attackDamage, boldFightAdvised } = require('./survival');
 const { fleeTarget } = require('./skills/fleeFrom');
 const { decideSkeletonResponse, findCoverCell, zigzagSide, shooterSees, rushStopReason, eatDuringRush, callerFromStack } = require('./skeletonResponse');
-const { createFightBreaker } = require('./fightBreaker');
+const { createFightBreaker, isZombieDuel } = require('./fightBreaker');
 // SYSTÈME À 3 HOMES (Massii 27/07) : safe = LA BASE, work = le chantier courant, death = la dette
 // de mort. Le serveur n'autorise que 3 homes et le code en posait 4 → un /sethome échouait EN
 // SILENCE sur chaque bot (bug prouvé world_mn5). Voir homes.js.
@@ -10547,6 +10547,8 @@ async function onSpawn() {
       // DISJONCTEUR (22/10) : la riposte réflexe passe par la même porte que tout engagement (mineurs).
       canEngage: () => { const d = fightGateDeps(); return d.canEngage ? d.canEngage() : { ok: true }; },
       onFlee: (r) => { const d = fightGateDeps(); if (d.onFlee) d.onFlee(r); },
+      // DUEL CONTRE UN ZOMBIE (23/10) : mineurs seulement (le cartographe garde sa fuite par défaut).
+      isDuel: () => !IS_MAPPER && _fightBreakerWired && _fightSituation().duel,
       // DÉLAI DE RÉACTION humain sur les réflexes (anti aimbot 0 ms / anti-ban) — TOUJOURS actif
       // (sécurité, pas seulement en humanize) : ~300 ms par défaut (les captures ne mesurent pas
       // encore reaction.*). Coût nul sur le minage (ce n'est pas un réflexe). Cf. paquet 1.
@@ -11135,11 +11137,13 @@ function wireCombatLoot() {
 function _fightSituation() {
   let hostiles = 0;
   let nearestDist = null;
+  const names = [];
   try {
     const list = nearbyHostiles(bot, 10);
     const me = bot.entity && bot.entity.position;
     for (const h of list) {
       if (!h || !h.position) continue;
+      names.push(h.name);
       if (h.name !== 'creeper') hostiles++;
       if (me) {
         const d = Math.hypot(h.position.x - me.x, h.position.y - me.y, h.position.z - me.z);
@@ -11147,13 +11151,17 @@ function _fightSituation() {
       }
     }
   } catch (e) { /* lecture best-effort */ }
-  return { hostiles, nearestDist };
+  // DUEL CONTRE UN ZOMBIE (23/10, fightBreaker.isZombieDuel) : un seul hostile (creeper compris), de la
+  // famille zombie, arme ≥ épée de pierre → engagement jusqu'à 6 PV et pas de coupure sur la chute.
+  let duel = false;
+  try { duel = isZombieDuel({ names, attackDamage: attackDamage(bot) }); } catch (e) { duel = false; }
+  return { hostiles, nearestDist, duel };
 }
 
 function _fightCanEngage() {
   const sit = _fightSituation();
   const p = bot.entity && bot.entity.position;
-  return _fightBreaker.canEngage({ t: Date.now(), pos: p ? { x: p.x, y: p.y, z: p.z } : null, health: bot.health, hostiles: sit.hostiles, nearestDist: sit.nearestDist });
+  return _fightBreaker.canEngage({ t: Date.now(), pos: p ? { x: p.x, y: p.y, z: p.z } : null, health: bot.health, hostiles: sit.hostiles, nearestDist: sit.nearestDist, duel: sit.duel });
 }
 
 function _fightNoteFlee(ok) {
@@ -11180,9 +11188,9 @@ function _fightInProgress() {
 function _fightBreakerCheck() {
   if (!_fightInProgress()) return;
   const t = Date.now();
-  const r = _fightBreaker.check({ inFight: true, health: bot.health, t });
-  if (!r.abort) return;
   const sit = _fightSituation();
+  const r = _fightBreaker.check({ inFight: true, health: bot.health, t, duel: sit.duel });
+  if (!r.abort) return;
   try { if (bot.pvp && typeof bot.pvp.stop === 'function') bot.pvp.stop(); }
   catch (e) { emit({ type: 'fight_abort_stop_failed', err: String(e && e.message || e) }); }
   let fleeOk = false;
@@ -11191,7 +11199,7 @@ function _fightBreakerCheck() {
   const p = bot.entity && bot.entity.position;
   _fightBreaker.noteAbort({ t, pos: p ? { x: p.x, y: p.y, z: p.z } : null, fleeOk, health: bot.health });
   emit({ type: 'fight_aborted', hp: Math.round((bot.health || 0) * 10) / 10, drop: Math.round(r.drop * 10) / 10,
-    hostiles: sit.hostiles, reason: r.reason, flee: fleeOk, y: p ? Math.round(p.y) : null });
+    hostiles: sit.hostiles, reason: r.reason, flee: fleeOk, y: p ? Math.round(p.y) : null, duel: sit.duel });
 }
 
 function wireFightBreaker() {

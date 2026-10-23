@@ -4,6 +4,7 @@
 // Pilotés par les events natifs de Mineflayer.
 
 const { creeperPlan } = require('./creeper');
+const { DUEL_MIN_HP } = require('./fightBreaker');
 
 const HUNGER_THRESHOLD = 6;   // sur 20
 const HEALTH_THRESHOLD = 6;   // sur 20
@@ -115,11 +116,15 @@ async function tryEat(bot) {
 /** Vrai s'il faut fuir : PV bas (relevé si affamé, cf. NO_REGEN_HP_MARGIN) OU creeper à fuir / à
  *  s'écarter (creeper.creeperPlan : gonfle à ≤ 7, ou calme à ≤ 4 — un creeper calme plus loin n'est
  *  pas une raison de fuir, AltoClef 20/10). */
-function shouldFlee(bot) {
+function shouldFlee(bot, { duel = false } = {}) {
+  // DUEL CONTRE UN ZOMBIE (23/10, fightBreaker.isZombieDuel) : on riposte jusqu'à DUEL_MIN_HP, sans la
+  // marge de faim — fuir un zombie collé finissait en mort (7/7 à 6-12 PV sous terre). Le creeper reste
+  // évalué plus bas (un duel n'en compte aucun dans les parages, mais la vérification ne coûte rien).
   // food absent/undefined → seuil INCHANGÉ (rétro-compat totale). Sous REGEN_FOOD (régén coupée)
   // chaque PV perdu est définitif tant qu'on n'a pas mangé → on décroche NO_REGEN_HP_MARGIN PV plus tôt.
   const lowHealth = (bot.food != null && bot.food <= REGEN_FOOD) ? HEALTH_THRESHOLD + NO_REGEN_HP_MARGIN : HEALTH_THRESHOLD;
-  if (bot.health != null && bot.health <= lowHealth) return true;
+  const tooLow = duel ? (bot.health != null && bot.health < DUEL_MIN_HP) : (bot.health != null && bot.health <= lowHealth);
+  if (tooLow) return true;
   const self = (bot.entity && bot.entity.position) || { x: 0, y: 0, z: 0 };
   const creeper = bot.nearestEntity((e) => {
     if (!e || (e.type !== 'mob' && e.type !== 'hostile') || e.name !== 'creeper' || !e.position) return false;
@@ -265,6 +270,9 @@ function installReflexes(bot, opts = {}) {
   const onSkeleton = typeof opts.onSkeleton === 'function' ? opts.onSkeleton : null;
   const skel = () => (onSkeleton ? skeletonThreat(bot, meleeRadius) : null);
   const strikeInPlace = typeof opts.strikeInPlace === 'function' ? opts.strikeInPlace : null;
+  // DUEL CONTRE UN ZOMBIE (23/10) : `isDuel()` vrai = un seul hostile proche, de la famille zombie, et une
+  // arme ≥ épée de pierre (index.js : _fightSituation). Absent / erreur → pas de duel (comportement inchangé).
+  const isDuel = typeof opts.isDuel === 'function' ? opts.isDuel : null;
   const panicCooldownMs = opts.panicCooldownMs != null ? opts.panicCooldownMs : 8000;
   const defensiveCooldownMs = opts.defensiveCooldownMs != null ? opts.defensiveCooldownMs : 6000;
   let lastPanic = -Infinity;    // -∞ : le 1er panic n'est jamais bloqué par le cooldown
@@ -315,7 +323,9 @@ function installReflexes(bot, opts = {}) {
       lastHealth = bot.health;
       return;
     }
-    if (shouldFlee(bot)) {
+    let duel = false;
+    try { duel = !!(isDuel && isDuel()); } catch (e) { duel = false; }
+    if (shouldFlee(bot, { duel })) {
       // COUVERT PLUTÔT QUE FUITE face à un TIREUR (autopsie live world_ax4 25/07 : CHAQUE mort
       // était précédée d'un `reflex: flee` — ils fuyaient et mouraient quand même, le squelette
       // pesant 52 des 103 morts). Fuir un archer à découvert, c'est courir dans sa ligne de tir
@@ -380,7 +390,7 @@ function installReflexes(bot, opts = {}) {
         // refus traité ci-dessus
       } else if (foe && !fighting) {
         fighting = true;
-        emit({ type: 'reflex', action: 'fight', mob: foe.name });
+        emit(duel ? { type: 'reflex', action: 'fight', mob: foe.name, duel: true } : { type: 'reflex', action: 'fight', mob: foe.name });
         act(() => { try { attack(foe); } catch (e) {} });   // riposte après le temps de réaction
         // re-autorise une riposte après 5 s (le pvp plugin poursuit la cible entre-temps)
         setTimeout(() => { fighting = false; }, 5000);
