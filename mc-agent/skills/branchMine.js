@@ -617,8 +617,38 @@ async function safeDigAndOpportunism(bot, target, token, debug, loopOpts) {
  *  - opts.torchEvery (déf 0=off) : torche au sol tous les N paliers du tunnel principal.
  */
 async function branchMine(bot, opts = {}, token = null) {
-  try { return await _branchMine(bot, opts || {}, token); }
+  // RETOUR VIDE (24/10, NethBot2/NethBot3 en iron_help) : `stats.digs` compte les coups de pioche TENTÉS.
+  // Un retour sans aucun coup ni minerai est marqué `empty` (cf. bmBail) : l'appelant le dit (`bm_bail`) et
+  // le compte comme un échec, au lieu d'une boucle silencieuse goal → enter → goal ×4 → retry 90 s.
+  const stats = { digs: 0 };
+  try {
+    const r = await _branchMine(bot, Object.assign({}, opts || {}, { _stats: stats }), token);
+    if (r && typeof r === 'object' && stats.digs === 0) {
+      const o = r.ores || {};
+      if (!((o.diamond || 0) + (o.iron || 0) + (o.coal || 0))) r.empty = true;
+    }
+    return r;
+  }
   finally { setPhase('idle', null, null); }
+}
+
+/**
+ * PUR — retour VIDE de branchMine (aucun coup de pioche, aucun minerai) → { bail, result }.
+ *  bail   : null (retour utile), sinon la raison à émettre dans `bm_bail` (raison du skill, 'stale:<why>',
+ *           'cancelled' ou 'empty' quand le skill a rendu ok:true sans rien faire).
+ *  result : le résultat à rendre au planner — un ok:true vide (hors jeton annulé) devient
+ *           { ok:false, reason:'bm_empty' } pour nourrir failStreak / goal_failed (backoff du planner).
+ */
+function bmBail(r) {
+  if (!r || typeof r !== 'object' || !r.empty) return { bail: null, result: r };
+  let bail;
+  if (r.stale) bail = 'stale:' + (r.why || 'life_changed');
+  else if (r.cancelled) bail = 'cancelled';
+  else bail = r.reason || 'empty';
+  const result = (r.ok !== false && !r.cancelled)
+    ? Object.assign({}, r, { ok: false, reason: 'bm_empty', bmReason: r.reason || null })
+    : r;
+  return { bail, result };
 }
 
 // Distance max d'une cible d'approche au bot DANS le serpentin/couloir : la case suivante est voisine, le
@@ -668,6 +698,7 @@ async function _branchMine(bot, opts0 = {}, token = null) {
   // retente le même bloc et le couloir continue, au lieu d'abandonner le branch-mine. Une fois par bloc.
   const digStep = async (t) => {
     setPhase('dig', { target: { x: t.x, y: t.y, z: t.z } }, opts);
+    if (opts._stats) opts._stats.digs++;
     let r = await safeDigAndOpportunism(bot, t, token, debug, opts);
     if (r && !r.ok && r.reason === 'no_pickaxe' && typeof opts.onNoPickaxe === 'function') {
       let fixed = false;
@@ -722,9 +753,14 @@ async function _branchMine(bot, opts0 = {}, token = null) {
   const left = leftOf(dir);
   const oresBefore = snapshotOres(bot);
   const stopStart = stopOre ? countItems(bot, stopOre.items) : 0;
+  // Défaut SANS stopOre = 1 diamant de PLUS qu'au départ (delta), jamais « un diamant en poche » :
+  // l'ancien test absolu sortait au 1er pas sans rien creuser dès que le bot PORTAIT un diamant (vécu
+  // 24/10 : iron_help → iron_deep ×4 en 300 ms puis retry 90 s, 30 min, NethBot3 18 💎 / NethBot2 28 💎 —
+  // et le repli « tunnel vers la grotte suivante » de caveHunt faisait pareil en phase diamant).
+  const diamondStart = stopOre ? 0 : countItem(bot, 'diamond');
   const stopReached = () => stopOre
     ? (countItems(bot, stopOre.items) - stopStart >= stopOre.count)
-    : (countItem(bot, 'diamond') >= 1);
+    : (countItem(bot, 'diamond') - diamondStart >= 1);
 
   // Point de départ figé : on calcule les cibles depuis CE point, jamais depuis la position
   // courante (sinon les targets dériveraient à mesure que le bot avance via pathfinder).
@@ -995,4 +1031,4 @@ function deltaOres(a, b) {
   return { diamond: Math.max(0, b.diamond - a.diamond), iron: Math.max(0, b.iron - a.iron), coal: Math.max(0, b.coal - a.coal) };
 }
 
-module.exports = { branchMine, currentPhase, approach, cardinalFromYaw, leftOf, ORE_NAMES, WALL_BLOCKS, floodFillVein, oreFamily, sealCaveOpenings, placeTorchAt, CAVE_MIN_AIR, TORCH_JITTER, TORCH_CORNER_MIN };
+module.exports = { branchMine, bmBail, currentPhase, approach, cardinalFromYaw, leftOf, ORE_NAMES, WALL_BLOCKS, floodFillVein, oreFamily, sealCaveOpenings, placeTorchAt, CAVE_MIN_AIR, TORCH_JITTER, TORCH_CORNER_MIN };

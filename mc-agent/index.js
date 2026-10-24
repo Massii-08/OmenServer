@@ -69,7 +69,7 @@ const { equipItem, eat } = require('./skills/equip');
 const { loiter } = require('./skills/loiter');
 const fs = require('fs');
 const { runPlanner } = require('./planner');
-const { chainFor, buildCtxInv, firstUnmet, armorNeed, chainAfterDone, wantsOpportunisticArmor, GIFT_SET_INGOTS, objectiveForStart, diamondTargetOf } = require('./goals');
+const { chainFor, buildCtxInv, firstUnmet, armorNeed, chainAfterDone, wantsOpportunisticArmor, GIFT_SET_INGOTS, objectiveForStart, diamondTargetOf, HELP_STOCK } = require('./goals');
 const { isForbiddenCheat } = require('./nogive');
 const homewarp = require('./homewarp');
 const voidGuard = require('./voidGuard'); // anti-vide : sol sous les homes/spawnpoint, descente loin de la base, rattrapage post-TP // couche warp LÉGITIME sans-give (/sethome+/home ; goSpawn=/home safe)
@@ -99,7 +99,7 @@ const { smelt, logsToConvert, fuelUnits } = require('./skills/smelt');
 const { descendDiagonal: _descendDiagonalRaw } = require('./skills/descendDiagonal');   // gardé plus bas (anti-vide)
 const { pickTier, stoneBatchWant, stoneStairPlan } = require('./stoneDig');
 const { pickWornOutToReport } = require('./wornOut');
-const { branchMine: _branchMineRaw, floodFillVein, currentPhase: bmCurrentPhase } = require('./skills/branchMine');   // gardé plus bas (disjoncteur OOM)
+const { branchMine: _branchMineRaw, bmBail, floodFillVein, currentPhase: bmCurrentPhase } = require('./skills/branchMine');   // gardé plus bas (disjoncteur OOM)
 const heapGuard = require('./heapGuard');   // OOM « au même endroit » du branch-mine (23/10)
 const { installToolGuard } = require('./toolGuard');   // OOM 23/10 : récursion sans fin de mineflayer-tool
 const loopGuard = require('./loopGuard');   // sync_loop_capped + loop_lag (gels de l'event loop)
@@ -4186,6 +4186,15 @@ async function runGoalSkill(goal, gen) {
       try {
         const inv0 = buildCtxInv(bot);
         const left = _giftNeed - (inv0.raw_iron || 0) - (inv0.iron_ingot || 0);
+        if (left > 0) stopOre = { items: ['raw_iron', 'iron_ingot'], count: Math.min(left, 16) };
+      } catch (e) { /* best-effort */ }
+    }
+    // iron_help (24/10) : on remonte fondre dès que le stock d'entraide est réuni (et non « au 1er diamant »,
+    // l'ancien défaut de branchMine qui sortait sans creuser quand le bot portait déjà des diamants).
+    if (!stopOre && _obj === 'iron_help') {
+      try {
+        const inv0 = buildCtxInv(bot);
+        const left = HELP_STOCK - (inv0.raw_iron || 0) - (inv0.iron_ingot || 0);
         if (left > 0) stopOre = { items: ['raw_iron', 'iron_ingot'], count: Math.min(left, 16) };
       } catch (e) { /* best-effort */ }
     }
@@ -10207,7 +10216,18 @@ async function branchMine(b, opts, token) {
     }
   } catch (e) { emit({ type: 'bm_crash_guard_error', err: String((e && e.message) || e).slice(0, 160) }); }
   try {
-    return await _branchMineRaw(b, o, token);
+    const r = await _branchMineRaw(b, o, token);
+    // RETOUR VIDE (24/10) : aucun coup de pioche, aucun minerai → `bm_bail {reason}` et, hors jeton
+    // annulé, un ÉCHEC pour le planner (goal_failed + failStreak) au lieu d'un ok:true silencieux qui
+    // relançait le même but ×4 en 300 ms puis retry 90 s, à vie (NethBot2/NethBot3 en iron_help).
+    const v = bmBail(r);
+    if (v.bail) {
+      const q = b && b.entity && b.entity.position;
+      emit({ type: 'bm_bail', reason: v.bail, objective: (world.objective && world.objective.type) || null,
+        targetY: o.targetY !== undefined ? o.targetY : null, stopOre: o.stopOre || null,
+        x: q ? Math.round(q.x) : null, y: q ? Math.round(q.y) : null, z: q ? Math.round(q.z) : null });
+    }
+    return v.result;
   } finally {
     _bmPhase = null;
     _bmCrashHits = 0;
@@ -11154,6 +11174,7 @@ async function runAutonomousBody(sender, objType, myTok) {
     const dec = chainAfterDone({
       objective: objType, steps: res.steps, mates: presence ? presence.list() : [],
       canTp, giftTarget, emptyDoneAt: _emptyDoneAt, now: Date.now(),
+      latched: (() => { try { return _teamLatchActive(); } catch (e) { return false; } })(),
     });
     _emptyDoneAt = dec.emptyDoneAt;
     if (dec.releaseGift) releaseGiftTarget(giftTarget);   // on ne part pas l'armer : un coéquipier le pourra

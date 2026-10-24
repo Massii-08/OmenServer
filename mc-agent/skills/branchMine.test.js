@@ -286,15 +286,60 @@ test('branchMine : pathfinder.goto appelé entre les digs (bot avance vraiment)'
 
 // ── PHASE 3 (vitesse + quota) ──────────────────────────────────────────────────────────────
 
-test('branchMine : legacy sans stopOre — bail immédiat si diamant déjà en poche', async () => {
+// ⚠️ Ancien contrat (« bail immédiat si diamant déjà en poche ») RETIRÉ le 24/10 : il tuait iron_help et
+// le repli tunnel de caveHunt dès que le bot portait un diamant. Le défaut est désormais un DELTA (+1 💎).
+test('branchMine : legacy sans stopOre — un diamant DÉJÀ en poche ne stoppe plus le tunnel (delta +1)', async () => {
   const { bot, calls } = makeBot({ y: -54, inv: [
     { name: 'iron_pickaxe', count: 1, type: 'pickaxe' },
     { name: 'cobblestone', count: 32, type: 'block' },
     { name: 'diamond', count: 1, type: 'item' },
   ] });
-  const r = await branchMine(bot, { targetY: -54, mainLength: 10 });
+  const r = await branchMine(bot, { targetY: -54, mainLength: 10, branchSpacing: 999, branchLength: 0 });
   assert.strictEqual(r.ok, true);
-  assert.strictEqual(calls.dig.length, 0, 'aucun dig : objectif DIAMOND_CHAIN déjà rempli');
+  assert.ok(calls.dig.length > 0, 'doit creuser : le diamant de départ ne compte pas');
+  assert.ok(!r.empty, 'pas un retour vide');
+});
+
+// REPRO LIVE 24/10 (NethBot3, session 570, positions-943e2c) : y=13, targetY 16, serpentin allowDeeper,
+// 18 diamants + iron_pickaxe en poche, cobble 128, AUCUN stopOre (chaîne iron_help). Avant le fix :
+// `branchMine:enter` puis retour { ok:true } sans un seul coup de pioche, ×4 en 300 ms → retry 90 s.
+test('branchMine : état réel NethBot3 (y13, 18 💎, iron_help sans stopOre) → creuse vraiment', async () => {
+  const { bot, calls } = makeBot({ y: 13, inv: [
+    { name: 'iron_pickaxe', count: 1, type: 'pickaxe' },
+    { name: 'stone_pickaxe', count: 2, type: 'pickaxe' },
+    { name: 'cobblestone', count: 128, type: 'block' },
+    { name: 'cobbled_deepslate', count: 39, type: 'block' },
+    { name: 'diamond', count: 18, type: 'item' },
+    { name: 'raw_iron', count: 2, type: 'item' },
+  ] });
+  const r = await branchMine(bot, { targetY: 16, mainLength: 6, branchSpacing: 3, branchLength: 8,
+    serpentine: true, allowDeeper: true, rng: () => 0 });
+  assert.ok(calls.dig.length >= 2, `au moins un pas creusé (digs=${calls.dig.length})`);
+  assert.ok(!r.empty);
+});
+
+test('branchMine : retour sans aucun coup de pioche → empty:true ; bmBail le change en échec', async () => {
+  const { bmBail } = require('./branchMine');
+  // wrong_depth : bot trop haut → aucun dig.
+  const { bot } = makeBot({ y: 60 });
+  const r = await branchMine(bot, { targetY: 16, mainLength: 6 });
+  assert.strictEqual(r.reason, 'wrong_depth');
+  assert.strictEqual(r.empty, true);
+  assert.deepStrictEqual(bmBail(r).bail, 'wrong_depth');
+  assert.strictEqual(bmBail(r).result.ok, false);
+  // ok:true vide (stop atteint au 1er pas) → bm_empty
+  const v = bmBail({ ok: true, empty: true, ores: { diamond: 0, iron: 0, coal: 0 } });
+  assert.strictEqual(v.bail, 'empty');
+  assert.strictEqual(v.result.ok, false);
+  assert.strictEqual(v.result.reason, 'bm_empty');
+  // jeton annulé : signalé, mais pas transformé en échec (préemption ≠ panne)
+  const c = bmBail({ ok: true, cancelled: true, empty: true });
+  assert.strictEqual(c.bail, 'cancelled');
+  assert.strictEqual(c.result.ok, true);
+  // stale : signalé avec sa cause
+  assert.strictEqual(bmBail({ ok: false, reason: 'stale', why: 'displaced', stale: true, empty: true }).bail, 'stale:displaced');
+  // retour utile : rien
+  assert.strictEqual(bmBail({ ok: true, ores: { iron: 2 } }).bail, null);
 });
 
 test('branchMine : stopOre delta — mine MÊME avec des diamants déjà en poche (mode quota)', async () => {

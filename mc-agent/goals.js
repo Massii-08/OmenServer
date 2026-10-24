@@ -749,9 +749,15 @@ function nextObjectiveAfter(objective, mates, opts = {}) {
   // « Servi » = 4 pièces PORTÉES (Massii 24/10) : teamwork.mapperUnserved (worn, repli armor).
   const mappersNaked = canGift
     && (mates || []).some((m) => m && m.role === 'mapper' && mapperUnserved(m));
+  // CLIQUET PHASE DIAMANT (24/10, `opts.latched` = teamwork.latchedTeamPhase actif) : une fois l'équipe
+  // passée au diamant, l'USURE d'un coéquipier (NethBot1 4 → 2 pièces, need 9) ne rappelle plus les
+  // mineurs 4/4 en iron_help — chacun reforge SA pièce (timer d'armure) et le périodique team_gift livre
+  // le surplus à pied. Vécu : NethBot3 (18 💎) et NethBot2 (28 💎) en iron_help → iron_deep, 30 min sans
+  // un diamant. Seul un cartographe à servir (mappersNaked, cible réservée) détourne encore.
+  const helpWanted = needy && !opts.latched;
   // 1re passe : dès qu'un coéquipier est en manque, on va l'AIDER en priorité (intent Massii).
   if (objective === 'iron_armor') {
-    if (needy) return 'iron_help';
+    if (helpWanted) return 'iron_help';
     return mappersNaked ? 'mapper_armor' : 'diamond';
   }
   // ⚠️ FLEET-DEADLOCK (world_mn12, 28/07) : `if (needy) return 'iron_help'` inconditionnel pinnait
@@ -765,7 +771,7 @@ function nextObjectiveAfter(objective, mates, opts = {}) {
   // continue d'aider tant qu'un worker est en manque.
   if (objective === 'iron_help') {
     if (mappersNaked) return 'mapper_armor';
-    return needy ? 'iron_help' : 'diamond';
+    return helpWanted ? 'iron_help' : 'diamond';
   }
   // Un set livré ne couvre qu'UN mappeur : tant qu'il en reste un nu, on en reforge un autre.
   if (objective === 'mapper_armor') return mappersNaked ? 'mapper_armor' : 'diamond';
@@ -805,7 +811,7 @@ const CHAIN_FALLBACK = 'diamond';              // l'objectif d'après de toute l
  *   why ∈ same_empty | recently_empty | all_empty (backoff) ;
  *   releaseGift = la réservation de `giftTarget` doit être RELÂCHÉE (on ne part pas l'armer).
  */
-function chainAfterDone({ objective, steps, mates, canTp = true, giftTarget = null, emptyDoneAt, now } = {}) {
+function chainAfterDone({ objective, steps, mates, canTp = true, giftTarget = null, emptyDoneAt, now, latched = false } = {}) {
   const t = Number.isFinite(now) ? now : Date.now();
   // Mémoire élaguée (copie) : rien d'expiré, rien du FUTUR — une date future gèlerait le saut à vie.
   const memo = {};
@@ -815,7 +821,7 @@ function chainAfterDone({ objective, steps, mates, canTp = true, giftTarget = nu
   // `steps === 0` STRICT : un résultat sans compte (vieux planner) ne déclenche jamais le saut.
   const empty = steps === 0;
   if (empty && objective) memo[objective] = t;
-  const proposed = nextObjectiveAfter(objective, mates, { canGift: !!canTp && !!giftTarget });
+  const proposed = nextObjectiveAfter(objective, mates, { canGift: !!canTp && !!giftTarget, latched: !!latched });
   let next = proposed;
   let delayMs = CHAIN_BASE_DELAY_MS;
   let skip = null;

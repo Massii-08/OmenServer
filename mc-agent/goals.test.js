@@ -1104,3 +1104,19 @@ test('iron_armor : charbon sauté (en surface) → bûches ; combustible suffisa
   assert.notStrictEqual(firstUnmet(ch, done).name, 'ingot_coal');
   assert.notStrictEqual(firstUnmet(ch, done).name, 'ingot_fuel');
 });
+
+// CLIQUET PHASE DIAMANT (24/10, positions-943e2c) : NethBot1 2/4 (need 9) ne doit plus rappeler
+// NethBot3/NethBot2 (4/4, 18/28 💎) en iron_help une fois la phase diamant verrouillée.
+test('nextObjectiveAfter : phase diamant verrouillée → un coéquipier usé ne rappelle pas en iron_help', () => {
+  const { chainAfterDone } = require('./goals');
+  const mates = [{ name: 'NethBot1', role: 'worker', need: 9, worn: 2 },
+    { name: 'MapBot1', role: 'mapper', worn: 3, need: 4 }];
+  assert.strictEqual(nextObjectiveAfter('iron_armor', mates, { canGift: false }), 'iron_help', 'sans cliquet : inchangé');
+  assert.strictEqual(nextObjectiveAfter('iron_armor', mates, { canGift: false, latched: true }), 'diamond');
+  assert.strictEqual(nextObjectiveAfter('iron_help', mates, { canGift: false, latched: true }), 'diamond');
+  // un cartographe réellement servable (cible réservée) détourne encore
+  assert.strictEqual(nextObjectiveAfter('iron_armor', mates, { canGift: true, latched: true }), 'mapper_armor');
+  const d = chainAfterDone({ objective: 'iron_armor', steps: 0, mates, canTp: true, giftTarget: null,
+    emptyDoneAt: {}, now: 1000, latched: true });
+  assert.strictEqual(d.next, 'diamond');
+});
