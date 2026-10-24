@@ -84,9 +84,9 @@ test('MAPPER_ARMOR_CHAIN : la mine vise le BESOIN restant (giftNeed), pas 24 fix
 });
 
 // ─── bûcheron : fin de rôle en phase diamant ─────────────────────────────────────────────────────
-test('lumberjackRetireForDiamond : phase diamant + stock plein → rend le rôle ; stock incomplet → le finit ; personne ne le reprend', () => {
+test('lumberjackRetireForDiamond : phase diamant → rend le rôle tout de suite ; personne ne le reprend', () => {
   assert.deepStrictEqual(L.lumberjackRetireForDiamond({ phase: 'diamond', amLumberjack: true, logs: 48 }), { retire: true, block: true });
-  assert.deepStrictEqual(L.lumberjackRetireForDiamond({ phase: 'diamond', amLumberjack: true, logs: 20 }), { retire: false, block: true });
+  assert.deepStrictEqual(L.lumberjackRetireForDiamond({ phase: 'diamond', amLumberjack: true, logs: 20 }), { retire: true, block: true });
   assert.deepStrictEqual(L.lumberjackRetireForDiamond({ phase: 'diamond', amLumberjack: false, logs: 64 }), { retire: false, block: true });
   assert.deepStrictEqual(L.lumberjackRetireForDiamond({ phase: 'mappers_armor', amLumberjack: true, logs: 64 }), { retire: false, block: false });
 });
@@ -155,4 +155,86 @@ test('câblage : tick de phase, events team_phase / diamond_progress, heartbeat 
     assert.match(SRC, new RegExp('^let ' + v + ' = ', 'm'), v);
   }
   assert.match(SRC, /^const _optionalFailAt = new Map\(\);/m);
+});
+
+// ─── CLIQUET de phase (fix 24/10 soir) ───────────────────────────────────────────────────────────
+// Vécu : diamond → mappers_armor → miners_armor → … parce que l'armure S'USE (NethBot1 4 → 2 portées)
+// → élection du bûcheron rouverte → NethBot2 (28 diamants, le meilleur) réélu bûcheron.
+const W = (name, o = {}) => m(name, Object.assign({ role: 'worker', worn: 4 }, o));
+const MP = (name, o = {}) => m(name, Object.assign({ role: 'mapper', worn: 4, missing: [] }, o));
+test('latchedTeamPhase : une fois diamond atteint, l’usure ne fait plus redescendre la phase', () => {
+  const worn = [W('NethBot2', { worn: 2 }), W('NethBot3'), MP('MapBot1', { worn: 3, missing: ['iron_boots'] }), MP('MapBot2')];
+  const raw = T.teamPhase({ selfName: 'NethBot1', selfRole: 'worker', selfWorn: 4, mates: worn, now: NOW });
+  assert.strictEqual(raw.phase, 'miners_armor');
+  const r = T.latchedTeamPhase({ raw, latch: { at: NOW - 60000 }, mates: worn, selfName: 'NethBot1', selfRole: 'worker', selfWorn: 4, now: NOW });
+  assert.strictEqual(r.phase, 'diamond');
+  assert.strictEqual(r.latched, true);
+  assert.strictEqual(r.nakedMapper, null, 'un cartographe à 3 pièces n’est pas nu');
+  assert.deepStrictEqual(r.latch, { at: NOW });
+});
+test('latchedTeamPhase : diamond brut pose le cliquet ; sans cliquet la phase brute passe', () => {
+  const ok = [W('NethBot2'), MP('MapBot1')];
+  const raw = T.teamPhase({ selfName: 'NethBot1', selfRole: 'worker', selfWorn: 4, mates: ok, now: NOW });
+  const r = T.latchedTeamPhase({ raw, latch: null, mates: ok, selfName: 'NethBot1', selfRole: 'worker', selfWorn: 4, now: NOW });
+  assert.strictEqual(r.phase, 'diamond'); assert.strictEqual(r.latched, true); assert.deepStrictEqual(r.latch, { at: NOW });
+  const bad = [W('NethBot2', { worn: 1 })];
+  const raw2 = T.teamPhase({ selfName: 'NethBot1', selfRole: 'worker', selfWorn: 4, mates: bad, now: NOW });
+  const r2 = T.latchedTeamPhase({ raw: raw2, latch: null, mates: bad, selfName: 'NethBot1', selfRole: 'worker', selfWorn: 4, now: NOW });
+  assert.strictEqual(r2.phase, 'miners_armor'); assert.strictEqual(r2.latched, false); assert.strictEqual(r2.latch, null);
+});
+test('latchedTeamPhase : cliquet périmé (flotte arrêtée > 30 min) ou venu du futur = ignoré ; un coéquipier cliqueté le propage', () => {
+  const bad = [W('NethBot2', { worn: 1 })];
+  const raw = T.teamPhase({ selfName: 'NethBot1', selfRole: 'worker', selfWorn: 4, mates: bad, now: NOW });
+  const base = { raw, mates: bad, selfName: 'NethBot1', selfRole: 'worker', selfWorn: 4, now: NOW };
+  assert.strictEqual(T.latchedTeamPhase(Object.assign({}, base, { latch: { at: NOW - T.TEAM_LATCH_STALE_MS - 1 } })).phase, 'miners_armor');
+  assert.strictEqual(T.latchedTeamPhase(Object.assign({}, base, { latch: { at: NOW + 3600000 } })).phase, 'miners_armor');
+  const prop = [W('NethBot2', { worn: 1, phaseLatched: true })];
+  const rawP = T.teamPhase({ selfName: 'NethBot1', selfRole: 'worker', selfWorn: 4, mates: prop, now: NOW });
+  assert.strictEqual(T.latchedTeamPhase(Object.assign({}, base, { raw: rawP, mates: prop, latch: null })).phase, 'diamond');
+  // présence périmée : ne propage rien
+  const old = [W('NethBot2', { worn: 1, phaseLatched: true, at: NOW - 10 * 60 * 1000 })];
+  assert.strictEqual(T.latchedTeamPhase(Object.assign({}, base, { mates: old, latch: null })).phase, 'miners_armor');
+});
+test('latchedTeamPhase : seul un cartographe VRAIMENT nu (≤ 1 pièce portée) est signalé', () => {
+  const mates = [W('NethBot2'), MP('MapBot1', { worn: 2, missing: ['iron_chestplate', 'iron_leggings'] }), MP('MapBot2', { worn: 1, missing: ['iron_chestplate'] })];
+  const raw = T.teamPhase({ selfName: 'NethBot1', selfRole: 'worker', selfWorn: 4, mates, now: NOW });
+  const r = T.latchedTeamPhase({ raw, latch: { at: NOW }, mates, selfName: 'NethBot1', selfRole: 'worker', selfWorn: 4, now: NOW });
+  assert.strictEqual(r.phase, 'diamond');
+  assert.strictEqual(r.nakedMapper, 'MapBot2');
+  // pièces en poche (missing vide) : il s'équipe seul → pas nu
+  const pocket = [MP('MapBot2', { worn: 0, missing: [] })];
+  assert.strictEqual(T.latchedTeamPhase({ raw, latch: { at: NOW }, mates: pocket, selfName: 'NethBot1', selfRole: 'worker', selfWorn: 4, now: NOW }).nakedMapper, null);
+  assert.strictEqual(T.NAKED_MAPPER_MAX_WORN, 1);
+});
+test('pickDivertedMiner : celui qui a le MOINS de diamants (4/4 porté), jamais le meilleur', () => {
+  const mates = [W('NethBot2', { diamonds: 28 }), W('NethBot3', { diamonds: 5 }), MP('MapBot1', { diamonds: 0 })];
+  assert.strictEqual(T.pickDivertedMiner({ selfName: 'NethBot1', selfDiamonds: 12, selfWorn: 4, mates, now: NOW }), 'NethBot3');
+  assert.strictEqual(T.pickDivertedMiner({ selfName: 'NethBot1', selfDiamonds: 2, selfWorn: 4, mates, now: NOW }), 'NethBot1');
+  // un mineur pas 4/4 ne peut servir personne → écarté
+  assert.strictEqual(T.pickDivertedMiner({ selfName: 'NethBot1', selfDiamonds: 0, selfWorn: 2, mates, now: NOW }), 'NethBot3');
+  // départage par nom
+  const eq = [W('NethBot3', { diamonds: 4 })];
+  assert.strictEqual(T.pickDivertedMiner({ selfName: 'NethBot1', selfDiamonds: 4, selfWorn: 4, mates: eq, now: NOW }), 'NethBot1');
+  assert.strictEqual(T.pickDivertedMiner({ selfName: 'NethBot1', selfDiamonds: 0, selfWorn: 0, mates: [], now: NOW }), null);
+});
+test('pickMapperToEquip : opts.maxWorn ne retient que les cartographes vraiment nus', () => {
+  const mates = [MP('MapBot1', { worn: 2, missing: ['iron_chestplate'] }), MP('MapBot2', { worn: 3, missing: ['iron_boots'] })];
+  assert.strictEqual(T.pickMapperToEquip({ selfName: 'N', selfStatus: { armor: 4 }, mates, now: NOW, opts: { maxWorn: 1 } }), null);
+  assert.strictEqual(T.pickMapperToEquip({ selfName: 'N', selfStatus: { armor: 4 }, mates, now: NOW }).to, 'MapBot1');
+});
+test('lumberjackRetireForDiamond : bûcheron en phase diamant → retour au diamant IMMÉDIAT, stock ou pas', () => {
+  assert.deepStrictEqual(L.lumberjackRetireForDiamond({ phase: 'diamond', amLumberjack: true, logs: 3 }), { retire: true, block: true });
+});
+test('preferredLumberjack : à armure égale, celui qui a le MOINS de diamants (pas le meilleur mineur)', () => {
+  const mates = [m('NethBot1', { role: 'worker', armor: 4, worn: 4, diamonds: 3 }), m('NethBot3', { role: 'worker', armor: 4, worn: 4, diamonds: 10 })];
+  assert.strictEqual(L.preferredLumberjack({ selfName: 'NethBot2', selfArmor: 4, selfWorn: 4, selfDiamonds: 28, mates, now: NOW }), 'NethBot1');
+  assert.strictEqual(L.preferredLumberjack({ selfName: 'NethBot2', selfArmor: 4, selfWorn: 4, selfDiamonds: 0, mates, now: NOW }), 'NethBot2');
+});
+test('armorRepairs : emplacements NOUVELLEMENT couverts (fer ou mieux), le reste ignoré', () => {
+  assert.deepStrictEqual(T.armorRepairs(['iron_helmet', 'iron_boots'], ['iron_helmet', 'iron_boots', 'iron_chestplate']),
+    [{ slot: 'chestplate', item: 'iron_chestplate' }]);
+  assert.deepStrictEqual(T.armorRepairs(['iron_helmet'], ['iron_helmet']), []);
+  assert.deepStrictEqual(T.armorRepairs([], ['leather_boots']), []);
+  assert.deepStrictEqual(T.armorRepairs(['iron_boots'], ['diamond_boots']), [], 'emplacement déjà couvert');
+  assert.deepStrictEqual(T.armorRepairs(null, ['diamond_leggings']), [{ slot: 'leggings', item: 'diamond_leggings' }]);
 });

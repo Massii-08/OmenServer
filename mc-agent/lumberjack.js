@@ -110,20 +110,21 @@ function wornIronCount(worn) {
  * cartographe. null s'il y a moins de 2 ouvriers frais (seul, un bûcheron n'aurait personne à servir)
  * ou si aucun n'est éligible. Une présence sans `worn` (ancien process) = non éligible (sens sûr).
  */
-function preferredLumberjack({ selfName, selfArmor, selfWorn, mates, now, freshMs = LUMBERJACK_FRESH_MS,
+function preferredLumberjack({ selfName, selfArmor, selfWorn, selfDiamonds, mates, now, freshMs = LUMBERJACK_FRESH_MS,
   minWorn = LUMBERJACK_MIN_WORN } = {}) {
   const t = now || Date.now();
   const all = [];
-  if (selfName) all.push({ name: String(selfName), armor: selfArmor || 0, worn: Number(selfWorn) || 0 });
+  if (selfName) all.push({ name: String(selfName), armor: selfArmor || 0, worn: Number(selfWorn) || 0, d: Number(selfDiamonds) || 0 });
   for (const m of mates || []) {
     if (!m || !m.name || m.name === selfName || m.role === 'mapper') continue;
     if (!_fresh(m, t, freshMs)) continue;
-    all.push({ name: String(m.name), armor: m.armor || 0, worn: Number(m.worn) || 0 });
+    all.push({ name: String(m.name), armor: m.armor || 0, worn: Number(m.worn) || 0, d: Number(m.diamonds) || 0 });
   }
   if (all.length < 2) return null;
   const eligible = all.filter((c) => c.worn >= minWorn);
   if (!eligible.length) return null;
-  eligible.sort((a, b) => (b.armor - a.armor) || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+  // Diamants ASC avant le nom (24/10 soir) : le meilleur mineur de diamant n'est jamais détourné.
+  eligible.sort((a, b) => (b.armor - a.armor) || (a.d - b.d) || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
   return eligible[0].name;
 }
 
@@ -790,9 +791,12 @@ function ljSwitchBlock({ active, migrating, switching, inProgress } = {}) {
 // il le termine (lj_stock) : c'est ce stock qui dépannera les coéquipiers (peerWoodSupplier, woodStock).
 // En phase diamant personne ne PREND le rôle (sinon l'élection le redonnerait aussitôt au mieux armé).
 /** PUR — {retire, block} : retire = le bûcheron rend le rôle ; block = personne ne doit le prendre. */
-function lumberjackRetireForDiamond({ phase, amLumberjack, logs, stock = LUMBERJACK_STOCK } = {}) {
+// Fix 24/10 soir : retour IMMÉDIAT (plus de « finir le stock ») — un bûcheron en phase diamant est un
+// bûcheron élu à tort (cliquet de phase, teamwork.latchedTeamPhase) ; ses bûches restent en poche et
+// servent au don entre coéquipiers. `logs`/`stock` gardés pour la signature.
+function lumberjackRetireForDiamond({ phase, amLumberjack } = {}) {
   if (phase !== 'diamond') return { retire: false, block: false };
-  return { retire: !!amLumberjack && (Number(logs) || 0) >= stock, block: true };
+  return { retire: !!amLumberjack, block: true };
 }
 
 module.exports = {

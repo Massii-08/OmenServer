@@ -278,6 +278,7 @@ function giftSb(o = {}) {
   const claims = {};
   Object.assign(sb, {
     giftSetPlan, pickMapperToEquip, teamStatus, giftBatchFor: L.giftBatchFor, ljGiftReady: L.ljGiftReady,
+    _teamLatchActive: () => false, NAKED_MAPPER_MAX_WORN: 1,   // cliquet de phase (index.teamlatch.test.js)
     buildCtxInv, isNearlyBroken: () => false, isAllowed: () => true, whitelist: null,
     _wornArmor: () => new Set(['iron_helmet', 'iron_chestplate', 'iron_leggings', 'iron_boots']),
     presence: { list: () => o.mates || [] },

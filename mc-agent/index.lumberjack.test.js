@@ -311,7 +311,7 @@ test('élection (21/10) : le bûcheron qui perd une pièce rend le rôle et REFO
 
 test('heartbeat : publie `worn` (pièces PORTÉES), lu par l\'élection des coéquipiers', () => {
   assert.match(SRC, /if \(st\) st\.worn = wornIronCount\(\[\.\.\._wornArmor\(\)\]\);/);
-  assert.match(fnSrc('lumberjackTick'), /preferredLumberjack\(\{ selfName: bot\.username, selfArmor, selfWorn, mates, now \}\)/);
+  assert.match(fnSrc('lumberjackTick'), /preferredLumberjack\(\{ selfName: bot\.username, selfArmor, selfWorn, selfDiamonds, mates, now \}\)/);
 });
 
 test('bûcheron au repos : rend la main dès qu\'une demande arrive', async () => {

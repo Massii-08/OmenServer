@@ -180,7 +180,8 @@ const { pickRegroupTarget, squadTarget, isMiningGoal, mateNearby } = require('./
 const lawnMine = require('./lawnMine');
 // ENTRAIDE D'ÉQUIPE (Massii 25/07 : « qu'ils s'aident entre eux, et quand ils ont l'armure
 // fer ils se séparent »). Décisions PURES ; l'exécution (marche + toss) est ci-dessous.
-const { teamStatus, pickDonation, allArmored, pickMobAssist, pickMapperToEquip, giftSetPlan, teamPhase } = require('./teamwork');
+const { teamStatus, pickDonation, allArmored, pickMobAssist, pickMapperToEquip, giftSetPlan, teamPhase,
+  latchedTeamPhase, pickDivertedMiner, armorRepairs, TEAM_LATCH_STALE_MS, NAKED_MAPPER_MAX_WORN } = require('./teamwork');
 const {
   isWoodGoal, woodWantFor, logCount, activeLumberjack, woodWaitDecision, WOOD_UNDERGROUND_Y, preferredLumberjack,
   lumberjackVerdict, pickWoodRequest, tossPlan, WOOD_REQUEST_TTL_MS, WOOD_MIN_GIFT, LUMBERJACK_STOCK,
@@ -1343,6 +1344,8 @@ function _giftContext() {
     for (let i = 0; i < 6; i++) {                      // descend la liste des cibles déjà prises
       const pick = pickMapperToEquip({
         selfName: bot.username, selfStatus, mates, claimed: skip, now,
+        // Phase diamant cliquetée (24/10 soir) : on ne détourne un mineur que pour un cartographe VRAIMENT nu.
+        opts: _teamLatchActive() ? { maxWorn: NAKED_MAPPER_MAX_WORN } : {},
       });
       if (!pick) { _giftTarget = null; return { target: null, ready }; }
       // Sans lockfile (groupe sans --claims) on accepte la cible telle quelle : mieux vaut deux
@@ -2225,6 +2228,11 @@ const TEAM_PHASE_TICK_MS = 60000;
 const DIAMOND_PROGRESS_EVERY_MS = 120000;
 const TEAM_SWITCH_COOLDOWN_MS = 180000;   // anti va-et-vient diamant ↔ mapper_armor
 let _teamPhaseLast = null;
+// CLIQUET (fix 24/10 soir, teamwork.latchedTeamPhase) : {at} — une fois `diamond` atteint la phase ne
+// redescend plus à cause de l'usure. Persisté dans le mémo base `teamLatch: {at, last}` (survit au
+// respawn : pas de `team_phase from:null` à chaque process), propagé par le heartbeat (`phaseLatched`).
+let _teamLatch = null;
+let _teamLatchLoaded = false;
 let _diamondProgressAt = 0;
 let _teamSwitchAt = 0;
 let _objSwitching = false;
@@ -2253,32 +2261,78 @@ async function switchObjective(to, why) {
   } finally { _objSwitching = false; }
 }
 
+/** Relit le cliquet du mémo base (une fois par process). */
+function _loadTeamLatch() {
+  if (_teamLatchLoaded) return;
+  _teamLatchLoaded = true;
+  try {
+    const tl = (loadBaseState() || {}).teamLatch;
+    if (tl && Number.isFinite(Number(tl.at)) && tl.at !== null) _teamLatch = { at: Number(tl.at) };
+    if (_teamPhaseLast === null && tl && typeof tl.last === 'string') _teamPhaseLast = tl.last;
+  } catch (e) { /* best-effort */ }
+}
+
+/** Cliquet actif (non périmé) — lu par le heartbeat et _giftContext. */
+function _teamLatchActive() {
+  _loadTeamLatch();
+  if (!_teamLatch || !Number.isFinite(_teamLatch.at)) return false;
+  const age = Date.now() - _teamLatch.at;
+  return age >= 0 && age <= TEAM_LATCH_STALE_MS;
+}
+
+/** Mémo base FUSIONNÉ (piège #73d) : {at, last}. */
+function _saveTeamLatch() {
+  try {
+    const st = Object.assign({}, loadBaseState() || {});
+    st.teamLatch = { at: _teamLatch ? _teamLatch.at : null, last: _teamPhaseLast };
+    saveBaseState(st);
+  } catch (e) { /* best-effort */ }
+}
+
+/** Phase EFFECTIVE (brute + cliquet). Met à jour `_teamLatch` ; la persistance est faite par le tick. */
+function currentTeamPhase(mates, selfWorn, now) {
+  _loadTeamLatch();
+  const selfRole = IS_MAPPER ? 'mapper' : 'worker';
+  const raw = teamPhase({ selfName: bot.username, selfRole, selfWorn, mates, now });
+  const eff = latchedTeamPhase({ raw, latch: _teamLatch, mates, selfName: bot.username, selfRole, selfWorn, now });
+  _teamLatch = eff.latch;
+  return Object.assign({}, raw, eff);
+}
+
 async function teamPhaseTick() {
   if (!presence || !bot || !bot.entity) return null;
   const now = Date.now();
   let mates = [];
   try { mates = presence.list(); } catch (e) { mates = []; }
   const selfWorn = wornIronCount([..._wornArmor()]);
-  const ph = teamPhase({ selfName: bot.username, selfRole: IS_MAPPER ? 'mapper' : 'worker', selfWorn, mates, now });
-  if (ph.phase !== _teamPhaseLast) {
-    emit({ type: 'team_phase', phase: ph.phase, from: _teamPhaseLast,
+  const ph = currentTeamPhase(mates, selfWorn, now);
+  if (ph.phase !== _teamPhaseLast) {          // VRAI changement seulement (le dernier est persisté)
+    emit({ type: 'team_phase', phase: ph.phase, from: _teamPhaseLast, raw: ph.raw, latched: ph.latched,
       miners: ph.minersArmored + '/' + ph.miners, mappers: ph.mappersServed + '/' + ph.mappers });
     _teamPhaseLast = ph.phase;
   }
+  _saveTeamLatch();
   const objT = world.objective && world.objective.type;
   if (objT === 'diamond' && now - _diamondProgressAt >= DIAMOND_PROGRESS_EVERY_MS) {
     _diamondProgressAt = now;
     emit({ type: 'diamond_progress', have: buildCtxInv(bot).diamond || 0, target: diamondTargetOf(world.objective) });
   }
-  if (IS_MAPPER || objT !== 'diamond' || ph.phase !== 'mappers_armor') return ph.phase;
+  if (IS_MAPPER || objT !== 'diamond') return ph.phase;
+  // Cliquet posé : seul un cartographe VRAIMENT nu rappelle un mineur ; une pièce usée ne rappelle personne.
+  const wantArm = ph.latched ? !!ph.nakedMapper : ph.phase === 'mappers_armor';
+  if (!wantArm) return ph.phase;
   if (now - _teamSwitchAt < TEAM_SWITCH_COOLDOWN_MS) return ph.phase;
   if (!isAllowed('/tpa x', whitelist)) return ph.phase;        // personne ne peut être servi
+  // UN mineur, celui qui a le MOINS de diamants (le meilleur n'est jamais détourné).
+  let selfDia = 0;
+  try { selfDia = buildCtxInv(bot).diamond || 0; } catch (e) { selfDia = 0; }
+  if (pickDivertedMiner({ selfName: bot.username, selfDiamonds: selfDia, selfWorn, mates, now }) !== bot.username) return ph.phase;
   const target = freshGiftTarget();                             // 4/4 soi-même + réservation `marmor:`
   if (!target) return ph.phase;
   _teamSwitchAt = now;
   const ok = await switchObjective('mapper_armor', 'team_mappers_armor');
   if (!ok) releaseGiftTarget(target);
-  else emit({ type: 'team_mapper_armor_return', to: target });
+  else emit({ type: 'team_mapper_armor_return', to: target, naked: ph.nakedMapper || null, diamonds: selfDia });
   return ph.phase;
 }
 
@@ -2304,8 +2358,11 @@ async function lumberjackTick() {
   try { mates = presence.list(); } catch (e) { mates = []; }
   // PHASE DIAMANT (Massii 24/10) : mineurs + cartographes 4/4 portés → le bûcheron finit son stock puis
   // rend le rôle et part au diamant ; personne ne le reprend tant que la phase dure (lumberjack.js).
+  let selfDiamonds = 0;
+  try { selfDiamonds = buildCtxInv(bot).diamond || 0; } catch (e) { selfDiamonds = 0; }
   try {
-    const ph = teamPhase({ selfName: bot.username, selfRole: 'worker', selfWorn, mates, now }).phase;
+    // Phase EFFECTIVE (cliquet 24/10 soir) : l'usure d'une pièce ne rouvre plus l'élection.
+    const ph = currentTeamPhase(mates, selfWorn, now).phase;
     const ret = lumberjackRetireForDiamond({ phase: ph, amLumberjack: amLj, logs: logCount(buildCtxInv(bot)) });
     if (ret.retire) {
       try { _teamClaims.release(LJ_CLAIM); } catch (e) {}
@@ -2314,7 +2371,7 @@ async function lumberjackTick() {
     }
     if (ret.block && !amLj) return 'follower';
   } catch (e) { /* best-effort : élection historique */ }
-  const preferred = preferredLumberjack({ selfName: bot.username, selfArmor, selfWorn, mates, now });
+  const preferred = preferredLumberjack({ selfName: bot.username, selfArmor, selfWorn, selfDiamonds, mates, now });
   const holder = _teamClaims.peek(LJ_CLAIM);
   const v = lumberjackVerdict({ selfName: bot.username, holder, preferred, amLumberjack: amLj, selfEligible });
   if (v === 'keep' || v === 'claim') {
@@ -11232,7 +11289,8 @@ async function onSpawn() {
         let _dia = 0;
         try { _dia = buildCtxInv(bot).diamond || 0; } catch (e) { _dia = 0; }
         presence.beat(Math.round(pB.x), Math.round(pB.z), role,
-          Object.assign({}, st || {}, { y: Math.round(pB.y), ironZone: _zoneIronMined, diamonds: _dia }));
+          Object.assign({}, st || {}, { y: Math.round(pB.y), ironZone: _zoneIronMined, diamonds: _dia,
+            phaseLatched: _teamLatchActive() }));
       } catch (e) { /* best-effort */ }
     };
     _beatNow = _beat;
@@ -14039,7 +14097,15 @@ setInterval(async () => {
     }
     const ironKeep = objType === 'resource' ? 8 : 0;
     _armorBusy = true;
+    const _wornBefore = [...worn];
     await withTimeout(ensureArmor({ ironKeep }), 150000, () => { try { stopMotion(); } catch (e) {} });
+    // RÉPARATION (24/10 soir) : en phase diamant c'est ce timer qui reforge la pièce usée — sans changer
+    // l'objectif des autres ni la phase. Event pour suivre.
+    try {
+      if (objType === 'diamond' || _teamLatchActive()) {
+        for (const r of armorRepairs(_wornBefore, [..._wornArmor()])) emit({ type: 'armor_repair', slot: r.slot, item: r.item, objective: objType });
+      }
+    } catch (e) { /* best-effort */ }
   } catch (e) { /* timer : ne crash jamais */ }
   finally { _armorBusy = false; }
 }, 90000);

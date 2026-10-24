@@ -195,6 +195,8 @@ function pickMapperToEquip({ selfName, selfStatus, mates, claimed, now, opts = {
     && m.role === 'mapper'
     && (t - (m.at || 0)) <= freshMs                    // présence périmée = mort/déconnecté
     && mapperUnserved(m)                               // statut inconnu = considéré NU (on n'abandonne pas sur une supposition)
+    // Phase diamant CLIQUETÉE (24/10 soir) : seul un cartographe vraiment nu justifie de détourner un mineur.
+    && !(Number.isFinite(opts.maxWorn) && mapperWorn(m) > opts.maxWorn)
     && !taken.has(m.name));
   if (!cands.length) return null;
   let best = null;
@@ -247,6 +249,84 @@ function teamPhase({ selfName, selfRole, selfWorn, mates, now, freshMs } = {}) {
   return { phase, miners: minerWorn.length, minersArmored, mappers: mappers.length, mappersServed };
 }
 
+// ── CLIQUET DE PHASE (fix 24/10 soir) ───────────────────────────────────────────────────────────
+// Vécu (events team_phase, sessions 545-562) : diamond → mappers_armor → miners_armor → mappers_armor
+// → diamond… L'armure S'USE : NethBot1 4 → 2 pièces portées ⇒ phase brute `miners_armor` ⇒ élection du
+// bûcheron rouverte ⇒ NethBot2 (28 diamants, le meilleur) réélu bûcheron, diamant arrêté ; une pièce
+// usée d'un cartographe (4 → 3) rappelait des mineurs en mapper_armor. Une fois `diamond` atteint, la
+// phase ne redescend plus : chacun reforge SA pièce (timer d'armure, ARMOR_FORGE_OBJECTIVES), et seul
+// un cartographe VRAIMENT nu (≤ NAKED_MAPPER_MAX_WORN pièces portées) fait revenir UN mineur.
+// Le cliquet vit dans le mémo base ({at}, rafraîchi à chaque tick) et se PROPAGE par le heartbeat
+// (`phaseLatched`) ; périmé au-delà de TEAM_LATCH_STALE_MS (flotte arrêtée → nouveau monde probable).
+const TEAM_LATCH_STALE_MS = 30 * 60 * 1000;
+const NAKED_MAPPER_MAX_WORN = 1;
+
+/**
+ * PUR — phase EFFECTIVE à partir de la phase brute (teamPhase) et du cliquet.
+ * @returns {{phase:string, latched:boolean, nakedMapper:string|null, raw:string, latch:{at:number}|null}}
+ */
+function latchedTeamPhase({ raw, latch, mates, selfName, selfRole, selfWorn, now, freshMs, staleMs } = {}) {
+  const t = now || Date.now();
+  const fm = freshMs || FRESH_MS;
+  const sm = staleMs || TEAM_LATCH_STALE_MS;
+  const rawPhase = (raw && raw.phase) || 'miners_armor';
+  const at = latch && Number(latch.at);
+  const ownValid = Number.isFinite(at) && at <= t && (t - at) <= sm;     // date future = mémo d'ailleurs
+  const fresh = (mates || []).filter((m) => m && m.name && m.name !== selfName && (t - (m.at || 0)) <= fm);
+  const mateLatched = fresh.some((m) => m.phaseLatched === true);
+  const latched = rawPhase === 'diamond' || ownValid || mateLatched;
+  if (!latched) return { phase: rawPhase, latched: false, nakedMapper: null, raw: rawPhase, latch: null };
+  const mappers = fresh.filter((m) => m.role === 'mapper');
+  if (selfName && selfRole === 'mapper') mappers.push({ name: selfName, worn: Number(selfWorn) || 0 });
+  let naked = null;
+  for (const mp of mappers) {
+    if (!mapperUnserved(mp) || mapperWorn(mp) > NAKED_MAPPER_MAX_WORN) continue;
+    if (!naked || mapperWorn(mp) < naked.w || (mapperWorn(mp) === naked.w && mp.name < naked.name)) {
+      naked = { name: mp.name, w: mapperWorn(mp) };
+    }
+  }
+  return { phase: 'diamond', latched: true, nakedMapper: naked ? naked.name : null, raw: rawPhase, latch: { at: t } };
+}
+
+/**
+ * PUR — quel mineur détourner pour une tâche d'équipe (armer un cartographe) ? Celui qui a le MOINS de
+ * diamants parmi les ouvriers frais 4/4 PORTÉS (soi compris) ; nom ASC en départage. Le meilleur mineur
+ * de diamant n'est jamais celui qu'on détourne. null si personne ne peut servir.
+ */
+function pickDivertedMiner({ selfName, selfDiamonds, selfWorn, mates, now, freshMs, minWorn = 4 } = {}) {
+  const t = now || Date.now();
+  const fm = freshMs || FRESH_MS;
+  const c = [];
+  if (selfName && (Number(selfWorn) || 0) >= minWorn) c.push({ name: String(selfName), d: Number(selfDiamonds) || 0 });
+  for (const m of mates || []) {
+    if (!m || !m.name || m.name === selfName || m.role !== 'worker' || (t - (m.at || 0)) > fm) continue;
+    if (mapperWorn(m) < minWorn) continue;
+    c.push({ name: String(m.name), d: Number(m.diamonds) || 0 });
+  }
+  if (!c.length) return null;
+  c.sort((a, b) => (a.d - b.d) || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+  return c[0].name;
+}
+
+/**
+ * PUR — pièces REFORGÉES : emplacements non couverts (fer ou mieux) avant, couverts après.
+ * @returns {Array<{slot:string, item:string}>}  (event `armor_repair`)
+ */
+function armorRepairs(before, after) {
+  const MATS = ['iron', 'diamond', 'netherite'];
+  const cover = (names, slot) => {
+    const set = new Set(names || []);
+    for (const mat of MATS) if (set.has(`${mat}_${slot}`)) return `${mat}_${slot}`;
+    return null;
+  };
+  const out = [];
+  for (const slot of PIECES) {
+    const now = cover(after, slot);
+    if (now && !cover(before, slot)) out.push({ slot, item: now });
+  }
+  return out;
+}
+
 /**
  * PUR — que me manque-t-il pour offrir un set fer COMPLET ?
  *
@@ -289,6 +369,7 @@ function allMappersArmored(mates, opts = {}) {
 module.exports = {
   teamStatus, pickDonation, allArmored, pickMobAssist,
   pickMapperToEquip, giftSetPlan, allMappersArmored, mapperWorn, mapperUnserved, teamPhase,
+  latchedTeamPhase, pickDivertedMiner, armorRepairs, TEAM_LATCH_STALE_MS, NAKED_MAPPER_MAX_WORN,
   PIECES, INGOTS_PER_PIECE, MIN_GIFT, AID_RANGE, ASSIST_RANGE, THREAT_RADIUS, ASSIST_MIN_HEALTH,
   SET_INGOTS,
 };
