@@ -10,6 +10,7 @@ const { pillarUp } = require('./pillarUp');
 const { POSABLE } = require('../dirt');
 const { bestToolFor, toolCategoryFor } = require('../tools');
 const { boundedDig, boundedEquip, bounded, DIG_STEP_TIMEOUT_MS } = require('../digBound');
+const { stairStep, defaultStepUp, DIRS: STAIR_DIRS } = require('./digOut');
 
 // ─── CHAQUE ÉTAPE EST BORNÉE (live 21/10, NethBot3 session 48) ─────────────────────────────────────
 // `shelter dig_in` puis PLUS RIEN pendant 10+ min, jour levé, planner gelé : un `/home safe` (retour à
@@ -777,13 +778,141 @@ async function _exitCell(bot, token, deps, cellRes, dugIn) {
   }
   // Pilier de la hauteur RÉELLEMENT creusée : il rebouche le puits en remontant (aucun trou laissé dans le
   // monde), et à 3 de profondeur il ramène les pieds au niveau du sol.
-  const pr = await bounded(pillarUp(bot, { height: Math.max(1, cellRes.depth || 2) }, token, { sleep: deps.pillarSleep || deps.sleep }),
-    Number.isFinite(deps.pillarTimeoutMs) && deps.pillarTimeoutMs > 0 ? deps.pillarTimeoutMs : SHELTER_PILLAR_MS);
-  if (!pr.ok) _stopAll(bot);
-  const up = pr.ok && pr.value ? pr.value : { ok: false, reason: 'timeout' };
-  emit({ type: 'shelter', action: 'out', ok: up.ok });
+  // SORTIE VÉRIFIÉE (live 25/10, NethBot3) : `pillarUp` rend ok sur une montée PARTIELLE et on annonçait
+  // `out {ok:true}` avec le bot encore au fond. La cible (le bord du puits) est mesurée AVANT le pilier ;
+  // après lui, s'il reste du trou → escapePit (pilier retenté, puis escalier), et l'event dit la vérité.
+  const read = _pitReader(bot);
+  const f0 = _feetOf(bot);
+  const targetY = (f0 && inPit(read, f0)) ? f0.y + pitClimbNeeded(read, f0) : null;
+  const up = await _pillarOnce(bot, token, deps, Math.max(1, cellRes.depth || 2));
+  let placed = up.placed || 0;
+  let reason = up.reason || null;
+  let escaped = _pitEscaped(bot, read, targetY);
+  let stairs = 0;
+  if (!escaped && !(token && token.cancelled)) {
+    const e = await escapePit(bot, token, deps, { targetY });
+    placed += e.placed || 0;
+    if (!reason) reason = e.reason || null;
+    stairs = e.stairs || 0;
+    escaped = e.escaped;
+    if (!escaped && e.reason) reason = e.reason;
+  }
+  emit({ type: 'shelter', action: 'out', ok: up.ok && escaped, placed, reason, escaped, stairs });
+  if (!escaped) return { ok: false, reason: 'still_in_pit' };
   _afterExit(deps);
   return { ok: true };
+}
+
+// ─── SORTIR D'UN PUITS (live 25/10, NethBot3 15+ min au fond, 0,4 PV, unjam en boucle) ────────────────
+const PIT_PILLAR_TRIES = 2;   // pilier retenté pour la profondeur restante, 2 fois au plus
+const PIT_STAIR_MAX = 3;      // puis escalier taillé dans la paroi : 3 marches au plus
+const PIT_CLIMB_MAX = 6;
+
+function _pitReader(bot) {
+  return (x, y, z) => { try { return bot.blockAt(new Vec3(x, y, z)); } catch (e) { return null; } };
+}
+/** Pieds du bot en entiers — COPIE (bot.entity.position est muté en place). */
+function _feetOf(bot) {
+  const p = bot && bot.entity && bot.entity.position;
+  if (!p || !Number.isFinite(p.x) || !Number.isFinite(p.y) || !Number.isFinite(p.z)) return null;
+  return { x: Math.floor(p.x), y: Math.floor(p.y), z: Math.floor(p.z) };
+}
+
+/**
+ * PUR — au fond d'un trou ? read(x,y,z) → bloc|null ; feet = pieds (entiers).
+ * Vrai SSI les 4 côtés sont PLEINS à hauteur des pieds ET de la tête (le bot ne peut ni marcher ni
+ * sauter dehors). Un bloc inconnu (chunk pas chargé) n'est pas plein : on ne conclut pas au piège.
+ */
+function inPit(read, feet) {
+  if (typeof read !== 'function' || !feet) return false;
+  for (const dy of [0, 1]) {
+    for (const [dx, dz] of _CARD) {
+      let b = null;
+      try { b = read(feet.x + dx, feet.y + dy, feet.z + dz); } catch (e) { b = null; }
+      if (!_solid(b)) return false;
+    }
+  }
+  return true;
+}
+
+/** PUR — de combien de blocs monter pour avoir la tête au-dessus du bord (1..max). */
+function pitClimbNeeded(read, feet, max = PIT_CLIMB_MAX) {
+  for (let n = 1; n < max; n++) if (!inPit(read, { x: feet.x, y: feet.y + n, z: feet.z })) return n;
+  return max;
+}
+
+function _pitEscaped(bot, read, targetY) {
+  const f = _feetOf(bot);
+  if (!f) return false;
+  if (targetY == null) return !inPit(read, f);
+  return f.y >= targetY;
+}
+
+/** Un pilier, borné ; rend toujours {ok, placed, reason}. */
+async function _pillarOnce(bot, token, deps, height) {
+  const fn = typeof deps.pillarUp === 'function' ? deps.pillarUp : pillarUp;
+  const pr = await bounded(fn(bot, { height }, token, { sleep: deps.pillarSleep || deps.sleep, bestToolFor }),
+    Number.isFinite(deps.pillarTimeoutMs) && deps.pillarTimeoutMs > 0 ? deps.pillarTimeoutMs : SHELTER_PILLAR_MS);
+  if (!pr.ok) _stopAll(bot);
+  const v = pr.ok && pr.value ? pr.value : { ok: false, placed: 0, reason: pr.reason || 'timeout' };
+  return { ok: !!v.ok, placed: v.placed || 0, reason: v.reason || null };
+}
+
+/**
+ * Sortir du puits où l'on est coincé : pilier retenté pour la profondeur restante (≤ 2), puis escalier
+ * taillé dans la paroi (≤ 3 marches, outil adapté, coups bornés, jamais vers un fluide — digOut.stairStep).
+ * opts.targetY = hauteur des pieds à atteindre (mesurée par l'appelant AVANT sa propre tentative) ; absent →
+ * mesurée ici. Pas dans un puits → rien à faire. → {ok, escaped, placed, reason, pillars, stairs}.
+ * Injectables : deps.pillarUp, deps.pitStepUp(bot, to), deps.sleep, deps.emit.
+ */
+async function escapePit(bot, token = null, deps = {}, opts = {}) {
+  const read = _pitReader(bot);
+  let targetY = opts.targetY;
+  if (targetY == null) {
+    const f0 = _feetOf(bot);
+    if (!f0 || !inPit(read, f0)) return { ok: true, escaped: true, placed: 0, reason: null, pillars: 0, stairs: 0 };
+    targetY = f0.y + pitClimbNeeded(read, f0);
+  }
+  const done = (r) => Object.assign({ placed, pillars, stairs }, r);
+  const escapedNow = () => _pitEscaped(bot, read, targetY);
+  let placed = 0, pillars = 0, stairs = 0, reason = null;
+  while (pillars < PIT_PILLAR_TRIES && !escapedNow()) {
+    if (token && token.cancelled) return done({ ok: false, escaped: false, reason: 'cancelled' });
+    pillars++;
+    const f = _feetOf(bot);
+    const v = await _pillarOnce(bot, token, deps, Math.max(1, targetY - f.y));
+    placed += v.placed;
+    if (v.reason) reason = v.reason;
+    if (!(v.placed > 0)) break;   // rien posé (plus de blocs, pas d'appui) : re-tenter ne changera rien
+  }
+  const sleep = deps.sleep || ((ms) => new Promise((r) => setTimeout(r, ms)));
+  const stepUp = typeof deps.pitStepUp === 'function' ? deps.pitStepUp : (b, to) => defaultStepUp(b, to, { sleep });
+  let tries = 0;
+  let di = 0;
+  while (tries < PIT_STAIR_MAX && !escapedNow()) {
+    if (token && token.cancelled) return done({ ok: false, escaped: false, reason: 'cancelled' });
+    tries++;
+    const f = _feetOf(bot);
+    let step = null;
+    let why = null;
+    for (let k = 0; k < STAIR_DIRS.length; k++) {
+      const i = (di + k) % STAIR_DIRS.length;
+      const s = stairStep(read, f, STAIR_DIRS[i]);
+      if (s.act === 'step') { step = s; di = i; break; }
+      why = s.why;
+    }
+    if (!step) { reason = 'stair_blocked:' + (why || 'unknown'); break; }
+    for (const c of step.dig) {
+      const b = read(c.x, c.y, c.z);
+      if (_solid(b)) await _digWithTool(bot, b, token);
+    }
+    let moved = false;
+    try { moved = !!(await stepUp(bot, step.to)); } catch (e) { moved = false; }
+    if (moved) stairs++;
+    else reason = 'stair_no_progress';
+  }
+  const escaped = escapedNow();
+  return done({ ok: escaped, escaped, reason: escaped ? null : (reason || 'still_in_pit') });
 }
 
 /** Pose/efface le marqueur « abri scellé, sortie différée » (bot._mcaShelterPending). Pur best-effort. */
@@ -808,7 +937,8 @@ async function exitPendingShelter(bot, token = null, deps = {}) {
   const pending = bot && bot._mcaShelterPending;
   if (!pending) return { ok: true, pending: false };
   _clearShelterPending(bot);
-  await _exitCell(bot, token, deps, { ok: true, mode: pending.mode, depth: pending.depth }, pending.dugIn);
+  const r = await _exitCell(bot, token, deps, { ok: true, mode: pending.mode, depth: pending.depth }, pending.dugIn);
+  if (r && r.ok === false) return { ok: false, pending: true, reason: r.reason };
   return { ok: true, pending: true };
 }
 
@@ -856,4 +986,5 @@ module.exports = {
   SHELTER_PUSH_BLOCKS, SHELTER_TELEPORT_BLOCKS, SHELTER_PUSH_RETURNS,
   createSpotMemory, cellBlockItem, SHELTER_PIT_DEPTH, SHELTER_MIN_DEPTH, CELL_BLOCKS,
   SHELTER_STAGE_MS, SHELTER_PILLAR_MS,
+  inPit, pitClimbNeeded, escapePit, PIT_PILLAR_TRIES, PIT_STAIR_MAX,
 };

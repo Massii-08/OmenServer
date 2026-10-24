@@ -204,7 +204,7 @@ const {
 } = require('./lumberjack');
 const { tierRank } = require('./tools');
 const { createTeleportWatcher, wireTeleportDetection } = require('./teleport');
-const { isNight, shelterUntilDawn, exitPendingShelter, shouldShelter, shelterHold, DAWN_WAIT_MAX_MS, DAWN_SAFE_EXIT_MAX_MS } = require('./skills/shelter');
+const { isNight, shelterUntilDawn, exitPendingShelter, shouldShelter, shelterHold, DAWN_WAIT_MAX_MS, DAWN_SAFE_EXIT_MAX_MS, escapePit, inPit: shelterInPit } = require('./skills/shelter');
 const { plannerWatchdogVerdict, deriveToken } = require('./plannerWatchdog');
 const { rushResumesPlanner, plannerOrphanVerdict } = require('./plannerRevive');
 const { shelterToken, shelterCancelLoopNote } = require('./shelterToken');
@@ -10045,6 +10045,54 @@ async function digOutAndResume(why) {
   } finally { _digOutBusy = false; }
 }
 
+// ── SORTIE DE PUITS (live 25/10, NethBot3 : 15+ min au fond de son abri, 4 côtés pleins sur 2 de haut,
+// unjam / unjam_relocate en boucle au même endroit, chasses `arrived:false`). Le pathfinder ne sort pas
+// d'un trou fermé : au 1er jam ESCALADÉ (3e unjam au même endroit) et si le bot est bien au fond d'un
+// puits, on joue la même sortie que l'abri (skills/shelter.escapePit : pilier retenté puis escalier),
+// au lieu du relocate. 2 échecs d'affilée → l'escalade d'origine reprend la main (relocate, jam_loop).
+let _pitEscapeBusy = false;   // lu par le jam-watchdog (timer) → niveau module (piège #56)
+let _pitEscapeFails = 0;      // échecs consécutifs : au-delà de PIT_ESCAPE_MAX_FAILS on rend la main
+const PIT_ESCAPE_MAX_FAILS = 2;
+
+/** Le bot est-il au fond d'un trou fermé sur 4 côtés et 2 de haut ? (lecture best-effort) */
+function stuckInPitNow() {
+  try {
+    const p = bot.entity && bot.entity.position;
+    if (!p) return false;
+    const feet = { x: Math.floor(p.x), y: Math.floor(p.y), z: Math.floor(p.z) };
+    const read = (x, y, z) => { try { return bot.blockAt(vec3Lib(x, y, z)); } catch (e) { return null; } };
+    return shelterInPit(read, feet);
+  } catch (e) { return false; }
+}
+
+async function pitEscapeAndResume(why) {
+  if (_pitEscapeBusy || _digOutBusy || _migrating) return null;
+  _pitEscapeBusy = true;
+  const t0 = Date.now();
+  try {
+    const tok = taskCtl.begin('pit_escape', stopMotion);
+    const w0 = Date.now();
+    while ((_skillInFlight > 0 || _autoRunners > 0) && !tok.cancelled && Date.now() - w0 < MIGRATION_PREEMPT_WAIT_MS) {
+      await sleep(250);
+    }
+    if (tok.cancelled) return null;
+    taskToken = tok;
+    try { stopMotion(); } catch (e) {}
+    const p0 = bot.entity && bot.entity.position;
+    const from = p0 ? { x: Math.floor(p0.x), y: Math.floor(p0.y), z: Math.floor(p0.z) } : null;
+    const r = await escapePit(bot, tok, { emit, sleep });
+    emit({ type: 'pit_escape', why, ok: !!r.escaped, escaped: !!r.escaped, placed: r.placed || 0,
+      pillars: r.pillars || 0, stairs: r.stairs || 0, reason: r.escaped ? undefined : r.reason, from,
+      took_s: Math.round((Date.now() - t0) / 1000) });
+    if (r.escaped) { _pitEscapeFails = 0; _jamEsc = null; _jamSample = null; }
+    else _pitEscapeFails += 1;
+    if (!tok.cancelled && world.objective && world.objective.status === 'in_progress') {
+      startAutonomous(null).catch((e) => emit({ type: 'error', message: String((e && e.message) || e) }));
+    }
+    return r;
+  } finally { _pitEscapeBusy = false; }
+}
+
 let _relocSeq = Math.floor(Math.random() * 997);   // graine par process : pas la même 1re cellule à chaque respawn
 async function relocateToRegion(opts = {}) {
   // SANS-GIVE (catch-all) : relocateToRegion est PUREMENT /spreadplayers → BLOQUÉ par nogive →
@@ -14809,6 +14857,7 @@ setInterval(async () => {
     if (!bot.entity || !bot.entity.position) return;
     if (Date.now() < _floatSettleUntil) { _jamSample = null; return; }   // settle post-spawn/warp : pas de jam
     if (_digOutBusy) { _jamSample = null; return; }                      // l'escalier creuse : ce n'est pas un jam
+    if (_pitEscapeBusy) { _jamSample = null; return; }                   // sortie de puits en cours : idem
     const p = bot.entity.position;
     const digging = !!bot.targetDigBlock;
     const hasGoal = !!(bot.pathfinder && bot.pathfinder.goal);
@@ -14873,6 +14922,14 @@ setInterval(async () => {
     // watchdogs flottant/océan, au 3e unjam ~même spot → relocate FORCÉ vers une cellule terre fraîche.
     const _je = recordJam(_jamEsc, p.x, p.z, now);
     _jamEsc = _je.state;
+    // AU FOND D'UN PUITS (25/10, NethBot3) : relocate et re-path ne l'en sortent pas — on remonte.
+    const _inPit = _je.escalate && stuckInPitNow();
+    if (_je.escalate && !_inPit) _pitEscapeFails = 0;                  // jam ailleurs qu'au fond d'un trou : compteur neuf
+    if (_inPit && _pitEscapeFails < PIT_ESCAPE_MAX_FAILS) {
+      emit({ type: 'unjam_pit', x: Math.floor(p.x), y: Math.floor(p.y), z: Math.floor(p.z), fails: _pitEscapeFails });
+      pitEscapeAndResume('unjam').catch((e) => emit({ type: 'error', message: String((e && e.message) || e) }));
+      return;
+    }
     if (_je.escalate) {
       emit({ type: 'unjam_relocate', x: Math.floor(p.x), y: Math.floor(p.y), z: Math.floor(p.z) });
       _floatSettleUntil = Date.now() + 15000;

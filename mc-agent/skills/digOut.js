@@ -178,4 +178,4 @@ async function digOut(bot, opts = {}, token = null) {
   return done({ ok: false, reason: 'timeout', steps });
 }
 
-module.exports = { digOut, stairStep, isOutside, dirIndexFromYaw, DIRS, DIG_OUT_MAX_MS, isFluid };
+module.exports = { digOut, defaultStepUp, stairStep, isOutside, dirIndexFromYaw, DIRS, DIG_OUT_MAX_MS, isFluid };

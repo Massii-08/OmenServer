@@ -275,7 +275,27 @@ function movableBot(at = { x: 0.5, y: 63, z: 0.5 }) {
   bot.entity.position = new Vec3(at.x, at.y, at.z);
   // Monde plein et chargé (la cellule elle-même est testée dans test/shelter.cell.test.js) : toit et côtés
   // déjà pleins → aucune pose, aucune attente — on ne teste ici que la boucle d'attente.
-  bot.blockAt = () => ({ name: 'dirt', boundingBox: 'block' });
+  // Sol plein SOUS les pieds de départ (le monde au-dessus est de l'air) et les coups de pioche ÉVIDENT
+  // les blocs : depuis la sortie VÉRIFIÉE (25/10), l'abri doit réellement pouvoir remonter du puits —
+  // un monde plein partout et incassable laisserait (à raison) le bot coincé au fond.
+  const groundTop = Math.floor(at.y) - 1;
+  const dug = new Set();
+  const solidAt = (x, y, z) => y <= groundTop && !dug.has(`${x},${y},${z}`);
+  bot.blockAt = (p) => {
+    if (!p) return { name: 'dirt', boundingBox: 'block' };
+    const x = Math.floor(p.x), y = Math.floor(p.y), z = Math.floor(p.z);
+    return solidAt(x, y, z) ? { name: 'dirt', boundingBox: 'block', position: new Vec3(x, y, z) }
+      : { name: 'air', boundingBox: 'empty', position: new Vec3(x, y, z) };
+  };
+  bot.dig = async (b) => { if (b && b.position) dug.add(`${b.position.x},${b.position.y},${b.position.z}`); };
+  // la marche de l'escalier : regarder la case visée puis sauter dessus si elle est libre et portée
+  bot.lookAt = async (v) => { bot._look = v; };
+  bot.setControlState = (k, on) => {
+    if (k !== 'jump' || !on || !bot._look) return;
+    const x = Math.floor(bot._look.x), y = Math.round(bot._look.y - 1.6), z = Math.floor(bot._look.z);
+    if (!solidAt(x, y, z) && !solidAt(x, y + 1, z) && solidAt(x, y - 1, z)) bot.entity.position = new Vec3(x + 0.5, y, z + 0.5);
+  };
+  bot.clearControlStates = () => {};
   return bot;
 }
 // Le puits creusé : le bot descend VRAIMENT de 3 blocs (l'abri mesure la profondeur à la position).
@@ -391,7 +411,7 @@ describe('abri : marqueur « scellé, pas encore sorti » + exitPendingShelter (
     const bot = movableBot();
     bot.time.timeOfDay = 1000;   // jour : la boucle de nuit finit tout de suite, l'attente des monstres s'arme
     const digs = [];
-    bot.dig = async (b) => { digs.push(b); };
+    { const dig0 = bot.dig; bot.dig = async (b) => { digs.push(b); return dig0(b); }; }
     const r = await shelterUntilDawn(bot, token, {
       emit: () => {},
       sleep: async () => { token.cancelled = true; },
@@ -415,7 +435,7 @@ describe('abri : marqueur « scellé, pas encore sorti » + exitPendingShelter (
   it('rien en attente (jamais scellé, ou déjà ressorti) → no-op, ne creuse rien', async () => {
     const bot = movableBot();
     const digs = [];
-    bot.dig = async (b) => { digs.push(b); };
+    { const dig0 = bot.dig; bot.dig = async (b) => { digs.push(b); return dig0(b); }; }
     const r = await exitPendingShelter(bot, null, { emit: () => {} });
     assert.deepEqual(r, { ok: true, pending: false });
     assert.equal(digs.length, 0);
@@ -471,7 +491,7 @@ describe('abri : `whileSealed` — crafts dans le trou, sortie PAR LE BAS', () =
     const events = [];
     const digs = [];
     const bot = movableBot();
-    bot.dig = async (b) => { digs.push(b); };
+    { const dig0 = bot.dig; bot.dig = async (b) => { digs.push(b); return dig0(b); }; }
     let n = 0;
     const r = await shelterUntilDawn(bot, null, {
       emit: (e) => events.push(e),
