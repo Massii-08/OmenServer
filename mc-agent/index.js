@@ -269,6 +269,7 @@ const { isRawMeat, rawEatAllowed, ateFields, cookLotPlan, ironFuelReserve, COOK_
 const {
   pickGrazingCell, foodTripLeg, triedCellsLoad, triedCellsAdd, FOOD_TRIP_MEMO_KEY, isOrderOwner,
   FOOD_TRIP_MS, FOOD_TRIP_YIELD_MAX_MS, FOOD_TRIP_NEAR, FOOD_TRIP_ARRIVED, FOOD_TRIP_LEG_MS, FOOD_TRIP_LEG_MIN_MS, FOOD_TRIP_MAX_LEGS, FOOD_TRIP_STUCK_MAX,
+  FOOD_TRIP_LONG_EXTRA_MS, FOOD_TRIP_LONG_MEMO_KEY, longTripLoad, longTripDue, longTripRecord,
 } = require('./foodTrip');
 // TROUPEAUX VUS (22/10, huntReach.js) : chaque animal de bot.entities (jusqu'à 96 blocs) est noté par
 // cellule de 32 dans le mémo de base ; l'expédition vise le troupeau connu le plus proche AVANT les biomes.
@@ -3594,7 +3595,7 @@ const SKILL_TIMEOUT_MS = Number(args.skillTimeout || 90000);
 // (vécu V3Res1/4 : 480s × 4 tentatives = 32 min d'anneaux stériles avant le stall).
 // huntCook + FOOD_TRIP_MS (75 s) : l'EXPÉDITION vers le gibier (marche vers la cellule à animaux la plus
 // proche connue) a son propre plafond, hors du budget de 60 s — un garde-fou de 90 s la couperait en route.
-const SKILL_TIMEOUTS = { descendDiagonal: 900000, branchMine: 900000, caveHunt: 900000, caveIron: 600000, huntCook: 90000 + FOOD_TRIP_MS + COOK_LOT_HARD_MS, ensureBed: 240000, smeltCharcoal: 300000, gather: 480000, gatherLog: 180000, ensurePick: 480000, fish: 300000, deliverWood: 120000, lumberjackIdle: 330000, lumberjackArmor: 160000, lumberjackForestTrip: LJ_FOREST_TRIP_MS + 20000, deliverMapperArmor: 180000 };   // /tpa 20 s + remise prouvée ≤ 2 × ~40 s (24/10)
+const SKILL_TIMEOUTS = { descendDiagonal: 900000, branchMine: 900000, caveHunt: 900000, caveIron: 600000, huntCook: 90000 + FOOD_TRIP_MS + FOOD_TRIP_LONG_EXTRA_MS + COOK_LOT_HARD_MS, ensureBed: 240000, smeltCharcoal: 300000, gather: 480000, gatherLog: 180000, ensurePick: 480000, fish: 300000, deliverWood: 120000, lumberjackIdle: 330000, lumberjackArmor: 160000, lumberjackForestTrip: LJ_FOREST_TRIP_MS + 20000, deliverMapperArmor: 180000 };   // /tpa 20 s + remise prouvée ≤ 2 × ~40 s (24/10)
 function timeoutFor(skill) { return SKILL_TIMEOUTS[skill] || SKILL_TIMEOUT_MS; }
 /** Champs « pourquoi » d'un résultat takeCover pour l'event `take_cover` (22/10 : `placed:0 ok:false`
  *  sans raison, session 155 — on ne savait pas si rien n'était posable, refusé, ou expiré). */
@@ -3805,6 +3806,15 @@ function foodTripState() {
     busy: !!(_imminentBusy || panicInFlight || _armorBusy || _baseBusy || _escaping || _deathDebtBusy || inWater
       || (bot.pvp && bot.pvp.target)),
     tripBusy: _foodTripBusy,
+    // SORTIE LONGUE due (24/10, foodTrip.longTripDue) : poche à 0 et une sortie courte ratée il y a < 30 min
+    // (mémo de base : survit aux morts — la mémoire de process est perdue à chaque respawn).
+    longDue: (() => {
+      try {
+        const now = Date.now();
+        const lt = longTripLoad(loadBaseState() || {}, now);
+        return longTripDue({ points: foodPoints(buildCtxInv(bot)), shortFailAt: lt.shortFailAt, longAt: lt.longAt, now });
+      } catch (e) { return false; }
+    })(),
     // Serveur de test (bot OP) : ensureFood se /give à manger en dernier recours — instantané, alors que
     // marcher 75 s ne ferait que le retarder. L'expédition est pour les bots SANS /give.
     canGive: !NO_GIVE,
@@ -3812,21 +3822,30 @@ function foodTripState() {
 }
 
 /** La cellule à gibier la plus proche CONNUE (carte du groupe), hors cellules ratées depuis < 20 min. */
-function foodTripCell() {
+function foodTripCell(o = {}) {
   const p = bot.entity && bot.entity.position;
   if (!p) return null;
   const now = Date.now();
   const st = loadBaseState();
   const avoid = triedCellsLoad(st, now);
+  // Sortie LONGUE (24/10) : portée élargie (≤ 400 blocs). Les troupeaux arrivés-bredouilles sont déjà
+  // oubliés (foodTripMark → herdsForget) et les cibles ratées écartées 20 min (mémo de base).
+  const herdOpts = { avoid, now };
+  if (o.long && Number.isFinite(o.maxDist)) herdOpts.maxDist = o.maxDist;
   // Un troupeau VU (herdScanTick) bat une cellule de biome où il y a « probablement » des bêtes.
-  const herd = pickHerd(herdsLoad(st, now), { x: p.x, z: p.z }, { avoid, now });
+  const herd = pickHerd(herdsLoad(st, now), { x: p.x, z: p.z }, herdOpts);
   if (herd) return herd;
-  return pickGrazingCell({
-    from: { x: p.x, z: p.z },
-    biomes: loadWorldCells().biomes,
-    avoid,
-    now,
-  });
+  const cellOpts = { from: { x: p.x, z: p.z }, biomes: loadWorldCells().biomes, avoid, now };
+  if (o.long && Number.isFinite(o.maxDist)) cellOpts.maxDist = o.maxDist;
+  return pickGrazingCell(cellOpts);
+}
+
+/** Bilan d'expédition → mémo de base (sortie longue : `shortFailAt` / `longAt`, foodTrip.longTripRecord). Fusion. */
+function foodTripOutcome(o) {
+  const now = Date.now();
+  const st = loadBaseState() || {};
+  const next = longTripRecord(st[FOOD_TRIP_LONG_MEMO_KEY], o, now);
+  saveBaseState(Object.assign({}, st, { [FOOD_TRIP_LONG_MEMO_KEY]: next }));
 }
 
 /** Verrou de l'expédition (niveau MODULE) : true = pris ; false = une autre expédition est déjà en vol. */
@@ -3847,7 +3866,8 @@ function foodTripUnlock() { _foodTripBusy = false; }
  */
 async function foodTripYield() {
   const t0 = Date.now();
-  while ((_foodTripBusy || _huntCookBusy > 0) && !taskToken.cancelled && Date.now() - t0 < FOOD_TRIP_YIELD_MAX_MS) await sleep(500);
+  // + FOOD_TRIP_LONG_EXTRA_MS : la sortie longue (4 min) et le plein sur place (24/10).
+  while ((_foodTripBusy || _huntCookBusy > 0) && !taskToken.cancelled && Date.now() - t0 < FOOD_TRIP_YIELD_MAX_MS + FOOD_TRIP_LONG_EXTRA_MS) await sleep(500);
 }
 
 /**
@@ -3928,7 +3948,7 @@ function herdScanTick() {
  * pendant une jambe : sans ce second point, un troupeau repéré à mi-jambe serait laissé derrière nous
  * avant que la jambe ne finisse. Une jambe qui n'avance pas dévie le cap (zone.legHeading) ; 2 de suite → on renonce.
  */
-async function foodTripWalk({ cell, ms, token }) {
+async function foodTripWalk({ cell, ms, token, maxLegs = FOOD_TRIP_MAX_LEGS }) {
   const t0 = Date.now();
   const left = () => ms - (Date.now() - t0);
   const p0 = bot.entity && bot.entity.position;
@@ -3940,7 +3960,7 @@ async function foodTripWalk({ cell, ms, token }) {
   }, 500);
   try {
     await withTempMovements(bot, Movements, { canDig: false }, async () => {
-      while (!token.cancelled && legs < FOOD_TRIP_MAX_LEGS && stuck < FOOD_TRIP_STUCK_MAX && left() > FOOD_TRIP_LEG_MIN_MS) {
+      while (!token.cancelled && legs < maxLegs && stuck < FOOD_TRIP_STUCK_MAX && left() > FOOD_TRIP_LEG_MIN_MS) {
         const p = bot.entity && bot.entity.position;
         if (!p) break;
         // COPIE des coordonnées AVANT la jambe : la référence `entity.position` n'est PAS fiable — la physique la
@@ -4051,12 +4071,15 @@ async function huntCookGoal(target, opts = {}) {
       // jour + surface → une marche vers la cellule à animaux la plus proche connue, puis la chasse
       // ci-dessus rejoue sur place. Toujours câblée : TOUS les appelants (timer, kit, descente, mappeur) y passent.
       tripState: () => foodTripState(),
-      grazingCell: () => foodTripCell(),
+      grazingCell: (o) => foodTripCell(o),
       tripLock: () => foodTripLock(),
       tripUnlock: () => foodTripUnlock(),
       tripWalk: (o) => foodTripWalk(o),
       tripTried: (cell) => foodTripMark(cell),
       huntFailed: () => foodTripMarkNearHerd(),
+      tripOutcome: (o) => foodTripOutcome(o),
+      // Arrivé au troupeau : faire le PLEIN (≥ 20 points, 3 vagues), pas un repas (24/10).
+      tripFill: true,
       emit,
     }, target, opts);
   } finally { _huntCookBusy--; }
@@ -4306,7 +4329,7 @@ async function runGoalSkill(goal, gen) {
       const _y = bot.entity && bot.entity.position ? bot.entity.position.y : 0;
       let _hunt = null;
       if (_y >= 45 && foodPoints(buildCtxInv(bot)) < STOCK_POINTS) {
-        try { _hunt = await withTimeout(huntCookGoal(4), HUNT_COOK_TIMEOUT_MS + FOOD_TRIP_MS + COOK_LOT_HARD_MS, () => { try { stopMotion(); } catch (e) {} }); } catch (e) {}
+        try { _hunt = await withTimeout(huntCookGoal(4), HUNT_COOK_TIMEOUT_MS + FOOD_TRIP_MS + FOOD_TRIP_LONG_EXTRA_MS + COOK_LOT_HARD_MS, () => { try { stopMotion(); } catch (e) {} }); } catch (e) {}
       }
       // PORTE NOURRITURE (run 20/10 : 4 « starved to death », toujours `hunt_cook_done before:0`) :
       // la chasse ci-dessus a eu sa chance ; sans DESCENT_MIN_POINTS en poche on ne descend pas
@@ -7029,7 +7052,7 @@ async function startMapper() {
   // DISCIPLINE DE NUIT (19/10 soir) : cartographe nu de nuit → pas de chasse (mapperNightGuard le terre
   // juste après) ; la faim attendra l'aube, ou la chair de zombie ramassée après un combat.
   if (nightLockdownNow()) nightGateNote('mapper_start_hunt');
-  else { try { await withTimeout(huntCookGoal(6), HUNT_COOK_TIMEOUT_MS + FOOD_TRIP_MS + COOK_LOT_HARD_MS, () => { try { stopMotion(); } catch (e) {} }); } catch (e) {} }
+  else { try { await withTimeout(huntCookGoal(6), HUNT_COOK_TIMEOUT_MS + FOOD_TRIP_MS + FOOD_TRIP_LONG_EXTRA_MS + COOK_LOT_HARD_MS, () => { try { stopMotion(); } catch (e) {} }); } catch (e) {} }
   emit({ type: 'mapper_started', world: bot._worldKey, sector: mapperSector });
   // ── /locate RETIRÉ (Massii 2026-07-26 : « les bots ne doivent pas utiliser de commandes comme
   // /locate »). C'est une commande d'opérateur qui RÉVÈLE la position de structures qu'un joueur ne
@@ -14225,7 +14248,7 @@ async function foodRunTick() {
     // chaque phase est rognée, ces 10 s de marge ne sont qu'un garde-fou d'exécution. + FOOD_TRIP_MS :
     // l'EXPÉDITION vers le gibier (aucun passif en vue, vraie faim, jour) a son propre plafond de 75 s,
     // HORS du budget — le garde-fou de 70 s la couperait en route et laisserait le reste tourner en fond.
-    await withTimeout(ensureFood(), FOOD_RUN_TIMEOUT_MS + FOOD_TRIP_MS + COOK_LOT_HARD_MS, () => { try { stopMotion(); } catch (e) {} });
+    await withTimeout(ensureFood(), FOOD_RUN_TIMEOUT_MS + FOOD_TRIP_MS + FOOD_TRIP_LONG_EXTRA_MS + COOK_LOT_HARD_MS, () => { try { stopMotion(); } catch (e) {} });
     // Le VERDICT de la passe : ce qu'on a RAMENÉ, pas ce qu'on a tenté. Tracé, parce qu'un
     // rationnement muet est indistinguable d'un mécanisme mort (#55a). `points` (réserve en points
     // de faim après la passe) et `took_ms` MESURENT la vitesse en live.
@@ -14476,12 +14499,15 @@ function descentFoodGateCheck(opts = {}) {
       if (herd) herdTried = triedCellsLoad(st, now).some((a) => Math.hypot(a.x - herd.x, a.z - herd.z) <= HERD_CELL);   // même règle que pickHerd({avoid})
     }
   } catch (e) { herd = null; herdTried = false; }
-  const r = descentFoodGate({ points, y: p ? p.y : NaN, refusals: foodGateLoad(st).refusals, now: Date.now(), noPrey: !!opts.noPrey, herdNear: !!herd, herdTried });
+  let longTripAt = 0;
+  try { longTripAt = longTripLoad(st, Date.now()).longAt; } catch (e) { longTripAt = 0; }
+  const r = descentFoodGate({ points, y: p ? p.y : NaN, refusals: foodGateLoad(st).refusals, now: Date.now(), noPrey: !!opts.noPrey, herdNear: !!herd, herdTried,
+    hunger: bot.food, longTripAt });
   if (!r.allow) {
     saveBaseState(Object.assign({}, st, { foodGate: Object.assign({}, st.foodGate || {}, { refusals: r.refusals }) }));
     emit({ type: 'food_gate', need: r.need, points, allow: false, refusals: r.refusals.length, reason: r.reason,
       herd: herd ? { x: herd.x, z: herd.z, dist: Math.round(herd.dist) } : undefined });
-  } else if ((r.reason === 'gate_spent' || r.reason === 'no_prey' || r.reason === 'some_food' || r.reason === 'gate_long_spent') && Date.now() - _foodGateEvAt >= 60000) {
+  } else if ((r.reason === 'gate_spent' || r.reason === 'no_prey' || r.reason === 'some_food' || r.reason === 'gate_long_spent' || r.reason === 'starving_spent') && Date.now() - _foodGateEvAt >= 60000) {
     _foodGateEvAt = Date.now();
     emit({ type: 'food_gate', need: r.need, points, allow: true, reason: r.reason });
   }

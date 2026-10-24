@@ -244,6 +244,84 @@ function foodTripLeg({ from, to, stuck = 0, legDist = LEG_DIST } = {}) {
   return { x: Math.round(fx + len * Math.cos(heading)), z: Math.round(fz + len * Math.sin(heading)), last: false };
 }
 
+// ─── 5) SORTIE LONGUE DE DERNIER RECOURS + FAIRE LE PLEIN (24/10) ───────────────────────────────
+// Run 24/10 (monde de 22 h, Hard) : 11 morts de mineurs en 35 min dont 3 famines. Séquence type :
+// `food_trip {biome:'herd', dist:100, after_fail}` → `food_trip_done {got:0, took_ms:74484, arrived:false,
+// aborted:true}` → on recommence. Les animaux NE réapparaissent PAS (nés à la génération des chunks) : les
+// troupeaux près du spawn sont mangés, et la marche de 75 s n'atteint jamais un troupeau vivant plus loin.
+// Et comme la sortie était marquée « aborted », la cellule n'était même pas écartée : même cible au tour suivant.
+//   • poche à 0 ET une sortie courte vient d'échouer (persisté) → UNE expédition LONGUE (4 min, 400 blocs) ;
+//   • arrivé au troupeau → on fait le PLEIN (≥ 20 points, jusqu'à 3 vagues), pas un repas.
+const FOOD_TRIP_LONG_MS = 240000;              // la marche longue (≈ 4 min)
+const FOOD_TRIP_LONG_MAX_DIST = 400;           // ≈ ce que 4 min couvrent en terrain réel
+const FOOD_TRIP_LONG_MAX_LEGS = 16;            // 400 / 64 ≈ 7 jambes droites ; le reste pour les déviations
+const FOOD_TRIP_LONG_AFTER_FAIL_MS = 30 * 60000;   // une sortie courte ratée depuis < 30 min ouvre la longue
+const FOOD_TRIP_LONG_COOLDOWN_MS = 10 * 60000;     // au plus une longue / 10 min (elle coûte 4 min de travail)
+const FOOD_TRIP_LONG_MEMO_KEY = 'foodTripLong';    // mémo de base : { shortFailAt, longAt } — survit aux morts
+const TRIP_FILL_POINTS = 20;                   // le plein : de quoi ne plus remonter toutes les 10 min
+const TRIP_FILL_WAVES = 3;                     // vagues de chasse sur place une fois arrivé
+const TRIP_FILL_HUNT_MS = 3 * 45000;           // budget de chasse sur place une fois arrivé (3 vagues)
+// Ce que la sortie longue + le plein ajoutent au PIRE cas d'une sortie : à ajouter aux garde-fous des
+// appelants (`+ FOOD_TRIP_MS + FOOD_TRIP_LONG_EXTRA_MS`), sinon ils la couperaient en route.
+const FOOD_TRIP_LONG_EXTRA_MS = (FOOD_TRIP_LONG_MS - FOOD_TRIP_MS) + TRIP_FILL_HUNT_MS;
+
+/** PUR — l'état persisté de la sortie longue, toujours bien formé (horodatages futurs écartés). */
+function longTripLoad(memo, now = Date.now()) {
+  const o = memo && typeof memo === 'object' && memo[FOOD_TRIP_LONG_MEMO_KEY] && typeof memo[FOOD_TRIP_LONG_MEMO_KEY] === 'object'
+    ? memo[FOOD_TRIP_LONG_MEMO_KEY] : {};
+  const ok = (v) => (_fin(v) && v > 0 && v <= now + 60000 ? v : 0);
+  return { shortFailAt: ok(o.shortFailAt), longAt: ok(o.longAt) };
+}
+
+/**
+ * PUR — la sortie longue est-elle due ? Poche à 0 point, une sortie COURTE a échoué il y a < 30 min,
+ * et aucune longue depuis 10 min. s = { points, shortFailAt, longAt, now }
+ */
+function longTripDue(s = {}) {
+  const now = _fin(s.now) ? s.now : Date.now();
+  // `Number(null) === 0` : « pas de donnée » ne doit jamais se lire « poche vide ».
+  const points = (s.points === null || s.points === undefined) ? NaN : Number(s.points);
+  if (!(Number.isFinite(points) && points <= 0)) return false;
+  const sf = Number(s.shortFailAt);
+  if (!(Number.isFinite(sf) && sf > 0 && sf <= now && now - sf < FOOD_TRIP_LONG_AFTER_FAIL_MS)) return false;
+  const la = Number(s.longAt);
+  if (Number.isFinite(la) && la > 0 && la <= now && now - la < FOOD_TRIP_LONG_COOLDOWN_MS) return false;
+  return true;
+}
+
+/**
+ * PUR — l'état persisté après une expédition. o = { long, failed, got }.
+ * Longue (tentée, même sans cible) → `longAt` = maintenant ; courte ratée → `shortFailAt` = maintenant ;
+ * une expédition qui a rapporté efface `shortFailAt` (plus de raison d'aller loin).
+ */
+function longTripRecord(state, o = {}, now = Date.now()) {
+  const st = longTripLoad({ [FOOD_TRIP_LONG_MEMO_KEY]: state }, now);
+  if (o.long) st.longAt = now;
+  else if (o.failed) st.shortFailAt = now;
+  if ((Number(o.got) || 0) > 0) st.shortFailAt = 0;
+  return st;
+}
+
+/** PUR — les plafonds de la marche (courte ou longue). */
+function tripLimits(long) {
+  return long
+    ? { ms: FOOD_TRIP_LONG_MS, maxDist: FOOD_TRIP_LONG_MAX_DIST, maxLegs: FOOD_TRIP_LONG_MAX_LEGS, long: true }
+    : { ms: FOOD_TRIP_MS, maxDist: FOOD_TRIP_MAX_DIST, maxLegs: FOOD_TRIP_MAX_LEGS, long: false };
+}
+
+/**
+ * PUR — l'expédition a-t-elle ÉCHOUÉ (cible à écarter) ? Rien rapporté ET : soit terminée normalement,
+ * soit coupée APRÈS une marche complète sans arriver (24/10 : `arrived:false, aborted:true` au bout des
+ * 75 s — la cible n'était jamais écartée et re-visée à chaque tour). Coupée EN ROUTE (mort, migration) :
+ * pas un échec de la cible.
+ * s = { kills, got, aborted, walked, arrived }
+ */
+function tripFailed(s = {}) {
+  if ((Number(s.kills) || 0) > 0 || (Number(s.got) || 0) > 0) return false;
+  if (!s.aborted) return true;
+  return !!s.walked && !s.arrived;
+}
+
 /**
  * PUR — le propriétaire de la tâche active est-il un ORDRE direct (follow, guard, take, migration…) ?
  * 'autonomous' (planner, mappeur) et 'food_run' (la sortie nourriture qui a préempté le planner, 23/10)
@@ -262,4 +340,8 @@ module.exports = {
   FOOD_TRIP_LEG_MS, FOOD_TRIP_LEG_MIN_MS, FOOD_TRIP_MAX_LEGS, FOOD_TRIP_STUCK_MAX,
   triedCellsPrune, triedCellsAdd, triedCellsLoad,
   pickGrazingCell, shouldFoodTrip, foodTripLeg,
+  FOOD_TRIP_LONG_MS, FOOD_TRIP_LONG_MAX_DIST, FOOD_TRIP_LONG_MAX_LEGS, FOOD_TRIP_LONG_AFTER_FAIL_MS,
+  FOOD_TRIP_LONG_COOLDOWN_MS, FOOD_TRIP_LONG_MEMO_KEY, FOOD_TRIP_LONG_EXTRA_MS,
+  TRIP_FILL_POINTS, TRIP_FILL_WAVES, TRIP_FILL_HUNT_MS,
+  longTripLoad, longTripDue, longTripRecord, tripLimits, tripFailed,
 };

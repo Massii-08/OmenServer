@@ -647,7 +647,7 @@ function foodSandbox(opts = {}) {
     _huntCookBusy: 0, foodRunTakeover: async () => null, foodRunRelease: () => false,
     foodStock: () => 0, foodRunNeeded: C.foodRunNeeded, foodRunCooldownAfter: C.foodRunCooldownAfter,
     _lastFoodRunAt: 0, _foodRunCooldownMs: C.FOOD_RUN_COOLDOWN_MS,
-    withTimeout: (p) => p, FOOD_RUN_TIMEOUT_MS: 70000, FOOD_TRIP_MS: 75000, stopMotion() {},
+    withTimeout: (p) => p, FOOD_RUN_TIMEOUT_MS: 70000, FOOD_TRIP_MS: 75000, FOOD_TRIP_LONG_EXTRA_MS: require('./foodTrip').FOOD_TRIP_LONG_EXTRA_MS, stopMotion() {},
     ensureFood: async () => { log.ensure++; },
     foodPoints: () => 0, buildCtxInv: () => ({}),
     loadBaseState: () => ({}), saveBaseState: () => true, returnToWork: async () => false,

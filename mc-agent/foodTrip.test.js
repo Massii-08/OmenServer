@@ -881,6 +881,7 @@ function tripGlue(over = {}) {
     emit: () => {},
     NO_GIVE: w.noGive !== false,
     FOOD_TRIP_YIELD_MAX_MS: T.FOOD_TRIP_YIELD_MAX_MS,
+    FOOD_TRIP_LONG_EXTRA_MS: T.FOOD_TRIP_LONG_EXTRA_MS,
     sleep: async (ms) => { w.sleeps.push(ms); w.clock.t += ms; if (w.onSleep) w.onSleep(w); },
   };
   const names = Object.keys(env);
@@ -1338,7 +1339,9 @@ test('foodTripYield : BORNÉ — une expédition qui ne finit jamais ne gèle pa
   const t0 = w.clock.t;
   await w.foodTripYield();
   const waited = w.clock.t - t0;
-  assert.ok(waited >= T.FOOD_TRIP_YIELD_MAX_MS && waited < T.FOOD_TRIP_YIELD_MAX_MS + 1000, `attente=${waited}`);
+  // + FOOD_TRIP_LONG_EXTRA_MS (24/10) : la sortie longue (4 min) et le plein sur place.
+  const cap = T.FOOD_TRIP_YIELD_MAX_MS + T.FOOD_TRIP_LONG_EXTRA_MS;
+  assert.ok(waited >= cap && waited < cap + 1000, `attente=${waited}`);
 });
 
 test('foodTripYield : tâche annulée pendant l attente (mort, migration) → on rend la main aussitôt', async () => {

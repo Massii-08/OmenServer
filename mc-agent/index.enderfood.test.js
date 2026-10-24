@@ -308,7 +308,7 @@ function foodTickSandbox({ y = 15, food = 6, points = 0, tripAt = null, base = {
     foodStock: () => 0, foodRunNeeded: C.foodRunNeeded, foodRunCooldownAfter: C.foodRunCooldownAfter,
     _lastFoodRunAt: clock.t - 60000, _foodRunCooldownMs: 900000,           // sourdine 15 min, posée il y a 1 min
     nightLockdownNow: () => false, nightGateNote: () => {},
-    withTimeout: (p) => p, FOOD_RUN_TIMEOUT_MS: 70000, FOOD_TRIP_MS: 75000, COOK_LOT_HARD_MS: 55000, stopMotion() {},
+    withTimeout: (p) => p, FOOD_RUN_TIMEOUT_MS: 70000, FOOD_TRIP_MS: 75000, FOOD_TRIP_LONG_EXTRA_MS: require('./foodTrip').FOOD_TRIP_LONG_EXTRA_MS, COOK_LOT_HARD_MS: 55000, stopMotion() {},
     ensureFood: async () => { log.ensure++; if (tripAt !== null) sb._foodSurfaceTripAt = clock.t + tripAt; },
     foodPoints: () => points, buildCtxInv: () => ({}),
     loadBaseState: () => sb.base, saveBaseState: (st) => { sb.base = st; return true; },

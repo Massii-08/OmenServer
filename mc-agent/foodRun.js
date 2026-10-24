@@ -115,9 +115,9 @@ async function runHuntCook(d, target, opts = {}) {
   const emit = d.emit || _noop;
   const now = d.now || Date.now;
   let budget = opts.budget || F.createBudget(opts.budgetMs != null ? opts.budgetMs : F.HUNT_COOK_BUDGET_MS, now);
-  const waves = opts.waves != null ? opts.waves : 1;
+  let waves = opts.waves != null ? opts.waves : 1;
   const huntMs = opts.huntMs != null ? opts.huntMs : F.HUNT_WAVE_MS;
-  const goal = opts.goalPoints != null ? opts.goalPoints : Number(target) * F.RAW_PIECE_POINTS;
+  let goal = opts.goalPoints != null ? opts.goalPoints : Number(target) * F.RAW_PIECE_POINTS;
   const parent = d.token || null;
   const cancelled = () => { try { return !!(parent && parent.cancelled); } catch (e) { return false; } };
   const points = () => F.foodPoints(d.inventory());
@@ -147,9 +147,17 @@ async function runHuntCook(d, target, opts = {}) {
     if (t.locked) { try { d.tripUnlock(); } catch (e) { /* best-effort : le verrou ne doit pas masquer la suite */ } }
     const ev = { type: 'food_trip_done', got: Math.max(0, got), took_ms: now() - t.t0, kills, arrived: t.arrived, legs: t.legs };
     if (aborted) ev.aborted = true;
+    if (t.long) ev.long = true;
     emit(ev);
-    if (!aborted && !(kills > 0 || got > 0) && typeof d.tripTried === 'function') {
+    // 24/10 : une marche COMPLÈTE sans arriver puis coupée (`arrived:false, aborted:true`) est aussi un échec
+    // de la cible — sinon elle était re-visée au tour suivant (TRIP.tripFailed).
+    const failed = TRIP.tripFailed({ kills, got, aborted, walked: t.walked, arrived: t.arrived });
+    if (failed && typeof d.tripTried === 'function') {
       try { d.tripTried(t.cell); } catch (e) { /* best-effort */ }
+    }
+    // Mémoire PERSISTÉE de la sortie longue (index.js → mémo de base) : une courte ratée l'ouvre.
+    if (typeof d.tripOutcome === 'function') {
+      try { d.tripOutcome({ long: !!t.long, failed, arrived: !!t.arrived, got: Math.max(0, got), kills }); } catch (e) { /* best-effort */ }
     }
   };
 
@@ -191,18 +199,30 @@ async function runHuntCook(d, target, opts = {}) {
       }));
       tripReason = verdict.reason;
       if (!verdict.go) return false;
+      // SORTIE LONGUE (24/10) : poche à 0 et une sortie courte ratée récemment (décidé et persisté côté
+      // index.js, `world.longDue`) → 4 min, jusqu'à 400 blocs, troupeau vu le plus proche d'abord.
+      const lim = TRIP.tripLimits(world.longDue === true);
       let cell = null;
-      try { cell = d.grazingCell() || null; } catch (e) { cell = null; }
-      if (!cell) { tripReason = 'no_cell'; return false; }
+      try { cell = d.grazingCell({ long: lim.long, maxDist: lim.maxDist }) || null; } catch (e) { cell = null; }
+      if (!cell) {
+        tripReason = lim.long ? 'no_cell_long' : 'no_cell';
+        // Longue due mais rien à viser : notée tentée (la porte de descente ne retient pas le bot pour rien).
+        if (lim.long && typeof d.tripOutcome === 'function') {
+          try { d.tripOutcome({ long: true, failed: true, arrived: false, got: 0, kills: 0, noCell: true }); } catch (e) { /* best-effort */ }
+        }
+        return false;
+      }
       if (typeof d.tripLock === 'function' && d.tripLock() === false) { tripReason = 'trip_busy'; return false; }
       tripReason = afterFail ? 'went_after_fail' : 'went';
       trip = {
         cell, t0: now(), pts0: points(), kills0: stats.kills,
         locked: typeof d.tripLock === 'function', closed: false, arrived: false, legs: null,
+        long: lim.long, walked: false,
       };
       emit({
         type: 'food_trip', toX: cell.x, toZ: cell.z, biome: cell.biome,
         dist: Math.round(Number(cell.dist) || 0), points: trip.pts0, ...(afterFail ? { after_fail: true } : {}),
+        ...(lim.long ? { long: true } : {}),
       });
       const leftBefore = budget.left();
       // Le jeton se coupe tout seul dès qu'un gibier est en vue (la marche s'arrête à sa jambe
@@ -211,13 +231,24 @@ async function runHuntCook(d, target, opts = {}) {
         ? () => points() >= goal
         : () => safe(d.passiveInView, false) || points() >= goal);
       let r = null;
-      try { r = await d.tripWalk({ cell, ms: TRIP.FOOD_TRIP_MS, token: ctl.token, cancel: ctl.cancel }); } catch (e) { r = null; }
+      const walkOpts = { cell, ms: lim.ms, token: ctl.token, cancel: ctl.cancel };
+      if (lim.long) walkOpts.maxLegs = lim.maxLegs;
+      try { r = await d.tripWalk(walkOpts); } catch (e) { r = null; }
       ctl.cancel();
+      trip.walked = !!r;
       trip.arrived = !!(r && r.arrived);
       trip.legs = r && r.legs != null ? r.legs : null;
       // Après une chasse ratée, le reste du budget est souvent nul : une marche de 75 s pour ne pas chasser
       // à l'arrivée serait perdue. Une vague complète au moins.
       budget = F.createBudget(afterFail ? Math.max(leftBefore, huntMs) : leftBefore, now);
+      // FAIRE LE PLEIN (24/10) : arrivé au troupeau, on chasse jusqu'à un vrai stock (≥ 20 points, 3 vagues,
+      // budget propre) — un repas seulement, et le bot remontait toutes les 10 min. La cuisson du lot suit.
+      // Opt-in par la dep `tripFill` (index.js la câble) : sans elle, le comportement d'avant.
+      if (trip.arrived && d.tripFill === true) {
+        goal = Math.max(goal, TRIP.TRIP_FILL_POINTS);
+        waves = Math.max(waves, TRIP.TRIP_FILL_WAVES);
+        budget = F.createBudget(Math.max(budget.left(), TRIP.TRIP_FILL_HUNT_MS), now);
+      }
       // (tâche annulée PENDANT la marche : la boucle de chasse ci-dessous s'arrête sur `cancelled()`)
       return true;
     };
