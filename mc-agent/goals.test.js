@@ -1064,3 +1064,43 @@ test('T1 : pioche de rechange + 4 bâtons AVANT le fer (iron_cave/descend_y16/ir
   assert.strictEqual(sticks.met(ctx({ stick: 4 })), true);
   assert.strictEqual(sticks.met(ctx({ stick: 0 })), true, 'ni planches ni bûches → sauté');
 });
+
+// ─── RÉGRESSION world_oct23 (24/10, NethBot1) : `iron_ingot no_fuel` ×13 en boucle ───────────────────
+// Au fond (y 16) avec 2 lingots + du fer brut, 5 bâtons, 3 tables, AUCUN charbon/planche/bûche : le
+// but `iron_ingot` (smeltIron) n'avait AUCUN but combustible avant lui — t1_coal/armor_fuel ne viennent
+// qu'APRÈS la pioche fer et le bouclier. smelt rendait no_fuel, le planner re-dérivait le même but, puis
+// retry 90 s… alors qu'un filon de charbon venait d'être cartographié à côté.
+const OCT23_NETHBOT1 = () => ({
+  inv: { stone_pickaxe: 1, stone_sword: 1, stone_axe: 1, furnace: 1, stick: 5, crafting_table: 3,
+    cobblestone: 111, cobbled_deepslate: 3, iron_ingot: 2, raw_iron: 20, torch: 10, cooked_beef: 10 },
+  worn: ['iron_boots', 'iron_helmet'], y: 16, hasTable: false,
+});
+
+test('iron_armor : sans combustible au fond, le charbon est cherché AVANT la fonte (plus de iron_ingot→no_fuel en boucle)', () => {
+  const ch = chainFor('iron_armor');
+  const names = ch.map((g) => g.name);
+  assert.ok(names.indexOf('ingot_coal') >= 0 && names.indexOf('ingot_coal') < names.indexOf('iron_ingot'));
+  assert.ok(names.indexOf('ingot_fuel') > names.indexOf('ingot_coal') && names.indexOf('ingot_fuel') < names.indexOf('iron_ingot'));
+  const g = firstUnmet(ch, OCT23_NETHBOT1());
+  assert.strictEqual(g.name, 'ingot_coal');
+  assert.strictEqual(g.skill, 'gather');
+  assert.deepStrictEqual(g.args.name, ['coal_ore', 'deepslate_coal_ore']);
+  assert.strictEqual(g.optional, true, 'pas de charbon en vue → mis de côté, on passe au bois (jamais un stall)');
+});
+
+test('iron_armor : charbon sauté (en surface) → bûches ; combustible suffisant → la fonte part tout de suite', () => {
+  const ch = chainFor('iron_armor');
+  const surf = OCT23_NETHBOT1(); surf.y = 70;
+  assert.strictEqual(firstUnmet(ch, surf).name, 'ingot_fuel');
+  assert.strictEqual(firstUnmet(ch, surf).skill, 'gatherLog');
+  // 1 charbon = 8 fontes ≥ les 2 lingots qui manquent → iron_ingot direct
+  const coal = OCT23_NETHBOT1(); coal.inv.coal = 1;
+  assert.strictEqual(firstUnmet(ch, coal).name, 'iron_ingot');
+  // 2 planches = 3 fontes ≥ 2 → iron_ingot direct (bois en poche : jamais de détour)
+  const planks = OCT23_NETHBOT1(); planks.inv.oak_planks = 2;
+  assert.strictEqual(firstUnmet(ch, planks).name, 'iron_ingot');
+  // déjà 4 lingots → ni charbon ni bois exigés
+  const done = OCT23_NETHBOT1(); done.inv.iron_ingot = 4;
+  assert.notStrictEqual(firstUnmet(ch, done).name, 'ingot_coal');
+  assert.notStrictEqual(firstUnmet(ch, done).name, 'ingot_fuel');
+});

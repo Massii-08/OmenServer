@@ -684,6 +684,7 @@ function woodSandbox(opts = {}) {
   const sb = sandbox(Object.assign({
     NO_GIVE: true,
     WOOD_GOALS: new Set(['logs', 'planks', 'plank_buffer', 'crafting_table', 'sticks', 'wooden_pickaxe']),
+    WOOD_TRIP_NEVER_SKILLS: new Set(['branchMine', 'caveIron', 'caveHunt', 'descendDiagonal']),
     _needsWoodTrip: false, _lastWoodTripAt: 0,
   }, opts));
   run(sb, fnSrc('woodTripWanted'));
@@ -705,6 +706,27 @@ test('TRAJET BOIS : conditions d origine inchangées hors lockdown (jour / armé
   assert.strictEqual(woodSandbox({ worn: 2, NO_GIVE: false, pos: { x: 0, y: 30, z: 0 } }).woodTripWanted({ name: 'logs' }), false);
   assert.strictEqual(woodSandbox({ worn: 2, pos: { x: 0, y: 30, z: 0 } }).woodTripWanted({ name: 'iron_deep' }), false);
   assert.strictEqual(woodSandbox({ worn: 2, pos: { x: 0, y: 30, z: 0 }, _needsWoodTrip: true }).woodTripWanted({ name: 'help_pick' }), true);
+});
+
+// RÉGRESSION world_oct23 (24/10, NethBot2 à y 5) : un échec bois ANCIEN (`logs timeout` 16 min plus tôt)
+// laissait `_needsWoodTrip` armé ; au but suivant — `iron_deep` (branchMine Y16) — le trajet partait :
+// /home safe en SURFACE, puis branchMine y lançait sa galerie → `wrong_depth` (startY 67, targetY 16),
+// le latch effacé sans une seule bûche ramassée (8 en poche !), puis /home work pour redescendre.
+test('index.js : WOOD_TRIP_NEVER_SKILLS est déclaré au niveau module avec les skills de minage', () => {
+  assert.match(SRC, /^const WOOD_TRIP_NEVER_SKILLS = new Set\(\['branchMine', 'caveIron', 'caveHunt', 'descendDiagonal'\]\);$/m);
+});
+
+test('TRAJET BOIS : le latch « bois prouvé absent » ne remonte JAMAIS un bot pour un but de MINAGE', () => {
+  for (const skill of ['branchMine', 'caveIron', 'caveHunt', 'descendDiagonal']) {
+    const sb = woodSandbox({ worn: 2, pos: { x: 0, y: 5, z: 0 }, _needsWoodTrip: true });
+    assert.strictEqual(sb.woodTripWanted({ name: 'iron_deep', skill }), false, skill);
+    assert.strictEqual(sb._needsWoodTrip, true, 'le besoin reste armé pour le prochain but bois');
+  }
+  // les buts qui exigent du bois partent toujours, latch ou pas
+  assert.strictEqual(woodSandbox({ worn: 2, pos: { x: 0, y: 5, z: 0 }, _needsWoodTrip: true })
+    .woodTripWanted({ name: 'help_pick', skill: 'ensurePick' }), true);
+  assert.strictEqual(woodSandbox({ worn: 2, pos: { x: 0, y: 5, z: 0 } })
+    .woodTripWanted({ name: 'logs', skill: 'gatherLog' }), true);
 });
 
 test('index.js : runGoalSkill déclenche le trajet bois via woodTripWanted (et consomme le cooldown juste après)', () => {

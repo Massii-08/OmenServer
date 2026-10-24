@@ -919,14 +919,14 @@ const _WATER_LACK_RE = /water|flood|drown/i;
 // `noWood` de gift_planks (66a5e45) ne pouvait jamais s'armer → gift_planks bouclait not_found à vie
 // en wood-desert → mappeurs JAMAIS armés. Le signal doit être produit par la branche qui le lit (#61).
 const _WOOD_GOALS = new Set(['logs', 'planks', 'plank_buffer', 'crafting_table', 'sticks', 'wooden_pickaxe',
-  'gift_planks', 'gift_fuel', 'lj_stock', 'lj_forest']);
+  'gift_planks', 'gift_fuel', 'ingot_fuel', 'lj_stock', 'lj_forest']);
 // ⚠️ LE TIMEOUT D'UNE RÉCOLTE DE BOIS ACCUSE LA ZONE (21/10, run « zéro → armure ») : NethBot2 a passé
 // 28,6 min sur `logs` (5 × `timeout`, 25 waypoints d'exploration), le bûcheron NethBot1 63 min sur
 // `lj_stock` (timeouts, 13 morts) — et le verdict disait `stay … logsNotFound:0`. Un `not_found` rend la
 // main en quelques secondes ; un `timeout` = 2-3 min de recherche sans trouver d'arbre : c'est la MÊME
 // preuve (zone rasée), en plus forte. Seuls les buts qui RÉCOLTENT comptent (le timeout d'un craft ou
 // d'une table n'est pas un manque d'arbres).
-const _WOOD_GATHER_GOALS = new Set(['logs', 'plank_buffer', 'lj_stock', 'gift_planks', 'gift_fuel']);
+const _WOOD_GATHER_GOALS = new Set(['logs', 'plank_buffer', 'lj_stock', 'gift_planks', 'gift_fuel', 'ingot_fuel']);
 // Poids d'un timeout de récolte : ~3 recherches `not_found` (le skill expire après 2-3 min de vaine
 // exploration). Sans ce poids, 5 timeouts en 28 min ne remplissent jamais la fenêtre (seuil 8 / 20 min) :
 // la zone se dirait encore « ok » quand le bot y a passé une demi-heure sans couper une bûche.

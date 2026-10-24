@@ -410,6 +410,13 @@ test('les buts bois de la chaine gift comptent aussi (mapper_armor wood-desert)'
   assert.strictEqual(zoneFailureKind('gift_fuel', 'not_found'), 'wood');
 });
 
+// world_oct23 24/10 : `ingot_fuel` (bûches pour fondre les 4 lingots de la pioche fer, goals.js) doit
+// accuser la zone comme gift_fuel — sinon un not_found sous terre n'arme jamais le trajet bois.
+test('ingot_fuel (combustible de la fonte) compte comme un but bois', () => {
+  assert.strictEqual(zoneFailureKind('ingot_fuel', 'not_found'), 'wood');
+  assert.strictEqual(zoneFailureKind('ingot_fuel', 'timeout'), 'wood');
+});
+
 // ─── L ETAT DE ZONE DOIT SURVIVRE AU PROCESS (cause racine, 27/07 soir) ─────────────────────────
 // La migration n a JAMAIS tire de la journee alors que la flotte etait visiblement noyee
 // (descend_y16 water_ahead 77-82 %, ~20 sauvetages eau par session). Raison : l horloge de zone

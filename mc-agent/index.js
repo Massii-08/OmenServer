@@ -425,6 +425,8 @@ let _safeHomeSurface = false; // safe posé à une VRAIE surface (y≥58) → ci
 let _deathDebtBusy = false;   // une seule récupération de dette en vol (le respawn peut se répéter en rafale)
 // Buts qui exigent du BOIS ou une TABLE : introuvables sous terre (cf. wood_trip ci-dessous).
 const WOOD_GOALS = new Set(['logs', 'planks', 'plank_buffer', 'crafting_table', 'sticks', 'wooden_pickaxe']);
+// Skills de MINAGE profond : le latch `_needsWoodTrip` ne les remonte jamais en surface (cf. woodTripWanted).
+const WOOD_TRIP_NEVER_SKILLS = new Set(['branchMine', 'caveIron', 'caveHunt', 'descendDiagonal']);
 let _lastWoodTripAt = 0;      // cooldown 2 min : un aller-retour surface ne doit pas boucler
 let _workSet = false;    // NO_GIVE : chantier profond SEC mémorisé (/sethome work) → re-descente = /home work (1 tp)
                               // au lieu de re-creuser ~52 blocs (chaque re-descente cassait une pioche → no_pickaxe → fer jamais accumulé, vécu homedeath)
@@ -3520,6 +3522,11 @@ async function huntSpidersGoal(opts = {}) {
 function woodTripWanted(goal) {
   if (!NO_GIVE || !goal) return false;
   if (!(WOOD_GOALS.has(goal.name) || _needsWoodTrip)) return false;
+  // LATCH ≠ BUT DE MINAGE (world_oct23 24/10, NethBot2/NethBot3) : un échec bois ancien laissait le latch
+  // armé et le trajet partait pour `iron_deep` → /home safe en surface → branchMine `wrong_depth` (startY
+  // 67/80, targetY 16) → latch effacé sans bûche → /home work. Le minage ne consomme pas de bois : on reste
+  // au fond, le latch reste armé pour le prochain but qui en exige (craft, pioche…).
+  if (!WOOD_GOALS.has(goal.name) && goal.skill && WOOD_TRIP_NEVER_SKILLS.has(goal.skill)) return false;
   const p = bot.entity && bot.entity.position;
   if (!p || !(p.y < 62)) return false;
   if ((Date.now() - _lastWoodTripAt) <= 120000) return false;

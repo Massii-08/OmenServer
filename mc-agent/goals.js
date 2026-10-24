@@ -280,6 +280,14 @@ const picksOK = (c) => stonePicks(c) >= 3 || invCount(c.inv, 'iron_pickaxe') >= 
 const fuelUnits = (c) => (invCount(c.inv, 'coal') + invCount(c.inv, 'charcoal')) * 8 +
   (anyPlanks(c.inv) + anyLog(c.inv)) * 1.5;
 const smeltNeed = (c) => Math.max(0, armorNeed(c, 3) - invCount(c.inv, 'iron_ingot'));
+// But `iron_ingot` (4 lingots pour la pioche fer) : le combustible en poche couvre-t-il ce qui reste à
+// fondre ? Vrai aussi quand il n'y a plus rien à fondre (lingots là, pioche fer là, armure complète, ou
+// pas de fer brut — la fonte n'a alors rien à brûler). Cf. ingot_coal/ingot_fuel.
+const ingotFuelOk = (c) => {
+  if (invCount(c.inv, 'iron_pickaxe') >= 1 || IA(c)) return true;
+  const left = Math.min(invCount(c.inv, 'raw_iron'), Math.max(0, 4 - invCount(c.inv, 'iron_ingot')));
+  return left === 0 || fuelUnits(c) >= left;
+};
 // ⚠️ UNE VRAIE RÉSERVE, PAS LE STRICT NÉCESSAIRE (Massii, 28/07) : « ils doivent aller chercher
 // BEAUCOUP de bois en surface, ou sinon récupérer BEAUCOUP de charbon, mais jamais se limiter à
 // quelques morceaux — je veux une vraie réserve pour quand ils en ont besoin. »
@@ -389,6 +397,18 @@ const IRON_ARMOR_CHAIN = [
   // 4 lingots, pas 3 : la pioche en consomme exactement 3 → il ne restait JAMAIS de quoi forger
   // un bouclier. Le 4e lingot est l'investissement de survie le moins cher du jeu (preuve live
   // 25/07 : les squelettes sont le tueur n°1 des bots nus).
+  // COMBUSTIBLE DE LA FONTE (world_oct23 24/10, NethBot1 : `iron_ingot no_fuel` ×13, chrono 81 min au lieu
+  // de 62). Au fond avec du fer brut mais 0 charbon/planche/bûche, `iron_ingot` était le 1er but non
+  // satisfait et AUCUN but combustible ne le précédait (t1_coal/armor_fuel viennent après la pioche fer) :
+  // smelt → no_fuel → même but → retry 90 s, en boucle. Mirror de help_coal/help_fuel : le charbon de la
+  // strate fer d'abord (`optional` : sans filon en vue, mis de côté 10 min → on passe au bois), puis des
+  // bûches (gatherLog → trajet bois). SATISFIABLE-OU-SAUTABLE : combustible suffisant pour les lingots qui
+  // manquent, rien à fondre, ou plus besoin de lingots → chemin nominal inchangé.
+  { name: 'ingot_coal',   optional: true,
+    met: (c) => ingotFuelOk(c) || (c.y === undefined || c.y > 40),
+    skill: 'gather',      args: { name: ['coal_ore', 'deepslate_coal_ore'], count: 8 } },
+  { name: 'ingot_fuel',   met: (c) => ingotFuelOk(c),
+    skill: 'gatherLog',   args: { count: 4 } },
   { name: 'iron_ingot',   met: (c) => invCount(c.inv, 'iron_ingot') >= 4 || invCount(c.inv, 'iron_pickaxe') >= 1 || IA(c),
     skill: 'smeltIron',   args: { count: 4 } },
   { name: 'iron_pickaxe', met: (c) => invCount(c.inv, 'iron_pickaxe') >= 1 || IA(c),
