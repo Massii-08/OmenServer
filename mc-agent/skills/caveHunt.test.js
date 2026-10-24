@@ -167,3 +167,101 @@ test('caveHunt : cible de la carte limitée à 64 blocs (3D) ; inatteignable mé
   assert.strictEqual(r.reason, 'no_cave_target');
   assert.strictEqual(asked.length, 1, 'la cible ratée au 1er appel n\'est plus retentée');
 });
+
+// ─── REJEU NethBot1 24/10 (session-602) : grappe retentée bloc par bloc + coupures comptées comme
+// « inatteignable ». Vraies coordonnées : bot à (121,-39,105) (relevé imminent_bookmark_death), cibles
+// visibles successives (120,-9,108) (119,-9,109) (120,-8,108) puis (129,-32,137) (130,-31,137). ──────
+const NB1_ORES = [
+  { x: 120, y: -9, z: 108 }, { x: 119, y: -9, z: 109 }, { x: 120, y: -8, z: 108 },
+  { x: 129, y: -32, z: 137 }, { x: 130, y: -31, z: 137 },
+].map((o) => Object.assign({ material: 'deepslate_diamond_ore' }, o));
+function nb1Scan(order = NB1_ORES) {
+  // Comme _defaultScanLocal : premier minerai non exclu (l'ordre = celui du log).
+  const { nearSkipped } = require('./caveHunt');
+  return (bot, material, skip) => order.find((o) => !nearSkipped(skip, o)) || null;
+}
+
+test('rejeu NethBot1 : une grappe inatteignable est mise de côté EN ENTIER (2 essais au lieu de 5)', async () => {
+  const tried = [];
+  const events = [];
+  const r = await caveHunt(botWith([['iron_pickaxe', 1]], { x: 121, y: -39, z: 105 }), {
+    material: 'diamond', count: 1, emit: (e) => events.push(e), nextOreTarget: () => null,
+    scanLocal: nb1Scan(), goTo: async (t) => { tried.push([t.x, t.y, t.z]); return false; }, mineAt: async () => 0,
+  });
+  assert.strictEqual(r.reason, 'no_cave_target');
+  assert.deepStrictEqual(tried, [[120, -9, 108], [129, -32, 137]],
+    'avant : (120,-9,108) (119,-9,109) (120,-8,108) (129,-32,137) (130,-31,137) — même grappe retentée bloc par bloc');
+  const res = events.filter((e) => e.type === 'diamond_cave_result');
+  assert.deepStrictEqual(res.map((e) => e.outcome), ['unreachable', 'unreachable']);
+});
+
+test('rejeu NethBot1 : une COUPURE (réflexe, détour, TP) n\'est pas un verdict — la même cible est retentée après settle', async () => {
+  const tried = [];
+  let settles = 0;
+  const replies = [{ reached: false, interrupted: true, why: 'goal_changed' }, 'interrupted', true];
+  const events = [];
+  const r = await caveHunt(botWith([['iron_pickaxe', 1]], { x: 121, y: -39, z: 105 }), {
+    material: 'diamond', count: 1, emit: (e) => events.push(e), nextOreTarget: () => null,
+    scanLocal: nb1Scan(), settle: async () => { settles++; },
+    goTo: async (t) => { tried.push([t.x, t.y, t.z]); return replies.shift(); }, mineAt: async () => 2,
+  });
+  assert.deepStrictEqual({ ok: r.ok, got: r.got }, { ok: true, got: 2 });
+  assert.deepStrictEqual(tried, [[120, -9, 108], [120, -9, 108], [120, -9, 108]]);
+  assert.strictEqual(settles, 2);
+  assert.deepStrictEqual(events.filter((e) => e.type === 'cave_unreachable'), [], 'une coupure ne produit plus cave_unreachable');
+  const res = events.filter((e) => e.type === 'diamond_cave_result');
+  assert.deepStrictEqual(res.map((e) => [e.outcome, e.why, e.mined]),
+    [['interrupted', 'goal_changed', 0], ['interrupted', 'interrupted', 0], ['mined', null, 2]]);
+  assert.ok(res.every((e) => typeof e.took_s === 'number'));
+});
+
+test('caveHunt : coupée MAX_INTERRUPTS fois → grappe laissée pour CET appel seulement (pas dans le store)', async () => {
+  const { createSkipStore, MAX_INTERRUPTS } = require('./caveHunt');
+  const store = createSkipStore();
+  const tried = [];
+  const r = await caveHunt(botWith([['iron_pickaxe', 1]], { x: 121, y: -39, z: 105 }), {
+    material: 'diamond', count: 1, nextOreTarget: () => null, skipStore: store, scanLocal: nb1Scan(),
+    goTo: async (t) => { tried.push(t.y); return 'interrupted'; }, mineAt: async () => 0,
+  });
+  assert.strictEqual(r.reason, 'no_cave_target');
+  assert.strictEqual(tried.filter((y) => y > -10).length, MAX_INTERRUPTS, 'grappe haute : 3 coupures puis la suivante');
+  assert.strictEqual(store.size(), 0, 'une coupure ne condamne pas la grappe 20 min');
+});
+
+test('caveHunt : PV bas (hpOk faux) → on sort tout de suite (low_hp), sans cibler', async () => {
+  const r = await caveHunt(botWith([['iron_pickaxe', 1]]), {
+    material: 'diamond', count: 1, hpOk: () => false,
+    scanLocal: () => { throw new Error('ne doit pas scanner'); }, nextOreTarget: () => null,
+  });
+  assert.strictEqual(r.reason, 'low_hp');
+});
+
+test('caveHunt : grappe de la CARTE voisine d\'une grappe mise de côté → ignorée aussi', async () => {
+  const { createSkipStore } = require('./caveHunt');
+  const store = createSkipStore();
+  store.add('120,-9,108');
+  const asked = [];
+  const r = await caveHunt(botWith([['iron_pickaxe', 1]], { x: 121, y: -39, z: 105 }), {
+    material: 'diamond', count: 1, skipStore: store, scanLocal: () => null,
+    nextOreTarget: (m, w, f, o) => { asked.push(new Set(o.skip)); return o.skip.has('119,-9,109') ? null : { x: 119, y: -9, z: 109 }; },
+    goTo: async () => { throw new Error('ne doit pas y aller'); }, mineAt: async () => 0,
+  });
+  assert.strictEqual(r.reason, 'no_cave_target');
+  assert.strictEqual(asked.length, 2);
+});
+
+test('helpers purs : nearSkipped rayon 4 · approachBudgetMs [45 s, 90 s] · legWaypoint monte/descend en jambes', () => {
+  const H = require('./caveHunt');
+  assert.strictEqual(H.nearSkipped(new Set(['120,-9,108']), { x: 120, y: -8, z: 108 }), true);
+  assert.strictEqual(H.nearSkipped(new Set(['120,-9,108']), { x: 129, y: -32, z: 137 }), false);
+  assert.strictEqual(H.approachBudgetMs(0), 45000);
+  assert.strictEqual(H.approachBudgetMs(26), 69000);
+  assert.strictEqual(H.approachBudgetMs(64), 90000);
+  const up = H.legWaypoint({ x: 121, y: -39, z: 105 }, { x: 120, y: -9, z: 108 }, 8);
+  assert.strictEqual(up.last, false);
+  assert.ok(up.y > -39 && up.y <= -31, `jambe montante : ${up.y}`);
+  assert.ok(Math.hypot(up.x - 121, up.y + 39, up.z - 105) <= 8.6);
+  assert.deepStrictEqual(H.legWaypoint({ x: 0, y: 0, z: 0 }, { x: 5, y: 3, z: 0 }, 8), { x: 5, y: 3, z: 0, last: true });
+  assert.deepStrictEqual(H.normalizeTravel(true), { reached: true, interrupted: false, why: null });
+  assert.strictEqual(H.normalizeTravel(false).why, 'unreachable');
+});

@@ -325,3 +325,19 @@ test('mayStartDig : jamais par-dessus le dig d\'un autre (mineflayer n\'en a qu\
   assert.strictEqual(mayStartDig(undefined), true);
   assert.strictEqual(mayStartDig({ name: 'stone' }), false);
 });
+
+test('grabScope : pendant la CHASSE AU DIAMANT de grotte (rareHunt) → ni détour ni approche, même sans but posé', () => {
+  // Rejeu session-601 (24/10) : ore_detour vers le diamant visé 100-300 ms après diamond_cave_target,
+  // puis cave_unreachable 0,5 s plus tard — le détour reposait SON but sur celui de l'approche.
+  for (const goal of [null, { cave: true }]) {
+    const s = grabScope({ goal, rareHunt: true });
+    assert.strictEqual(s.run, true, 'le minerai à portée de bras reste pris');
+    assert.strictEqual(s.detour, false);
+    assert.strictEqual(s.approach, false);
+    assert.strictEqual(s.walk, false);
+    assert.strictEqual(s.drops, false);
+    assert.strictEqual(mayApproach(s, 'deepslate_diamond_ore'), false);
+    assert.strictEqual(s.maxDist, PICKUP_REACH);
+  }
+  assert.strictEqual(grabScope({ migrating: true, rareHunt: true }).run, false, 'la migration prime');
+});

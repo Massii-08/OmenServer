@@ -104,7 +104,7 @@ const heapGuard = require('./heapGuard');   // OOM « au même endroit » du bra
 const { installToolGuard } = require('./toolGuard');
 const { diaWornCount, armorTier, isIronDonor } = require('./diaArmor');   // armure diamant des mineurs (24/10 soir)   // OOM 23/10 : récursion sans fin de mineflayer-tool
 const loopGuard = require('./loopGuard');   // sync_loop_capped + loop_lag (gels de l'event loop)
-const { caveHunt, sharedSkipStore: caveHuntSkip } = require('./skills/caveHunt');   // cave-first diamant (Massii 26/07)
+const { caveHunt, sharedSkipStore: caveHuntSkip, nearSkipped: caveNearSkipped, approachBudgetMs: caveApproachBudgetMs, legWaypoint: caveLegWaypoint } = require('./skills/caveHunt');   // cave-first diamant (Massii 26/07)
 const { caveIron: caveIronSkill } = require('./skills/caveIron');   // fer en grotte (Massii 20/10)
 const caveIronPick = require('./caveIron');
 const oresScan = require('./ores');                          // scan ciblé du fer VU (ironCaveCtx, 24/10)
@@ -1223,7 +1223,7 @@ function caveDiamondNearNow() {
       const skip = new Set(caveHuntSkip.keys());
       const ores = require('./ores');
       for (const o of (ores.scanExposedOres(bot, { maxDistance: 48, count: 16, names: ['diamond_ore', 'deepslate_diamond_ore'] }) || [])) {
-        if (skip.has(`${o.x},${o.y},${o.z}`)) continue;
+        if (caveNearSkipped(skip, o)) continue;     // grappe mise de côté (rayon 4), pas seulement le bloc
         try { if (ores.isWaterAdjacent(bot, o)) continue; } catch (e) { /* inconnu → gardé */ }
         if (Math.hypot(o.x - from.x, o.y - from.y, o.z - from.z) <= 64) { val = true; break; }
       }
@@ -4393,36 +4393,29 @@ async function runGoalSkill(goal, gen) {
     const memCH = (args['wm-live'] && args['world-memory']) ? loadMemory(args['world-memory']) : bot._worldMemory;
     const _count = (name) => ((bot.inventory && bot.inventory.items()) || [])
       .reduce((s, i) => s + (i.name === name ? i.count : 0), 0);
-    const rCH = await caveHunt(bot, Object.assign({
-      emit,
-      memory: memCH,
-      world: String(bot._worldKey || 'overworld'),
-      // Inatteignables mémorisées ENTRE deux reprises du but (TTL 20 min, 24/10 : 203 cave_unreachable
-      // pour 91 cibles distinctes, les mêmes retentées à chaque reprise).
-      skipStore: caveHuntSkip,
-      // Déplacement « joueur » (24/10, même patron que le fer de grotte) : par l'OUVERTURE de la grotte
-      // d'abord (canDig:false), en creusant ensuite si elle n'est pas reliée ; diamant plus BAS de > 4 blocs →
-      // escalier dirigé (le pathfinder rend NoPath dans la roche pleine — l'ancien GoalNear 3D unique
-      // concluait `cave_unreachable` en 6-12 s pour la plupart des cibles).
-      goTo: async (t) => {
-        const near = () => {
-          const p = bot.entity && bot.entity.position;
-          return !!(p && Math.hypot(p.x - t.x, p.y - t.y, p.z - t.z) <= 6);
-        };
-        try {
-          const p0 = bot.entity && bot.entity.position;
-          if (p0 && p0.y - t.y > 4 && !taskToken.cancelled) { try { await _caveStairTo(t, taskToken); } catch (e) { /* approche fine */ } }
-          if (!near() && !taskToken.cancelled) await _caveGotoOre(t, taskToken);
-        } catch (e) { /* inatteignable → false */ }
-        return near();
-      },
-      // Le filon entier, pas juste le bloc visé : un diamant vient rarement seul.
-      mineAt: async (t) => {
-        const before = _count('diamond') + _count('raw_iron') * 0;
-        try { await floodFillVein(bot, t, taskToken); } catch (e) { /* best-effort */ }
-        return Math.max(0, _count('diamond') - before);
-      },
-    }, goal.args || {}), taskToken);
+    const tokCH = taskToken;                   // CAPTURÉ : une préemption ne nous le vole pas
+    let rCH;
+    _diamondHuntBusy = true;                   // le détour du ramassage ne repose plus son but sur notre approche
+    try {
+      rCH = await caveHunt(bot, Object.assign({
+        emit,
+        memory: memCH,
+        world: String(bot._worldKey || 'overworld'),
+        // Inatteignables mémorisées ENTRE deux reprises du but (TTL 20 min, 24/10 : 203 cave_unreachable
+        // pour 91 cibles distinctes, les mêmes retentées à chaque reprise) — par GRAPPE (rayon 4).
+        skipStore: caveHuntSkip,
+        // Approche « joueur » bornée (diamondCaveGoto) : coupure (réflexe, TP) ≠ inatteignable.
+        goTo: (t) => diamondCaveGoto(t, tokCH),
+        settle: () => _caveSettle(tokCH),
+        hpOk: () => caveIronPick.caveHpOk(bot && bot.health),
+        // Le filon entier, pas juste le bloc visé : un diamant vient rarement seul.
+        mineAt: async (t) => {
+          const before = _count('diamond');
+          try { await floodFillVein(bot, t, tokCH); } catch (e) { /* best-effort */ }
+          return Math.max(0, _count('diamond') - before);
+        },
+      }, goal.args || {}), tokCH);
+    } finally { _diamondHuntBusy = false; }
     if (rCH && rCH.reason === 'no_cave_target') {
       emit({ type: 'cave_travel', reason: 'no_cave_target' });
       return await branchMine(bot, Object.assign(
@@ -7263,6 +7256,7 @@ function _caveBudgetRecord(r) {
 // de lui. Un trajet coupé rend `interrupted` : ce n'est pas un verdict sur la grotte (pas de disjoncteur),
 // et la grappe n'est mise de côté qu'à la 2e coupure en 10 min (sinon le planner la reprendrait en boucle).
 let _tpCount = 0;                    // téléportations vues (onTeleport) — lu pendant le trajet (niveau module, piège #56)
+let _diamondHuntBusy = false;        // chasse au diamant de grotte en cours — lu par le timer du ramassage (oregrab.grabScope)
 let _caveTripBusy = false;           // trajet/minage de grotte en cours — lu par trySquad / tryRegroup (timers)
 let _caveInterrupts = {};            // key de grappe → [instants des coupures]
 const CAVE_INTERRUPT_WINDOW_MS = 10 * 60 * 1000;
@@ -7433,10 +7427,107 @@ async function _caveTorch() {
 }
 
 /**
+ * APPROCHE D'UN DIAMANT VISIBLE (24/10, session-601/602 : 70 cibles en 50 min pour +7 diamants, verdicts
+ * `cave_unreachable` en 0,5-8 s). Ce que fait un joueur pour un diamant vu à 25 blocs : y aller par
+ * l'ouverture, sinon CREUSER jusqu'à lui — en montant comme en descendant. Budget caveApproachBudgetMs
+ * (45-90 s selon la distance) :
+ *   1. plus bas de > 4 blocs → escalier dirigé (_caveStairTo) ;
+ *   2. _caveGotoOre : ouverture (canDig:false) puis en creusant (canDig:true), chacune ≤ la moitié du reste ;
+ *   3. toujours pas là et pas coupé → JAMBES de 8 blocs en creusant (_caveLegsTo) : un but unique lointain
+ *      rend NoPath dans la roche pleine (A* borné), des jambes courtes non — montée en escalier comprise.
+ * Une COUPURE (TP, GoalChanged, PathStopped d'un réflexe, bot emmené plus loin) n'est PAS un verdict
+ * (caveTravelVerdict) : { interrupted:true } → caveHunt retente la même grappe après _caveSettle.
+ * @returns {Promise<{reached:boolean, interrupted?:boolean, why:string|null}>}
+ */
+async function diamondCaveGoto(t, tok) {
+  const t0 = Date.now();
+  const pos = () => bot.entity && bot.entity.position;
+  const dist = () => { const p = pos(); return p ? Math.hypot(p.x - t.x, p.y - t.y, p.z - t.z) : null; };
+  const near = () => { const d = dist(); return d != null && d <= 6; };
+  const d0 = dist();
+  const deadline = t0 + caveApproachBudgetMs(d0);
+  const left = () => deadline - Date.now();
+  const errs = [];
+  const tp0 = _tpCount;
+  const ok = (why) => ({ reached: true, interrupted: false, why });
+  const fail = (why) => {
+    const v = caveTravelVerdict({ teleported: _tpCount !== tp0, errs, d0, d1: dist() });
+    if (v === 'interrupted') return { reached: false, interrupted: true, why: _tpCount !== tp0 ? 'teleported' : 'interrupted' };
+    return { reached: false, interrupted: false, why };
+  };
+  const cut = () => tok.cancelled || _tpCount !== tp0 || caveTravelVerdict({ errs, d0, d1: dist() }) === 'interrupted';
+  if (near()) return ok('near');
+  try {
+    const p0 = pos();
+    if (p0 && p0.y - t.y > 4) {
+      const st = await _caveStairTo(t, tok);
+      if (st && st.teleported) return { reached: false, interrupted: true, why: 'teleported' };
+      if (near()) return ok('stair');
+    }
+    if (tok.cancelled) return { reached: false, interrupted: false, why: 'cancelled' };
+    if (left() > 3000 && await _caveGotoOre(t, tok, errs, Math.max(3000, Math.floor(left() / 3)))) return ok('path');
+    if (near()) return ok('path');
+    if (cut()) return fail('interrupted');
+    if (left() > 3000 && await _caveLegsTo(t, tok, errs, deadline)) return ok('legs');
+  } catch (e) { errs.push(e); }
+  if (near()) return ok('legs');
+  if (tok.cancelled) return { reached: false, interrupted: false, why: 'cancelled' };
+  const nopath = errs.some((e) => /NoPath|no path/i.test(String((e && e.name) || '') + ' ' + String((e && e.message) || '')));
+  return fail(left() <= 3000 ? 'timeout' : (nopath ? 'nopath' : 'no_progress'));
+}
+
+/**
+ * Jambes de 8 blocs vers le minerai, EN CREUSANT (canDig:true, lavaGuard/bridgeGuard de la nominale
+ * hérités par withTempMovements). y RÉEL interpolé (caveLegWaypoint) → GoalNear 3D. Arrêt : arrivé,
+ * coupé (TP / but volé), deux jambes sans progrès (< 1,5 bloc), ou échéance. → true si à ≤ 6 blocs.
+ */
+async function _caveLegsTo(t, tok, errs, deadline) {
+  const pos = () => bot.entity && bot.entity.position;
+  const dist = () => { const p = pos(); return p ? Math.hypot(p.x - t.x, p.y - t.y, p.z - t.z) : Infinity; };
+  const tp0 = _tpCount;
+  let stalls = 0;
+  emit({ type: 'cave_legs', x: t.x, y: t.y, z: t.z, d: Math.round(dist()) });
+  while (!tok.cancelled && _tpCount === tp0 && Date.now() < deadline - 1000) {
+    const before = dist();
+    if (before <= 6) return true;
+    const wp = caveLegWaypoint(pos(), t, 8);
+    if (!wp) break;
+    const n0 = errs.length;
+    const ms = Math.max(1000, Math.min(20000, deadline - Date.now()));
+    await withTempMovements(bot, Movements, { canDig: true }, async () => {
+      try {
+        await withTimeout(Promise.resolve(bot.pathfinder.goto(new pfGoals.GoalNear(wp.x, wp.y, wp.z, wp.last ? 2 : 1)))
+          .catch((e) => { errs.push(e); throw e; }), ms, () => { errs.push({ name: 'OwnTimeout' }); try { stopMotion(); } catch (e) {} });
+      } catch (e) { /* verdict par la distance */ }
+    });
+    const fresh = errs.slice(n0);
+    if (fresh.some((e) => e && (e.name === 'GoalChanged' || /goal was changed/i.test(String(e.message || ''))))) return false;
+    if (dist() > before - 1.5) { if (++stalls >= 2) break; } else stalls = 0;
+  }
+  return dist() <= 6;
+}
+
+/**
+ * Attendre que le pathfinder se libère après une COUPURE (fuite, couvert, détour, rush) avant de reposer
+ * notre but — sinon on lui vole le pathfinder à notre tour. Borné 12 s. NIVEAU MODULE.
+ */
+async function _caveSettle(tok, maxMs = 12000) {
+  const t0 = Date.now();
+  await sleep(500);
+  while (!tok.cancelled && Date.now() - t0 < maxMs) {
+    let moving = false;
+    try { moving = !!(bot.pathfinder && typeof bot.pathfinder.isMoving === 'function' && bot.pathfinder.isMoving()); } catch (e) { moving = false; }
+    if (!moving && !_skelRushBusy && !panicInFlight && !_imminentBusy && !_escaping) return true;
+    await sleep(250);
+  }
+  return false;
+}
+
+/**
  * Déplacement vers un minerai de grotte : par l'OUVERTURE d'abord (canDig:false, le chemin d'un
  * joueur), en creusant ensuite (canDig:true) si la grotte n'est pas reliée. y RÉEL connu → 3D.
  */
-async function _caveGotoOre(t, tok, errs = null) {
+async function _caveGotoOre(t, tok, errs = null, ms = 60000) {
   const note = (e) => { if (errs) errs.push(e); };
   const near = () => {
     const p = bot.entity && bot.entity.position;
@@ -7448,7 +7539,7 @@ async function _caveGotoOre(t, tok, errs = null) {
   // ⚠️ withTimeout AVALE les rejets (il résout {ok:false}) : sans ce .catch, l'erreur du pathfinder
   // (GoalChanged / PathStopped / NoPath) n'arrivait jamais au verdict (22/10). Notre propre échéance est
   // marquée `OwnTimeout` : le PathStopped qu'elle provoque n'est pas une coupure venue d'ailleurs.
-  const go = (g) => withTimeout(Promise.resolve(bot.pathfinder.goto(g)).catch((e) => { note(e); throw e; }), 60000,
+  const go = (g) => withTimeout(Promise.resolve(bot.pathfinder.goto(g)).catch((e) => { note(e); throw e; }), ms,
     () => { note({ name: 'OwnTimeout' }); try { stopMotion(); } catch (e) {} });
   await withTempMovements(bot, Movements, { canDig: false }, async () => {
     try { await go(goal); } catch (e) { /* NoPath → phase 2 */ }
@@ -13436,6 +13527,7 @@ setInterval(async () => {
       goal: bot.pathfinder ? bot.pathfinder.goal : null,
       ownGoal: _oreGrabGoal,
       stair: _stairDepth > 0,
+      rareHunt: _diamondHuntBusy,     // caveHunt vise déjà le diamant : pas de détour par-dessus son approche
     });
     let scope = scopeNow();
     if (!scope.run) return;   // migration EXCLUSIVE : ni but posé, ni dig lancé sous ses jambes

@@ -37,8 +37,7 @@ function _defaultScanLocal(bot, material, skip, maxDistance, out = null) {
   let n = 0;
   for (const o of (scanExposedOres(bot, { maxDistance, count: 40, names: oreNamesOf(material) }) || [])) {
     if (oreBase(o.material) !== oreBase(material)) continue;
-    const key = `${o.x},${o.y},${o.z}`;
-    if (skip.has(key)) continue;
+    if (nearSkipped(skip, o)) continue;     // la GRAPPE entière, pas seulement le bloc raté
     try { if (isWaterAdjacent(bot, o)) continue; } catch (e) { /* pas d'info → on garde */ }
     n++;
     const d = Math.hypot(o.x - p.x, o.y - p.y, o.z - p.z);
@@ -65,6 +64,62 @@ function createSkipStore(ttlMs = 20 * 60 * 1000, nowFn = Date.now) {
   };
 }
 const sharedSkipStore = createSkipStore();
+
+/**
+ * Mise de côté par GRAPPE (24/10, NethBot1 : (120,-9,108) puis (119,-9,109) puis (120,-8,108) — trois blocs
+ * de la MÊME grappe retentés l'un après l'autre, 20 s perdues sur une grappe déjà jugée inatteignable).
+ * Un bloc à ≤ CLUSTER_R d'une clé mise de côté l'est aussi. PUR.
+ */
+const CLUSTER_R = 4;
+const keyOf = (t) => `${t.x},${t.y},${t.z}`;
+function parseKey(k) {
+  const a = String(k).split(',').map(Number);
+  return a.length === 3 && a.every(Number.isFinite) ? { x: a[0], y: a[1], z: a[2] } : null;
+}
+function nearSkipped(keys, t, r = CLUSTER_R) {
+  if (!keys || !t) return false;
+  if (typeof keys.has === 'function' && keys.has(keyOf(t))) return true;
+  for (const k of keys) {
+    const q = parseKey(k);
+    if (q && Math.hypot(q.x - t.x, q.y - t.y, q.z - t.z) <= r) return true;
+  }
+  return false;
+}
+
+/**
+ * Temps accordé à l'approche d'un minerai VISIBLE (24/10) : ce qu'il faut à un joueur pour marcher puis
+ * creuser jusqu'à lui — 30 s + 1,5 s par bloc, borné à [45 s, 90 s]. PUR.
+ */
+function approachBudgetMs(dist) {
+  const d = Number.isFinite(dist) ? Math.max(0, dist) : 64;
+  return Math.max(45000, Math.min(90000, Math.round(30000 + 1500 * d)));
+}
+
+/**
+ * Prochaine JAMBE vers la cible (24/10) : un point à `step` blocs sur le segment bot → minerai, y RÉEL
+ * interpolé (les deux extrémités sont réelles : on creuse la ligne). Assez proche → la cible elle-même.
+ * Sert à l'approche en creusant quand un seul but lointain rend NoPath (A* borné dans la roche pleine) :
+ * montée comme descente, par jambes courtes. PUR.
+ */
+function legWaypoint(from, to, step = 8) {
+  if (!from || !to) return null;
+  const dx = to.x - from.x, dy = to.y - from.y, dz = to.z - from.z;
+  const d = Math.hypot(dx, dy, dz);
+  if (!(d > step + 2)) return { x: to.x, y: to.y, z: to.z, last: true };
+  const k = step / d;
+  return { x: Math.round(from.x + dx * k), y: Math.round(from.y + dy * k), z: Math.round(from.z + dz * k), last: false };
+}
+
+/** Résultat d'un `goTo` : booléen (historique), 'interrupted', ou { reached, interrupted, why }. PUR. */
+function normalizeTravel(r) {
+  if (r === true) return { reached: true, interrupted: false, why: null };
+  if (r === 'interrupted') return { reached: false, interrupted: true, why: 'interrupted' };
+  if (r && typeof r === 'object') return { reached: !!r.reached, interrupted: !!r.interrupted, why: r.why || null };
+  return { reached: false, interrupted: false, why: 'unreachable' };
+}
+
+/** Coupures tolérées par grappe (un réflexe a pris le pathfinder) avant de la laisser pour cet appel. */
+const MAX_INTERRUPTS = 3;
 
 /** Meilleur palier de pioche en poche (0 = aucune). Sert à ne cibler que le minable. */
 function pickTierOf(inv) {
@@ -111,10 +166,32 @@ async function caveHunt(bot, opts = {}, token = null) {
   const skip = new Set();
   const store = opts.skipStore || null;     // persistant entre appels (index : sharedSkipStore)
   if (store) { for (const k of store.keys()) skip.add(k); }
-  const markSkip = (t) => { const k = `${t.x},${t.y},${t.z}`; skip.add(k); if (store) store.add(k); };
+  const markSkip = (t) => { const k = keyOf(t); skip.add(k); if (store) store.add(k); };
+  // Coupures (réflexe de combat, fuite, détour d'un timer, TP) : pas un verdict sur la grappe — on la
+  // retente après que le pathfinder s'est libéré, au plus MAX_INTERRUPTS fois PAR GRAPPE et par appel.
+  const interrupts = [];                     // [{ k, n }]
+  const softSkip = new Set();                // grappes laissées pour CET appel (non persistées)
+  const interruptCount = (t) => {
+    for (const e of interrupts) { const q = parseKey(e.k); if (q && Math.hypot(q.x - t.x, q.y - t.y, q.z - t.z) <= CLUSTER_R) return e; }
+    const e = { k: keyOf(t), n: 0 }; interrupts.push(e); return e;
+  };
+  const isDiamond = oreBase(material) === 'diamond';
+  const nowFn = opts.now || Date.now;
+  const result = (target, t0, outcome, extra = {}) => {
+    if (!isDiamond) return;
+    emit(Object.assign({ type: 'diamond_cave_result', outcome, took_s: Math.round((nowFn() - t0) / 100) / 10,
+      mined: 0, why: null, x: target.x, y: target.y, z: target.z }, extra));
+  };
+  const maxAttempts = opts.maxAttempts || 40;  // garde anti-boucle chaude (goTo qui rend tout de suite)
+  let attempts = 0;
   let got = 0;
   while (got < need) {
     if (token && token.cancelled) return { ok: false, reason: 'cancelled', got };
+    // Blessé : pas de grotte (caveIron.caveHpOk) — l'appel sortait au plus tôt à la cible suivante, il
+    // enchaînait 6 grappes à 5,9 PV (NethBot1, 24/10) pendant que les réflexes lui volaient le pathfinder.
+    if (opts.hpOk && !opts.hpOk()) return { ok: got > 0, reason: got > 0 ? undefined : 'low_hp', got };
+    if (++attempts > maxAttempts) return { ok: got > 0, reason: got > 0 ? undefined : 'attempts', got };
+    const excluded = { has: (k) => skip.has(k) || softSkip.has(k), [Symbol.iterator]: function* () { yield* skip; yield* softSkip; } };
     const from = bot.entity && bot.entity.position ? bot.entity.position : null;
     // ORDRE : ce que le bot VOIT d'abord, la carte ensuite. Mesure live 26/07 : avec la carte en
     // premier, 95 cibles sur 98 étaient `cave_unreachable` et pas un seul diamant miné — on visait
@@ -123,18 +200,27 @@ async function caveHunt(bot, opts = {}, token = null) {
     // atteignable ; un minerai cartographié n'est qu'une rumeur.
     const scanLocal = opts.scanLocal || _defaultScanLocal;
     const seen = { count: 0 };
-    let target = scanLocal(bot, material, skip, opts.localRange || 48, seen);
+    let target = scanLocal(bot, material, excluded, opts.localRange || 48, seen);
+    if (target && nearSkipped(excluded, target)) target = null;   // scanLocal injecté qui ignore la grappe
     let src = target ? 'local' : null;
     if (target) emit({ type: 'cave_local', material, x: target.x, y: target.y, z: target.z });
     if (!target) {
-      target = pickNext(memory, world, from, {
-        allowTypes: [oreBase(material)],
-        exposedOnly: true,      // JAMAIS un minerai enterré : on n'exploite que le visible
-        excludeWet: true,       // JAMAIS une grotte inondée (exigence explicite, non négociable)
-        pickTier: tier,
-        maxDist,
-        skip,
-      });
+      // La carte ne connaît que les clés exactes : une cible voisine d'une grappe mise de côté est
+      // ajoutée au filtre exact et on redemande (borné).
+      const exact = new Set([...skip, ...softSkip]);
+      for (let i = 0; i < 32; i++) {
+        target = pickNext(memory, world, from, {
+          allowTypes: [oreBase(material)],
+          exposedOnly: true,      // JAMAIS un minerai enterré : on n'exploite que le visible
+          excludeWet: true,       // JAMAIS une grotte inondée (exigence explicite, non négociable)
+          pickTier: tier,
+          maxDist,
+          skip: exact,
+        });
+        if (!target || !nearSkipped(excluded, target)) break;
+        exact.add(keyOf(target));
+        target = null;
+      }
       if (target) src = 'memory';
     }
     if (!target) return { ok: got > 0, reason: got > 0 ? undefined : 'no_cave_target', got };
@@ -144,20 +230,35 @@ async function caveHunt(bot, opts = {}, token = null) {
       const dist = from ? Math.round(Math.hypot(target.x - from.x, target.y - from.y, target.z - from.z)) : null;
       emit({ type: 'diamond_cave_target', x: target.x, y: target.y, z: target.z, dist, ores: seen.count || 1, src });
     }
-    let reached = false;
-    try { reached = !!(await goTo(target)); } catch (e) { reached = false; }
-    if (token && token.cancelled) return { ok: false, reason: 'cancelled', got };
-    if (!reached) {
-      markSkip(target);                                    // inatteignable → on ne s'y acharne pas
+    const t0 = nowFn();
+    let tr;
+    try { tr = normalizeTravel(await goTo(target)); } catch (e) { tr = { reached: false, interrupted: false, why: 'error' }; }
+    if (token && token.cancelled) { result(target, t0, 'cancelled', { why: 'cancelled' }); return { ok: false, reason: 'cancelled', got }; }
+    if (!tr.reached && tr.interrupted) {
+      const e = interruptCount(target);
+      e.n++;
+      result(target, t0, 'interrupted', { why: tr.why || 'interrupted', tries: e.n });
+      if (e.n >= MAX_INTERRUPTS) softSkip.add(keyOf(target));
+      // Laisser le réflexe finir (fuite, couvert, détour) AVANT de reposer notre but : sinon on lui vole
+      // le pathfinder à notre tour.
+      if (opts.settle) { try { await opts.settle(); } catch (err) { /* best-effort */ } }
+      continue;
+    }
+    if (!tr.reached) {
+      markSkip(target);                                    // inatteignable → la grappe est mise de côté
       emit({ type: 'cave_unreachable', x: target.x, y: target.y, z: target.z });
+      result(target, t0, 'unreachable', { why: tr.why || 'unreachable' });
       continue;
     }
     let mined = 0;
     try { mined = (await mineAt(target)) || 0; } catch (e) { mined = 0; }
-    if (mined > 0) { got += mined; emit({ type: 'cave_mined', material, got }); }
-    else { markSkip(target); }
+    if (mined > 0) { got += mined; emit({ type: 'cave_mined', material, got }); result(target, t0, 'mined', { mined }); }
+    else { markSkip(target); result(target, t0, 'empty', { why: 'nothing_mined' }); }
   }
   return { ok: true, got };
 }
 
-module.exports = { caveHunt, pickTierOf, createSkipStore, sharedSkipStore, oreNamesOf };
+module.exports = {
+  caveHunt, pickTierOf, createSkipStore, sharedSkipStore, oreNamesOf,
+  CLUSTER_R, nearSkipped, approachBudgetMs, legWaypoint, normalizeTravel, MAX_INTERRUPTS,
+};

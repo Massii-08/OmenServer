@@ -196,9 +196,16 @@ const REACH_SCAN = ORE_REACH + 2;
  * @returns {{run: boolean, detour: boolean, walk: boolean, drops: boolean, approach: boolean,
  *            maxDist: number, scan: number}} — `maxDist` à passer à oreStepPlan, `scan` à findBlocks
  */
-function grabScope({ migrating = false, goal = null, ownGoal = null, stair = false } = {}) {
+function grabScope({ migrating = false, goal = null, ownGoal = null, stair = false, rareHunt = false } = {}) {
   if (migrating) {
     return { run: false, detour: false, walk: false, drops: false, approach: false, maxDist: 0, scan: 0 };
+  }
+  // `rareHunt` (24/10) : la chasse au diamant de grotte (caveHunt) VISE déjà ces minerais rares. Le
+  // détour du timer vers le MÊME diamant reposait son but par-dessus celui de l'approche → GoalChanged →
+  // `cave_unreachable` en 0,5-3 s (session-601 : 21 des 70 cibles, goal_trace oreGrabGoto 3/3 interrompus).
+  // Pendant la chasse : portée de bras seulement, ni détour ni approche — même entre deux jambes (goal null).
+  if (rareHunt) {
+    return { run: true, detour: false, walk: false, drops: false, approach: false, maxDist: PICKUP_REACH, scan: REACH_SCAN };
   }
   // `stair` (23/10) : une descente en escalier n'a pas de but posé entre deux paliers (dig à la main) —
   // c'est pourtant un trajet en cours : portée de bras seulement, sinon on avorte ses digs.
