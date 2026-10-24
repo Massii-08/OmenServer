@@ -365,7 +365,7 @@ const FOOD_RUN_COOLDOWN_MS = 180000;
 
 /**
  * PUR — faut-il lancer MAINTENANT une quête de nourriture (chasse/pêche/butin) ?
- * sig = { food: 0-20|inconnu, foodItems: nb d'items comestibles en poche (FOODS ∪ EMERGENCY_FOODS),
+ * sig = { food: 0-20|inconnu, health (optionnel : blessé < 16 → seuil relevé à 17), foodItems: nb d'items comestibles en poche (FOODS ∪ EMERGENCY_FOODS),
  *         now, lastRunAt, cooldownMs? }
  * → false si la faim est inconnue (`bot.food` n'est pas livré juste après une connexion : le lire
  *   via `Number(null) === 0` enverrait le bot chasser à chaque spawn), si elle est confortable, s'il
@@ -377,7 +377,10 @@ const FOOD_RUN_COOLDOWN_MS = 180000;
 function foodRunNeeded(sig = {}) {
   if (!sig) return false;
   if (!(typeof sig.food === 'number' && Number.isFinite(sig.food))) return false;
-  if (sig.food > FOOD_RUN_HUNGER) return false;
+  // Blessé (< 16 PV) sous 18 de faim (24/10) : la régénération est coupée DÈS 17, pas à 14 — un bot à
+  // 2 PV et faim 17 sans rien en poche ne remonte jamais. La quête part (cooldown inchangé).
+  const hurtNoRegen = typeof sig.health === 'number' && sig.health > 0 && sig.health < 16 && sig.food < 18;
+  if (sig.food > FOOD_RUN_HUNGER && !hurtNoRegen) return false;
   const stock = Number(sig.foodItems);
   if (Number.isFinite(stock) && stock > 0) return false;
   const now = Number(sig.now);

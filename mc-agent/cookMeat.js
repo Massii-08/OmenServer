@@ -86,11 +86,14 @@ function cookLotPlan(sig = {}) {
 }
 
 /**
- * PUR — le filet anti-faim peut-il manger du CRU ? Oui à faim ≤ 6, s'il est impossible de cuire
+ * PUR — le filet anti-faim peut-il manger du CRU ? Oui à faim ≤ 6, blessé (`hurt`), s'il est impossible de cuire
  * (ni four ni combustible), ou si on l'a déjà différé RAW_DEFER_MAX_MS sans trouver l'occasion de cuire.
  */
-function rawEatAllowed({ food, canCook = false, deferredMs = 0 } = {}) {
+function rawEatAllowed({ food, canCook = false, deferredMs = 0, hurt = false } = {}) {
   if (typeof food === 'number' && food <= RAW_EAT_HUNGER) return true;
+  // BLESSÉ sous 18 de faim (24/10, eatSafe.healEatWanted) : pas de régénération tant qu'on n'a pas mangé —
+  // différer le cru, c'est rester à 1 PV. La cuisson d'abord ne se décide qu'au filet (bot libre, PV ≥ 10).
+  if (hurt) return true;
   if (!canCook) return true;
   return Number(deferredMs) >= RAW_DEFER_MAX_MS;
 }

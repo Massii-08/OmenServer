@@ -22,7 +22,8 @@ const { attackNearest } = require('./skills/attackNearest');
 const { fleeFrom, isFleeHostile } = require('./skills/fleeFrom');
 const { installOxygenGuard } = require('./oxygen');
 const { installReflexes, RANGED, DEFENSIVE_HEALTH, isFleeOnlyMob, FOODS, EMERGENCY_FOODS, tryEat, pickFood, eatWanted } = require('./reflexes');
-const { lowHpStep, craftBlockedAtLowHp, LOWHP_RECOVERY_BUDGET_MS, LOWHP_FOOD_RUN_TTL_MS } = require('./lowhp');
+const { lowHpStep, craftBlockedAtLowHp, isLowHpSkip, LOWHP_RECOVERY_BUDGET_MS, LOWHP_FOOD_RUN_TTL_MS } = require('./lowhp');
+const { healEatWanted, eatEffective, itemCount, noEffectBackoffMs, eatLockWaitMs, cookFirstWhenHurt, EAT_LOCK_MS, MAX_HEAL_BITES } = require('./eatSafe');
 const { decideReaction } = require('./triggers');
 const { loadCommands, isAllowed, buildCommandDocs } = require('./commands');
 const { loadPolicy, isTrusted, parseTpRequest, parseTradeRequest, gateDecision, buildTrustDocs } = require('./trust');
@@ -3264,10 +3265,12 @@ async function recoverLowHp(goalName) {
       if (step === 'ok') { outcome = 'healed'; break; }
       if (step === 'proceed') { outcome = 'no_regen'; break; }
       if (step === 'eat') {
-        try { bot.stopDigging(); } catch (e) {}
-        const ate = await withTimeout(tryEat(bot), 8000, () => {});
-        if (ate === true) { eats++; emit({ type: 'ate', item: 'low_hp_recover', food: bot.food }); }
-        else { eatFails++; emit({ type: 'eat_failed', item: 'low_hp_recover', food: bot.food, reason: (ate && ate.reason) || 'no_eat' }); await sleep(1000); }
+        // 24/10 : le filet (hungerNetTick) mange jusqu'à faim ≥ 18, accepte le cru blessé, VÉRIFIE la bouchée
+        // (consume() peut rendre sans manger) et émet ate/heal_eat/eat_failed lui-même. Muré (`sealed`) :
+        // l'hostile derrière la paroi n'empêche pas de manger ; lowHpStep fait se murer AVANT de manger.
+        const ate = await hungerNetTick('low_hp_recover', { sealed });
+        if (ate === true) eats++;
+        else { eatFails++; await sleep(1000); }
       } else if (step === 'seal') {
         sealed = true;
         try { stopMotion(); } catch (e) {}
@@ -6652,11 +6655,12 @@ async function runSkillWithTelemetry(g) {
   // Le bot est mort pendant le skill : son résultat appartient à une vie finie (ni goal_failed, ni verdict
   // de zone, ni suite du but). Le planner de cette vie, jeton annulé par endLifeTasks, rend la main.
   if (lifeStale(_gen)) return (r && r.stale) ? { ok: false, reason: 'cancelled', stale: true } : dropStaleTask(g.skill, _gen);
-  // PV CRITIQUES (22/10) : un craft refusé (`low_hp_skip`) n'est PAS un échec du but — ni goal_failed,
+  // PV CRITIQUES (22/10) : un craft refusé (`low_hp_skip`, ou PRÉFIXÉ par un skill qui enchaîne les crafts,
+  // `gift_batch_craft:low_hp_skip` — 24/10, lowhp.isLowHpSkip) n'est PAS un échec du but — ni goal_failed,
   // ni noteZoneFailure, ni demande de bois. On RÉCUPÈRE (manger / se murer / sortie nourriture /
   // attendre, ≤ 60 s) puis on rend `wait:true` : le planner ne le compte ni dans failStreak ni dans le
   // fingerprint, et re-dérive le but au tour suivant (cf. planner.js MAX_WAIT_TURNS).
-  if (r && r.ok === false && r.reason === 'low_hp_skip') {
+  if (r && r.ok === false && isLowHpSkip(r.reason)) {
     if (taskToken.cancelled || lifeStale(_gen) || migrationOwnsBot()) return { ok: false, reason: 'cancelled' };
     const rec = await recoverLowHp(g.name);
     if (taskToken.cancelled || lifeStale(_gen) || migrationOwnsBot()) return { ok: false, reason: 'cancelled' };
@@ -12565,6 +12569,7 @@ async function onSpawn() {
     };
     installReflexes(bot, _reflexHooks);
     installFillCap();   // plafond de remblai : jamais 10 piles de cobble en poche (23/10)
+    try { wireEatLock(); } catch (e) { emit({ type: 'eat_lock_wire_failed', err: String((e && e.message) || e) }); }
     if (!IS_MAPPER) { try { wireSkeletonHurt(); } catch (e) { emit({ type: 'skeleton_hurt_wire_failed', err: String((e && e.message) || e) }); } }
     // TÉLÉPORTATION (#10) : détecte tout TP (admin /tp, /home, portail, respawn) → émet
     // teleport_detected{from,to} + ABANDONNE le goal pathfinder (il visait l'ancienne position —
@@ -13717,6 +13722,52 @@ setInterval(async () => {
 // (reflexes.eatWanted), et choisit le poulet cru / la chair en dernier (reflexes.pickFood).
 // Extrait en fonction de NIVEAU MODULE : le trou de nuit l'appelle aussi, avant tout craft.
 let _hungerBusy = false;
+// 24/10 (eatSafe.js) : 51 % des `ate` du filet étaient FACTICES (withTimeout ne lève jamais → `ate` émis
+// même quand consume() échouait ou rendait SANS manger). Chaque bouchée est désormais VÉRIFIÉE (faim
+// montée ou objet consommé) ; les ratés d'affilée espacent les essais. NIVEAU MODULE (piège #56).
+let _eatNoEffectStreak = 0;
+let _eatBackoffUntil = 0;
+
+/**
+ * UNE bouchée, sous verrou (bot._eatLockUntil : equip/dig étrangers attendent, cf. wireEatLock), VÉRIFIÉE.
+ * Rend true seulement si elle a eu lieu. Émet ate (+ heal_eat si blessé) ou eat_failed.
+ */
+async function eatBite(food, tag) {
+  const foodBefore = bot.food;
+  const hpBefore = bot.health;
+  const hurt = healEatWanted({ health: bot.health, food: bot.food });
+  let countBefore = null;
+  try { countBefore = itemCount(bot.inventory.items() || [], food.name); } catch (e) { countBefore = null; }
+  try { bot.stopDigging(); } catch (e) {}               // libère la main (la cause du silence)
+  bot._eatLockUntil = Date.now() + EAT_LOCK_MS;
+  let res;
+  try {
+    res = await withTimeout((async () => {
+      await bot.equip(food, 'hand');
+      await bot.consume();
+      return 'done';
+    })(), 8000, () => {});
+  } catch (e) { res = { reason: String((e && e.message) || e).slice(0, 60) }; }
+  finally { bot._eatLockUntil = 0; }
+  const fail = (reason) => {
+    _eatNoEffectStreak++;
+    _eatBackoffUntil = Date.now() + noEffectBackoffMs(_eatNoEffectStreak);
+    emit({ type: 'eat_failed', item: food.name, food: bot.food, hp: bot.health, via: tag, reason, streak: _eatNoEffectStreak });
+    return false;
+  };
+  // withTimeout ne lève jamais : erreur → {ok:false, reason:'error'}, délai → {reason:'timeout'}.
+  if (res !== 'done') return fail((res && res.reason) || 'error');
+  await sleep(250);                                     // update_health suit le statut « fini de manger »
+  let countAfter = null;
+  try { countAfter = itemCount(bot.inventory.items() || [], food.name); } catch (e) { countAfter = null; }
+  if (!eatEffective({ foodBefore, foodAfter: bot.food, countBefore, countAfter })) return fail('no_effect');
+  _eatNoEffectStreak = 0;
+  _eatBackoffUntil = 0;
+  emit(Object.assign({ type: 'ate', item: food.name, food: bot.food, hp: bot.health, via: tag }, ateFields(food.name)));
+  if (hurt) emit({ type: 'heal_eat', hp: hpBefore, food_before: foodBefore, food_after: bot.food, item: food.name, via: tag });
+  return true;
+}
+
 async function hungerNetTick(tag = 'net', { sealed = false } = {}) {
   if (_hungerBusy) return false;
   let ate = false;
@@ -13726,6 +13777,7 @@ async function hungerNetTick(tag = 'net', { sealed = false } = {}) {
     // vraie faim (≤ 8), elle, n'attend pas (historique). Muré dans l'abri (`sealed`) : le zombie
     // derrière la paroi ne frappe pas, on mange.
     const starving = bot.food <= 8;
+    if (!starving && Date.now() < _eatBackoffUntil) return false;   // bouchées sans effet : on espace
     if (!starving) {
       if (!eatWanted({ food: bot.food, health: bot.health })) return false;
       if (bot.pvp && bot.pvp.target) return false;
@@ -13735,39 +13787,76 @@ async function hungerNetTick(tag = 'net', { sealed = false } = {}) {
       try { td = _nearestThreatDist(); } catch (e) { td = null; }
       if (typeof td === 'number' && td <= 6) return false;
     }
-    let food = pickFood(bot.inventory.items() || []);
-    if (!food) return false;                             // vraiment rien à manger : ensureFood s'en occupe
-    // CRU (23/10, cookMeat.js) : 286 des 296 `ate via:net` des mineurs étaient du cru (2-3 points au lieu
-    // de 6-8). pickFood prend déjà le cuit d'abord ; le cru n'est mangé qu'à faim ≤ 6, s'il est
-    // impossible de cuire, ou après 90 s d'attente sans occasion. Sinon : on cuit (bot libre) ou on diffère.
-    if (isRawMeat(food.name)) {
-      const deferredMs = _rawDeferSince ? Date.now() - _rawDeferSince : 0;
-      if (!rawEatAllowed({ food: bot.food, canCook: !sealed && netMeatCookable(), deferredMs })) {
-        if (!netCookFree()) { if (!_rawDeferSince) _rawDeferSince = Date.now(); return false; }
-        _hungerBusy = true;
-        await cookMeatLot('net', { walk: false });
-        food = pickFood(bot.inventory.items() || []);
-        if (!food) return false;
-        // cuisson ratée → cooldown armé : netMeatCookable devient faux, le cru se mange tout de suite
-        if (isRawMeat(food.name) && !rawEatAllowed({ food: bot.food, canCook: netMeatCookable(), deferredMs })) return false;
+    // BLESSÉ (24/10) : un joueur mange jusqu'à 18 pour se soigner — on enchaîne les bouchées (≤ 4) tant
+    // que les PV sont sous 16 et la faim sous 18. Indemne : une bouchée par tick, comme avant.
+    for (let bite = 0; bite < MAX_HEAL_BITES; bite++) {
+      if (bite > 0 && !healEatWanted({ health: bot.health, food: bot.food })) break;
+      let food = pickFood(bot.inventory.items() || []);
+      if (!food) break;                                  // vraiment rien à manger : ensureFood s'en occupe
+      // CRU (23/10, cookMeat.js) : pickFood prend déjà le cuit d'abord ; indemne, le cru n'est mangé qu'à
+      // faim ≤ 6, s'il est impossible de cuire, ou après 90 s d'attente sans occasion. BLESSÉ (24/10) : le
+      // cru tout de suite — sauf bot libre, cuisson possible et PV ≥ 10 (cuire d'abord ne coûte rien).
+      if (isRawMeat(food.name)) {
+        const hurt = healEatWanted({ health: bot.health, food: bot.food });
+        const deferredMs = _rawDeferSince ? Date.now() - _rawDeferSince : 0;
+        const canCook = bite === 0 && !sealed && netMeatCookable();
+        const free = canCook && netCookFree();
+        const cookFirst = hurt && cookFirstWhenHurt({ health: bot.health, canCook, free });
+        if (cookFirst || !rawEatAllowed({ food: bot.food, canCook, deferredMs, hurt })) {
+          if (!free) { if (!_rawDeferSince) _rawDeferSince = Date.now(); break; }
+          _hungerBusy = true;
+          await cookMeatLot('net', { walk: false });
+          food = pickFood(bot.inventory.items() || []);
+          if (!food) break;
+          // cuisson ratée → cooldown armé : netMeatCookable devient faux, le cru se mange tout de suite
+          if (isRawMeat(food.name) && !rawEatAllowed({ food: bot.food, canCook: netMeatCookable(), deferredMs, hurt })) break;
+        }
       }
-    }
-    _rawDeferSince = 0;
-    _hungerBusy = true;
-    try { bot.stopDigging(); } catch (e) {}               // libère la main (la cause du silence)
-    try {
-      await withTimeout((async () => {
-        await bot.equip(food, 'hand');
-        await bot.consume();
-      })(), 8000, () => {});
+      _rawDeferSince = 0;
+      _hungerBusy = true;
+      if (!(await eatBite(food, tag))) break;
       ate = true;
-      emit(Object.assign({ type: 'ate', item: food.name, food: bot.food, hp: bot.health, via: tag }, ateFields(food.name)));
-    } catch (e) {
-      emit({ type: 'eat_failed', item: food.name, food: bot.food, via: tag, reason: String((e && e.message) || e).slice(0, 60) });
     }
   } catch (e) { /* watchdog : ne crash jamais */ }
   finally { _hungerBusy = false; }
   return ate;
+}
+
+// ── VERROU DE BOUCHÉE (24/10, eatSafe.eatLockWaitMs) ──────────────────────────────────────────────
+// mineflayer termine consume() SANS manger dès que l'objet en main change (heldItemChanged) — le
+// branch-mine ré-équipait sa pioche, l'aura son épée, pendant la bouchée. `bot.usingHeldItem` ne suffit
+// pas à les retenir : mineflayer le remet à faux sur N'IMPORTE quel paquet entity_status. Pendant le
+// verrou (≤ 2,6 s), un equip/unequip/dig étranger ATTEND ; un equip de nourriture (le repas) passe.
+// Une fois par process ; NIVEAU MODULE (piège #56).
+let _eatLockWired = false;
+function eatLockActive() {
+  try { return !!(bot && typeof bot._eatLockUntil === 'number' && bot._eatLockUntil > Date.now()); } catch (e) { return false; }
+}
+function _eatLockIsFood(item) {
+  const nm = item && typeof item === 'object' ? item.name : null;
+  return !!nm && (FOODS.has(nm) || EMERGENCY_FOODS.has(nm));
+}
+async function _eatLockGate() {
+  const t0 = Date.now();
+  let w = eatLockWaitMs({ lockUntil: bot._eatLockUntil, now: Date.now() });
+  while (w > 0 && Date.now() - t0 < EAT_LOCK_MS) {
+    await sleep(Math.min(w, 150));
+    w = eatLockWaitMs({ lockUntil: bot._eatLockUntil, now: Date.now() });
+  }
+}
+function wireEatLock() {
+  if (_eatLockWired) return false;
+  _eatLockWired = true;
+  for (const m of ['equip', 'unequip', 'dig']) {
+    if (typeof bot[m] !== 'function') continue;
+    const orig = bot[m];
+    bot[m] = function eatLocked(item) {
+      const self = this; const args = arguments;
+      if (!eatLockActive() || (m === 'equip' && _eatLockIsFood(item))) return orig.apply(self, args);
+      return _eatLockGate().then(() => orig.apply(self, args));
+    };
+  }
+  return true;
 }
 setInterval(() => { hungerNetTick().catch(() => {}); }, 5000);
 
@@ -13812,7 +13901,7 @@ async function foodRunTick() {
       y: _py, food: bot.food, foodItems: stock, now: Date.now(), lastTripAt: foodGateLoad(_fgSt).lastUnderTripAt,
     });
     if (!underDue && !foodRunNeeded({
-      food: bot.food, foodItems: stock, now: Date.now(), lastRunAt: _lastFoodRunAt,
+      food: bot.food, health: bot.health, foodItems: stock, now: Date.now(), lastRunAt: _lastFoodRunAt,
       cooldownMs: _foodRunCooldownMs,
     })) return;
     if (nightLockdownNow()) { nightGateNote('food_run', { food: bot.food }); return; }
@@ -14199,7 +14288,7 @@ function auraTick() {
     const now = Date.now();
     const plan = auraPlan({
       target, weapon: w ? w.name : null, held: bot.heldItem ? bot.heldItem.name : null,
-      digging: !!bot.targetDigBlock, eating: !!bot.usingHeldItem,
+      digging: !!bot.targetDigBlock, eating: !!bot.usingHeldItem || eatLockActive(),
       pvpTarget: bot.pvp ? bot.pvp.target : null, lastHitAt: _auraLastHitAt, now,
     });
     if (plan.act === 'equip') {

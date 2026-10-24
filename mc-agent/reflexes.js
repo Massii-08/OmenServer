@@ -5,6 +5,7 @@
 
 const { creeperPlan } = require('./creeper');
 const { DUEL_MIN_HP } = require('./fightBreaker');
+const { healEatWanted, EAT_LOCK_MS } = require('./eatSafe');
 
 const HUNGER_THRESHOLD = 6;   // sur 20
 const HEALTH_THRESHOLD = 6;   // sur 20
@@ -96,7 +97,8 @@ function pickFood(items) {
 function eatWanted({ food, health } = {}) {
   if (typeof food !== 'number' || Number.isNaN(food)) return false;
   if (food <= HUNGER_THRESHOLD) return true;
-  return typeof health === 'number' && health <= HURT_HEALTH && food <= REGEN_FOOD;
+  // 24/10 : « blessé » = sous 16 PV (eatSafe.HEAL_HP) — à 15 PV et faim 17 le bot ne régénérait pas.
+  return healEatWanted({ health, food });
 }
 
 /** Mange si faim basse — OU si blessé et que la faim ne permet plus la régen (phase B). */
@@ -108,8 +110,13 @@ async function tryEat(bot) {
   // mais on ne meurt pas de faim avec de la viande crue en poche.
   const food = pickFood(items);
   if (!food) return false;
-  await bot.equip(food, 'hand');
-  await bot.consume();
+  // Verrou de bouchée (24/10, eatSafe) : un equip/dig étranger pendant la consommation fait finir
+  // `consume()` SANS manger (heldItemChanged). Les wrappers d'index.js (wireEatLock) le respectent.
+  bot._eatLockUntil = Date.now() + EAT_LOCK_MS;
+  try {
+    await bot.equip(food, 'hand');
+    await bot.consume();
+  } finally { bot._eatLockUntil = 0; }
   return true;
 }
 

@@ -354,3 +354,16 @@ test('zombie collé + squelette → logique historique (fuite), onSkeleton non a
   assert.equal(calls.skel.length, 0);
   assert.equal(calls.flee, 1);
 });
+
+test('eatWanted : blessé sous 16 PV (24/10, eatSafe.HEAL_HP) et faim < 18 → manger ; tryEat pose le verrou de bouchée', async () => {
+  const { eatWanted, tryEat } = require('./reflexes');
+  assert.strictEqual(eatWanted({ food: 17, health: 15.5 }), true);
+  assert.strictEqual(eatWanted({ food: 13, health: 1.1 }), true);
+  assert.strictEqual(eatWanted({ food: 17, health: 16 }), false);
+  let lockSeen = 0;
+  const bot = { food: 13, health: 3, inventory: { items: () => [{ name: 'beef', count: 2 }] },
+    equip: async () => {}, consume: async () => { lockSeen = bot._eatLockUntil; } };
+  assert.strictEqual(await tryEat(bot), true);
+  assert.ok(lockSeen > Date.now() - 100, 'verrou posé pendant la bouchée');
+  assert.ok(!(bot._eatLockUntil > Date.now()), 'verrou levé après');
+});

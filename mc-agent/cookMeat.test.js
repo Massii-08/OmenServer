@@ -79,3 +79,9 @@ test('ateFields : `raw`/`cooked` dans l event ate', () => {
   assert.deepStrictEqual(C.ateFields('cooked_beef'), { raw: false, cooked: true });
   assert.deepStrictEqual(C.ateFields('bread'), { raw: false, cooked: false });
 });
+
+// 24/10 : à 1,1 PV et faim 13 la règle « cru seulement à faim ≤ 6 » laissait le bot SANS régénération.
+test('rawEatAllowed : BLESSÉ (faim < 18 coupe la régénération) → le cru se mange tout de suite', () => {
+  assert.strictEqual(C.rawEatAllowed({ food: 13, canCook: true, hurt: true }), true);
+  assert.strictEqual(C.rawEatAllowed({ food: 13, canCook: true, hurt: false }), false, 'indemne : on diffère comme avant');
+});

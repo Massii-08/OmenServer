@@ -13,7 +13,7 @@ test('lowHpStep : PV au-dessus du seuil critique → ok (aucun impact sur un bot
 });
 
 test('lowHpStep : de quoi manger et pas de régénération → manger d’abord', () => {
-  assert.strictEqual(lowHpStep({ health: 5, food: 13, hasFood: true, threatDist: 3 }), 'eat');
+  assert.strictEqual(lowHpStep({ health: 5, food: 13, hasFood: true, threatDist: 12 }), 'eat', 'hostile en vue mais pas collé : on mange');
   assert.strictEqual(lowHpStep({ health: 5, food: null, hasFood: true }), 'eat', 'faim inconnue : on mange');
 });
 
@@ -54,4 +54,20 @@ test('shelterCraftThrottled : un craft refusé (low_hp_skip) n est retenté qu u
   assert.strictEqual(shelterCraftThrottled({ blocked: false, lastSkipAt: 1000, now: 6000 }), false, 'PV remontés : craft tout de suite');
   assert.strictEqual(shelterCraftThrottled({ blocked: true, lastSkipAt: 0, now: 6000 }), false, 'jamais refusé : on essaie');
   assert.strictEqual(shelterCraftThrottled({ blocked: true, lastSkipAt: 9000, now: 6000 }), false, 'horloge à rebours : pas de gel');
+});
+
+// 24/10 — NethBot2 (session 606) : 1,1 PV, faim 13, `gift_batch_craft:low_hp_skip` ×16 en 10 min, puis mort.
+test('isLowHpSkip : la raison PRÉFIXÉE d un craft refusé déclenche aussi la récupération', () => {
+  const { isLowHpSkip } = require('./lowhp');
+  assert.strictEqual(isLowHpSkip('low_hp_skip'), true);
+  assert.strictEqual(isLowHpSkip('gift_batch_craft:low_hp_skip'), true);
+  assert.strictEqual(isLowHpSkip('craft:no_table:low_hp_skip'), true);
+  assert.strictEqual(isLowHpSkip('not_low_hp_skipped'), false);
+  assert.strictEqual(isLowHpSkip('gift_batch_craft:no_recipe'), false);
+  assert.strictEqual(isLowHpSkip(null), false);
+});
+
+test('lowHpStep : hostile COLLÉ et de quoi manger → se murer D ABORD, manger ensuite (jamais en plein combat)', () => {
+  assert.strictEqual(lowHpStep({ health: 5, food: 13, hasFood: true, threatDist: 3 }), 'seal');
+  assert.strictEqual(lowHpStep({ health: 5, food: 13, hasFood: true, threatDist: 3, sealed: true }), 'eat');
 });

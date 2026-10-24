@@ -171,7 +171,7 @@ test('craftSmart : PV critiques + hostile à 12 blocs → toujours refusé (inte
 
 test('runSkillWithTelemetry : low_hp_skip → recoverLowHp + wait:true, AVANT goal_failed / noteZoneFailure', () => {
   const body = fnSrc('runSkillWithTelemetry');
-  const iSkip = body.indexOf("r.reason === 'low_hp_skip'");
+  const iSkip = body.indexOf('isLowHpSkip(r.reason)');
   const iFail = body.indexOf("type: 'goal_failed'");
   assert.ok(iSkip > 0 && iFail > 0 && iSkip < iFail, 'le refus est intercepté avant le bloc d échec');
   assert.match(body, /await recoverLowHp\(g\.name\)/);
@@ -192,7 +192,8 @@ function recoverSandbox({ health = 4, food = 13, items = [], entities = [], onSl
     stopMotion: () => { sb.calls.push('stopMotion'); },
     nightSeal: async () => { sb.calls.push('seal'); return 3; },
     foodRunTick: async () => { sb.calls.push('food_run'); clock.t += 20000; },
-    tryEat: async (b) => { sb.calls.push('eat'); b.food = 20; b._items.length = 0; return true; },
+    // 24/10 : la récupération mange par le filet (hungerNetTick : bouchées vérifiées, cru accepté blessé).
+    hungerNetTick: async (tag) => { sb.calls.push('eat'); sb.eatTags = (sb.eatTags || []).concat([tag]); sb.bot.food = 20; sb.bot._items.length = 0; return true; },
     isFleeHostile, NEUTRAL_NO_PROVOKE, FOODS, EMERGENCY_FOODS,
     lowHpStep: lowhp.lowHpStep, LOWHP_RECOVERY_BUDGET_MS: lowhp.LOWHP_RECOVERY_BUDGET_MS, LOWHP_FOOD_RUN_TTL_MS: lowhp.LOWHP_FOOD_RUN_TTL_MS,
     bot: {
@@ -242,4 +243,13 @@ test('recoverLowHp : annulé → rend la main tout de suite', async () => {
   const r = await run(sb, "recoverLowHp('furnace')");
   assert.strictEqual(r.outcome, 'cancelled');
   assert.deepStrictEqual(sb.calls, []);
+});
+
+// 24/10 : un joueur à deux cœurs avec un zombie collé se mure AVANT de manger (la bouchée rengaine l'arme).
+test('recoverLowHp : hostile collé ET de quoi manger → se mure d abord, puis mange (muré) par le filet', async () => {
+  const sb = recoverSandbox({ health: 2, food: 13, items: [{ name: 'beef', count: 3 }], entities: [zombie(4)],
+    onSleep: (s) => { s.bot.health += 1; } });
+  await run(sb, "recoverLowHp('gift_craft')");
+  assert.deepStrictEqual(sb.calls.slice(0, 3), ['stopMotion', 'seal', 'eat']);
+  assert.deepStrictEqual(sb.eatTags, ['low_hp_recover']);
 });

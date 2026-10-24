@@ -33,8 +33,8 @@ function isCritical(health) {
  *   foodRunTriedRecently.
  * Rend :
  *   'ok'      PV au-dessus du seuil critique : rien à récupérer, le craft peut partir ;
+ *   'seal'    hostile à ≤ 8 blocs et pas encore muré (passe AVANT 'eat' depuis le 24/10) ;
  *   'eat'     de quoi manger et la faim coupe (ou coupera) la régénération ;
- *   'seal'    hostile à ≤ 8 blocs et pas encore muré ;
  *   'wait'    hostile en vue (≤ 16) OU régénération en cours (food ≥ 18) : rester immobile ;
  *   'food_run' rien à manger, pas de régénération : lancer la sortie nourriture bornée ;
  *   'proceed' rien à manger, sortie déjà tentée, personne en vue : attendre ne rendra AUCUN PV,
@@ -46,12 +46,24 @@ function lowHpStep(s = {}) {
   const food = typeof s.food === 'number' ? s.food : null;
   const regen = food != null && food > REGEN_FOOD;
   const threat = typeof s.threatDist === 'number' && Number.isFinite(s.threatDist) ? s.threatDist : null;
-  if (s.hasFood && !regen && (s.eatFails || 0) < LOWHP_MAX_EAT_FAILS) return 'eat';
+  // 24/10 : se murer AVANT de manger quand un hostile est collé — une bouchée rengaine l'arme 1,6 s et
+  // le coup suivant tombe pendant le repas (« reculer/se murer d'abord »). Muré, on mange.
   if (threat != null && threat <= LOWHP_SEAL_RADIUS && !s.sealed) return 'seal';
+  if (s.hasFood && !regen && (s.eatFails || 0) < LOWHP_MAX_EAT_FAILS) return 'eat';
   if (threat != null && threat <= LOWHP_THREAT_RADIUS) return 'wait';
   if (regen) return 'wait';
   if (!s.foodRunTriedRecently) return 'food_run';
   return 'proceed';
+}
+
+/**
+ * La raison d'échec d'un skill est-elle un craft refusé à PV critiques ? (24/10) Les skills qui
+ * enchaînent plusieurs crafts remontent la raison PRÉFIXÉE (`gift_batch_craft:low_hp_skip`) : elle
+ * échappait au `reason === 'low_hp_skip'` de runSkillWithTelemetry → goal_failed relancé en boucle
+ * (NethBot2, ×16 en 10 min à 1,1 PV) au lieu de la récupération.
+ */
+function isLowHpSkip(reason) {
+  return typeof reason === 'string' && /(^|:)low_hp_skip$/.test(reason);
 }
 
 /** Le craft doit-il être refusé ? (garde de craftSmart) */
@@ -75,6 +87,6 @@ function shelterCraftThrottled({ blocked, lastSkipAt, now } = {}) {
 
 module.exports = {
   shelterCraftThrottled, LOWHP_SKIP_RETRY_MS,
-  lowHpStep, craftBlockedAtLowHp, isCritical,
+  lowHpStep, craftBlockedAtLowHp, isCritical, isLowHpSkip,
   LOWHP_THREAT_RADIUS, LOWHP_SEAL_RADIUS, LOWHP_RECOVERY_BUDGET_MS, LOWHP_FOOD_RUN_TTL_MS, LOWHP_MAX_EAT_FAILS,
 };

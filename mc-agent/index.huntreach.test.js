@@ -9,6 +9,7 @@ const path = require('node:path');
 const vm = require('node:vm');
 const R = require('./reflexes');
 const C = require('./cookMeat');
+const E = require('./eatSafe');
 
 const SRC = fs.readFileSync(path.join(__dirname, 'index.js'), 'utf8');
 function grab(re, label) {
@@ -26,6 +27,11 @@ function sandbox(o = {}) {
     emit(e) { sb.events.push(e); },
     Object, Math, Number, Array, JSON, Promise, String, Error,
     pickFood: R.pickFood, eatWanted: R.eatWanted,
+    healEatWanted: E.healEatWanted, eatEffective: E.eatEffective, itemCount: E.itemCount,
+    noEffectBackoffMs: E.noEffectBackoffMs, cookFirstWhenHurt: E.cookFirstWhenHurt,
+    EAT_LOCK_MS: E.EAT_LOCK_MS, MAX_HEAL_BITES: E.MAX_HEAL_BITES,
+    sleep: async () => {},
+    locks: [],
     isRawMeat: C.isRawMeat, rawEatAllowed: C.rawEatAllowed, ateFields: C.ateFields,
     // Cuisson (23/10) : par défaut IMPOSSIBLE (ni four ni combustible) → le cru se mange comme avant.
     netMeatCookable: () => !!o.cookable && !sb.cookFailed,
@@ -45,12 +51,22 @@ function sandbox(o = {}) {
       pvp: { target: o.fighting ? { name: 'zombie' } : null },
       inventory: { items: () => sb.inv.map((i) => ({ name: i.name, count: i.count })) },
       stopDigging() {},
-      equip: async (it) => { sb.eaten.push(it.name); },
-      consume: async () => { if (o.consumeThrows) throw new Error('busy'); },
+      equip: async (it) => { sb.eaten.push(it.name); sb.held = it.name; },
+      // Une VRAIE bouchée consomme l'objet et remonte la faim (+4) ; `noEffect` = le bug du 24/10
+      // (consume() rendu sans manger : objet en main changé par le branch-mine / l'aura).
+      consume: async () => {
+        if (o.consumeThrows) throw new Error('busy');
+        sb.locks.push(sb.bot._eatLockUntil || 0);
+        if (o.noEffect) return;
+        const i = sb.inv.findIndex((x) => x.name === sb.held);
+        if (i >= 0) sb.inv.splice(i, 1);
+        sb.bot.food = Math.min(20, sb.bot.food + 4);
+      },
     },
   };
   vm.createContext(sb);
-  vm.runInContext("'use strict';\n" + [letSrc('_hungerBusy'), letSrc('_rawDeferSince'), fnSrc('hungerNetTick'),
+  vm.runInContext("'use strict';\n" + [letSrc('_hungerBusy'), letSrc('_rawDeferSince'), letSrc('_eatNoEffectStreak'),
+    letSrc('_eatBackoffUntil'), fnSrc('eatBite'), fnSrc('hungerNetTick'),
     'this.hungerNetTick = hungerNetTick;'].join('\n'), sb);
   return sb;
 }
@@ -104,29 +120,36 @@ test('index.js : timers et état de la chasse/des troupeaux au NIVEAU MODULE (pi
 test('filet : du cuit en poche → le CUIT d abord, event ate {raw:false, cooked:true}', async () => {
   const sb = sandbox({ food: 10, health: 5, items: ['beef', 'cooked_beef'], cookable: true });
   assert.strictEqual(await sb.hungerNetTick(), true);
-  assert.deepStrictEqual(sb.eaten, ['cooked_beef']);
+  assert.strictEqual(sb.eaten[0], 'cooked_beef', 'le cuit d abord');
   const ate = sb.events.find((e) => e.type === 'ate');
   assert.strictEqual(ate.raw, false);
   assert.strictEqual(ate.cooked, true);
   assert.strictEqual(sb.cooks.length, 0);
 });
 
-test('filet : cru + four et combustible + faim 14 → il CUIT puis mange le cuit', async () => {
-  const sb = sandbox({ food: 14, health: 5, items: ['mutton', 'mutton', 'mutton'], cookable: true });
+test('filet : cru + four et combustible + faim 14, blessé sans danger (PV 12, bot libre) → il CUIT puis mange le cuit', async () => {
+  const sb = sandbox({ food: 14, health: 12, items: ['mutton', 'mutton', 'mutton'], cookable: true });
   assert.strictEqual(await sb.hungerNetTick(), true);
   assert.deepStrictEqual(sb.cooks.map((c) => c[0]), ['net']);
   assert.strictEqual(sb.cooks[0][1].walk, false, 'depuis un timer : jamais de marche');
   assert.deepStrictEqual(sb.eaten, ['cooked_mutton']);
 });
 
-test('filet : cru, cuisson possible mais bot OCCUPÉ → il diffère (ne mange pas le cru)', async () => {
-  const sb = sandbox({ food: 14, health: 5, items: ['beef'], cookable: true, free: false });
+test('filet : cru, cuisson possible mais bot OCCUPÉ, INDEMNE à faim 8 → il diffère (ne mange pas le cru)', async () => {
+  const sb = sandbox({ food: 8, health: 20, items: ['beef'], cookable: true, free: false });
   assert.strictEqual(await sb.hungerNetTick(), false);
   assert.deepStrictEqual(sb.eaten, []);
 });
 
+test('filet : BLESSÉ, cuisson possible mais bot occupé → le cru TOUT DE SUITE (24/10 : différer = rester à 1 PV)', async () => {
+  const sb = sandbox({ food: 13, health: 1.1, items: ['beef'], cookable: true, free: false });
+  assert.strictEqual(await sb.hungerNetTick(), true);
+  assert.deepStrictEqual(sb.eaten, ['beef']);
+  assert.strictEqual(sb.cooks.length, 0);
+});
+
 test('filet : différé plus de 90 s sans occasion de cuire → il mange le cru', async () => {
-  const sb = sandbox({ food: 14, health: 5, items: ['beef'], cookable: true, free: false, now: 1000 });
+  const sb = sandbox({ food: 8, health: 20, items: ['beef'], cookable: true, free: false, now: 1000 });
   assert.strictEqual(await sb.hungerNetTick(), false);
   sb.Date = { now: () => 1000 + C.RAW_DEFER_MAX_MS };
   assert.strictEqual(await sb.hungerNetTick(), true);
@@ -165,4 +188,61 @@ test('index.js : état de la cuisson au NIVEAU MODULE (lu par le timer du filet,
   assert.match(SRC, /await cookMeatLot\('mine', \{ walk: false \}\)/, 'le hook du branch-mine cuit sans marcher');
   assert.match(SRC, /await cookMeatLot\('goal'\)/, 'entre deux buts');
   assert.match(SRC, /await cookBetweenGoals\(g\);/, 'runSkillWithTelemetry cuit entre deux buts');
+});
+
+
+// ─── SE SOIGNER EN MANGEANT, ET VÉRIFIER QU'ON A MANGÉ (24/10, eatSafe.js) ──────────────────────
+test('filet : blessé → il enchaîne les bouchées jusqu à faim ≥ 18 et émet heal_eat', async () => {
+  const sb = sandbox({ food: 10, health: 3, items: ['cooked_beef', 'cooked_beef', 'cooked_beef'] });
+  assert.strictEqual(await sb.hungerNetTick(), true);
+  assert.deepStrictEqual(sb.eaten, ['cooked_beef', 'cooked_beef'], '10 → 14 → 18 : deux bouchées');
+  assert.strictEqual(sb.bot.food, 18);
+  const h = sb.events.filter((e) => e.type === 'heal_eat');
+  assert.strictEqual(h.length, 2);
+  assert.deepStrictEqual([h[0].food_before, h[0].food_after, h[0].item, h[0].hp], [10, 14, 'cooked_beef', 3]);
+});
+
+test('filet : affamé mais INDEMNE → une seule bouchée (pas de gavage, pas de heal_eat)', async () => {
+  const sb = sandbox({ food: 4, health: 20, items: ['bread', 'bread', 'bread'] });
+  assert.strictEqual(await sb.hungerNetTick(), true);
+  assert.deepStrictEqual(sb.eaten, ['bread']);
+  assert.ok(!sb.events.some((e) => e.type === 'heal_eat'));
+});
+
+test('filet : consume() rendu SANS effet (objet en main changé) → eat_failed no_effect, PAS de faux ate', async () => {
+  const sb = sandbox({ food: 17, health: 11.4, items: ['cooked_porkchop', 'cooked_porkchop'], noEffect: true, now: 1000 });
+  assert.strictEqual(await sb.hungerNetTick(), false);
+  assert.ok(!sb.events.some((e) => e.type === 'ate'), 'le cooked_porkchop toutes les 5 s à faim 17');
+  const f = sb.events.find((e) => e.type === 'eat_failed');
+  assert.strictEqual(f.reason, 'no_effect');
+});
+
+test('filet : bouchées sans effet répétées → backoff (pas de spin toutes les 5 s)', async () => {
+  const sb = sandbox({ food: 17, health: 11.4, items: ['cooked_porkchop'], noEffect: true, now: 1000 });
+  await sb.hungerNetTick();                         // raté 1 : retente au tick suivant
+  await sb.hungerNetTick();                         // raté 2 : backoff 15 s
+  assert.strictEqual(sb.eaten.length, 2);
+  sb.Date = { now: () => 1000 + 10000 };
+  assert.strictEqual(await sb.hungerNetTick(), false);
+  assert.strictEqual(sb.eaten.length, 2, 'en backoff : pas de 3e essai');
+  sb.Date = { now: () => 1000 + 16000 };
+  await sb.hungerNetTick();
+  assert.strictEqual(sb.eaten.length, 3, 'backoff écoulé : on retente');
+});
+
+test('filet : le verrou de bouchée est posé PENDANT consume et levé après', async () => {
+  const sb = sandbox({ food: 13, health: 5, items: ['bread'], now: 5000 });
+  await sb.hungerNetTick();
+  assert.ok(sb.locks[0] > 5000, 'verrou actif pendant la consommation');
+  assert.ok(!(sb.bot._eatLockUntil > 5000), 'levé ensuite');
+});
+
+test('index.js : verrou de bouchée câblé (equip/dig étrangers attendent, aura le lit) ; état au niveau MODULE', () => {
+  assert.match(SRC, /^let _eatNoEffectStreak = 0;$/m);
+  assert.match(SRC, /^let _eatBackoffUntil = 0;$/m);
+  assert.match(SRC, /^let _eatLockWired = false;$/m);
+  assert.match(SRC, /^function wireEatLock\(\)/m);
+  assert.match(SRC, /try \{ wireEatLock\(\); \}/, 'branché au spawn, tous rôles');
+  assert.match(SRC, /eating: !!bot\.usingHeldItem \|\| eatLockActive\(\)/, 'l aura ne rengaine pas pendant la bouchée');
+  assert.match(SRC, /isLowHpSkip\(r\.reason\)/, 'raison préfixée → récupération');
 });

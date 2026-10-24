@@ -65,7 +65,7 @@ function sandbox({ entities = [], held = null, items = [], digging = false, usin
   // Le VRAI verrou, comme posé dans onSpawn (horloge du bac à sable).
   run(sb, 'this.__hold = _creeperHold;');
   GH.installGoalHold(sb.bot.pathfinder, sb.__hold, () => clock.t);
-  for (const f of ['_auraEmit', 'canSeeEntityNow', 'auraTick', 'creeperTick']) run(sb, fnSrc(f));
+  for (const f of ['_auraEmit', 'canSeeEntityNow', 'eatLockActive', 'auraTick', 'creeperTick']) run(sb, fnSrc(f));
   return sb;
 }
 const flush = () => new Promise((r) => setImmediate(r));
@@ -210,4 +210,19 @@ test('index.js : le verrou de but est posé dans onSpawn par-dessus goalTrace, u
   const iTrace = SRC.indexOf('installGoalTrace(bot.pathfinder');
   const iHold = SRC.indexOf('installGoalHold(bot.pathfinder');
   assert.ok(iTrace > 0 && iHold > iTrace, 'hold APRÈS trace (enveloppe extérieure)');
+});
+
+// 24/10 (eatSafe.js) : l'aura ré-équipait l'épée pendant la bouchée → consume() rendu SANS manger ; et
+// `usingHeldItem` est remis à faux par n'importe quel entity_status. Le verrou de bouchée la retient.
+test('auraTick : bouchée en cours (verrou) → ni equip ni coup, même si usingHeldItem est faux', async () => {
+  const sb = sandbox({ entities: [mob('zombie', 2)], held: 'cooked_beef', items: ['cooked_beef', 'stone_sword'] });
+  sb.bot._eatLockUntil = sb.clock.t + 2000;
+  run(sb, 'auraTick()');
+  await flush();
+  assert.ok(!sb.calls.some((c) => c.startsWith('equip:')), JSON.stringify(sb.calls));
+  sb.bot._eatLockUntil = 0;
+  sb.clock.t += 700;
+  run(sb, 'auraTick()');
+  await flush();
+  assert.deepStrictEqual(sb.calls.filter((c) => c.startsWith('equip:')), ['equip:stone_sword'], 'verrou levé : l aura reprend');
 });
