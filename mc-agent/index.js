@@ -48,6 +48,10 @@ const { createGoalTrace, installGoalTrace } = require('./goalTrace');   // DIAG 
 const vec3Lib = require('vec3'); // watchdog anti-jam (blocs barrants)
 const { realThreat, woodHidePlan, woodHideStateAt, hasLineOfSight } = require('./threatgate');
 const { creeperPlan, creeperIsThreat, isCreeperFusing, awayPoint: creeperAwayPoint, fleeDone: creeperFleeDone, FLEE_KEEP: CREEPER_FLEE_KEEP } = require('./creeper');
+const {
+  HANDOFF_MAX_TRIES, HANDOFF_ENTITY_WAIT_MS, HANDOFF_APPROACH_MS, HANDOFF_POLL_MS, HANDOFF_BEAT_CHECK_MS,
+  HANDOFF_RECEIVE_WAIT_MS, isGiftForMe, slotsToFree, pickupTargets, tossReady, deliveryProof, handoffNext, receiverNext,
+} = require('./handoff');   // remise en main propre d'une pièce d'armure (24/10)
 const { createHoldState, installGoalHold, holdSetGoal, hold: holdGoal, release: releaseGoalHold } = require('./goalHold');   // fuite creeper : le planner ne vole plus le but
 const { auraTarget, auraPlan } = require('./aura');
 const { gather, woodExpeditionCount, woodExploreShape } = require('./skills/gather');
@@ -1376,6 +1380,199 @@ function releaseGiftTarget(name) {
   if (_giftTarget === name) _giftTarget = null;
   if (_giftBatch && _giftBatch.to === name) _giftBatch = null;
   _giftAt = 0;
+}
+
+// ─── REMISE EN MAIN PROPRE (24/10, cf. handoff.js) ──────────────────────────────────────────────
+// Vécu : `gift_delivered` 500 ms après le TP puis `/home work` 300 ms plus tard ; MapBot1 (poche
+// pleine) et NethBot3 (reparti miner) n'ont jamais ramassé — 1 h 30 à 2/4, toute l'équipe retenue en
+// mapper_armor. Le donneur ne déclare plus rien sans preuve ; le receveur s'arrête, fait de la place,
+// ramasse et s'équipe. ⚠️ Niveau MODULE (piège #56) : lus par le handler messagestr et par le skill.
+let _giftRecvBusy = false;          // une réception à la fois
+
+/** Objets au sol connus du client → [{ id, name, x, y, z }]. Jamais de throw. */
+function _groundItems() {
+  const out = [];
+  try {
+    for (const e of Object.values(bot.entities || {})) {
+      if (!e || !e.position || e.isValid === false) continue;
+      if (e.name !== 'item' && e.displayName !== 'Item') continue;
+      let name = null;
+      try { const it = e.getDroppedItem && e.getDroppedItem(); name = it ? it.name : null; } catch (err) { name = null; }
+      out.push({ id: e.id, name, x: e.position.x, y: e.position.y, z: e.position.z });
+    }
+  } catch (err) { /* best-effort */ }
+  return out;
+}
+
+/** Nb de pièces `names` en poche. */
+function _pocketCount(names) {
+  const set = new Set(names || []);
+  let n = 0;
+  try { for (const it of (bot.inventory && bot.inventory.items()) || []) if (it && set.has(it.name)) n += it.count || 1; } catch (e) {}
+  return n;
+}
+
+/** Entité du joueur `name` (attend ≤ maxMs qu'elle apparaisse après un TP). */
+async function _waitPlayerEntity(name, maxMs) {
+  const t0 = Date.now();
+  for (;;) {
+    const ent = bot.players && bot.players[name] && bot.players[name].entity;
+    if (ent && ent.position) return ent;
+    if (Date.now() - t0 >= maxMs) return null;
+    await sleep(HANDOFF_POLL_MS);
+  }
+}
+
+/**
+ * DONNEUR : approche (≤ 2 blocs), regarde, jette `pieces`, puis attend la PREUVE (ramassage vu, ou
+ * heartbeat du receveur postérieur au jet qui ne les liste plus). Sans preuve : reprend ses objets et
+ * réessaie une fois. → { given, by, tries }. `given` = 0 tant que rien n'est prouvé. Jamais de throw.
+ */
+async function handOffPieces(to, pieces) {
+  const gen = _lifeGen;
+  let tries = 0;
+  let collected = 0;
+  let tossedNames = [];
+  const onCollect = (collector, collectedEnt) => {
+    try {
+      if (!collector || collector.username !== to) return;
+      let name = null;
+      try { const it = collectedEnt && collectedEnt.getDroppedItem && collectedEnt.getDroppedItem(); name = it ? it.name : null; } catch (e) {}
+      if (name == null || pieces.includes(name)) collected += 1;
+    } catch (e) { /* jamais de throw dans un handler */ }
+  };
+  try { bot.on('playerCollect', onCollect); } catch (e) {}
+  try {
+    while (tries < HANDOFF_MAX_TRIES) {
+      tries += 1;
+      if (lifeStale(gen)) return { given: 0, by: null, tries, reason: 'life_changed' };
+      const ent = await _waitPlayerEntity(to, HANDOFF_ENTITY_WAIT_MS);
+      if (!ent) { emit({ type: 'gift_retry', to, try: tries, reason: 'not_visible' }); continue; }
+      const me = bot.entity && bot.entity.position;
+      let dist = me ? me.distanceTo(ent.position) : Infinity;
+      if (!tossReady(dist)) {
+        try { await gotoWithTimeout(bot, new pfGoals.GoalNear(ent.position.x, ent.position.y, ent.position.z, 1), HANDOFF_APPROACH_MS); } catch (e) {}
+        const me2 = bot.entity && bot.entity.position;
+        const e2 = bot.players && bot.players[to] && bot.players[to].entity;
+        dist = (me2 && e2 && e2.position) ? me2.distanceTo(e2.position) : Infinity;
+      }
+      if (!tossReady(dist)) { emit({ type: 'gift_retry', to, try: tries, reason: 'too_far', dist: Math.round(dist * 10) / 10 }); continue; }
+      const tgt = (bot.players[to] && bot.players[to].entity) || ent;
+      try { await bot.lookAt(tgt.position.offset(0, 1.0, 0), true); } catch (e) {}
+      tossedNames = [];
+      collected = 0;
+      for (const piece of pieces) {
+        const it = ((bot.inventory && bot.inventory.items()) || []).find((i) => i && i.name === piece);
+        if (!it) continue;
+        try { await bot.tossStack(it); tossedNames.push(piece); } catch (e) {}
+      }
+      if (!tossedNames.length) return { given: 0, by: null, tries, reason: 'nothing_to_toss' };
+      const tossAt = Date.now();
+      emit({ type: 'gift_tossed', to, pieces: tossedNames.slice(), try: tries, dist: Math.round(dist * 10) / 10 });
+      // Un pas en arrière : le délai de ramassage (2 s) vaut pour TOUT LE MONDE — collé au receveur, le
+      // donneur reprendrait ses propres objets une fois sur deux.
+      try { bot.setControlState('back', true); await sleep(600); } catch (e) {} finally { try { bot.setControlState('back', false); } catch (e) {} }
+      let lastBeatCheck = 0;
+      let receiver = null;
+      let next = 'wait';
+      while (next === 'wait') {
+        if (lifeStale(gen)) return { given: 0, by: null, tries, reason: 'life_changed' };
+        await sleep(HANDOFF_POLL_MS);
+        const now = Date.now();
+        if (presence && now - lastBeatCheck >= HANDOFF_BEAT_CHECK_MS) {
+          lastBeatCheck = now;
+          try { receiver = (presence.list() || []).find((m) => m && m.name === to) || null; } catch (e) { receiver = null; }
+        }
+        const proof = deliveryProof({ pieces: tossedNames, collected, receiver, tossAt, pocketBack: _pocketCount(tossedNames) });
+        next = handoffNext({ proof, elapsedMs: now - tossAt, tries });
+        if (next === 'delivered') {
+          emit({ type: 'gift_confirmed', to, by: proof.by, pieces: tossedNames.slice(), took_ms: now - tossAt });
+          return { given: tossedNames.length, by: proof.by, tries };
+        }
+      }
+      // Pas de preuve : on reprend ce qui traîne encore (le receveur a pu ne pas pouvoir ramasser).
+      for (const g of pickupTargets({ self: bot.entity.position, items: _groundItems(), radius: 8 })) {
+        if (g.name != null && !tossedNames.includes(g.name)) continue;
+        try { await gotoWithTimeout(bot, new pfGoals.GoalNear(g.x, g.y, g.z, 0), 5000); } catch (e) {}
+      }
+      await sleep(800);
+      emit({ type: 'gift_retry', to, try: tries, reason: next === 'give_up' ? 'unconfirmed_final' : 'unconfirmed',
+        back: _pocketCount(tossedNames) });
+      if (next === 'give_up') break;
+    }
+    return { given: 0, by: null, tries, reason: 'unconfirmed' };
+  } finally {
+    try { bot.removeListener('playerCollect', onCollect); } catch (e) {}
+  }
+}
+
+/**
+ * RECEVEUR : un coéquipier qui tient `marmor:<moi>` vient de demander un /tpa → je m'arrête (verrou de
+ * but), je fais de la place, j'attend ≤ 30 s, je ramasse les cadeaux à ≤ 4 blocs et je m'équipe aussitôt.
+ * Fire-and-forget depuis le handler messagestr. Jamais de throw.
+ */
+async function receiveGiftFrom(donor) {
+  if (_giftRecvBusy) return;
+  _giftRecvBusy = true;
+  const gen = _lifeGen;
+  const t0 = Date.now();
+  const wornBefore = _wornArmor().size;
+  let outcome = 'timeout';
+  emit({ type: 'gift_receive_wait', from: donor });
+  try {
+    try { if (bot.targetDigBlock && typeof bot.stopDigging === 'function') bot.stopDigging(); } catch (e) {}
+    // Le verrou de but est PARTAGÉ avec la fuite creeper : on ne le vole jamais à un autre propriétaire.
+    const holdFree = () => !(_creeperHold.until > Date.now() && _creeperHold.owner && _creeperHold.owner !== 'gift_receive');
+    if (holdFree()) {
+      holdGoal(_creeperHold, t0 + HANDOFF_RECEIVE_WAIT_MS, 'gift_receive');
+      try { holdSetGoal(bot.pathfinder, _creeperHold, null); } catch (e) {}
+    }
+    // Place : une case par pièce attendue (l'armure ne s'empile pas). Poche pleine = rien ne se ramasse.
+    try {
+      const expected = missingIronPieces(buildCtxInv(bot), [..._wornArmor()]).length || 1;
+      let toFree = slotsToFree({ emptySlots: bot.inventory.emptySlotCount(), expected });
+      const tossed = [];
+      while (toFree > 0) {
+        const junk = pickJunkToToss(bot.inventory.items(), { exclude: [] });
+        if (!junk) break;
+        await bot.tossStack(junk);
+        tossed.push(junk.name + ':' + junk.count);
+        toFree -= 1;
+      }
+      if (tossed.length) emit({ type: 'gift_receive_room', tossed });
+    } catch (e) { /* best-effort */ }
+    let donorSeen = false;
+    let donorGoneAt = 0;
+    for (;;) {
+      if (lifeStale(gen)) { outcome = 'life_changed'; break; }
+      const now = Date.now();
+      const me = bot.entity && bot.entity.position;
+      const dEnt = bot.players && bot.players[donor] && bot.players[donor].entity;
+      const near = !!(me && dEnt && dEnt.position && me.distanceTo(dEnt.position) <= 8);
+      if (near) { donorSeen = true; donorGoneAt = 0; } else if (donorSeen && !donorGoneAt) donorGoneAt = now;
+      const ground = me ? pickupTargets({ self: me, items: _groundItems() }) : [];
+      const gotAll = missingIronPieces(buildCtxInv(bot), [..._wornArmor()]).length === 0;
+      const step = receiverNext({ elapsedMs: now - t0, gotAll, groundLeft: ground.length, donorSeen,
+        donorGoneMs: donorGoneAt ? now - donorGoneAt : 0 });
+      if (step === 'done' || step === 'donor_left' || step === 'timeout') { outcome = step; break; }
+      if (step === 'collect' && holdFree()) {
+        const g = ground[0];
+        holdGoal(_creeperHold, Math.max(now + 3000, t0 + HANDOFF_RECEIVE_WAIT_MS), 'gift_receive');
+        try { holdSetGoal(bot.pathfinder, _creeperHold, new pfGoals.GoalNear(g.x, g.y, g.z, 0)); } catch (e) {}
+      }
+      await sleep(HANDOFF_POLL_MS);
+    }
+  } finally {
+    if (_creeperHold.owner === 'gift_receive') {
+      releaseGoalHold(_creeperHold);
+      try { bot.pathfinder.setGoal(null); } catch (e) {}
+    }
+    try { await ensureArmor({ ironKeep: 0 }); } catch (e) { /* best-effort */ }
+    const worn = _wornArmor().size;
+    emit({ type: 'gift_received', from: donor, outcome, worn, gained: worn - wornBefore, took_ms: Date.now() - t0 });
+    try { if (_beatNow) _beatNow(); } catch (e) {}   // le donneur attend ce heartbeat comme preuve
+    _giftRecvBusy = false;
+  }
 }
 
 // ─── BÛCHERON D'ÉQUIPE (Massii 20/10) ────────────────────────────────────────────────────────────
@@ -2948,7 +3145,7 @@ const SKILL_TIMEOUT_MS = Number(args.skillTimeout || 90000);
 // (vécu V3Res1/4 : 480s × 4 tentatives = 32 min d'anneaux stériles avant le stall).
 // huntCook + FOOD_TRIP_MS (75 s) : l'EXPÉDITION vers le gibier (marche vers la cellule à animaux la plus
 // proche connue) a son propre plafond, hors du budget de 60 s — un garde-fou de 90 s la couperait en route.
-const SKILL_TIMEOUTS = { descendDiagonal: 900000, branchMine: 900000, caveHunt: 900000, caveIron: 600000, huntCook: 90000 + FOOD_TRIP_MS + COOK_LOT_HARD_MS, ensureBed: 240000, smeltCharcoal: 300000, gather: 480000, gatherLog: 180000, ensurePick: 480000, fish: 300000, deliverWood: 120000, lumberjackIdle: 330000, lumberjackArmor: 160000, lumberjackForestTrip: LJ_FOREST_TRIP_MS + 20000 };
+const SKILL_TIMEOUTS = { descendDiagonal: 900000, branchMine: 900000, caveHunt: 900000, caveIron: 600000, huntCook: 90000 + FOOD_TRIP_MS + COOK_LOT_HARD_MS, ensureBed: 240000, smeltCharcoal: 300000, gather: 480000, gatherLog: 180000, ensurePick: 480000, fish: 300000, deliverWood: 120000, lumberjackIdle: 330000, lumberjackArmor: 160000, lumberjackForestTrip: LJ_FOREST_TRIP_MS + 20000, deliverMapperArmor: 180000 };   // /tpa 20 s + remise prouvée ≤ 2 × ~40 s (24/10)
 function timeoutFor(skill) { return SKILL_TIMEOUTS[skill] || SKILL_TIMEOUT_MS; }
 /** Champs « pourquoi » d'un résultat takeCover pour l'event `take_cover` (22/10 : `placed:0 ok:false`
  *  sans raison, session 155 — on ne savait pas si rien n'était posable, refusé, ou expiré). */
@@ -4037,11 +4234,23 @@ async function runGoalSkill(goal, gen) {
       emit({ type: 'gift_tpa_failed', to });
       return { ok: false, reason: 'tpa_failed' };
     }
-    let given = 0;
-    for (const piece of _pieces) {
-      try { const r = await giveItem(bot, { name: piece }, to); if (r && r.ok) given += 1; } catch (e) {}
+    // Remise en main propre (24/10, handoff.js) : approche ≤ 2 blocs, regard, jet, puis PREUVE de
+    // ramassage — sinon on reprend ses objets et on réessaie. `gift_delivered` n'est émis QUE prouvé.
+    const ho = await handOffPieces(to, _pieces.filter((p) => _pocketCount([p]) > 0));
+    const given = ho.given;
+    if (given <= 0) {
+      // Non prouvé : rien n'est marqué livré. Les pièces reprises restent en poche (le lot se recalcule),
+      // la réservation est rendue pour qu'un coéquipier ou nous-mêmes réessayions plus tard.
+      emit({ type: 'gift_unconfirmed', to, tries: ho.tries, reason: ho.reason || null, back: _pocketCount(_pieces) });
+      try { if (_teamClaims) _teamClaims.release('marmor:' + to); } catch (e) {}
+      // 90 s de répit pour CE receveur (pas de /tpa en rafale), puis il redevient servable.
+      _giftDone.set(to, Date.now() - (GIFT_DONE_TTL_MS - GIFT_BATCH_REDO_MS));
+      _giftTarget = null; _giftAt = 0;
+      ljAfterGift(to, 0);
+      await returnToWork('gift_unconfirmed');
+      return { ok: false, reason: 'gift_unconfirmed' };
     }
-    emit({ type: 'gift_delivered', to, pieces: given });
+    emit({ type: 'gift_delivered', to, pieces: given, by: ho.by });
     // Lot partiel : le cartographe reste à finir → re-servable après son prochain heartbeat (90 s) au
     // lieu des 5 min d'un set complet. Le heartbeat le publiera avec ses NOUVELLES pièces manquantes.
     _giftDone.set(to, _batch && given > 0 ? Date.now() - (GIFT_DONE_TTL_MS - GIFT_BATCH_REDO_MS) : Date.now());
@@ -7696,7 +7905,9 @@ async function ensureArmor(opts = {}) {
     try {
       await bot.equip(it, dest);
       worn.add(name);
-      if (isRetry) emit({ type: 'armor_equipped', piece: name, dest, retry: true });
+      // Toujours émis (24/10) : sans lui, impossible de voir dans les logs qu'une pièce reçue a été enfilée.
+      emit({ type: 'armor_equipped', slot: dest, item: name, piece: name, dest, retry: !!isRetry });
+      try { if (_beatNow && /_(helmet|chestplate|leggings|boots)$/.test(name)) _beatNow(); } catch (e) {}
       return { ok: true };
     } catch (e) {
       const reason = (e && e.message) ? String(e.message).slice(0, 80) : 'error';
@@ -12575,6 +12786,11 @@ bot.on('messagestr', (msg) => {
   const tpTrusted = tpWho && (isTrusted(tpWho, policy.trusted) || (policy.group_bots || []).includes(tpWho));
   if (tpTrusted && isAllowed('/tpaccept', whitelist)) {
     bot.chat('/tpaccept'); emit({ type: 'command', command: '/tpaccept', reason: 'tp:' + tpWho });
+    // LIVRAISON qui me vise (le demandeur tient `marmor:<moi>`) : je m'arrête et je ramasse (24/10).
+    try {
+      const claim = _teamClaims ? _teamClaims.peek('marmor:' + bot.username) : null;
+      if (isGiftForMe({ claim, me: bot.username, requester: tpWho })) receiveGiftFrom(tpWho).catch(() => {});
+    } catch (e) { /* best-effort */ }
     return;
   }
   if (policy.trade) {

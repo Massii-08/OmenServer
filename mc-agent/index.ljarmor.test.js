@@ -248,13 +248,13 @@ test('câblage : ctxExtra, dispatch, télémétrie, heartbeat `missing`, timeout
   assert.match(SRC, /if \(goal\.skill === 'lumberjackForestTrip'\) return lumberjackForestTripSkill\(\);/);
   assert.match(SRC, /if \(isLumberjackObjective\(\)\) return ljCraftGiftSkill\(\);/);
   assert.match(SRC, /const _pieces = ljGiftPiecesFor\(to\) \|\| \(_batch \? _batch\.pieces\.slice\(\) : null\) \|\| GIFT_PIECES;/);   // + lot (20/10)
-  assert.match(SRC, /for \(const piece of _pieces\) \{/);
+  assert.match(SRC, /await handOffPieces\(to, _pieces\.filter\(/);   // remise en main propre (24/10) : SES pièces seulement
   assert.match(SRC, /noteLumberjackStockFail\(g\.name, r && r\.reason\);/);
   assert.match(SRC, /if \(st\) st\.missing = missingIronPieces\(invB, \[\.\.\._wornArmor\(\)\]\);/);
   assert.match(SRC, /lumberjackArmor: 160000, lumberjackForestTrip: LJ_FOREST_TRIP_MS \+ 20000/);
   // ljAfterGift sur TOUS les chemins de deliverMapperArmor (sinon _ljGift resterait posé → boucle)
   const deliver = SRC.slice(SRC.indexOf("if (goal.skill === 'deliverMapperArmor')"), SRC.indexOf("if (goal.skill === 'ensureArmor')"));
-  assert.strictEqual((deliver.match(/ljAfterGift\(to, /g) || []).length, 4);
+  assert.strictEqual((deliver.match(/ljAfterGift\(to, /g) || []).length, 5);   // + sortie « non prouvée » (24/10)
 });
 
 // ─── MINEURS D'ABORD (23/10, run live : bottes+casque livrés à MapBot2, NethBot2/3 à 2 pièces) ──────
