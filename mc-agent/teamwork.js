@@ -24,17 +24,18 @@ const INGOTS_PER_PIECE = { helmet: 5, chestplate: 8, leggings: 7, boots: 4 };
 function teamStatus(inv, worn, wood) {
   const i = inv || {};
   const w = new Set(worn || []);
+  // Fer OU MIEUX (24/10 soir) : un mineur en armure diamant qui a cédé son vieux fer restait « nu »
+  // pour l'équipe (iron_help, phase d'équipe, éligibilité). Le diamant/netherite couvre le slot.
+  const has = (p) => ['iron', 'diamond', 'netherite'].some((m) => w.has(`${m}_${p}`) || (i[`${m}_${p}`] || 0) > 0);
   let armor = 0;
   for (const p of PIECES) {
-    const name = `iron_${p}`;
-    if (w.has(name) || (i[name] || 0) > 0) armor += 1;
+    if (has(p)) armor += 1;
   }
   const ingots = i.iron_ingot || 0;
   // Lingots encore nécessaires pour compléter MON armure (les pièces manquantes uniquement).
   let need = 0;
   for (const p of PIECES) {
-    const name = `iron_${p}`;
-    if (!w.has(name) && !(i[name] || 0)) need += INGOTS_PER_PIECE[p];
+    if (!has(p)) need += INGOTS_PER_PIECE[p];
   }
   const st = { armor, ingots, need };
   if (wood && wood.want > 0 && Number.isFinite(wood.at)) { st.woodWant = wood.want; st.woodAt = wood.at; }
@@ -293,18 +294,21 @@ function latchedTeamPhase({ raw, latch, mates, selfName, selfRole, selfWorn, now
  * diamants parmi les ouvriers frais 4/4 PORTÉS (soi compris) ; nom ASC en départage. Le meilleur mineur
  * de diamant n'est jamais celui qu'on détourne. null si personne ne peut servir.
  */
-function pickDivertedMiner({ selfName, selfDiamonds, selfWorn, mates, now, freshMs, minWorn = 4 } = {}) {
+// DONNEUR DE FER (24/10 soir) : un mineur en armure diamant complète, ≥ 24 diamants en poche et du fer
+// SAIN en poche (son ancienne armure, `ironDonor` du heartbeat / `selfDonor`) passe AVANT les autres :
+// il livre ses pièces sans rien miner (giftBatchFor lit la poche), et son surplus le rend détournable.
+function pickDivertedMiner({ selfName, selfDiamonds, selfWorn, selfDonor, mates, now, freshMs, minWorn = 4 } = {}) {
   const t = now || Date.now();
   const fm = freshMs || FRESH_MS;
   const c = [];
-  if (selfName && (Number(selfWorn) || 0) >= minWorn) c.push({ name: String(selfName), d: Number(selfDiamonds) || 0 });
+  if (selfName && (Number(selfWorn) || 0) >= minWorn) c.push({ name: String(selfName), d: Number(selfDiamonds) || 0, donor: !!selfDonor });
   for (const m of mates || []) {
     if (!m || !m.name || m.name === selfName || m.role !== 'worker' || (t - (m.at || 0)) > fm) continue;
     if (mapperWorn(m) < minWorn) continue;
-    c.push({ name: String(m.name), d: Number(m.diamonds) || 0 });
+    c.push({ name: String(m.name), d: Number(m.diamonds) || 0, donor: m.ironDonor === true });
   }
   if (!c.length) return null;
-  c.sort((a, b) => (a.d - b.d) || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+  c.sort((a, b) => (Number(b.donor) - Number(a.donor)) || (a.d - b.d) || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
   return c[0].name;
 }
 

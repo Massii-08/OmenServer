@@ -113,7 +113,7 @@ test('DIAMOND_CHAIN contient les 12 buts IRON + 3 buts diamant en queue', () => 
   const names = DIAMOND_CHAIN.map((g) => g.name);
   assert.deepStrictEqual(
     names,
-    ['dia_pick', 'logs', 'planks', 'crafting_table', 'sticks', 'wooden_pickaxe',
+    ['dia_pick', 'dia_armor', 'logs', 'planks', 'crafting_table', 'sticks', 'wooden_pickaxe',
      'cobble_pick', 'stone_pickaxe', 'cobble_furnace', 'furnace',
      'iron_ore', 'iron_ingot', 'iron_pickaxe',
      'dia_spare_sticks', 'dia_spare_smelt', 'dia_spare_pick',

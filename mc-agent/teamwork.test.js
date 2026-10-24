@@ -324,3 +324,22 @@ test('teamStatus : demande de bois publiée en woodWant/woodAt, need reste les L
   assert.deepStrictEqual(Object.keys(teamStatus({}, [])).sort(), ['armor', 'ingots', 'need']);
   assert.deepStrictEqual(Object.keys(teamStatus({}, [], null)).sort(), ['armor', 'ingots', 'need']);
 });
+
+test('teamStatus : une pièce DIAMANT portée couvre son slot (armure diamant des mineurs, 24/10)', () => {
+  const T = require('./teamwork');
+  const st = T.teamStatus({}, ['diamond_helmet', 'diamond_chestplate', 'netherite_leggings', 'iron_boots']);
+  assert.strictEqual(st.armor, 4);
+  assert.strictEqual(st.need, 0);
+});
+
+test('pickDivertedMiner : un DONNEUR de fer (armure diamant + surplus) passe avant les autres', () => {
+  const T = require('./teamwork');
+  const NOW = 1e9;
+  const mates = [
+    { name: 'NethBot2', role: 'worker', at: NOW, worn: 4, diamonds: 2 },
+    { name: 'NethBot3', role: 'worker', at: NOW, worn: 4, diamonds: 40, ironDonor: true },
+  ];
+  assert.strictEqual(T.pickDivertedMiner({ selfName: 'NethBot1', selfDiamonds: 0, selfWorn: 4, mates, now: NOW }), 'NethBot3');
+  assert.strictEqual(T.pickDivertedMiner({ selfName: 'NethBot1', selfDiamonds: 30, selfWorn: 4, selfDonor: true,
+    mates: [mates[0]], now: NOW }), 'NethBot1');
+});

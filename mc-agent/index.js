@@ -69,7 +69,7 @@ const { equipItem, eat } = require('./skills/equip');
 const { loiter } = require('./skills/loiter');
 const fs = require('fs');
 const { runPlanner } = require('./planner');
-const { chainFor, buildCtxInv, firstUnmet, armorNeed, chainAfterDone, wantsOpportunisticArmor, GIFT_SET_INGOTS, objectiveForStart, diamondTargetOf, HELP_STOCK } = require('./goals');
+const { chainFor, buildCtxInv, firstUnmet, armorNeed, chainAfterDone, wantsOpportunisticArmor, GIFT_SET_INGOTS, objectiveForStart, diamondTargetOf, HELP_STOCK, diamondArmorPlanOf } = require('./goals');
 const { isForbiddenCheat } = require('./nogive');
 const homewarp = require('./homewarp');
 const voidGuard = require('./voidGuard'); // anti-vide : sol sous les homes/spawnpoint, descente loin de la base, rattrapage post-TP // couche warp LÉGITIME sans-give (/sethome+/home ; goSpawn=/home safe)
@@ -101,7 +101,8 @@ const { pickTier, stoneBatchWant, stoneStairPlan } = require('./stoneDig');
 const { pickWornOutToReport } = require('./wornOut');
 const { branchMine: _branchMineRaw, bmBail, floodFillVein, currentPhase: bmCurrentPhase } = require('./skills/branchMine');   // gardé plus bas (disjoncteur OOM)
 const heapGuard = require('./heapGuard');   // OOM « au même endroit » du branch-mine (23/10)
-const { installToolGuard } = require('./toolGuard');   // OOM 23/10 : récursion sans fin de mineflayer-tool
+const { installToolGuard } = require('./toolGuard');
+const { diaWornCount, armorTier, isIronDonor } = require('./diaArmor');   // armure diamant des mineurs (24/10 soir)   // OOM 23/10 : récursion sans fin de mineflayer-tool
 const loopGuard = require('./loopGuard');   // sync_loop_capped + loop_lag (gels de l'event loop)
 const { caveHunt } = require('./skills/caveHunt');   // cave-first diamant (Massii 26/07)
 const { caveIron: caveIronSkill } = require('./skills/caveIron');   // fer en grotte (Massii 20/10)
@@ -1243,7 +1244,12 @@ function ctxExtra() {
   // Pioche diamant (goals.wantsDiamondPick) : l'amélioration fer → diamant déjà faite (une fois).
   let diaPickUpgraded = false;
   try { diaPickUpgraded = _diaPickState().upgraded; } catch (e) { diaPickUpgraded = false; }
+  // Armure diamant (goals.diamondArmorPlanOf) : pièces d'armure SAINES en poche — une pièce usée sortie
+  // de son slot ne doit pas être ré-enfilée en croyant le slot couvert.
+  let pocketArmorGood = [];
+  try { pocketArmorGood = _pocketArmorGood(); } catch (e) { pocketArmorGood = []; }
   return {
+    pocketArmorGood,
     ...bedCtx,
     hasTable: !!_nearestTable(bot), y: pos ? pos.y : undefined, worn: [..._wornArmor()], offhand, diaPickUpgraded,
     mapperTarget: gift.target, giftReady: gift.ready, giftBatch: !!gift.batch, noWood, passiveNear,
@@ -2303,12 +2309,67 @@ function _setIronDetour(at) {
 /** État pioche diamant {spent, upgraded} (mémo base, relu une fois par process). */
 function _diaPickState() {
   if (_diaPick) return _diaPick;
-  _diaPick = { spent: 0, upgraded: false };
+  _diaPick = { spent: 0, upgraded: false, armor: 0 };
   try {
     const d = (loadBaseState() || {}).diamondPick;
-    if (d) _diaPick = { spent: Math.max(0, Number(d.spent) || 0), upgraded: !!d.upgraded };
+    // `armor` (24/10 soir) = la part de `spent` passée en armure diamant (suivi), `spent` reste le TOTAL.
+    if (d) _diaPick = { spent: Math.max(0, Number(d.spent) || 0), upgraded: !!d.upgraded, armor: Math.max(0, Number(d.armor) || 0) };
   } catch (e) { /* best-effort */ }
   return _diaPick;
+}
+
+/** Persiste l'état pioche/armure diamant (mémo FUSIONNÉ, piège #73d). */
+function _saveDiaPick() {
+  try { const b = Object.assign({}, loadBaseState() || {}); b.diamondPick = _diaPick; saveBaseState(b); } catch (e) { /* best-effort */ }
+}
+
+/** Pièces d'armure SAINES en poche (noms). */
+function _pocketArmorGood() {
+  const out = [];
+  for (const it of (bot && bot.inventory && bot.inventory.items()) || []) {
+    if (!it || !it.name || !/_(helmet|chestplate|leggings|boots)$/.test(it.name)) continue;
+    if (!isNearlyBroken(it)) out.push(it.name);
+  }
+  return out;
+}
+
+/** But `dia_armor` : enfile une pièce diamant saine de la poche, ou forge la suivante (ordre plastron →
+ *  jambières → casque → bottes, cf. diaArmor.js) et l'enfile. Diamants dépensés → `spent` (+ `armor`). */
+async function craftDiamondArmorPiece() {
+  const ctx = Object.assign({ inv: buildCtxInv(bot) }, ctxExtra());
+  const plan = diamondArmorPlanOf(ctx);
+  if (!plan) return { ok: true };                                 // plus rien à faire (état changé)
+  const dest = ARMOR_SLOTS[plan.slot];
+  const equipGood = async (name) => {
+    const it = ((bot.inventory && bot.inventory.items()) || []).find((i) => i.name === name && !isNearlyBroken(i));
+    if (!it) return false;
+    try { await bot.equip(it, dest); } catch (e) {
+      emit({ type: 'diamond_armor_equip_failed', item: name, reason: String((e && e.message) || e).slice(0, 80) });
+      return false;
+    }
+    return _wornArmor().has(name);
+  };
+  if (plan.act === 'equip') {
+    const ok = await equipGood(plan.name);
+    if (ok) emit({ type: 'diamond_armor_equipped', item: plan.name, worn: diaWornCount([..._wornArmor()]) });
+    return ok ? { ok: true } : { ok: false, reason: 'equip_failed' };
+  }
+  const inv0 = buildCtxInv(bot);
+  const r = await craftSmart({ name: plan.name, count: 1 });
+  const inv1 = buildCtxInv(bot);
+  if ((inv1[plan.name] || 0) <= (inv0[plan.name] || 0)) {
+    return (r && r.ok === false) ? r : { ok: false, reason: 'craft_no_effect' };
+  }
+  const used = Math.max(0, (inv0.diamond || 0) - (inv1.diamond || 0));
+  const st = _diaPickState();
+  _diaPick = { spent: st.spent + used, upgraded: st.upgraded, armor: (st.armor || 0) + used };
+  _saveDiaPick();
+  // Le fer remplacé atterrit dans la poche (échange de slot) : rechange, ou don à un cartographe nu.
+  await equipGood(plan.name);
+  const worn = diaWornCount([..._wornArmor()]);
+  emit({ type: 'diamond_armor_crafted', item: plan.name, used, worn, spent: _diaPick.spent,
+    armorDiamonds: _diaPick.armor, have: inv1.diamond || 0 });
+  return { ok: true };
 }
 
 /** But `dia_pick` : craft de la pioche diamant + comptabilité des 3 diamants (progression). */
@@ -2320,12 +2381,17 @@ async function craftDiamondPick(goal) {
   if ((inv1.diamond_pickaxe || 0) > (inv0.diamond_pickaxe || 0)) {
     const used = Math.max(0, (inv0.diamond || 0) - (inv1.diamond || 0));
     const st = _diaPickState();
-    _diaPick = { spent: st.spent + used, upgraded: st.upgraded || hadIron };
-    try { const b = Object.assign({}, loadBaseState() || {}); b.diamondPick = _diaPick; saveBaseState(b); } catch (e) { /* best-effort */ }
+    _diaPick = { spent: st.spent + used, upgraded: st.upgraded || hadIron, armor: st.armor || 0 };
+    _saveDiaPick();
     emit({ type: 'diamond_pick_crafted', used, had_iron_pick: hadIron, spent: _diaPick.spent, have: inv1.diamond || 0 });
     return { ok: true };
   }
   return (r && r.ok === false) ? r : { ok: false, reason: 'craft_no_effect' };
+}
+
+/** Ce mineur peut-il céder son ancienne armure de fer (diaArmor.isIronDonor) ? */
+function _ironDonorNow(diamonds) {
+  return isIronDonor({ diaWorn: diaWornCount([..._wornArmor()]), diamonds, spareIron: _giftPocket().good.length });
 }
 
 /** Décision cliquet pour CE bot (null = pas concernée). Ne touche à rien. */
@@ -2408,10 +2474,12 @@ async function teamPhaseTick() {
   if (objT === 'diamond' && now - _diamondProgressAt >= DIAMOND_PROGRESS_EVERY_MS) {
     _diamondProgressAt = now;
     const _have = buildCtxInv(bot).diamond || 0;
-    let _spent = 0;
-    try { _spent = _diaPickState().spent; } catch (e) { _spent = 0; }
-    // have = en poche (l'objectif) ; spent = dépensés en pioches ; mined = have + spent (tout ce qui a été miné).
-    emit({ type: 'diamond_progress', have: _have, target: diamondTargetOf(world.objective), spent: _spent, mined: _have + _spent });
+    let _spent = 0, _armorDia = 0;
+    try { _spent = _diaPickState().spent; _armorDia = _diaPickState().armor || 0; } catch (e) { _spent = 0; _armorDia = 0; }
+    // have = en poche (l'objectif) ; spent = dépensés (pioches + armure) ; mined = have + spent (tout ce
+    // qui a été miné) ; armorDiamonds = la part de spent passée en armure diamant.
+    emit({ type: 'diamond_progress', have: _have, target: diamondTargetOf(world.objective), spent: _spent,
+      mined: _have + _spent, armorDiamonds: _armorDia });
   }
   if (IS_MAPPER || objT !== 'diamond') return ph.phase;
   // Cliquet posé : seul un cartographe VRAIMENT nu rappelle un mineur ; une pièce usée ne rappelle personne.
@@ -2422,7 +2490,9 @@ async function teamPhaseTick() {
   // UN mineur, celui qui a le MOINS de diamants (le meilleur n'est jamais détourné).
   let selfDia = 0;
   try { selfDia = buildCtxInv(bot).diamond || 0; } catch (e) { selfDia = 0; }
-  if (pickDivertedMiner({ selfName: bot.username, selfDiamonds: selfDia, selfWorn, mates, now }) !== bot.username) return ph.phase;
+  let selfDonor = false;
+  try { selfDonor = _ironDonorNow(selfDia); } catch (e) { selfDonor = false; }
+  if (pickDivertedMiner({ selfName: bot.username, selfDiamonds: selfDia, selfWorn, selfDonor, mates, now }) !== bot.username) return ph.phase;
   const target = freshGiftTarget();                             // 4/4 soi-même + réservation `marmor:`
   if (!target) return ph.phase;
   _teamSwitchAt = now;
@@ -4468,6 +4538,7 @@ async function runGoalSkill(goal, gen) {
   }
   // Chaîne diamond_armor : équipe toute pièce diamant en poche (jamais downgrade) puis craft la
   // pièce diamant la moins chère du slot encore sous-diamant (armorUpgradePlan, pur/testé).
+  if (goal.skill === 'diaArmor') return craftDiamondArmorPiece();
   if (goal.skill === 'craftDiamondArmor') {
     const itemsOf = () => ((bot.inventory && bot.inventory.items()) || []).map((i) => ({ name: i.name, count: i.count }));
     let progressed = false;
@@ -11445,6 +11516,16 @@ async function onSpawn() {
           // `woodStock` (23/10) : bûches-équivalent en poche — le demandeur sait qu'un coéquipier peut le
           // dépanner quand aucun bûcheron n'est élu (lumberjack.peerWoodSupplier).
           if (st) st.woodStock = woodEquiv(invB);
+          // Armure diamant (24/10 soir) : palier porté (diamant/mixte/fer/nu), pièces diamant portées, pièces
+          // fer SAINES en poche, et « donneur » (armure diamant complète + ≥ 24 💎 + fer à céder) — lu par
+          // pickDivertedMiner pour envoyer en priorité ce mineur armer un cartographe nu.
+          if (st) {
+            const _w = [..._wornArmor()];
+            st.armorTier = armorTier(_w);
+            st.diaWorn = diaWornCount(_w);
+            st.spareIron = _giftPocket().good.length;
+            st.ironDonor = isIronDonor({ diaWorn: st.diaWorn, diamonds: invB.diamond || 0, spareIron: st.spareIron });
+          }
         } catch (e) {}
         // `y` + `ironZone` : c'est ce qui permet de distinguer un MINEUR AU TRAVAIL d'un bot qui
         // traîne en surface. Sans eux, `squadLeader` ne pouvait trancher qu'à l'alphabet — et si

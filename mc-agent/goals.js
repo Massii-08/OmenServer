@@ -23,6 +23,7 @@ function anyLog(inv) {
 // creuser échoue. Mesure live : sans elle, 12 abris avortés + 12 couverts en `placed:0`. La fonte
 // d'amorçage brûlant les planches, la poche se vide pile quand la survie en a besoin.
 const { POSABLE } = require('./dirt');
+const { diamondArmorNext, diaWornCount } = require('./diaArmor');
 function posableCount(inv) {
   const o = inv || {};
   return Object.keys(o).reduce(
@@ -165,7 +166,13 @@ const diamondPickCount = (c) => DIAMOND_PICKS.reduce((s, n) => s + invCount(c.in
 // seul non satisfait, craft impossible (no_iron) → stall, retry 90 s, stall… à vie. Le raccourci amont
 // exige donc AUSSI une pioche fer+ en poche : sans elle la chaîne fer se rouvre (minerai → lingots →
 // pioche). Les buts `dia_spare_*` ci-dessous évitent d'en arriver là (pioche de rechange).
-const DI = (c) => D(c) && diamondPickCount(c) >= 1;
+// ⚠️ ARMURE DIAMANT (24/10 soir) : l'armure et la pioche diamant VIDENT la poche de ses diamants. Avec
+// `D` seul, 0 diamant en poche rouvrait tout l'amont (bois de surface, four, minerai de fer) chez un
+// mineur en pioche + armure diamant. Une pioche diamant ou une pièce diamant PORTÉE prouve l'amont autant
+// qu'un diamant en poche.
+const _diaProof = (c) => D(c) || invCount(c.inv, 'diamond_pickaxe') + invCount(c.inv, 'netherite_pickaxe') >= 1
+  || diaWornCount(c.worn) >= 1;
+const DI = (c) => _diaProof(c) && diamondPickCount(c) >= 1;
 const _TOOL_GOALS = new Set(['wooden_pickaxe', 'stone_pickaxe', 'iron_pickaxe']);
 // PIOCHE EN DIAMANT (24/10 soir) — NethBot3, 18 💎 en poche, pioche fer cassée à y -53 : il repartait
 // chercher du fer (`iron_ore not_found` ×21). Un joueur fait une pioche en diamant sur place (3 💎 +
@@ -187,6 +194,18 @@ function wantsDiamondPick(c) {
 }
 const DIA_PICK_GOAL = { name: 'dia_pick', met: (c) => !wantsDiamondPick(c),
   skill: 'craft', args: { name: 'diamond_pickaxe', count: 1 } };
+// ARMURE EN DIAMANT (Massii 24/10 soir : « qu'ils survivent le plus longtemps possible pour récupérer le
+// plus de diamants possible ») — cf. diaArmor.js : plastron → jambières → casque → bottes, ordre strict,
+// 3 diamants gardés pour la pioche, pièce usée refaite en diamant. `optional` : un échec (table, equip
+// refusé en mouvement) met le but de côté 10 min, jamais un stall du minage.
+// `c.pocketArmorGood` = pièces d'armure SAINES en poche (ctxExtra) ; absent → toute la poche.
+function diamondArmorPlanOf(c) {
+  if (!c || !c.inv) return null;
+  return diamondArmorNext({ inv: c.inv, worn: c.worn, pocketGood: c.pocketArmorGood,
+    pickCount: diamondPickCount(c), tableOk: tablePlaceable(c) });
+}
+const DIA_ARMOR_GOAL = { name: 'dia_armor', optional: true, met: (c) => !diamondArmorPlanOf(c),
+  skill: 'diaArmor', args: {} };
 const _diamondChains = new Map();
 /** Chaîne diamant pour une cible donnée (mémoïsée : la chaîne est un tableau stable par cible). */
 function diamondChain(target) {
@@ -196,6 +215,8 @@ function diamondChain(target) {
   const chain = [
     // Pioche diamant d'abord : avec 3 💎 en poche, le fer n'est plus un détour nécessaire.
     DIA_PICK_GOAL,
+    // Puis l'armure diamant (dès qu'une pièce est abordable) : survivre = miner plus longtemps.
+    DIA_ARMOR_GOAL,
     // Buts d'OUTIL : satisfaits aussi par une pioche diamant RÉELLEMENT en poche (sinon un bot à pioche
     // diamant seule re-crafterait pioche bois → pierre → fer).
     ...IRON_CHAIN.map((g) => (_TOOL_GOALS.has(g.name)
@@ -950,4 +971,4 @@ function firstUnmet(chain, ctx, skip) {
 
 module.exports = {
   BED_GOAL, nextObjectiveAfter, chainAfterDone, objectiveForStart, POST_IRON_ARMOR_OBJECTIVES, CHAIN_EMPTY_WINDOW_MS, CHAIN_BASE_DELAY_MS, CHAIN_BACKOFF_MS, CHAIN_FALLBACK,
-  IRON_HELP_CHAIN, HELP_STOCK, wantsDiamondPick, DIA_PICK_COST, MAPPER_ARMOR_CHAIN, LUMBERJACK_CHAIN, GIFT_SET_INGOTS, DIAMOND_TARGET, diamondChain, diamondTargetOf, diamondPickCount, hasShield, posableCount, hasSword, hasAxe, buildCtxInv, invCount, anyLog, anyPlanks, MVP_CHAIN, IRON_CHAIN, DIAMOND_CHAIN, IRON_ARMOR_CHAIN, DIAMOND_ARMOR_CHAIN, MAPPER_KIT, chainFor, firstUnmet, armorNeed, armorWornOk, wantsOpportunisticArmor, ARMOR_FORGE_OBJECTIVES };
+  IRON_HELP_CHAIN, HELP_STOCK, wantsDiamondPick, diamondArmorPlanOf, DIA_PICK_COST, MAPPER_ARMOR_CHAIN, LUMBERJACK_CHAIN, GIFT_SET_INGOTS, DIAMOND_TARGET, diamondChain, diamondTargetOf, diamondPickCount, hasShield, posableCount, hasSword, hasAxe, buildCtxInv, invCount, anyLog, anyPlanks, MVP_CHAIN, IRON_CHAIN, DIAMOND_CHAIN, IRON_ARMOR_CHAIN, DIAMOND_ARMOR_CHAIN, MAPPER_KIT, chainFor, firstUnmet, armorNeed, armorWornOk, wantsOpportunisticArmor, ARMOR_FORGE_OBJECTIVES };

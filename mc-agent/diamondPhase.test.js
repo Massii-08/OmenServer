@@ -279,10 +279,10 @@ test('craftDiamondPick : craft réussi → 3 💎 comptés (spent), amélioratio
     loadBaseState: () => base, saveBaseState: (b) => { base = b; },
   });
   run(sb, 'var _diaPick = null;');
-  run(sb, fnSrc('_diaPickState')); run(sb, fnSrc('craftDiamondPick'));
+  run(sb, fnSrc('_diaPickState')); run(sb, fnSrc('_saveDiaPick')); run(sb, fnSrc('craftDiamondPick'));
   const r = await run(sb, "craftDiamondPick({ name: 'dia_pick', args: { name: 'diamond_pickaxe', count: 1 } })");
   assert.strictEqual(r.ok, true);
-  assert.strictEqual(JSON.stringify(base.diamondPick), JSON.stringify({ spent: 3, upgraded: true }));
+  assert.strictEqual(JSON.stringify(base.diamondPick), JSON.stringify({ spent: 3, upgraded: true, armor: 0 }));
   assert.ok(events.some((e) => e.type === 'diamond_pick_crafted' && e.used === 3 && e.have === 15));
   // un craft sans effet n'est pas un succès et ne compte rien
   inv = { diamond: 18, stick: 2 };
@@ -295,7 +295,7 @@ test('craftDiamondPick : craft réussi → 3 💎 comptés (spent), amélioratio
 test('câblage : dia_pick routé vers craftDiamondPick ; diamond_progress publie spent + mined ; ctxExtra porte diaPickUpgraded', () => {
   assert.match(fnSrc('runGoalSkill'), /if \(goal\.name === 'dia_pick'\) return craftDiamondPick\(goal\);/);
   const tick = fnSrc('teamPhaseTick');
-  assert.match(tick, /type: 'diamond_progress', have: _have, target: diamondTargetOf\(world\.objective\), spent: _spent, mined: _have \+ _spent/);
+  assert.match(tick, /type: 'diamond_progress', have: _have, target: diamondTargetOf\(world\.objective\), spent: _spent,\s+mined: _have \+ _spent, armorDiamonds: _armorDia/);
   assert.match(fnSrc('ctxExtra'), /offhand, diaPickUpgraded,/);
   assert.match(SRC, /^let _diaPick = null;$/m);
 });
