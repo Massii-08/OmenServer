@@ -115,7 +115,7 @@ test('DIAMOND_CHAIN contient les 12 buts IRON + 3 buts diamant en queue', () => 
     names,
     ['dia_pick', 'dia_armor', 'logs', 'planks', 'crafting_table', 'sticks', 'wooden_pickaxe',
      'cobble_pick', 'stone_pickaxe', 'cobble_furnace', 'furnace',
-     'iron_ore', 'iron_ingot', 'iron_pickaxe',
+     'iron_ore', 'iron_ingot', 'iron_pickaxe', 'sword',
      'dia_spare_sticks', 'dia_spare_smelt', 'dia_spare_pick',
      'cobble_buffer', 'descend_y54', 'diamond_caves'],
   );

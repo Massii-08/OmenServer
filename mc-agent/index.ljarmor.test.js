@@ -54,6 +54,7 @@ function sandbox(o = {}) {
     isNearlyBroken: (it) => !!it.worn,
     _wornArmor: () => new Set(o.worn || []),
     isNight: (b) => !!(b && b.time && b.time.timeOfDay >= 13000),
+    diamondFree: require('./freeRoam').diamondFree, cautionNight: require('./freeRoam').cautionNight,
     loadBaseState: () => sb.base,
     saveBaseState: (st) => { sb.base = st; return true; },
     buildCtxInv,
@@ -84,7 +85,8 @@ function sandbox(o = {}) {
   for (const l of ['_giftTarget', '_giftAt', '_ljGift', '_ljGiftAt', '_ljForgeHoldUntil', '_ljStockFails', '_ljStockFailsLoaded', '_ljNotFound']) run(sb, letSrc(l));
   for (const f of ['releaseGiftTarget', 'isLumberjackObjective', '_ljPocketArmor', '_ljReleaseGift', '_ljArmorContext',
     'ljGiftPiecesFor', 'ljAfterGift', '_ljTossWornArmor', 'lumberjackArmorSkill', 'ljCraftGiftSkill',
-    '_ljLoadStockFails', '_ljSaveStockFails', 'noteLumberjackStockFail', '_ljForestNeeded', 'lumberjackForestTripSkill']) run(sb, fnSrc(f));
+    '_ljLoadStockFails', '_ljSaveStockFails', 'noteLumberjackStockFail', '_ljForestNeeded', 'lumberjackForestTripSkill',
+    'diamondFreeNow', 'cautionNightNow']) run(sb, fnSrc(f));
   run(sb, 'globalThis.__get = (n) => eval(n); globalThis.__set = (n, v) => eval(n + " = v");');
   return sb;
 }

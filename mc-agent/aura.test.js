@@ -76,3 +76,18 @@ test('auraPlan : cooldown pas prêt (selon l objet qui frappera) → attendre', 
   // creuse avec une pioche : cooldown pioche (834) et pas celui de l épée
   assert.strictEqual(A.auraPlan({ ...base, held: 'stone_pickaxe', digging: true, lastHitAt: 9300 }).act, 'wait');
 });
+
+// ── ARME SORTIE À L'APPROCHE (24/10) ────────────────────────────────────────────────────────────
+test('auraReadyPlan : hostile proche + épée en poche + terre en main → equip', () => {
+  const { auraReadyPlan } = require('./aura');
+  const base = { near: true, weapon: 'diamond_sword', held: 'dirt', now: 10000, lastReadyAt: 0 };
+  assert.deepStrictEqual(auraReadyPlan(base), { act: 'equip' });
+  assert.strictEqual(auraReadyPlan(Object.assign({}, base, { held: 'iron_sword' })).act, 'none');
+  assert.strictEqual(auraReadyPlan(Object.assign({}, base, { weapon: null })).act, 'none');
+  assert.strictEqual(auraReadyPlan(Object.assign({}, base, { digging: true })).act, 'none');
+  assert.strictEqual(auraReadyPlan(Object.assign({}, base, { eating: true })).act, 'none');
+  assert.strictEqual(auraReadyPlan(Object.assign({}, base, { busy: true })).act, 'none');
+  assert.strictEqual(auraReadyPlan(Object.assign({}, base, { pvpTarget: {} })).act, 'none');
+  assert.strictEqual(auraReadyPlan(Object.assign({}, base, { near: false })).act, 'none');
+  assert.strictEqual(auraReadyPlan(Object.assign({}, base, { lastReadyAt: 9000 })).act, 'none', 'anti ping-pong 3 s');
+});

@@ -385,3 +385,14 @@ test('isCriticalHealth : health absent/invalide → false (ne bloque jamais sans
   assert.strictEqual(isCriticalHealth(null), false);
   assert.strictEqual(isCriticalHealth(NaN), false);
 });
+
+test('bookmark : signet posé → bot._mcaOnBookmarked({name, x, y, z}) (mémo deepWork, 24/10)', () => {
+  const hw = require('./homewarp');
+  const seen = [];
+  const bot = { chat: () => {}, entity: { position: { x: 1, y: -54, z: 2 } }, _mcaOnBookmarked: (i) => seen.push(i) };
+  assert.strictEqual(hw.bookmark(bot, 'work'), 'work');
+  assert.deepStrictEqual(seen, [{ name: 'work', x: 1, y: -54, z: 2 }]);
+  // un callback qui lève ne casse pas la pose
+  bot._mcaOnBookmarked = () => { throw new Error('x'); };
+  assert.strictEqual(hw.bookmark(bot, 'work'), 'work');
+});

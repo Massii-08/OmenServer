@@ -24,6 +24,7 @@ function anyLog(inv) {
 // d'amorçage brûlant les planches, la poche se vide pile quand la survie en a besoin.
 const { POSABLE } = require('./dirt');
 const { diamondArmorNext, diaWornCount } = require('./diaArmor');
+const { swordPlan } = require('./sword');
 function posableCount(inv) {
   const o = inv || {};
   return Object.keys(o).reduce(
@@ -206,6 +207,15 @@ function diamondArmorPlanOf(c) {
 }
 const DIA_ARMOR_GOAL = { name: 'dia_armor', optional: true, met: (c) => !diamondArmorPlanOf(c),
   skill: 'diaArmor', args: {} };
+// ÉPÉE (Massii 24/10 : « NethBot3 a de la terre en main ») — cf. sword.js : diamant dès 2 diamants de
+// marge après la réserve pioche, sinon fer, sinon pierre ; refaite quand elle casse ou s'use
+// (`c.swordsGood` = épées SAINES, ctxExtra). `optional` + satisfaite quand rien n'est abordable : jamais
+// un stall. Les diamants dépensés vont dans `diamond_progress.spent` (index.js, skill `sword`).
+function swordPlanOf(c) {
+  if (!c || !c.inv) return null;
+  return swordPlan({ inv: c.inv, swordsGood: c.swordsGood, pickCount: diamondPickCount(c), tableOk: tablePlaceable(c) });
+}
+const SWORD_GOAL = { name: 'sword', optional: true, met: (c) => !swordPlanOf(c), skill: 'sword', args: {} };
 const CAVE_DIAMOND_BAND_Y = -16;   // au-dessous, on est dans la bande des grottes à diamant
 const _diamondChains = new Map();
 /** Chaîne diamant pour une cible donnée (mémoïsée : la chaîne est un tableau stable par cible). */
@@ -223,6 +233,9 @@ function diamondChain(target) {
     ...IRON_CHAIN.map((g) => (_TOOL_GOALS.has(g.name)
       ? Object.assign({}, g, { met: (c) => g.met(c) || invCount(c.inv, 'diamond_pickaxe') + invCount(c.inv, 'netherite_pickaxe') >= 1 })
       : withFinal(g, DI))),
+    // ÉPÉE (24/10) : une fois l'outillage assuré (pioche d'abord : sans elle on ne mine rien), l'arme —
+    // diamant si la marge le permet. On ne se bat plus au poing (ou à la terre) au fond de la mine.
+    SWORD_GOAL,
     // PIOCHE DE RECHANGE (24/10) : des heures à -54, une pioche fer dure ~250 blocs. On n'y consacre que
     // ce qui est DÉJÀ en poche (fer brut / lingots ramassés en route, bâtons, bois) : buts SAUTABLES
     // (`optional` : un échec les met de côté 10 min, cf. index.js), jamais une remontée.
@@ -987,5 +1000,5 @@ function firstUnmet(chain, ctx, skip) {
 }
 
 module.exports = {
-  BED_GOAL, nextObjectiveAfter, chainAfterDone, objectiveForStart, POST_IRON_ARMOR_OBJECTIVES, CHAIN_EMPTY_WINDOW_MS, CHAIN_BASE_DELAY_MS, CHAIN_BACKOFF_MS, CHAIN_FALLBACK,
+  BED_GOAL, SWORD_GOAL, swordPlanOf, nextObjectiveAfter, chainAfterDone, objectiveForStart, POST_IRON_ARMOR_OBJECTIVES, CHAIN_EMPTY_WINDOW_MS, CHAIN_BASE_DELAY_MS, CHAIN_BACKOFF_MS, CHAIN_FALLBACK,
   IRON_HELP_CHAIN, HELP_STOCK, wantsDiamondPick, diamondArmorPlanOf, DIA_PICK_COST, MAPPER_ARMOR_CHAIN, LUMBERJACK_CHAIN, GIFT_SET_INGOTS, DIAMOND_TARGET, diamondChain, diamondTargetOf, diamondPickCount, hasShield, posableCount, hasSword, hasAxe, buildCtxInv, invCount, anyLog, anyPlanks, MVP_CHAIN, IRON_CHAIN, DIAMOND_CHAIN, IRON_ARMOR_CHAIN, DIAMOND_ARMOR_CHAIN, MAPPER_KIT, chainFor, firstUnmet, armorNeed, armorWornOk, wantsOpportunisticArmor, ARMOR_FORGE_OBJECTIVES };

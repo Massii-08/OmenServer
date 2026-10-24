@@ -52,7 +52,7 @@ function base(o = {}) {
     saveBaseState: (st) => { sb.memo = JSON.parse(JSON.stringify(st)); return true; },
     isInWater: () => false,
     _homeMissingAt: {}, _homeMissingEvAt: {}, HOME_MISSING_EVENT_EVERY_MS: 60000, SAFE_MISSING_MEMO_KEY: 'safeHomeMissingAt',
-    _homeRefusedAt: {}, _safeHomeSet: true, _safeHomeSurface: true, _workSet: true,
+    _homeRefusedAt: {}, _safeHomeSet: true, _safeHomeSurface: true, _workSet: true, _forgetDeepWork: () => {},
     _digOutBusy: false, _digOutFailAt: 0, DIG_OUT_RETRY_MS: 180000, _migrating: false,
     world: { objective: { type: 'mapper_armor', status: 'in_progress' } },
     startAutonomous: async () => { sb.started++; },

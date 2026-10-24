@@ -71,3 +71,17 @@ test('lowHpStep : hostile COLLÉ et de quoi manger → se murer D ABORD, manger 
   assert.strictEqual(lowHpStep({ health: 5, food: 13, hasFood: true, threatDist: 3 }), 'seal');
   assert.strictEqual(lowHpStep({ health: 5, food: 13, hasFood: true, threatDist: 3, sealed: true }), 'eat');
 });
+
+test('low_hp BRUT (garde PV de caveHunt, 24/10) : reconnu, et la récupération vise 12 PV', () => {
+  const { isLowHpSkip, lowHpTargetFor, lowHpStep } = require('./lowhp');
+  assert.strictEqual(isLowHpSkip('low_hp'), true);
+  assert.strictEqual(isLowHpSkip('caveHunt:low_hp'), true);
+  assert.strictEqual(isLowHpSkip('not_low_hp'), false);
+  assert.strictEqual(lowHpTargetFor('low_hp'), 12);
+  assert.strictEqual(lowHpTargetFor('low_hp_skip'), null);
+  // 9 PV : pas « critique » (≤ 6), mais sous la garde de grotte → on récupère (manger / sortie nourriture)
+  assert.strictEqual(lowHpStep({ health: 9, food: 10, hasFood: true }), 'ok');
+  assert.strictEqual(lowHpStep({ health: 9, food: 10, hasFood: true, targetHp: 12 }), 'eat');
+  assert.strictEqual(lowHpStep({ health: 9, food: 4, hasFood: false, targetHp: 12 }), 'food_run');
+  assert.strictEqual(lowHpStep({ health: 12, food: 4, hasFood: false, targetHp: 12 }), 'ok');
+});

@@ -7,7 +7,7 @@ const chain = G.diamondChain(192);
 const first = (ctx) => { const g = G.firstUnmet(chain, ctx); return g && g.name; };
 // Mineur au fond : pioche fer, table en poche, four, y -54.
 const miner = (inv, extra) => Object.assign({
-  inv: Object.assign({ iron_pickaxe: 1, crafting_table: 1, furnace: 1, cobblestone: 32, stick: 4 }, inv),
+  inv: Object.assign({ iron_pickaxe: 1, crafting_table: 1, furnace: 1, cobblestone: 32, stick: 4, diamond_sword: 1 }, inv),
   y: -54, worn: ['iron_helmet', 'iron_chestplate', 'iron_leggings', 'iron_boots'], diaPickUpgraded: true,
 }, extra || {});
 
@@ -53,4 +53,25 @@ test('0 diamant en poche après l armure : pas de retour au bois/fer de surface'
   const g2 = G.firstUnmet(chain, c2);
   assert.ok(g2 && !['logs', 'planks', 'crafting_table', 'furnace', 'iron_ore', 'iron_ingot'].includes(g2.name),
     'premier but = ' + (g2 && g2.name));
+});
+
+// ── ÉPÉE (Massii 24/10 : « NethBot3 a de la terre en main ») ─────────────────────────────────────
+test('épée : la chaîne diamant en fabrique une (diamant dès 2 de marge après la réserve pioche)', () => {
+  const g = chain.find((x) => x.name === 'sword');
+  assert.ok(g, 'but sword présent');
+  assert.strictEqual(g.optional, true);
+  assert.strictEqual(g.skill, 'sword');
+  const noSword = (inv, extra) => { const c = miner(inv, extra); delete c.inv.diamond_sword; return c; };
+  assert.strictEqual(first(noSword({ diamond: 5 })), 'sword');
+  assert.strictEqual(G.swordPlanOf(noSword({ diamond: 5 })).name, 'diamond_sword');
+  // 4 diamants : réserve pioche → épée pierre (cobble en poche)
+  assert.strictEqual(G.swordPlanOf(noSword({ diamond: 4 })).name, 'stone_sword');
+  // épée saine → on mine
+  assert.strictEqual(first(miner({ diamond: 4 })), 'diamond_caves');
+});
+
+test('épée presque cassée (swordsGood vide) → refaite ; pioche manquante passe avant', () => {
+  assert.strictEqual(first(miner({ diamond: 2 }, { swordsGood: [] })), 'sword');
+  const c = miner({ diamond: 0, iron_pickaxe: 0 }, { swordsGood: [] });
+  assert.notStrictEqual(first(c), 'sword');
 });

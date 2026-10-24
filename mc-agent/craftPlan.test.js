@@ -125,3 +125,12 @@ test('woodCountFallback : 4 fournées de bâtons sans essence assez fournie (bir
   assert.strictEqual(P.woodCountFallback('iron_helmet', { iron_ingot: 4 }, { count: 2 }), 2); // pas un manque de bois
   assert.strictEqual(P.woodCountFallback('unknown_thing', {}, { count: 3 }), 3);
 });
+
+test('épées : pierre = 2 blocs (pas 1), diamant = 2 diamants + bâtons fabriqués depuis les planches', () => {
+  const cp = require('./craftPlan');
+  assert.strictEqual(cp.planIntermediates('stone_sword', { cobblestone: 1, stick: 1 }, { tableAvailable: true }).reason, 'no_stone');
+  assert.strictEqual(cp.planIntermediates('stone_sword', { cobblestone: 2, stick: 1 }, { tableAvailable: true }).ok, true);
+  assert.strictEqual(cp.planIntermediates('diamond_sword', { diamond: 1, stick: 1 }, { tableAvailable: true }).reason, 'no_diamond');
+  const r = cp.planIntermediates('diamond_sword', { diamond: 2, oak_planks: 2 }, { tableAvailable: true });
+  assert.deepStrictEqual(r.steps, [{ name: 'stick', count: 1 }]);
+});

@@ -42,7 +42,10 @@ function isCritical(health) {
  *             partir plutôt que de figer le bot (l'intention de 0990f4c, c'est la MENACE).
  */
 function lowHpStep(s = {}) {
-  if (!isCritical(s.health)) return 'ok';
+  // `targetHp` (24/10) : seuil d'un skill PLUS exigeant que le critique (caveHunt refuse sous 12 PV, `low_hp`) —
+  // on récupère jusqu'à lui, pas seulement jusqu'à 6.
+  const target = typeof s.targetHp === 'number' && Number.isFinite(s.targetHp) ? s.targetHp : null;
+  if (target != null ? !(typeof s.health === 'number' && s.health < target) : !isCritical(s.health)) return 'ok';
   const food = typeof s.food === 'number' ? s.food : null;
   const regen = food != null && food > REGEN_FOOD;
   const threat = typeof s.threatDist === 'number' && Number.isFinite(s.threatDist) ? s.threatDist : null;
@@ -62,8 +65,16 @@ function lowHpStep(s = {}) {
  * échappait au `reason === 'low_hp_skip'` de runSkillWithTelemetry → goal_failed relancé en boucle
  * (NethBot2, ×16 en 10 min à 1,1 PV) au lieu de la récupération.
  */
+// 24/10 (NethBot1, `diamond_caves → goal_failed low_hp` ×12 en 10 min) : la garde PV de caveHunt rend la
+// raison BRUTE `low_hp` (sous 12 PV, caveIron.CAVE_MIN_HP) — elle échappait aussi à la récupération.
 function isLowHpSkip(reason) {
-  return typeof reason === 'string' && /(^|:)low_hp_skip$/.test(reason);
+  return typeof reason === 'string' && /(^|:)low_hp(_skip)?$/.test(reason);
+}
+
+/** PV à atteindre pour une raison PV donnée : `low_hp` (garde de grotte) → 12 ; `low_hp_skip` → critique (null). */
+const LOWHP_CAVE_TARGET = 12;                // = caveIron.CAVE_MIN_HP (pas d'import : cycle évité)
+function lowHpTargetFor(reason) {
+  return (typeof reason === 'string' && /(^|:)low_hp$/.test(reason)) ? LOWHP_CAVE_TARGET : null;
 }
 
 /** Le craft doit-il être refusé ? (garde de craftSmart) */
@@ -87,6 +98,6 @@ function shelterCraftThrottled({ blocked, lastSkipAt, now } = {}) {
 
 module.exports = {
   shelterCraftThrottled, LOWHP_SKIP_RETRY_MS,
-  lowHpStep, craftBlockedAtLowHp, isCritical, isLowHpSkip,
+  lowHpStep, craftBlockedAtLowHp, isCritical, isLowHpSkip, lowHpTargetFor, LOWHP_CAVE_TARGET,
   LOWHP_THREAT_RADIUS, LOWHP_SEAL_RADIUS, LOWHP_RECOVERY_BUDGET_MS, LOWHP_FOOD_RUN_TTL_MS, LOWHP_MAX_EAT_FAILS,
 };

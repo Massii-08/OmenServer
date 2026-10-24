@@ -117,7 +117,7 @@ test('DIAMOND : pioche fer CASSÉE après des diamants → la chaîne fer se rou
 });
 
 test('DIAMOND : pioche de rechange avec le fer DÉJÀ en poche, buts optionnels et sautables', () => {
-  const base = { iron_pickaxe: 1, cobblestone: 16, diamond: 5, furnace: 1, coal: 2 };
+  const base = { iron_pickaxe: 1, cobblestone: 16, diamond: 5, furnace: 1, coal: 2, diamond_sword: 1 };  // épée faite : cf. sword.test.js
   // diaPickUpgraded : l'amélioration fer → diamant (unique) est déjà faite — sinon dia_pick passe devant.
   const goal = (inv) => G.firstUnmet(G.DIAMOND_CHAIN, { inv: Object.assign({}, base, inv), y: -54, hasTable: false, diaPickUpgraded: true });
   assert.strictEqual(G.firstUnmet(G.DIAMOND_CHAIN, { inv: Object.assign({}, base, { stick: 2, crafting_table: 1 }), y: -54 }).name, 'dia_pick');
@@ -244,4 +244,26 @@ test('armorRepairs : emplacements NOUVELLEMENT couverts (fer ou mieux), le reste
   assert.deepStrictEqual(T.armorRepairs([], ['leather_boots']), []);
   assert.deepStrictEqual(T.armorRepairs(['iron_boots'], ['diamond_boots']), [], 'emplacement déjà couvert');
   assert.deepStrictEqual(T.armorRepairs(null, ['diamond_leggings']), [{ slot: 'leggings', item: 'diamond_leggings' }]);
+});
+
+// ─── AUCUN CARTOGRAPHE (Massii 24/10 : cartographes supprimés, les mineurs cartographient) ─────────
+test('0 cartographe : mineurs 4/4 → phase diamant directe ; « aucun cartographe » = « cartographes servis »', () => {
+  const mates = [m('NethBot2', { role: 'worker', worn: 4 }), m('NethBot3', { role: 'worker', worn: 4 })];
+  const raw = T.teamPhase({ selfName: 'NethBot1', selfRole: 'worker', selfWorn: 4, mates, now: NOW });
+  assert.deepStrictEqual([raw.phase, raw.mappers, raw.mappersServed], ['diamond', 0, 0]);
+  const eff = T.latchedTeamPhase({ raw, latch: null, mates, selfName: 'NethBot1', selfRole: 'worker', selfWorn: 4, now: NOW });
+  assert.strictEqual(eff.phase, 'diamond');
+  assert.strictEqual(eff.nakedMapper, null, 'personne à rappeler en mapper_armor');
+  // un ancien cartographe PÉRIMÉ dans le fichier de présence ne compte pas
+  const stale = mates.concat([m('MapBot1', { role: 'mapper', worn: 0, at: NOW - 3600000 })]);
+  assert.strictEqual(T.teamPhase({ selfName: 'NethBot1', selfRole: 'worker', selfWorn: 4, mates: stale, now: NOW }).phase, 'diamond');
+});
+
+test('0 cartographe : ni don d armure, ni détour mapper_armor, ni cible de livraison', () => {
+  const mates = [m('NethBot2', { role: 'worker', worn: 4, armor: 4 })];
+  assert.strictEqual(G.nextObjectiveAfter('iron_armor', mates), 'diamond');
+  assert.strictEqual(G.nextObjectiveAfter('mapper_armor', mates), 'diamond');
+  assert.strictEqual(T.pickMapperToEquip({ mates, selfName: 'NethBot1', selfStatus: { armor: 4 }, now: NOW }), null);
+  const dec = G.chainAfterDone({ objective: 'iron_armor', steps: 3, mates, canTp: true, giftTarget: null, now: NOW });
+  assert.notStrictEqual(dec.next, 'mapper_armor');
 });

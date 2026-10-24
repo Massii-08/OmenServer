@@ -125,6 +125,7 @@ function shelterSandbox({ worn = 0, entities = [zombie(6), zombie(8, 2, 'skeleto
     homewarp: { goHome() {} }, sleep: async () => {}, stopMotion() {},
     _wornArmor: () => new Set(['iron_helmet', 'iron_boots', 'iron_leggings', 'iron_chestplate'].slice(0, worn)),
     isNight: () => true,
+    diamondFree: require('./freeRoam').diamondFree, cautionNight: require('./freeRoam').cautionNight, _freeRoamNoteAt: 0,
     shouldShelter: SH.shouldShelter,
     DAWN_WAIT_MAX_MS: SH.DAWN_WAIT_MAX_MS, DAWN_SAFE_EXIT_MAX_MS: SH.DAWN_SAFE_EXIT_MAX_MS,
     // sortie sûre (20/10) : testée dans index.dawnexit.test.js ; ici, seulement présente
@@ -155,6 +156,7 @@ function shelterSandbox({ worn = 0, entities = [zombie(6), zombie(8, 2, 'skeleto
   }
   run(sb, fnSrc('isThreatHostile'));
   run(sb, fnSrc('hostilesNearNow'));
+  run(sb, fnSrc('diamondFreeNow'));
   run(sb, fnSrc('nightLockdownNow'));
   run(sb, fnSrc('maybeNightShelter'));
   return sb;
@@ -326,4 +328,18 @@ test('maybeNightShelter : 3 abris `cancelled` d affilée < 2 min → shelter_can
   sb.taskToken.cancelled = true; sb.taskCtl.begin('x');
   assert.strictEqual(toks[3].cancelled, false, 'jeton neuf : seuls sa borne / le watchdog l annulent');
   assert.strictEqual(sb._shelterFreshNext, false, 'consommé une fois');
+});
+
+// ── ARMURE DIAMANT COMPLÈTE = LIBRE LA NUIT (freeRoam, Massii 24/10) ─────────────────────────────
+test('maybeNightShelter : armure DIAMANT complète portée → aucun abri, même proactif/forcé, et il le dit (night_free_roam)', async () => {
+  const sb = shelterSandbox({ worn: 0 });
+  sb._wornArmor = () => new Set(['diamond_helmet', 'diamond_chestplate', 'diamond_leggings', 'diamond_boots']);
+  sb.bot.time = { timeOfDay: 18000, day: 3 };
+  assert.strictEqual(await sb.maybeNightShelter(true, { force: true }), false);
+  assert.strictEqual(sb.captured.calls.length, 0, 'pas de shelterUntilDawn, donc pas de dawn_wait');
+  assert.strictEqual((sb.events || []).filter((e) => e.type === 'night_free_roam').length, 1);
+  // 3 pièces diamant + fer : prudence intacte
+  const sb2 = shelterSandbox({ worn: 0 });
+  sb2._wornArmor = () => new Set(['diamond_helmet', 'diamond_chestplate', 'diamond_leggings', 'iron_boots']);
+  assert.strictEqual(await sb2.maybeNightShelter(true), true);
 });

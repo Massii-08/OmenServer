@@ -830,6 +830,7 @@ function tripGlue(over = {}) {
     clearInterval: (id) => { w.cleared.push(id); },
     isInWater: () => { if (w.waterThrows) throw new Error('monde illisible'); return w.inWater; },
     isNight,
+    cautionNightNow: () => isNight(w.bot),   // freeRoam (diamant complet) testé dans index.nightlockdown.test.js
     taskCtl: { get active() { return w.owner; } },
     loadWorldCells: () => ({ biomes: w.cells, depleted: [], ores: [] }),
     loadBaseState: () => w.memo,
@@ -1581,4 +1582,22 @@ test('foodTripMarkNearHerd : marque dans le mémo de base la cellule du troupeau
   // la cellule ratée n est plus « troupeau connu » pour la porte, et l expédition vise le suivant
   assert.strictEqual(HR.knownHerdNear(HR.herdsLoad(w.memo, now), { x: 0, z: 0 }, { now, avoid: T.triedCellsLoad(w.memo, now) }).x, 150);
   assert.strictEqual(w.foodTripMarkNearHerd(), null, 'déjà marquée : plus rien à marquer à < 64');
+});
+
+test('expédition APRÈS chasse ratée : budget épuisé → la marche part QUAND MÊME, puis une vague de chasse (24/10, trip:no_time)', async () => {
+  // NethBot1 24/10 : 0 nourriture, bête vue mais injoignable, budget mangé par la vague → `trip:no_time` ×12.
+  const w = tripWorld({ passive: true, huntTakes: 59000 });
+  let n = 0;
+  w.deps.hunt = async (o) => {
+    n++;
+    w.calls.push(['hunt', { ms: o.ms }]);
+    if (n === 1) { w.clock.advance(Math.min(59000, o.ms)); return { ok: false, kills: 0 }; }   // injoignable
+    w.clock.advance(Math.min(20000, o.ms)); w.inv.beef = (w.inv.beef || 0) + 3; return { ok: true, kills: 2 };
+  };
+  const r = await runHuntCook(w.deps, 2, { budget: F.createBudget(60000, w.clock.now) });
+  const names = callNames(w);
+  assert.ok(names.includes('walk'), 'marche vers le troupeau connu : ' + names.join(','));
+  assert.strictEqual(names.filter((x) => x === 'hunt').length, 2, 'une vague après la marche');
+  assert.notStrictEqual(w.events.find((e) => e.type === 'hunt_cook_done').trip, 'no_time');
+  assert.ok(r.ok || (r.got || 0) >= 0);
 });

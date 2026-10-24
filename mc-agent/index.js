@@ -22,7 +22,7 @@ const { attackNearest } = require('./skills/attackNearest');
 const { fleeFrom, isFleeHostile } = require('./skills/fleeFrom');
 const { installOxygenGuard } = require('./oxygen');
 const { installReflexes, RANGED, DEFENSIVE_HEALTH, isFleeOnlyMob, FOODS, EMERGENCY_FOODS, tryEat, pickFood, eatWanted } = require('./reflexes');
-const { lowHpStep, craftBlockedAtLowHp, isLowHpSkip, LOWHP_RECOVERY_BUDGET_MS, LOWHP_FOOD_RUN_TTL_MS } = require('./lowhp');
+const { lowHpStep, craftBlockedAtLowHp, isLowHpSkip, lowHpTargetFor, LOWHP_RECOVERY_BUDGET_MS, LOWHP_FOOD_RUN_TTL_MS } = require('./lowhp');
 const { healEatWanted, eatEffective, itemCount, noEffectBackoffMs, eatLockWaitMs, cookFirstWhenHurt, EAT_LOCK_MS, MAX_HEAL_BITES } = require('./eatSafe');
 const { decideReaction } = require('./triggers');
 const { loadCommands, isAllowed, buildCommandDocs } = require('./commands');
@@ -54,7 +54,7 @@ const {
   HANDOFF_RECEIVE_WAIT_MS, isGiftForMe, slotsToFree, pickupTargets, tossReady, deliveryProof, handoffNext, receiverNext,
 } = require('./handoff');   // remise en main propre d'une pièce d'armure (24/10)
 const { createHoldState, installGoalHold, holdSetGoal, hold: holdGoal, release: releaseGoalHold } = require('./goalHold');   // fuite creeper : le planner ne vole plus le but
-const { auraTarget, auraPlan } = require('./aura');
+const { auraTarget, auraPlan, auraReadyPlan, AURA_READY_REACH } = require('./aura');
 const { gather, woodExpeditionCount, woodExploreShape } = require('./skills/gather');
 const { gotoWithTimeout } = require('./skills/explore');   // trajet borné ET interruptible (abortIf)
 // Kit de secours en coffre (run 10, 20/10) — décisions PURES, glue « KIT DE SECOURS EN COFFRE ».
@@ -70,7 +70,7 @@ const { equipItem, eat } = require('./skills/equip');
 const { loiter } = require('./skills/loiter');
 const fs = require('fs');
 const { runPlanner } = require('./planner');
-const { chainFor, buildCtxInv, firstUnmet, armorNeed, chainAfterDone, wantsOpportunisticArmor, GIFT_SET_INGOTS, objectiveForStart, diamondTargetOf, HELP_STOCK, diamondArmorPlanOf } = require('./goals');
+const { chainFor, buildCtxInv, firstUnmet, armorNeed, chainAfterDone, wantsOpportunisticArmor, GIFT_SET_INGOTS, objectiveForStart, diamondTargetOf, HELP_STOCK, diamondArmorPlanOf, swordPlanOf } = require('./goals');
 const { isForbiddenCheat } = require('./nogive');
 const homewarp = require('./homewarp');
 const voidGuard = require('./voidGuard'); // anti-vide : sol sous les homes/spawnpoint, descente loin de la base, rattrapage post-TP // couche warp LÉGITIME sans-give (/sethome+/home ; goSpawn=/home safe)
@@ -104,6 +104,7 @@ const { branchMine: _branchMineRaw, bmBail, floodFillVein, currentPhase: bmCurre
 const heapGuard = require('./heapGuard');   // OOM « au même endroit » du branch-mine (23/10)
 const { installToolGuard } = require('./toolGuard');
 const { diaWornCount, armorTier, isIronDonor } = require('./diaArmor');   // armure diamant des mineurs (24/10 soir)   // OOM 23/10 : récursion sans fin de mineflayer-tool
+const { diamondFree, cautionNight } = require('./freeRoam');   // diamant complet = libre la nuit (24/10)
 const loopGuard = require('./loopGuard');   // sync_loop_capped + loop_lag (gels de l'event loop)
 const { caveHunt, sharedSkipStore: caveHuntSkip, nearSkipped: caveNearSkipped, approachBudgetMs: caveApproachBudgetMs, legWaypoint: caveLegWaypoint } = require('./skills/caveHunt');   // cave-first diamant (Massii 26/07)
 const { caveIron: caveIronSkill } = require('./skills/caveIron');   // fer en grotte (Massii 20/10)
@@ -164,6 +165,8 @@ const {
   homeCamped, spawnpointVeto, rescueWarpVeto, safeHomeMove, spawnSafeHomeAction, deathPosPrune, deathPosLoad, deathPosMemoWith,
   safeHomeLoad, safeHomeMemoWith, nearestHostile, hostileNearHome, CAMPED_EVENT_EVERY_MS, deathsNear, hostileSeenRecently,
 } = require('./homeSafety');
+const { createSurvey } = require('./survey');   // cartographie en passant par les mineurs (24/10)
+const { deepSpotCheck, shouldRefreshDeepWork, deepWorkWarpPlan, deepWorkLanded, deepWorkLoad } = require('./deepWork');   // chantier de diamant persisté (24/10)
 const { mapperNightPlan } = require('./mapperNight');   // nuit du cartographe : rentrer au home ou se terrer ICI (21/10)
 const { recordJam, jamLoopMemoWith, jamLoopAtStart, jamLoopCleared } = require('./jamEscalate'); // JAM persistant au MÊME endroit → relocate forcé (live 22/06 SOIR ResBot2) ; jam_loop répété → escalier (20/10)
 const { digOut: digOutSkill, isOutside: digOutIsOutside, DIG_OUT_MAX_MS } = require('./skills/digOut'); // escalier vers la surface quand aucun home ne sort le bot (20/10)
@@ -465,12 +468,95 @@ function _botXZ() {
   return p ? { x: p.x, z: p.z } : null;
 }
 
+// ── CHANTIER DE DIAMANT PERSISTÉ (deepWork.js, Massii 24/10) ─────────────────────────────────────
+// Le home `work` profond (y ≤ -40, case sûre) est posé/rafraîchi PENDANT le travail et survit à la mort
+// (mémo base `deepWork`) : `descend_y54` y retourne par /home work avant tout escalier. `_workSet` (le
+// drapeau historique) est un état de PROCESS remis à faux à chaque mort — c'est lui qui renvoyait le bot
+// dans ~120 blocs d'escalier après chaque réapparition. ⚠️ NIVEAU MODULE (piège #56) : lu par un timer.
+let _deepWork = null;          // {x,y,z,at} | null
+let _deepWorkLoaded = false;
+let _deepWorkTryAt = 0;        // dernière tentative de pose (throttle 1/min, deepWork.shouldRefreshDeepWork)
+let _deepWorkRefusedEvAt = 0;
+let _deepWorkPosing = false;   // la pose vient de deepWorkTick : le callback de bookmark ne doit pas « oublier » l'ancien
+
+function _loadDeepWork() {
+  if (_deepWorkLoaded) return _deepWork;
+  _deepWorkLoaded = true;
+  try { _deepWork = deepWorkLoad(loadBaseState(), Date.now()); } catch (e) { _deepWork = null; }
+  return _deepWork;
+}
+
+/** Mémo FUSIONNÉ (piège #73d). null = oublié. */
+function _setDeepWork(v) {
+  _deepWorkLoaded = true;
+  _deepWork = v || null;
+  try {
+    const st = Object.assign({}, loadBaseState() || {});
+    st.deepWork = _deepWork;
+    saveBaseState(st);
+  } catch (e) { /* best-effort */ }
+}
+
+/** Le chantier profond n'est plus une destination (noyé, impasse, home supprimé/refusé, migration…). */
+function _forgetDeepWork(why) {
+  if (!_loadDeepWork()) return;
+  _setDeepWork(null);
+  try { emit({ type: 'deep_work_forgotten', why: why || null }); } catch (e) { /* best-effort */ }
+}
+
+/** Callback de homewarp.bookmark : un `/sethome work` posé AILLEURS (surface, coupe de bois…) remplace le
+ *  chantier profond — le home serveur ne pointe plus dessus. */
+function _onBookmarked(info) {
+  try {
+    if (!info || info.name !== HOME_WORK || _deepWorkPosing) return;
+    const w = _loadDeepWork();
+    if (!w) return;
+    const here = { x: info.x, y: info.y, z: info.z };
+    // Posé ailleurs (même profond : la case n'a pas passé deepSpotCheck) → oublié ; le timer re-pose sur
+    // une case vérifiée dans la minute si le bot travaille sous -40.
+    if (!deepWorkLanded(w, here)) {
+      _setDeepWork(null);
+      emit({ type: 'deep_work_forgotten', why: 'work_moved', y: Number.isFinite(info.y) ? Math.round(info.y) : null });
+    }
+  } catch (e) { /* best-effort */ }
+}
+
+/** Timer : pose/rafraîchit le home `work` sur une case SÛRE du chantier quand le bot travaille sous -40. */
+function deepWorkTick() {
+  if (IS_MAPPER || !NO_GIVE || !bot || !bot.entity || !bot.entity.position) return;
+  const p = bot.entity.position;
+  const now = Date.now();
+  const last = _loadDeepWork();
+  if (!shouldRefreshDeepWork({ pos: { x: p.x, y: p.y, z: p.z }, last, now, lastTryAt: _deepWorkTryAt })) return;
+  // Jamais en plein combat, minage, abri, migration, ni blessé / dans l'eau / un hostile à 8 blocs.
+  if (bot.targetDigBlock || (bot.pvp && bot.pvp.target) || _shelterInFlight || _migrating) return;
+  if (bot.health == null || bot.health < 10) return;
+  try { if (isInWater(bot)) return; } catch (e) { return; }
+  try {
+    const h = bot.nearestEntity((x) => x && x.kind === 'Hostile mobs');
+    if (h && h.position && h.position.distanceTo(p) <= 8) return;
+  } catch (e) { return; }
+  _deepWorkTryAt = now;
+  const chk = deepSpotCheck((q) => bot.blockAt(new vec3Lib.Vec3(q.x, q.y, q.z)), { x: p.x, y: p.y, z: p.z });
+  if (!chk.ok) {
+    if (now - _deepWorkRefusedEvAt >= 5 * 60 * 1000) { _deepWorkRefusedEvAt = now; emit({ type: 'deep_work_unsafe', why: chk.why, y: Math.round(p.y) }); }
+    return;
+  }
+  let ok = false;
+  _deepWorkPosing = true;
+  try { ok = !!homewarp.bookmark(bot, HOME_WORK); } catch (e) { ok = false; } finally { _deepWorkPosing = false; }
+  if (!ok) return;
+  _setDeepWork({ x: Math.floor(p.x), y: Math.floor(p.y), z: Math.floor(p.z), at: now });
+  _workSet = true; _workPos = _botXZ(); _workDrownTimes = []; _workStuckTimes = [];
+  emit({ type: 'work_bookmarked', ctx: 'deep_site', x: Math.floor(p.x), y: Math.floor(p.y), z: Math.floor(p.z) });
+}
+
 function abandonWorkIfDrowned() {
   if (!_workSet) { _workDrownTimes = []; return; }
   const r = recordWorkDrown(_workDrownTimes, Date.now());
   _workDrownTimes = r.times;
   if (!r.abandon) return;
-  _workSet = false;
+  _workSet = false; _forgetDeepWork('drowned');
   // 3a : BANNIR le lieu, pas seulement l'oublier. L'oubli seul laissait la re-descente re-percer
   // le MÊME aquifère quelques blocs plus loin — mesuré : 118 sauvetages, 0 minerai.
   const now = Date.now();
@@ -499,7 +585,7 @@ function abandonWorkIfDrowned() {
 function abandonWorkIfDeathSpot(x, z) {
   if (!_workSet || !_workPos) return;
   if (Math.hypot(_workPos.x - x, _workPos.z - z) > 32) return;
-  _workSet = false;
+  _workSet = false; _forgetDeepWork('drowned_ban');
   emit({ type: 'work_abandoned_death_spot', x: Math.round(x), z: Math.round(z) });
 }
 let _drySteerTries = 0;       // NO_GIVE : marches tentées vers la cellule 128 sèche (arrivée VÉRIFIÉE, ≤3 —
@@ -531,7 +617,7 @@ function noteHomeMissing(name) {
     _homeRefusedAt.safe = now;      // les secours cessent de compter dessus (safeWarpDown)
     try { saveBaseState(Object.assign({}, loadBaseState() || {}, { [SAFE_MISSING_MEMO_KEY]: now })); } catch (e) { /* best-effort */ }
   }
-  if (name === HOME_WORK) _workSet = false;
+  if (name === HOME_WORK) { _workSet = false; _forgetDeepWork('home_missing'); }
   if (now - (_homeMissingEvAt[name] || 0) >= HOME_MISSING_EVENT_EVERY_MS) {
     _homeMissingEvAt[name] = now;
     emit({ type: 'home_missing', name });
@@ -1300,8 +1386,11 @@ function ctxExtra() {
   // de son slot ne doit pas être ré-enfilée en croyant le slot couvert.
   let pocketArmorGood = [];
   try { pocketArmorGood = _pocketArmorGood(); } catch (e) { pocketArmorGood = []; }
+  // Épée (goals.SWORD_GOAL / sword.js) : épées SAINES en poche — une épée à bout de course est refaite.
+  let swordsGood = [];
+  try { swordsGood = _swordsGood(); } catch (e) { swordsGood = []; }
   return {
-    pocketArmorGood,
+    pocketArmorGood, swordsGood,
     ...bedCtx,
     hasTable: !!_nearestTable(bot), y: pos ? pos.y : undefined, worn: [..._wornArmor()], offhand, diaPickUpgraded,
     mapperTarget: gift.target, giftReady: gift.ready, giftBatch: !!gift.batch, noWood, passiveNear,
@@ -2386,6 +2475,46 @@ function _pocketArmorGood() {
   return out;
 }
 
+/** Épées SAINES en poche (noms, main comprise : la main est un slot de l'inventaire). */
+function _swordsGood() {
+  const out = [];
+  for (const it of (bot && bot.inventory && bot.inventory.items()) || []) {
+    if (!it || !it.name || !/_sword$/.test(it.name)) continue;
+    if (!isNearlyBroken(it)) out.push(it.name);
+  }
+  return out;
+}
+
+/** But `sword` (sword.js) : craft de l'épée (diamant / fer / pierre) + mise en main hors minage.
+ *  Diamants dépensés → `diamond_progress.spent` (comme la pioche et l'armure diamant). Event `sword_crafted`. */
+async function craftSwordGoal() {
+  const ctx = Object.assign({ inv: buildCtxInv(bot) }, ctxExtra());
+  const plan = swordPlanOf(ctx);
+  if (!plan) return { ok: true };                                 // plus rien à faire (état changé)
+  const inv0 = buildCtxInv(bot);
+  const r = await craftSmart({ name: plan.name, count: 1 });
+  const inv1 = buildCtxInv(bot);
+  if ((inv1[plan.name] || 0) <= (inv0[plan.name] || 0)) {
+    return (r && r.ok === false) ? r : { ok: false, reason: 'craft_no_effect' };
+  }
+  const used = Math.max(0, (inv0.diamond || 0) - (inv1.diamond || 0));
+  if (used > 0) {
+    const st = _diaPickState();
+    _diaPick = { spent: st.spent + used, upgraded: st.upgraded, armor: st.armor || 0 };
+    _saveDiaPick();
+  }
+  // En main tout de suite si rien ne se mine (un dig en cours garde son outil — l'aura ressortira l'épée).
+  try {
+    if (!bot.targetDigBlock) {
+      const it = ((bot.inventory && bot.inventory.items()) || []).find((i) => i.name === plan.name);
+      if (it) await bot.equip(it, 'hand');
+    }
+  } catch (e) { /* best-effort */ }
+  emit({ type: 'sword_crafted', tier: plan.tier, used, upgrade: !!plan.upgrade,
+    spent: used > 0 ? _diaPick.spent : undefined, have: inv1.diamond || 0 });
+  return { ok: true };
+}
+
 /** But `dia_armor` : enfile une pièce diamant saine de la poche, ou forge la suivante (ordre plastron →
  *  jambières → casque → bottes, cf. diaArmor.js) et l'enfile. Diamants dépensés → `spent` (+ `armor`). */
 async function craftDiamondArmorPiece() {
@@ -2792,7 +2921,7 @@ function _ljForestNeeded() {
     _ljLoadStockFails();
     if (!needsForestTrip(_ljStockFails, Date.now())) return false;
     // Pas de marche de 120 s de nuit : la discipline de nuit possède la surface (les échecs restent comptés).
-    if (bot.time && bot.time.timeOfDay != null && isNight(bot)) return false;
+    if (bot.time && bot.time.timeOfDay != null && cautionNightNow()) return false;   // diamant complet : pas de nuit (freeRoam)
     return logCount(buildCtxInv(bot)) < LUMBERJACK_STOCK;
   } catch (e) { return false; }
 }
@@ -3248,22 +3377,30 @@ function craftLowHpBlocked() {
  * collé → sortie nourriture si la faim coupe la régénération → sinon rester immobile jusqu'à PV > seuil.
  * Rend { outcome } : healed | no_regen (rien à gagner à attendre) | timeout | cancelled | dead | busy.
  */
-async function recoverLowHp(goalName) {
+const LOWHP_PROCEED_PAUSE_MS = 15000;   // garde de skill sans issue : pause avant la relance du but
+async function recoverLowHp(goalName, opts = {}) {
   if (_lowHpRecoverBusy) { await sleep(2000); return { outcome: 'busy' }; }
+  // `targetHp` (24/10) : garde PV d'un skill (caveHunt `low_hp` < 12) → récupérer jusqu'à elle.
+  const targetHp = Number.isFinite(opts.targetHp) ? opts.targetHp : undefined;
   _lowHpRecoverBusy = true;
   const t0 = Date.now();
   let sealed = false;
   let eats = 0;
   let eatFails = 0;
   let outcome = 'timeout';
-  emit({ type: 'low_hp_recover', goal: goalName, hp: bot.health, food: bot.food });
+  emit({ type: 'low_hp_recover', goal: goalName, hp: bot.health, food: bot.food, target: targetHp });
   try {
     while (Date.now() - t0 < LOWHP_RECOVERY_BUDGET_MS) {
       if (taskToken.cancelled || migrationOwnsBot()) { outcome = 'cancelled'; break; }
       if (!bot.entity || bot.health === 0) { outcome = 'dead'; break; }
-      const step = lowHpStep(Object.assign(lowHpSignals(), { sealed, eatFails }));
+      const step = lowHpStep(Object.assign(lowHpSignals(), { sealed, eatFails, targetHp }));
       if (step === 'ok') { outcome = 'healed'; break; }
-      if (step === 'proceed') { outcome = 'no_regen'; break; }
+      if (step === 'proceed') {
+        // Garde de skill (pas critique) sans rien à manger ni sortie possible : la relance immédiate du but
+        // retomberait sur le même refus en quelques ms (×12 en 10 min, NethBot1 24/10) — on laisse respirer.
+        if (targetHp !== undefined) await sleep(LOWHP_PROCEED_PAUSE_MS);
+        outcome = 'no_regen'; break;
+      }
       if (step === 'eat') {
         // 24/10 : le filet (hungerNetTick) mange jusqu'à faim ≥ 18, accepte le cru blessé, VÉRIFIE la bouchée
         // (consume() peut rendre sans manger) et émet ate/heal_eat/eat_failed lui-même. Muré (`sealed`) :
@@ -3628,7 +3765,7 @@ function foodTripState() {
   return {
     // `bot.time` peut manquer juste après un spawn : null = heure inconnue → la décision ne part PAS,
     // plutôt que de conclure « il fait jour » et marcher 75 s au crépuscule.
-    isDay: (bot.time && bot.time.timeOfDay != null) ? !isNight(bot) : null,
+    isDay: (bot.time && bot.time.timeOfDay != null) ? !cautionNightNow() : null,   // diamant complet : jour permanent (freeRoam)
     y: p ? p.y : NaN,
     migrating: _migrating,
     ordered: isOrderOwner(owner),   // 'food_run' (sortie qui a préempté le planner) n'est pas un ordre
@@ -4330,6 +4467,39 @@ async function runGoalSkill(goal, gen) {
     // → on l'oublie et on re-creuse (qui relocalise au sec via _descendWaterFails).
     // Mort pendant les pré-hooks (chasse, armure…) : pas de /home work vers le chantier de l'autre vie.
     if (lifeStale(_gen)) return dropStaleTask('descendDiagonal', _gen);
+    // CHANTIER DE DIAMANT PERSISTÉ (deepWork.js, 24/10) : survit à la mort, contrairement à `_workSet`.
+    // Profond, récent, pas un camp de mort → /home work AVANT tout escalier.
+    if (NO_GIVE && bot.entity && bot.entity.position) {
+      const _dw = _loadDeepWork();
+      const _p0 = bot.entity.position;
+      let _deaths = [];
+      try { _deaths = _recentDeathPositions(); } catch (e) { _deaths = []; }
+      const plan = deepWorkWarpPlan({ deepWork: _dw, pos: { x: _p0.x, y: _p0.y, z: _p0.z }, now: Date.now(), deaths: _deaths });
+      if (plan.warp) {
+        emit({ type: 'descend_via_deep_work', x: _dw.x, y: _dw.y, z: _dw.z, from_y: Math.round(_p0.y) });
+        _stairDepth++;
+        try {
+          try { homewarp.goHome(bot, HOME_WORK); } catch (e) {}
+          await awaitWarp({ maxMs: 8000 });
+          await sleep(1200);
+        } finally { _stairDepth = Math.max(0, _stairDepth - 1); }
+        if (lifeStale(_gen)) return dropStaleTask('descendDiagonal', _gen);
+        const _pl = bot.entity && bot.entity.position;
+        const landed = _pl ? { x: _pl.x, y: _pl.y, z: _pl.z } : null;
+        let _wet = false;
+        try { _wet = isInWater(bot); } catch (e) { _wet = false; }
+        if (landed && deepWorkLanded(_dw, landed) && !_wet) {
+          _workSet = true; _workPos = _botXZ();
+          emit({ type: 'deep_work_landed', y: Math.round(landed.y) });
+          return { ok: true, viaHome: true };
+        }
+        // Pas arrivé au chantier (TP refusé, home déplacé, atterrissage mouillé) : on l'oublie, escalier.
+        _forgetDeepWork(_wet ? 'landed_wet' : 'not_landed');
+        if (_wet) { try { await escapeWater(bot, { emit }); } catch (e) {} }
+      } else if (plan.why === 'camped') {
+        emit({ type: 'deep_work_camped', x: _dw.x, y: _dw.y, z: _dw.z });
+      }
+    }
     if (NO_GIVE && _workSet && bot.entity && bot.entity.position && bot.entity.position.y > 30) {
       emit({ type: 'descend_via_home_work' });
       // Pendant l'attente du TP + le settle (jusqu'à ~9 s), l'escalier compte déjà comme en cours : le
@@ -4341,7 +4511,7 @@ async function runGoalSkill(goal, gen) {
         await sleep(1200);                // settle chunks post-tp
       } finally { _stairDepth = Math.max(0, _stairDepth - 1); }
       const _py = (bot.entity && bot.entity.position) ? bot.entity.position.y : 99;
-      if (isInWater(bot)) { _workSet = false; try { await escapeWater(bot, { emit }); } catch (e) {} }
+      if (isInWater(bot)) { _workSet = false; _forgetDeepWork('landed_wet'); try { await escapeWater(bot, { emit }); } catch (e) {} }
       else if (_py <= 20) return { ok: true, viaHome: true };  // arrivé profond & sec → pas de re-creusage
     }
     // Cap imposé par un `drop_ahead` répété (descendDiagonal prend son cap dans le yaw) : appliqué ICI,
@@ -4382,7 +4552,7 @@ async function runGoalSkill(goal, gen) {
       // un puits FRAIS 30-50 blocs plus loin au lieu de /home work → même drop_ahead.
       const s = recordWorkStuck(_workStuckTimes, Date.now());
       _workStuckTimes = s.times;
-      if (s.abandon) { _workSet = false; _descendWaterFails++; emit({ type: 'work_abandoned_stuck', reason: r.reason }); }
+      if (s.abandon) { _workSet = false; _forgetDeepWork('stuck'); _descendWaterFails++; emit({ type: 'work_abandoned_stuck', reason: r.reason }); }
     }
     return r;
   }
@@ -4502,7 +4672,7 @@ async function runGoalSkill(goal, gen) {
         await withTimeout(bot.pathfinder.goto(new pfGoals.GoalNear(_tx, Math.round(_p.y), _tz, 3)), 90000,
           () => { try { stopMotion(); } catch (e) {} });
       } catch (e) {}
-      if (isInWater(bot)) { _workSet = false; try { await escapeWater(bot, { emit }); } catch (e) {} }
+      if (isInWater(bot)) { _workSet = false; _forgetDeepWork('landed_wet'); try { await escapeWater(bot, { emit }); } catch (e) {} }
       else { try { homewarp.bookmark(bot, HOME_WORK); _workSet = true; _workPos = _botXZ(); emit({ type: 'work_bookmarked', ctx: 'waterlocked_relocate' }); } catch (e) {} }
     }
     return rBM;
@@ -4605,6 +4775,7 @@ async function runGoalSkill(goal, gen) {
   // Chaîne diamond_armor : équipe toute pièce diamant en poche (jamais downgrade) puis craft la
   // pièce diamant la moins chère du slot encore sous-diamant (armorUpgradePlan, pur/testé).
   if (goal.skill === 'diaArmor') return craftDiamondArmorPiece();
+  if (goal.skill === 'sword') return craftSwordGoal();
   if (goal.skill === 'craftDiamondArmor') {
     const itemsOf = () => ((bot.inventory && bot.inventory.items()) || []).map((i) => ({ name: i.name, count: i.count }));
     let progressed = false;
@@ -4712,16 +4883,29 @@ let _plannerParked = false;    // stop/afk/guard/follow/pvp d'un JOUEUR : le pla
 let _nightHold = 0;            // planners retenus par la discipline de nuit : immobilité LÉGITIME (desync, confine)
 let _lockdownShelters = null;  // comptabilité des abris de la nuit (caution.lockdownShelterNote → `shelter_reenter`)
 const _nightGateAt = {};       // throttle des events `night_gate` : 1×/min par routine retenue
+let _freeRoamNoteAt = 0;       // throttle de `night_free_roam` (diamant complet, pas d'abri) : 1×/10 min
 const NIGHT_HOLD_POLL_MS = 2000;            // pas de re-décision du planner retenu
 const NIGHT_HOLD_MAX_MS = 15 * 60 * 1000;   // garde-fou : une nuit MC ≈ 8,7 min (+ 2 min d'aube) — jamais retenu à vie sur une heure figée
 
 /** Discipline de nuit MAINTENANT ? Nu (< 2 pièces PORTÉES, usées exclues) + nuit CONNUE. `bot.time`
  *  absent (juste après un spawn) → heure inconnue → false (convention de caution.nightLockdown). */
 function nightLockdownNow() {
+  if (diamondFreeNow()) return false;   // armure diamant complète : libre la nuit (freeRoam, Massii 24/10)
   let worn = 0;
   try { worn = _wornArmor().size; } catch (e) { worn = 0; }   // inventaire illisible → 0 = prudent
   const known = !!(bot && bot.time && bot.time.timeOfDay != null);
   return nightLockdown({ isNight: known ? isNight(bot) : null, worn });
+}
+
+/** Armure diamant complète PORTÉE (pièces usées exclues) ? → libre en surface, la nuit comprise (freeRoam). */
+function diamondFreeNow() {
+  try { return diamondFree([..._wornArmor()]); } catch (e) { return false; }
+}
+
+/** La nuit vue par les gardes de prudence : false pour le diamant complet, sinon isNight. Heure inconnue →
+ *  l'appelant décide (il teste bot.time avant). */
+function cautionNightNow() {
+  try { return !!cautionNight(isNight(bot), [..._wornArmor()]); } catch (e) { return false; }
 }
 
 /** Trace qu'une routine a été RETENUE par la discipline de nuit (1×/min par routine) : sans elle, un
@@ -4802,6 +4986,14 @@ async function maybeNightShelter(proactive = false, opts = {}) {
   if (_shelterInFlight) {
     try { await _shelterInFlight; } catch (e) { /* l'abri en cours a ses propres garde-fous */ }
     return true;
+  }
+  // ARMURE DIAMANT COMPLÈTE (Massii 24/10) : pas d'abri de nuit, pas d'attente d'aube — il travaille.
+  if (diamondFreeNow()) {
+    if (bot.time && bot.time.timeOfDay != null && isNight(bot) && Date.now() - _freeRoamNoteAt >= 10 * 60 * 1000) {
+      _freeRoamNoteAt = Date.now();
+      emit({ type: 'night_free_roam', y: bot.entity && bot.entity.position ? Math.round(bot.entity.position.y) : null });
+    }
+    return false;
   }
   const deathsRecent = deathTimes.filter((t) => Date.now() - t < 10 * 60 * 1000).length;
   // Décision d'abri déléguée à shouldShelter (skills/shelter) : sensible à l'OBSCURITÉ (lightLevel
@@ -5791,7 +5983,7 @@ async function migrateZone(reason) {
       if (CONFINE) CONFINE = { x: base.x, z: base.z, radius: CONFINE.radius };
       _anchorSet = true;
       bot._mcaExploreBounds = { x: base.x, z: base.z, radius: Math.max(_confineDyn.radius * 2, 128) };
-      _workSet = false;                            // l'ancien chantier est à l'autre bout du monde
+      _workSet = false; _forgetDeepWork('migrated');                            // l'ancien chantier est à l'autre bout du monde
       // `_zoneStateNow()` en 2e argument : les cibles RATÉES survivent au déménagement (45 min).
       _migrationInterrupts = 0;
       _applyZoneState(zoneStateAfterMigration(Date.now(), _zoneStateNow(), reason));
@@ -5877,7 +6069,7 @@ function onMigrationCancelled(reason, target, phase) {
  *  il a déjà tranché « migrer », l'interruption n'a rien prouvé. Décision : zone.migrationResumeDecision. */
 function maybeResumeMigration() {
   const pending = _migrationResume;
-  const night = (bot && bot.time && bot.time.timeOfDay != null) ? isNight(bot) : null;
+  const night = (bot && bot.time && bot.time.timeOfDay != null) ? cautionNightNow() : null;   // freeRoam
   const d = migrationResumeDecision({ pending, now: Date.now(), activeTask: taskCtl.active, isNight: night, migrating: _migrating });
   if (d === 'drop') {
     _migrationResume = null;
@@ -6003,7 +6195,7 @@ function checkZoneVerdict() {
   if (isLumberjackObjective()) {
     try {
       _ljLoadStockFails();
-      const night = (bot.time && bot.time.timeOfDay != null) ? isNight(bot) : true;   // heure inconnue → prudence
+      const night = (bot.time && bot.time.timeOfDay != null) ? cautionNightNow() : !diamondFreeNow();   // heure inconnue → prudence (sauf diamant complet)
       if (ljWoodMigrationDue({ notFound: _ljNotFound, now, isNight: night, lastMigrationAt: _lastMigrationAt, migrating: _migrating })) {
         emit({ type: 'lumberjack_wood_migration', not_found: _ljNotFound.length });
         _ljNotFound = [];
@@ -6046,7 +6238,7 @@ function checkZoneVerdict() {
     lastMigrationReason: _lastMigrationReason,   // `wood` + arrivée sans arbres → seuils d'urgence (23/10)
     // Pas de trek de nuit (fix 18/08). `bot.time` peut manquer juste après un spawn : `null` =
     // heure inconnue → pas de gate (comme mapperNightGuard), plutôt que de conclure « il fait jour ».
-    isNight: (bot.time && bot.time.timeOfDay != null) ? isNight(bot) : null,
+    isNight: (bot.time && bot.time.timeOfDay != null) ? cautionNightNow() : null,   // diamant complet : migre de nuit (freeRoam)
     now,
   });
   // TRACE : sans elle, un 'stay' est muet → on ne peut pas voir QUELLE porte bloque la migration
@@ -6662,7 +6854,7 @@ async function runSkillWithTelemetry(g) {
   // fingerprint, et re-dérive le but au tour suivant (cf. planner.js MAX_WAIT_TURNS).
   if (r && r.ok === false && isLowHpSkip(r.reason)) {
     if (taskToken.cancelled || lifeStale(_gen) || migrationOwnsBot()) return { ok: false, reason: 'cancelled' };
-    const rec = await recoverLowHp(g.name);
+    const rec = await recoverLowHp(g.name, { targetHp: lowHpTargetFor(r.reason) || undefined });
     if (taskToken.cancelled || lifeStale(_gen) || migrationOwnsBot()) return { ok: false, reason: 'cancelled' };
     return { ok: false, reason: 'recovering', wait: true, outcome: rec.outcome };
   }
@@ -10820,7 +11012,7 @@ function invalidateVoidHome(name, at, reason) {
       saveBaseState(st);
     } catch (e) {}
   }
-  if (name === HOME_WORK) { _workSet = false; _workPos = null; }
+  if (name === HOME_WORK) { _workSet = false; _forgetDeepWork('delhome'); _workPos = null; }
   emit({ type: 'home_invalidated_void', name, reason, ...(at || {}) });
 }
 
@@ -13154,6 +13346,7 @@ bot.loadPlugin(collectBlock);
 // d'envoyer la commande (point d'entrée unique : goSpawn, safeWarpHome et les appels directs).
 bot._mcaSafeVeto = (ctx) => !!safeHomeVeto(ctx);
 // ANTI-VIDE (22/10) : homewarp.bookmark refuse un home au-dessus du vide — on le DIT (jamais en silence).
+bot._mcaOnBookmarked = (i) => _onBookmarked(i);   // mémo deepWork (un /sethome work ailleurs remplace le chantier)
 bot._mcaOnBookmarkRefused = (i) => { try { emit({ type: 'sethome_refused_void', name: i.name, reason: i.reason, solid: i.solid, x: i.x, y: i.y, z: i.z }); } catch (e) {} };
 // Mort par CHUTE annoncée par le serveur → home/base de la même colonne condamnés, boucle détectée.
 bot.on('messagestr', (msg) => {
@@ -13388,7 +13581,7 @@ bot.on('messagestr', (msg) => {
   if (refusedH) {
     _homeRefusedAt[refusedH] = Date.now();
     emit({ type: 'home_tp_refused', name: refusedH });
-    if (refusedH === HOME_WORK) _workSet = false;
+    if (refusedH === HOME_WORK) { _workSet = false; _forgetDeepWork('tp_refused'); }
     if (refusedH === 'safe') _safeHomeSurface = false;   // le prochain spawn surface re-posera un safe sain
   }
   // Secure-then-warp : serveurs à teleport-delay — warmup annoncé (info) et surtout ANNULATION
@@ -14248,6 +14441,7 @@ const CREEPER_FLEE_MAX_MS = 6000;      // une fuite verrouille le pathfinder 6 s
 const CREEPER_REPLAN_MS = 1000;        // re-viser le point de fuite (le creeper suit)
 let _auraLastHitAt = 0;                // dernier coup OU dernier changement d'arme (remet le cooldown à zéro)
 let _auraBusy = false;                 // un equip est en vol
+let _auraReadyAt = 0;                  // dernière arme sortie « à l'approche » (aura.auraReadyPlan, anti ping-pong)
 let _auraEvAt = {};                    // throttle des events par type
 let _creeperFlee = null;               // fuite en cours : { startedAt, lastSetAt, fusing } | null
 const _creeperHold = createHoldState();   // verrou de but pendant la fuite (goalHold.js)
@@ -14282,8 +14476,30 @@ function auraTick() {
     const p = bot.entity && bot.entity.position;
     if (!p || bot.health == null || bot.health <= 0) return;
     const self = { x: p.x, y: p.y, z: p.z };   // COPIE (Vec3 muté en place)
-    const target = auraTarget(Object.values(bot.entities || {}), self, { canSee: canSeeEntityNow });
-    if (!target) return;
+    const _ents = Object.values(bot.entities || {});
+    const target = auraTarget(_ents, self, { canSee: canSeeEntityNow });
+    if (!target) {
+      // Rien au contact : un hostile qui APPROCHE (≤ 6 blocs, visible) → l'épée en main avant le contact
+      // (aura.auraReadyPlan — Massii 24/10, « terre en main »). Abri / pilier en cours = pose de blocs : on
+      // ne leur vole pas la main.
+      const nearFoe = auraTarget(_ents, self, { reach: AURA_READY_REACH, canSee: canSeeEntityNow });
+      if (!nearFoe) return;
+      const wr = bestWeapon(bot);
+      const nowR = Date.now();
+      const rp = auraReadyPlan({
+        near: true, weapon: wr ? wr.name : null, held: bot.heldItem ? bot.heldItem.name : null,
+        digging: !!bot.targetDigBlock, eating: !!bot.usingHeldItem || eatLockActive(),
+        pvpTarget: bot.pvp ? bot.pvp.target : null, busy: !!_shelterInFlight || !!_meleePillar,
+        lastReadyAt: _auraReadyAt, now: nowR,
+      });
+      if (rp.act !== 'equip') return;
+      _auraBusy = true;
+      _auraReadyAt = nowR;
+      _auraLastHitAt = nowR;   // changer d'objet remet le cooldown 1.9+ à zéro
+      Promise.resolve().then(() => bot.equip(wr, 'hand')).catch(() => {}).then(() => { _auraBusy = false; });
+      _auraEmit('aura_ready', { mob: nearFoe.name, weapon: wr.name });
+      return;
+    }
     const w = bestWeapon(bot);
     const now = Date.now();
     const plan = auraPlan({
@@ -14367,6 +14583,21 @@ function creeperTick() {
   } catch (e) { /* best-effort */ }
 }
 setInterval(() => { auraTick(); creeperTick(); }, AURA_TICK_MS);
+setInterval(() => { try { deepWorkTick(); } catch (e) { /* best-effort */ } }, 15000);   // chantier de diamant (deepWork.js)
+// CARTOGRAPHIE EN PASSANT (survey.js, Massii 24/10 : plus de cartographes, les MINEURS nourrissent la carte) :
+// biomes en surface, minerais des chunks chargés sous terre. Throttlé 45 s dans le module ; jamais pendant un
+// combat, un dig, un craft, un abri, une fuite de creeper ou un pilier. ⚠️ NIVEAU MODULE (piège #56).
+const _survey = createSurvey({ worldKey: () => (bot && bot._worldKey) || 'overworld', emit: (e) => emit(e) });
+function surveyBusyNow() {
+  try {
+    if (!bot || !bot.entity) return true;
+    if (bot.targetDigBlock || (bot.pvp && bot.pvp.target) || _craftDepth > 0 || _shelterInFlight || _creeperFlee || _meleePillar) return true;
+    if (bot.health == null || bot.health < 8) return true;
+    const h = bot.nearestEntity((x) => x && x.kind === 'Hostile mobs');
+    return !!(h && h.position && h.position.distanceTo(bot.entity.position) <= 8);
+  } catch (e) { return true; }
+}
+setInterval(() => { try { if (!IS_MAPPER) _survey.tick(bot, { busy: surveyBusyNow() }); } catch (e) { /* best-effort */ } }, 15000);
 setInterval(meleePillarTick, PILLAR_TICK_MS);   // pilier anti-mêlée (glue près de guardSpawn)
 
 // ── PLUS DE PIOCHE → EN REFAIRE UNE (Massii 2026-07-26 : « si ils n'ont plus de pioche ils doivent

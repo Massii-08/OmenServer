@@ -182,8 +182,12 @@ async function runHuntCook(d, target, opts = {}) {
       if (!afterFail && safe(d.passiveInView, false)) return false;
       let world = {};
       try { world = d.tripState() || {}; } catch (e) { world = {}; }   // monde illisible → heure inconnue → on reste
+      // APRÈS UNE CHASSE RATÉE (24/10, NethBot1 : `no_prey:hunt_failed trip:no_time` ×12 en 10 min, 0 nourriture,
+      // PV bas) : la vague de chasse avait mangé le budget, et la porte « < 20 s restantes » interdisait
+      // justement la marche vers le troupeau connu — la seule issue. La marche a son PROPRE plafond (75 s) et
+      // la chasse sur place reçoit un budget neuf (ci-dessous) : la porte de temps ne s'applique plus ici.
       const verdict = TRIP.shouldFoodTrip(Object.assign({}, world, {
-        points: points(), passiveInView: false, leftMs: budget.left(),
+        points: points(), passiveInView: false, leftMs: afterFail ? null : budget.left(),
       }));
       tripReason = verdict.reason;
       if (!verdict.go) return false;
@@ -211,7 +215,9 @@ async function runHuntCook(d, target, opts = {}) {
       ctl.cancel();
       trip.arrived = !!(r && r.arrived);
       trip.legs = r && r.legs != null ? r.legs : null;
-      budget = F.createBudget(leftBefore, now);
+      // Après une chasse ratée, le reste du budget est souvent nul : une marche de 75 s pour ne pas chasser
+      // à l'arrivée serait perdue. Une vague complète au moins.
+      budget = F.createBudget(afterFail ? Math.max(leftBefore, huntMs) : leftBefore, now);
       // (tâche annulée PENDANT la marche : la boucle de chasse ci-dessous s'arrête sur `cancelled()`)
       return true;
     };

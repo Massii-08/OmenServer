@@ -146,10 +146,11 @@ function cancelSandbox() {
     _migrationResume: null, _migrationInterrupts: 0, _migrating: false, _migrationLegs: 1,
     world: { objective: { type: 'iron_armor', status: 'in_progress' } },
     bot: { time: { timeOfDay: 1000 } }, isNight: () => false,
+    _wornArmor: () => new Set(), diamondFree: require('./freeRoam').diamondFree, cautionNight: require('./freeRoam').cautionNight,
     migrateZone: async (reason) => { sb.migrations.push(reason); },
     Math, Date, String, Number, Promise,
   });
-  vm.runInContext("'use strict';\n" + fnSrc('onMigrationCancelled') + '\n' + fnSrc('maybeResumeMigration'), sb);
+  vm.runInContext("'use strict';\n" + fnSrc('cautionNightNow') + '\n' + fnSrc('diamondFreeNow') + '\n' + fnSrc('onMigrationCancelled') + '\n' + fnSrc('maybeResumeMigration'), sb);
   return sb;
 }
 

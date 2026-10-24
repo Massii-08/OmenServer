@@ -44,11 +44,12 @@ const RECIPES = {
   wooden_shovel: { planks: 1, sticks: 2, table: true },
   stone_pickaxe: { stone: 3, sticks: 2, table: true },
   stone_axe: { stone: 3, sticks: 2, table: true },
-  stone_sword: { stone: 1, sticks: 1, table: true },
+  stone_sword: { stone: 2, sticks: 1, table: true },
   stone_shovel: { stone: 1, sticks: 2, table: true },
   iron_pickaxe: { iron: 3, sticks: 2, table: true },
   iron_axe: { iron: 3, sticks: 2, table: true },
   iron_sword: { iron: 2, sticks: 1, table: true },
+  diamond_sword: { diamond: 2, sticks: 1, table: true },
   iron_shovel: { iron: 1, sticks: 2, table: true },
   iron_helmet: { iron: 5, table: true },
   iron_chestplate: { iron: 8, table: true },
@@ -103,6 +104,10 @@ function planIntermediates(item, inventory, opts) {
   if (r.iron) {
     const have = inv.iron_ingot || 0;
     if (have < r.iron * times) return { known: true, ok: false, reason: 'no_iron', need: r.iron * times, have };
+  }
+  if (r.diamond) {
+    const have = inv.diamond || 0;
+    if (have < r.diamond * times) return { known: true, ok: false, reason: 'no_diamond', need: r.diamond * times, have };
   }
   if (r.coal) {
     const have = COALS.reduce((a, n) => a + (inv[n] || 0), 0);

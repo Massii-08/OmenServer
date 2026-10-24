@@ -174,7 +174,7 @@ test('runSkillWithTelemetry : low_hp_skip → recoverLowHp + wait:true, AVANT go
   const iSkip = body.indexOf('isLowHpSkip(r.reason)');
   const iFail = body.indexOf("type: 'goal_failed'");
   assert.ok(iSkip > 0 && iFail > 0 && iSkip < iFail, 'le refus est intercepté avant le bloc d échec');
-  assert.match(body, /await recoverLowHp\(g\.name\)/);
+  assert.match(body, /await recoverLowHp\(g\.name, \{ targetHp: lowHpTargetFor\(r\.reason\) \|\| undefined \}\)/);
   assert.match(body, /return \{ ok: false, reason: 'recovering', wait: true, outcome: rec\.outcome \};/);
 });
 
@@ -195,7 +195,7 @@ function recoverSandbox({ health = 4, food = 13, items = [], entities = [], onSl
     // 24/10 : la récupération mange par le filet (hungerNetTick : bouchées vérifiées, cru accepté blessé).
     hungerNetTick: async (tag) => { sb.calls.push('eat'); sb.eatTags = (sb.eatTags || []).concat([tag]); sb.bot.food = 20; sb.bot._items.length = 0; return true; },
     isFleeHostile, NEUTRAL_NO_PROVOKE, FOODS, EMERGENCY_FOODS,
-    lowHpStep: lowhp.lowHpStep, LOWHP_RECOVERY_BUDGET_MS: lowhp.LOWHP_RECOVERY_BUDGET_MS, LOWHP_FOOD_RUN_TTL_MS: lowhp.LOWHP_FOOD_RUN_TTL_MS,
+    lowHpStep: lowhp.lowHpStep, LOWHP_PROCEED_PAUSE_MS: 15000, LOWHP_RECOVERY_BUDGET_MS: lowhp.LOWHP_RECOVERY_BUDGET_MS, LOWHP_FOOD_RUN_TTL_MS: lowhp.LOWHP_FOOD_RUN_TTL_MS,
     bot: {
       health, food, _items: items.slice(),
       entity: { position: { x: 0, y: 70, z: 0 } },
@@ -252,4 +252,24 @@ test('recoverLowHp : hostile collé ET de quoi manger → se mure d abord, puis 
   await run(sb, "recoverLowHp('gift_craft')");
   assert.deepStrictEqual(sb.calls.slice(0, 3), ['stopMotion', 'seal', 'eat']);
   assert.deepStrictEqual(sb.eatTags, ['low_hp_recover']);
+});
+
+
+test('recoverLowHp(targetHp 12) : `low_hp` de caveHunt à 9 PV → mange puis attend 12 PV (plus de retry à vide)', async () => {
+  const sb = recoverSandbox({ health: 9, food: 10, items: [{ name: 'bread', count: 2 }], onSleep: (s) => { s.bot.health += 0.5; } });
+  const r = await run(sb, "recoverLowHp('diamond_caves', { targetHp: 12 })");
+  assert.strictEqual(r.outcome, 'healed');
+  assert.deepStrictEqual(sb.calls, ['eat']);
+  assert.ok(sb.bot.health >= 12, 'jusqu au seuil de la grotte : ' + sb.bot.health);
+});
+
+test('recoverLowHp(targetHp 12) : rien à manger → sortie nourriture, puis pause avant la relance (pas de boucle en ms)', async () => {
+  const sb = recoverSandbox({ health: 9, food: 4 });
+  const r1 = await run(sb, "recoverLowHp('diamond_caves', { targetHp: 12 })");
+  assert.strictEqual(r1.outcome, 'no_regen');
+  assert.deepStrictEqual(sb.calls, ['food_run']);
+  const t = sb.clock.t;
+  const r2 = await run(sb, "recoverLowHp('diamond_caves', { targetHp: 12 })");
+  assert.strictEqual(r2.outcome, 'no_regen');
+  assert.ok(sb.clock.t - t >= 15000, 'pause de 15 s : ' + (sb.clock.t - t));
 });

@@ -100,7 +100,26 @@ function auraPlan(o = {}) {
   return { act: 'hit' };
 }
 
+// ARME SORTIE À L'APPROCHE (Massii 24/10 : « NethBot3 a de la terre en main ») : l'aura n'équipait l'arme
+// qu'au contact (≤ 3 blocs), donc le PREMIER coup partait souvent avec l'objet tenu (terre, torche,
+// pioche) et le cooldown 1.9+ de l'équipement tombait pendant que le mob frappait. Un hostile à ≤ 6 blocs
+// et visible → l'épée en main AVANT le contact. Jamais pendant un dig (le minage garde son outil), un
+// repas, un combat mineflayer-pvp (il équipe lui-même) ni une pose de blocs (abri, pilier : `busy`) ;
+// au plus 1 changement / AURA_READY_EVERY_MS (un minage qui reprend sa pioche entre deux blocs ne doit pas
+// faire ping-pong avec l'épée).
+const AURA_READY_REACH = 6;
+const AURA_READY_EVERY_MS = 3000;
+
+/** PUR — sortir l'arme maintenant (un hostile approche) ? → { act:'equip'|'none' } */
+function auraReadyPlan(o = {}) {
+  if (!o.near || o.eating || o.digging || o.pvpTarget || o.busy) return { act: 'none' };
+  if (isWeapon(o.held) || !isWeapon(o.weapon)) return { act: 'none' };
+  const every = Number.isFinite(o.everyMs) ? o.everyMs : AURA_READY_EVERY_MS;
+  if (o.lastReadyAt && Number.isFinite(o.now) && o.now - o.lastReadyAt < every) return { act: 'none' };
+  return { act: 'equip' };
+}
+
 module.exports = {
-  auraTarget, auraPlan, attackCooldownMs, cooldownReady, isWeapon,
+  auraTarget, auraPlan, auraReadyPlan, AURA_READY_REACH, AURA_READY_EVERY_MS, attackCooldownMs, cooldownReady, isWeapon,
   AURA_REACH, AURA_NEVER,
 };

@@ -19,6 +19,7 @@
 // …et que RIEN ne change pour un bot armé (≥ 2 pièces) ou de jour.
 
 const NW = require('./nightWork');
+const FR = require('./freeRoam');   // diamant complet = libre la nuit (24/10)
 const test = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');
@@ -74,7 +75,7 @@ function sandbox({ worn = 0, timeOfDay = NIGHT, day = 4, pos = { x: 0, y: 70, z:
     setTimeout: () => 0,
     _wornN: worn,
     _wornArmor: () => new Set(PIECES.slice(0, sb._wornN)),
-    isNight: SH.isNight,
+    isNight: SH.isNight, diamondFree: FR.diamondFree, cautionNight: FR.cautionNight,
     nightLockdown: C.nightLockdown, nightPlannerStep: C.nightPlannerStep, lockdownShelterNote: C.lockdownShelterNote,
     NIGHT_SHELTER_GAP_MS: C.NIGHT_SHELTER_GAP_MS, NIGHT_UNDERGROUND_Y: C.NIGHT_UNDERGROUND_Y,
     regroupCaution: C.regroupCaution,
@@ -90,6 +91,8 @@ function sandbox({ worn = 0, timeOfDay = NIGHT, day = 4, pos = { x: 0, y: 70, z:
   vm.createContext(sb);
   run(sb, fnSrc('_nightId'));
   run(sb, fnSrc('nightUndergroundNow'));
+  run(sb, fnSrc('diamondFreeNow'));
+  run(sb, fnSrc('cautionNightNow'));
   run(sb, fnSrc('nightLockdownNow'));
   run(sb, fnSrc('nightGateNote'));
   return sb;
@@ -782,4 +785,25 @@ test('index.js : tous les appelants de maybeNightShelter passent par le MÊME ab
   const body = fnSrc('maybeNightShelter');
   assert.ok(body.indexOf('if (_shelterInFlight)') < body.indexOf('shouldShelter(sig)'), 'le ralliement passe avant toute décision');
   assert.match(body, /const _shelterGap = lockdown \? NIGHT_SHELTER_GAP_MS : \(opts\.force \? FORCED_SHELTER_MIN_GAP_MS : 10 \* 60 \* 1000\);/);
+});
+
+// ═════════════════════ freeRoam (Massii 24/10) : diamant complet = libre la nuit ════════════════════
+test('nightLockdownNow / cautionNightNow : armure DIAMANT complète → jamais de lockdown, la nuit n existe pas', () => {
+  const sb = sandbox({ worn: 0 });
+  assert.strictEqual(sb.nightLockdownNow(), true, 'nu de nuit : lockdown');
+  assert.strictEqual(sb.cautionNightNow(), true);
+  sb._wornArmor = () => new Set(['diamond_helmet', 'diamond_chestplate', 'diamond_leggings', 'diamond_boots']);
+  assert.strictEqual(sb.diamondFreeNow(), true);
+  assert.strictEqual(sb.nightLockdownNow(), false);
+  assert.strictEqual(sb.cautionNightNow(), false, 'bois / nourriture / migration : la nuit ne les retient plus');
+  sb._wornArmor = () => new Set(['diamond_helmet', 'diamond_chestplate', 'diamond_leggings', 'iron_boots']);
+  assert.strictEqual(sb.cautionNightNow(), true, '3 pièces diamant : prudence intacte');
+});
+
+test('câblage freeRoam : les gardes de nuit bois / nourriture / migration lisent cautionNightNow', () => {
+  assert.match(fnSrc('foodTripState'), /isDay: \(bot\.time && bot\.time\.timeOfDay != null\) \? !cautionNightNow\(\) : null/);
+  assert.match(fnSrc('maybeResumeMigration'), /cautionNightNow\(\)/);
+  assert.match(fnSrc('_ljForestNeeded'), /cautionNightNow\(\)/);
+  assert.match(fnSrc('maybeNightShelter'), /if \(diamondFreeNow\(\)\) \{/);
+  assert.match(SRC, /isNight: \(bot\.time && bot\.time\.timeOfDay != null\) \? cautionNightNow\(\) : null,   \/\/ diamant complet : migre de nuit/);
 });

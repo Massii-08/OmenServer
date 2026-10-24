@@ -69,7 +69,16 @@ function bookmark(bot, name) {
       return false;
     }
   }
-  return _send(bot, '/sethome ' + n) ? n : false;
+  if (!_send(bot, '/sethome ' + n)) return false;
+  // Signet POSÉ : prévenir le bot (index.js tient le mémo `deepWork` à jour — un `/sethome work` posé en
+  // surface remplace le chantier profond, cf. deepWork.js). Best-effort, jamais bloquant.
+  try {
+    if (typeof bot._mcaOnBookmarked === 'function') {
+      const p = bot.entity && bot.entity.position;
+      bot._mcaOnBookmarked({ name: n, x: p ? p.x : null, y: p ? p.y : null, z: p ? p.z : null });
+    }
+  } catch (e) { /* best-effort */ }
+  return n;
 }
 
 /** {x,y,z} → objet passable à bot.blockAt (Vec3 si la position du bot en est un : `offset`). */
