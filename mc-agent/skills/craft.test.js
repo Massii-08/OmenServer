@@ -418,7 +418,7 @@ test('effet : bot.craft qui LÈVE → craft_failed comme avant, sans attendre 60
   const bot = craftBot({ oak_log: 4 }, { table: null });
   bot.craft = async () => { throw new Error('missing ingredient'); };
   const sleep = fakeSleep();
-  assert.deepStrictEqual(await craftItem(bot, { name: 'oak_planks', _sleep: sleep }), { ok: false, reason: 'craft_failed' });
+  { const r = await craftItem(bot, { name: 'oak_planks', _sleep: sleep }); assert.strictEqual(r.ok, false); assert.strictEqual(r.reason, 'craft_failed'); }
   assert.deepStrictEqual(sleep.log, []);
 });
 
@@ -904,7 +904,7 @@ test('freed accompagne AUSSI un échec survenu après le jet (craft_failed, craf
   const lost = slotBot(fullInv([['oak_log', 8], ['dirt', 40]]));
   lost.craft = async () => { throw new Error('missing ingredient'); };
   assert.deepStrictEqual(await craftItem(lost, { name: 'oak_planks', _sleep: fakeSleep() }),
-    { ok: false, reason: 'craft_failed', freed: 'dirt' });
+    { ok: false, reason: 'craft_failed', err: 'missing ingredient', freed: 'dirt' });
   const ghost = slotBot(fullInv([['oak_log', 8], ['dirt', 40]]));
   ghost.craft = async () => {};                                       // le serveur ignore le craft
   assert.deepStrictEqual(await craftItem(ghost, { name: 'oak_planks', _sleep: fakeSleep() }),

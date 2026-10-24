@@ -458,7 +458,7 @@ async function craftItem(bot, { name, count = 1, _fixPlanks = true, _sleep, _fre
     // Lu AVANT le craft — un stock préexistant ne doit pas passer pour un effet.
     const before = _countOf(bot, produced);
     try { await bot.craft(recipes[0], count, table || undefined); }
-    catch (e) { return { ok: false, reason: 'craft_failed' }; }
+    catch (e) { return { ok: false, reason: 'craft_failed', err: String((e && e.message) || e).slice(0, 120) }; }
     // Inventaire illisible (vieux stub partiel) : rien à constater, contrat historique `{ok:true}`.
     if (before === null) return { ok: true };
     return (await _awaitCraftEffect(bot, produced, before, sleep))
