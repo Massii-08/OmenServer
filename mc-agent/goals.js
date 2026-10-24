@@ -206,6 +206,7 @@ function diamondArmorPlanOf(c) {
 }
 const DIA_ARMOR_GOAL = { name: 'dia_armor', optional: true, met: (c) => !diamondArmorPlanOf(c),
   skill: 'diaArmor', args: {} };
+const CAVE_DIAMOND_BAND_Y = -16;   // au-dessous, on est dans la bande des grottes à diamant
 const _diamondChains = new Map();
 /** Chaîne diamant pour une cible donnée (mémoïsée : la chaîne est un tableau stable par cible). */
 function diamondChain(target) {
@@ -244,7 +245,12 @@ function diamondChain(target) {
       skill: 'gather',       args: { name: 'stone', count: 16 } },
     // Y cible -54 : juste au-dessus de la nappe de lave (Y=-55→-63, cf. spec). On accepte y<=-52
     // (marge de tolérance — l'escalier descend par paliers, on s'arrête dès qu'on franchit le seuil).
-    { name: 'descend_y54',   met: (c) => (c.y !== undefined && c.y <= -52) || DT(c),
+    // GROTTES D'ABORD (Massii 24/10 : « pourquoi creuser des galeries au lieu d'aller dans les grottes ») :
+    // déjà dans la bande des diamants (≤ -16) avec un diamant EXPOSÉ connu à ≤ 64 blocs (`c.caveDiamondNear`,
+    // ctxExtra) → pas d'escalier, la grotte d'abord. Sans lui, chaque diamant de grotte au-dessus de -52
+    // relançait un escalier jusqu'à -54 (19 relances en 106 min, NethBot1, sessions 582-584).
+    { name: 'descend_y54',   met: (c) => (c.y !== undefined && c.y <= -52) || DT(c)
+        || (!!c.caveDiamondNear && c.y !== undefined && c.y <= CAVE_DIAMOND_BAND_Y),
       skill: 'descendDiagonal', args: { targetY: -54 } },
     // CAVE-FIRST (Massii, live 26/07 : « les diamants il les allait chercher dans les cave = pas de
     // tunnel où ils creusent en continu, l'unique moment où ils creusent c'est quand ils passent

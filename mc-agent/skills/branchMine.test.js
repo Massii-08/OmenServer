@@ -2,6 +2,8 @@
 const { test } = require('node:test');
 const assert = require('node:assert');
 const { branchMine, floodFillVein } = require('./branchMine');
+// Registre de torches PARTAGÉ (niveau module) : chaque test repart d'un monde sans torche.
+require('node:test').beforeEach(() => { require('../torches').sharedTorchRegistry.clear(); });
 
 function pos(x, y, z) { return { x, y, z, offset(dx, dy, dz) { return pos(x + dx, y + dy, z + dz); } }; }
 
@@ -423,10 +425,11 @@ test('branchMine : torches posées dans le NOIR avec cadence jitterée (rng inje
     { name: 'cobblestone', count: 32, type: 'block' },
     { name: 'torch', count: 8, type: 'block' },
   ] });
-  // rng 0 → jitter nul → poses à i=4 et i=8 ; lumière inconnue (fake) = sombre → pose
+  // rng 0 → jitter nul → pose à i=4 ; lumière inconnue (fake) = sombre → pose. À i=8 la torche de i=4
+  // est à 4 blocs : rationnement 24/10 (« moins de torches ») → pas de 2e torche si près.
   await branchMine(bot, { targetY: -54, mainLength: 9, branchSpacing: 999, branchLength: 0, torchEvery: 4, rng: () => 0 });
   const up = calls.placeBlock.filter((c) => c.face && c.face.y === 1);
-  assert.ok(up.length >= 2, `au moins 2 torches posées (got ${up.length})`);
+  assert.strictEqual(up.length, 1, `une seule torche sur 9 blocs (got ${up.length})`);
 });
 
 test('branchMine : endroit ÉCLAIRÉ → pas de torche (économie + naturel)', async () => {
@@ -744,15 +747,20 @@ test('branchMine serpentin : grotte devant au 1er pas → bouchée, aucune case 
   assert.strictEqual(intoCave.length, 0, 'le couloir ne traverse pas la grotte');
 });
 
-test('branchMine : torches tous les ~8 blocs (écart ≤ torchEvery + 2, plus [N, 2N[)', async () => {
+test('branchMine : torches ESPACÉES d\'au moins 11 blocs (Massii 24/10 « moins de torches »), sans trou > ~13', async () => {
   const { bot, calls } = makeBot({ y: -54, inv: [
     { name: 'iron_pickaxe', count: 1, type: 'pickaxe' },
     { name: 'cobblestone', count: 32, type: 'block' },
     { name: 'torch', count: 16, type: 'block' },
   ] });
-  await branchMine(bot, { targetY: -54, mainLength: 30, branchSpacing: 999, branchLength: 0, torchEvery: 8, rng: () => 0.99 });
+  // torchEvery 8 (ancienne cadence) : l'espacement mini, lui, impose ≥ 12 blocs entre deux torches.
+  await branchMine(bot, { targetY: -54, mainLength: 40, branchSpacing: 999, branchLength: 0, torchEvery: 8, rng: () => 0.99 });
   const up = calls.placeBlock.filter((c) => c.face && c.face.y === 1);
-  assert.ok(up.length >= 3, `≥ 3 torches sur 30 blocs (got ${up.length}) — l'ancien jitter n'en posait que 2`);
+  const xs = up.map((c) => c.ref.x).sort((a, b) => a - b);
+  assert.ok(up.length >= 3 && up.length <= 4, `3-4 torches sur 40 blocs (got ${up.length}: ${xs})`);
+  for (let i = 1; i < xs.length; i++) {
+    assert.ok(xs[i] - xs[i - 1] >= 12 && xs[i] - xs[i - 1] <= 13, `écart ${xs[i] - xs[i - 1]} entre ${xs[i - 1]} et ${xs[i]}`);
+  }
 });
 
 test('branchMine serpentin : torche au COUDE quand la dernière est loin', async () => {
@@ -1017,4 +1025,33 @@ test('floodFillVein (OOM 23/10) : fer + pioche de pierre → miné normalement',
   const n = await floodFillVein(bot, { x: 0, y: 12, z: 0 });
   assert.strictEqual(collects, 1);
   assert.strictEqual(n, 1);
+});
+
+// ─── DIAMANT VISIBLE À CÔTÉ DE LA GALERIE (Massii en jeu 24/10 : « ils sont passés à côté de plein de
+// diamants sans les prendre ») ────────────────────────────────────────────────────────────────────
+// La galerie qui traverse une case DÉJÀ VIDE (grotte, ancienne galerie, poche de filon) rendait la main
+// avant le contrôle des voisins : `if (!block || block.boundingBox !== 'block') return { ok: true }` venait
+// AVANT l'opportunisme. Le diamant posé dans la paroi de cette case, visible à l'œil, restait en place.
+test('safeDigAndOpportunism : case déjà vide → le diamant VISIBLE dans sa paroi est miné quand même', async () => {
+  const { safeDigAndOpportunism } = require('./branchMine');
+  const k = (q) => `${Math.floor(q.x)},${Math.floor(q.y)},${Math.floor(q.z)}`;
+  const ores = new Set(['1,-55,0']);          // paroi droite de la case (0,-55,0), qui est de l'air
+  const collected = [];
+  const bot = {
+    entity: { position: { x: -1.5, y: -55, z: 0.5 } },
+    inventory: { items: () => [{ name: 'iron_pickaxe', type: 7, count: 1 }] },
+    heldItem: { name: 'iron_pickaxe', type: 7 },
+    equip: async () => {},
+    blockAt(q) {
+      const key = k(q);
+      const pos = { x: Math.floor(q.x), y: Math.floor(q.y), z: Math.floor(q.z) };
+      if (ores.has(key)) return { name: 'deepslate_diamond_ore', boundingBox: 'block', position: pos };
+      if (key === '0,-55,0' || key === '0,-54,0' || key === '-1,-55,0' || key === '-1,-54,0') return { name: 'cave_air', boundingBox: 'empty', position: pos };
+      return { name: 'deepslate', boundingBox: 'block', position: pos };
+    },
+    collectBlock: { async collect(b) { ores.delete(k(b.position)); collected.push(k(b.position)); } },
+  };
+  const r = await safeDigAndOpportunism(bot, { x: 0, y: -55, z: 0 }, null, false, {});
+  assert.strictEqual(r.ok, true);
+  assert.deepStrictEqual(collected, ['1,-55,0'], 'le diamant adjacent à la galerie doit être miné');
 });

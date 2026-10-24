@@ -7,7 +7,7 @@ const assert = require('node:assert');
 const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
-const { decideSkeletonResponse, findCoverCell, zigzagSide, shooterSees, rushStopReason, eatDuringRush, callerFromStack } = require('./skeletonResponse');
+const { decideSkeletonResponse, findCoverCell, zigzagSide, shooterSees, rushStopReason, eatDuringRush, callerFromStack, rushRearmWanted, rushEquipBlocked } = require('./skeletonResponse');
 const { createTaskController } = require('./tasks');
 const goalHold = require('./goalHold');
 const { FOODS, EMERGENCY_FOODS } = require('./reflexes');
@@ -61,7 +61,7 @@ function setup({ health = 9, skel = { x: 2.8, y: 64, z: 0 }, zombie = null, item
     stopMotion: () => {}, withTimeout: (p) => p, pfGoals: { GoalBlock: function () {} }, vec3Lib: (x, y, z) => ({ x, y, z }),
     sleep: (ms) => new Promise((r) => setTimeout(r, Math.min(ms, 5))),
     fleeFrom: () => { calls.flee++; return true; }, _fightBreaker: fb,
-    rushStopReason, eatDuringRush, callerFromStack, taskCtl, FOODS, EMERGENCY_FOODS,
+    rushStopReason, eatDuringRush, callerFromStack, rushRearmWanted, rushEquipBlocked, taskCtl, FOODS, EMERGENCY_FOODS,
     holdGoal: goalHold.hold, releaseGoalHold: goalHold.release, _creeperHold: goalHold.createHoldState(),
     lavaNearby: (b) => !!b._lavaNear,
     _escapeWaterRaw: async () => { calls.escapeWater = (calls.escapeWater || 0) + 1; return { ok: true }; },
@@ -73,6 +73,7 @@ function setup({ health = 9, skel = { x: 2.8, y: 64, z: 0 }, zombie = null, item
     let _skelBusy = false; let _skelHoldUntil = 0; let _skelHurtAt = -Infinity;
     let _skelRushBusy = false; let _skelRushBlocked = { stops: 0, by: null }; let _skelPlannerPending = false;
     let _skelHpDropAt = -Infinity; let _skelEatDeferredAt = -Infinity; let _skelRushYieldBy = null;
+    let _skelRushWeapon = null; let _skelRushEquipBlockedAt = -Infinity;
     let _pvpAttackRaw = (t) => { rawCalls.push(t.name); bot.pvp.target = t; };
     ${NAMES.map(fnSrc).join('\n')}
     globalThis.api = { skeletonAwareFlee, skeletonFirstFlee, skeletonRespond, get busy() { return _skelBusy; },
@@ -293,4 +294,16 @@ test('VITAL — stopMotion({force, vital}) (mur de panique, sortie imminente) tr
   const d = done(h);
   assert.strictEqual(d.endReason, 'preempted');
   assert.strictEqual(d.by, 'panic_wall');
+});
+
+test('charge (24/10, `rearmed: 13`) : un AUTRE timer ne peut pas mettre pioche/torche en main ; blocs et arme passent', () => {
+  const h = setup({ health: 12 });
+  h.sb.api.setRushing(true);
+  assert.strictEqual(h.sb.api.skeletonEquipAllowed({ name: 'iron_pickaxe' }, 'hand'), false);
+  assert.strictEqual(h.sb.api.skeletonEquipAllowed({ name: 'torch' }, 'hand'), false);
+  assert.strictEqual(h.sb.api.skeletonEquipAllowed({ name: 'cobblestone' }, 'hand'), true, 'mur de survie');
+  assert.strictEqual(h.sb.api.skeletonEquipAllowed({ name: 'stone_sword' }, 'hand'), true);
+  assert.ok(h.events.some((e) => e.type === 'rush_equip_blocked' && e.item === 'iron_pickaxe'));
+  h.sb.api.setRushing(false);
+  assert.strictEqual(h.sb.api.skeletonEquipAllowed({ name: 'iron_pickaxe' }, 'hand'), true, 'hors charge : libre');
 });

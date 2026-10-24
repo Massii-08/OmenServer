@@ -22,20 +22,49 @@ const { nextOreTarget, oreBase, requiredPickTier, scanExposedOres, isWaterAdjace
  * elle rendait `no_cave_target` et le bot se mettait à creuser — alors qu'une grotte pleine de
  * minerai était visible à dix blocs. Un bot a des yeux, pas seulement une carte.
  */
-function _defaultScanLocal(bot, material, skip, maxDistance) {
+/** Noms de blocs d'un matériau : 'diamond' → diamond_ore + deepslate_diamond_ore. */
+function oreNamesOf(material) {
+  const b = oreBase(material);
+  return [`${b}_ore`, `deepslate_${b}_ore`];
+}
+
+function _defaultScanLocal(bot, material, skip, maxDistance, out = null) {
   let best = null, bestD = Infinity;
   const p = bot.entity && bot.entity.position;
   if (!p) return null;
-  for (const o of (scanExposedOres(bot, { maxDistance, count: 40 }) || [])) {
+  // Scan RESTREINT au matériau cherché (24/10) : un scan « 40 minerais les plus proches, tous types »
+  // rendait charbon/redstone/fer et jamais le diamant de la grotte à 25 blocs.
+  let n = 0;
+  for (const o of (scanExposedOres(bot, { maxDistance, count: 40, names: oreNamesOf(material) }) || [])) {
     if (oreBase(o.material) !== oreBase(material)) continue;
     const key = `${o.x},${o.y},${o.z}`;
     if (skip.has(key)) continue;
     try { if (isWaterAdjacent(bot, o)) continue; } catch (e) { /* pas d'info → on garde */ }
+    n++;
     const d = Math.hypot(o.x - p.x, o.y - p.y, o.z - p.z);
     if (d < bestD) { bestD = d; best = o; }
   }
+  if (out) out.count = n;
   return best;
 }
+
+/**
+ * Cibles inatteignables mises de côté ENTRE deux appels (24/10 : 203 `cave_unreachable` pour 91 cibles
+ * distinctes en 106 min — le Set local à chaque appel faisait retenter les mêmes à chaque reprise du but).
+ * TTL : une grotte peut devenir atteignable (un coéquipier l'a ouverte, le bot est ailleurs).
+ */
+function createSkipStore(ttlMs = 20 * 60 * 1000, nowFn = Date.now) {
+  const m = new Map();
+  const live = (k) => { const t = m.get(k); if (t == null) return false; if (nowFn() - t >= ttlMs) { m.delete(k); return false; } return true; };
+  return {
+    add(k) { m.set(k, nowFn()); },
+    has(k) { return live(k); },
+    keys() { return [...m.keys()].filter(live); },
+    size() { return this.keys().length; },
+    clear() { m.clear(); },
+  };
+}
+const sharedSkipStore = createSkipStore();
 
 /** Meilleur palier de pioche en poche (0 = aucune). Sert à ne cibler que le minable. */
 function pickTierOf(inv) {
@@ -64,7 +93,9 @@ function pickTierOf(inv) {
 async function caveHunt(bot, opts = {}, token = null) {
   const material = opts.material || 'diamond';
   const need = opts.count || 1;
-  const maxDist = opts.maxDist || 96;   // 256 visait des cibles hors de portee du pathfinder
+  // 64 blocs en 3D (24/10) : ce qu'un joueur va chercher avant de creuser à l'aveugle ; au-delà la
+  // « cible » est une rumeur de la carte, derrière de la roche (96 → la moitié des cave_unreachable).
+  const maxDist = opts.maxDist || 64;
   const emit = opts.emit || (() => {});
   const memory = opts.memory || bot._worldMemory || null;
   const world = opts.world || bot._worldKey || 'overworld';
@@ -78,6 +109,9 @@ async function caveHunt(bot, opts = {}, token = null) {
   if (tier < requiredPickTier(material)) return { ok: false, reason: 'no_pick', got: 0 };
 
   const skip = new Set();
+  const store = opts.skipStore || null;     // persistant entre appels (index : sharedSkipStore)
+  if (store) { for (const k of store.keys()) skip.add(k); }
+  const markSkip = (t) => { const k = `${t.x},${t.y},${t.z}`; skip.add(k); if (store) store.add(k); };
   let got = 0;
   while (got < need) {
     if (token && token.cancelled) return { ok: false, reason: 'cancelled', got };
@@ -88,7 +122,9 @@ async function caveHunt(bot, opts = {}, token = null) {
     // pathfinder ne sait pas traverser. Un minerai VISIBLE est dans les chunks chargés, donc
     // atteignable ; un minerai cartographié n'est qu'une rumeur.
     const scanLocal = opts.scanLocal || _defaultScanLocal;
-    let target = scanLocal(bot, material, skip, opts.localRange || 48);
+    const seen = { count: 0 };
+    let target = scanLocal(bot, material, skip, opts.localRange || 48, seen);
+    let src = target ? 'local' : null;
     if (target) emit({ type: 'cave_local', material, x: target.x, y: target.y, z: target.z });
     if (!target) {
       target = pickNext(memory, world, from, {
@@ -99,24 +135,29 @@ async function caveHunt(bot, opts = {}, token = null) {
         maxDist,
         skip,
       });
+      if (target) src = 'memory';
     }
     if (!target) return { ok: got > 0, reason: got > 0 ? undefined : 'no_cave_target', got };
 
     emit({ type: 'cave_target', material, x: target.x, y: target.y, z: target.z, d: got });
+    if (oreBase(material) === 'diamond') {
+      const dist = from ? Math.round(Math.hypot(target.x - from.x, target.y - from.y, target.z - from.z)) : null;
+      emit({ type: 'diamond_cave_target', x: target.x, y: target.y, z: target.z, dist, ores: seen.count || 1, src });
+    }
     let reached = false;
     try { reached = !!(await goTo(target)); } catch (e) { reached = false; }
     if (token && token.cancelled) return { ok: false, reason: 'cancelled', got };
     if (!reached) {
-      skip.add(`${target.x},${target.y},${target.z}`);   // inatteignable → on ne s'y acharne pas
+      markSkip(target);                                    // inatteignable → on ne s'y acharne pas
       emit({ type: 'cave_unreachable', x: target.x, y: target.y, z: target.z });
       continue;
     }
     let mined = 0;
     try { mined = (await mineAt(target)) || 0; } catch (e) { mined = 0; }
     if (mined > 0) { got += mined; emit({ type: 'cave_mined', material, got }); }
-    else { skip.add(`${target.x},${target.y},${target.z}`); }
+    else { markSkip(target); }
   }
   return { ok: true, got };
 }
 
-module.exports = { caveHunt, pickTierOf };
+module.exports = { caveHunt, pickTierOf, createSkipStore, sharedSkipStore, oreNamesOf };

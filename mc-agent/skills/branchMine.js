@@ -27,6 +27,7 @@ const { cheapestPickFor } = require('../gear');
 const { assessDrop, safeToDrop } = require('./fallCheck');
 const { gather } = require('./gather');
 const lawnMine = require('../lawnMine');
+const torchRules = require('../torches');
 const { Vec3 } = require('vec3');
 let _emit; try { _emit = require('../io').emit; } catch (e) { _emit = () => {}; }
 function dbg(_label, payload) { try { _emit({ type: 'dbg', from: 'branchMine', ...payload }); } catch (e) {} }
@@ -335,6 +336,7 @@ async function placeTorchLogged(bot, floorTarget, light) {
   try { const c = bot.blockAt(floorTarget); if (c && c.skyLight != null) skyLight = c.skyLight; } catch (e) {}
   const r = await placeTorchAt(bot, floorTarget);
   const placed = r.placed;
+  if (placed) { try { torchRules.sharedTorchRegistry.note(floorTarget); } catch (e) { /* best-effort */ } }
   try {
     _emit({
       type: 'torch_placed', from: 'branchMine', placed: !!placed, why: r.why,
@@ -343,6 +345,17 @@ async function placeTorchLogged(bot, floorTarget, light) {
     });
   } catch (e) { /* best-effort */ }
   return placed;
+}
+
+// RATIONNEMENT (Massii 24/10 : « il y a besoin de moins de torches ») : une torche de galerie seulement si
+// le sol est noir (≤ 3) ET qu'aucune torche n'est à ≤ 11 blocs (registre partagé + scan des blocs) — la
+// galerie en lacets (parallèles à 3 blocs) posait une torche tous les 5-8 blocs. Rend {want, light, near}.
+function galleryTorchDecision(bot, footTarget) {
+  let light = null;
+  try { const cell = bot.blockAt(footTarget); if (cell && cell.light != null) light = cell.light; } catch (e) { /* inconnue = sombre */ }
+  let near = null;
+  try { near = torchRules.nearestTorchDist(bot, footTarget); } catch (e) { near = null; }
+  return { want: torchRules.galleryTorchWanted({ lightLevel: light, nearestTorch: near }), light: light == null ? 0 : light, near };
 }
 
 // Détecte un ore dans les voisins 6-connectés d'un bloc. Tous les ores UTILES (quota + torches).
@@ -531,7 +544,17 @@ async function safeDigAndOpportunism(bot, target, token, debug, loopOpts) {
     const head = self && bot.blockAt(p(Math.floor(self.x), Math.floor(self.y) + 1, Math.floor(self.z)));
     if (head && isWater(head.name)) return { ok: false, reason: 'water_ahead' };
   } catch (e) { /* lecture ratée → on ne bloque pas le minage */ }
-  if (!block || block.boundingBox !== 'block') return { ok: true };       // déjà air → rien à faire
+  // Déjà air (grotte, ancienne galerie, poche de filon) : rien à creuser, MAIS ses parois se voient — un
+  // minerai qui y affleure se prend comme après un coup de pioche (Massii 24/10 : « ils sont passés à côté
+  // de plein de diamants sans les prendre » — ce return précédait l'opportunisme). Lave déjà murée plus haut.
+  if (!block || block.boundingBox !== 'block') {
+    if (block && !(token && token.cancelled) && !_isStale(loopOpts)) {
+      for (const pos of oreNeighborPositions(bot, target)) {
+        try { await floodFillVein(bot, pos, token); } catch (e) { /* opportuniste : on continue */ }
+      }
+    }
+    return { ok: true };
+  }
   if (isLava(block.name)) return { ok: false, reason: 'lava_at_target' };
 
   // ⚠️ JAMAIS UN MINERAI À MAINS NUES (Massii, 27/07 : « il tape avec les mains là »). Casser du
@@ -880,9 +903,9 @@ async function _branchMine(bot, opts0 = {}, token = null) {
       const torchHere = async () => {
         lastTorchS = n;
         nextTorchAtS = n + torchGap();
-        let light = 0;
-        try { const cell = bot.blockAt(footTarget); if (cell && cell.light != null) light = cell.light; } catch (e) { /* inconnue = sombre */ }
-        if (light < 8) { try { await placeTorchLogged(bot, footTarget, light); } catch (e) { /* best-effort */ } }
+        const td = galleryTorchDecision(bot, footTarget);
+        if (td.want) { try { await placeTorchLogged(bot, footTarget, td.light); } catch (e) { /* best-effort */ } }
+        else { nextTorchAtS = n + 1; }   // déjà éclairé ici : on re-regarde au pas suivant (≈ 1 torche / 12 blocs)
       };
       if (n >= nextTorchAtS) await torchHere();
       // VIRAGE à intervalle IRRÉGULIER (jamais métronomique = pas une grille) — ou forcé par une grotte devant.
@@ -964,13 +987,11 @@ async function _branchMine(bot, opts0 = {}, token = null) {
     // de cadence métronomique (prochaine pose à torchEvery + 0..2 paliers aléatoires, cf. torchGap).
     if (i >= nextTorchAt) {
       nextTorchAt = i + torchGap();
-      let light = 0;
-      try {
-        const cell = bot.blockAt(footTarget);
-        if (cell && cell.light !== undefined && cell.light !== null) light = cell.light;
-      } catch (e) { /* inconnue = sombre */ }
-      if (light < 8) {
-        try { await placeTorchLogged(bot, footTarget, light); } catch (e) { /* best-effort */ }
+      const td = galleryTorchDecision(bot, footTarget);
+      if (td.want) {
+        try { await placeTorchLogged(bot, footTarget, td.light); } catch (e) { /* best-effort */ }
+      } else {
+        nextTorchAt = i + 1;   // déjà éclairé ici : on re-regarde au pas suivant (≈ 1 torche / 12 blocs)
       }
     }
 
@@ -1031,4 +1052,4 @@ function deltaOres(a, b) {
   return { diamond: Math.max(0, b.diamond - a.diamond), iron: Math.max(0, b.iron - a.iron), coal: Math.max(0, b.coal - a.coal) };
 }
 
-module.exports = { branchMine, bmBail, currentPhase, approach, cardinalFromYaw, leftOf, ORE_NAMES, WALL_BLOCKS, floodFillVein, oreFamily, sealCaveOpenings, placeTorchAt, CAVE_MIN_AIR, TORCH_JITTER, TORCH_CORNER_MIN };
+module.exports = { galleryTorchDecision, safeDigAndOpportunism, branchMine, bmBail, currentPhase, approach, cardinalFromYaw, leftOf, ORE_NAMES, WALL_BLOCKS, floodFillVein, oreFamily, sealCaveOpenings, placeTorchAt, CAVE_MIN_AIR, TORCH_JITTER, TORCH_CORNER_MIN };

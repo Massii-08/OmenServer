@@ -116,3 +116,26 @@ test('nightWorkPlan fromShelter : surface relevée au-dessus du puits, hostiles 
   // sans fromShelter, le comportement historique (fuite) est intact
   assert.strictEqual(N.nightWorkPlan({ y: 70, hasPick: true, hostileDist: 2 }).action, 'flee');
 });
+
+// ─── SOUS TERRE, LA NUIT NE CHANGE RIEN (Massii 24/10 : « les bots sous terre n'ont pas besoin de se murer
+// pendant la nuit, de toute façon les mobs spawnent même de jour dans les cavernes ») ────────────────────
+test('nightUnderground : y < 50 SOUS ROCHE (pas de ciel) = sous terre ; à ciel ouvert y 46-49 = surface', () => {
+  assert.strictEqual(N.nightUnderground(null, { y: 47, covered: true }), true);
+  assert.strictEqual(N.nightUnderground(null, { y: 47, covered: false }), false);
+  assert.strictEqual(N.nightUnderground(null, { y: 52, covered: true }), false, 'au-dessus de 50 : la règle historique');
+  assert.strictEqual(N.nightUnderground(null, { y: -54 }), true);
+});
+
+test('mineur à y -54 la NUIT, nu : aucun abri, le minage continue (abri, planner, report de but)', () => {
+  const { shouldShelter } = require('./skills/shelter');
+  const { nightPlannerStep } = require('./caution');
+  const underground = N.nightUnderground(null, { y: -54, covered: true });
+  assert.deepStrictEqual(shouldShelter({ night: true, lightLevel: 0, naked: true, lowHp: false, hostilesNear: true, proactive: true, underground }),
+    { shelter: false, reason: 'underground' });
+  for (const skill of ['branchMine', 'caveHunt', 'descendDiagonal', 'craft', 'smeltIron']) {
+    assert.strictEqual(nightPlannerStep({ lockdown: true, y: -54, skill, underground }), 'run', skill);
+    assert.strictEqual(N.nightDeferGoal({ lockdown: true, underground, skill }), false, skill);
+  }
+  // Les trajets de SURFACE restent prudents la nuit (bois, chasse).
+  assert.strictEqual(nightPlannerStep({ lockdown: true, y: -54, skill: 'gatherLog', underground }), 'wait');
+});

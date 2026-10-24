@@ -103,3 +103,67 @@ test('caveHunt : ni carte ni vue → no_cave_target (le trajet reste le dernier 
   });
   assert.strictEqual(r.reason, 'no_cave_target');
 });
+
+// ─── DIAMANT VISIBLE DANS LA GROTTE (Massii en jeu 24/10 : « pourquoi NethBot1 creuse sans viser les
+// diamants visibles dans les cavernes ? ») ──────────────────────────────────────────────────────────
+// Le scan local demandait à findBlocks les 40 minerais LES PLUS PROCHES, tous types confondus, puis gardait
+// les diamants : à -54 le charbon / redstone / fer d'à côté remplissait les 40 places et le diamant de la
+// grotte, à 25 blocs, n'était jamais dans la liste.
+function caveWorld({ diamond = { x: 25, y: -54, z: 0 }, others = 60 } = {}) {
+  const ids = { coal_ore: 1, deepslate_coal_ore: 2, deepslate_redstone_ore: 3, deepslate_diamond_ore: 4, diamond_ore: 5 };
+  const blocks = new Map();
+  for (let i = 0; i < others; i++) blocks.set(`${2 + (i % 10)},-54,${Math.floor(i / 10) - 3}`, 'deepslate_redstone_ore');
+  if (diamond) blocks.set(`${diamond.x},${diamond.y},${diamond.z}`, 'deepslate_diamond_ore');
+  const me = { x: 0, y: -54, z: 0 };
+  const bot = {
+    entity: { position: me },
+    inventory: { items: () => [{ name: 'iron_pickaxe', count: 1 }] },
+    registry: { blocksByName: Object.fromEntries(Object.entries(ids).map(([n, id]) => [n, { id }])) },
+    findBlocks({ matching, maxDistance, count }) {
+      const want = new Set(matching);
+      return [...blocks.entries()]
+        .map(([k, n]) => { const [x, y, z] = k.split(',').map(Number); return { x, y, z, n }; })
+        .filter((b) => want.has(ids[b.n]) && Math.hypot(b.x - me.x, b.y - me.y, b.z - me.z) <= maxDistance)
+        .sort((a, b) => Math.hypot(a.x, a.z) - Math.hypot(b.x, b.z))
+        .slice(0, count);
+    },
+    blockAt(q) {
+      const k = `${Math.floor(q.x)},${Math.floor(q.y)},${Math.floor(q.z)}`;
+      if (blocks.has(k)) return { name: blocks.get(k), boundingBox: 'block' };
+      return { name: 'cave_air', boundingBox: 'empty' };       // grotte : tout est ouvert autour
+    },
+  };
+  return bot;
+}
+
+test('caveHunt : le diamant VISIBLE à 25 blocs est visé même si 60 autres minerais sont plus près', async () => {
+  const bot = caveWorld();
+  const events = [];
+  const targets = [];
+  await caveHunt(bot, {
+    material: 'diamond', count: 1, emit: (e) => events.push(e), nextOreTarget: () => null,
+    goTo: async (t) => { targets.push(t); return true; }, mineAt: async () => 1,
+  });
+  assert.deepStrictEqual(targets.map((t) => [t.x, t.y, t.z]), [[25, -54, 0]]);
+  const ev = events.find((e) => e.type === 'diamond_cave_target');
+  assert.ok(ev, 'event diamond_cave_target');
+  assert.deepStrictEqual([ev.x, ev.y, ev.z, ev.dist, ev.ores, ev.src], [25, -54, 0, 25, 1, 'local']);
+});
+
+test('caveHunt : cible de la carte limitée à 64 blocs (3D) ; inatteignable mémorisée ENTRE deux appels (skipStore)', async () => {
+  const { createSkipStore } = require('./caveHunt');
+  const store = createSkipStore(20 * 60 * 1000);
+  const asked = [];
+  const pick = (mem, w, from, o) => { asked.push(o); return o.skip.has('5,-50,0') ? null : { x: 5, y: -50, z: 0, material: 'diamond_ore' }; };
+  const run = () => caveHunt(botWith([['iron_pickaxe', 1]]), {
+    material: 'diamond', count: 1, nextOreTarget: pick, skipStore: store, scanLocal: () => null,
+    goTo: async () => false, mineAt: async () => 0,
+  });
+  await run();
+  assert.strictEqual(asked[0].maxDist, 64);
+  assert.strictEqual(store.has('5,-50,0'), true);
+  asked.length = 0;
+  const r = await run();
+  assert.strictEqual(r.reason, 'no_cave_target');
+  assert.strictEqual(asked.length, 1, 'la cible ratée au 1er appel n\'est plus retentée');
+});

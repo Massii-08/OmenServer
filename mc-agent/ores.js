@@ -213,12 +213,15 @@ function isWaterAdjacent(bot, pos) {
  */
 function scanExposedOres(bot, opts = {}) {
   const { maxDistance = 48, count = 40 } = opts;
+  // opts.names : ne chercher QUE ces minerais (24/10 — le diamant d'une grotte à 25 blocs n'entrait jamais
+  // dans les 40 minerais LES PLUS PROCHES tous types confondus : charbon/redstone/fer remplissaient la liste).
+  const names = Array.isArray(opts.names) && opts.names.length ? opts.names : ORE_NAMES;
   try {
     if (!bot || typeof bot.blockAt !== 'function' || typeof bot.findBlocks !== 'function') return [];
     const reg = bot.registry && bot.registry.blocksByName;
     if (!reg) return [];
     const ids = [];
-    for (const name of ORE_NAMES) {
+    for (const name of names) {
       const hit = reg[name];
       if (hit && typeof hit.id === 'number') ids.push(hit.id); // skip noms absents (vieille version)
     }

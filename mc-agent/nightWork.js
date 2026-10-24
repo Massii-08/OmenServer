@@ -14,6 +14,7 @@ const { NIGHT_UNDERGROUND_Y, NIGHT_SURFACE_SKILLS } = require('./caution');
 // Profondeur visée sous la surface : 12 blocs de roche au-dessus de la tête = aucun mob de surface ne
 // vous entend, et c'est ~12 paliers d'escalier (≈ 30 s). Atteindre y < 45 suffit aussi (même frontière
 // que tout le code de nuit) : on s'arrête au PREMIER des deux.
+const NIGHT_COVERED_Y = 50;        // sous roche au-dessous : sous terre même au-dessus de NIGHT_UNDERGROUND_Y
 const NIGHT_WORK_DEPTH = 12;
 // Une fois descendu, le bot reste « sous terre » tant qu'il ne remonte pas à moins de 8 blocs de la
 // surface relevée (le minage le fait bouger de quelques blocs en hauteur).
@@ -167,6 +168,10 @@ function nightUnderground(state, sig = {}) {
   const y = sig && sig.y;
   if (!(typeof y === 'number' && Number.isFinite(y))) return false;
   if (y < NIGHT_UNDERGROUND_Y) return true;
+  // SOUS ROCHE (Massii 24/10 : « les bots sous terre n'ont pas besoin de se murer pendant la nuit ») : entre
+  // 45 et 50, un bot sans ciel au-dessus (`covered`, relevé par l'appelant) est dans une grotte — la nuit n'y
+  // change rien. À ciel ouvert, même à 47, il reste en surface (vallée, plage).
+  if (sig.covered === true && y < NIGHT_COVERED_Y) return true;
   if (!state || state.surfaceY == null) return false;
   if (state.night !== (sig.night != null ? sig.night : null)) return false;
   const now = Number(sig.now) || 0;
@@ -198,7 +203,7 @@ function nightSealCells(feet, isOpen) {
 }
 
 module.exports = {
-  NIGHT_WORK_DEPTH, NIGHT_WORK_SLACK, NIGHT_WORK_TTL_MS, NIGHT_WORK_FLEE_DIST, NIGHT_DEFER_SKILLS,
+  NIGHT_COVERED_Y, NIGHT_WORK_DEPTH, NIGHT_WORK_SLACK, NIGHT_WORK_TTL_MS, NIGHT_WORK_FLEE_DIST, NIGHT_DEFER_SKILLS,
   nightWorkTargetY, nightWorkPlan, nightUnderground, nightDeferGoal, nightSealCells,
   shelterCraftNext, SHELTER_CRAFT_3X3, SHELTER_TORCH_TARGET,
 };

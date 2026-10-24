@@ -197,6 +197,35 @@ function callerFromStack(stack, skip = []) {
   return null;
 }
 
+// ─── RÉARMEMENT PENDANT LA CHARGE (24/10, NethBot3 session 590 : `skeleton_rush_done` timeout, 6 s,
+// `rearmed: 13`, squelette au contact, 0 coup porté, PV 12 → 7). La boucle (250 ms) rééquipait l'épée
+// avec l'objet Item capturé AU DÉPART de la charge. mineflayer `equip(item)` part de `item.slot` : après
+// le 1er equip qui a déplacé l'épée de l'inventaire vers la barre rapide, ce slot est PÉRIMÉ — le rééquipement
+// suivant déplace donc ce qui occupe l'ANCIEN slot (outil, torche…) dans la main, la main n'est toujours pas
+// l'épée, on rééquipe encore… : ping-pong, et chaque changement d'objet en main remet le délai d'attaque à
+// zéro (mineflayer-pvp ne frappe qu'au bout du cooldown) → aucun coup ne part.
+const REARM_MIN_GAP_MS = 1000;
+
+/** PUR — faut-il remettre l'arme en main maintenant ? (au plus 1×/s, jamais pendant un usage d'objet) */
+function rushRearmWanted({ heldName = null, weaponName = null, usingHeldItem = false, now = 0, lastRearmAt = -Infinity, minGapMs = REARM_MIN_GAP_MS } = {}) {
+  if (!weaponName) return false;
+  if (usingHeldItem) return false;
+  if (heldName === weaponName) return false;
+  return !(_num(now) && _num(lastRearmAt) && now - lastRearmAt < minGapMs);
+}
+
+// Ce qu'un AUTRE timer n'a pas le droit de mettre en main pendant la charge (ramassage de minerai,
+// torche d'ambiance, outil d'un dig) : outils et objets d'usage. Les BLOCS restent permis (mur anti-lave,
+// mur de panique = survie), la nourriture a son propre verrou (eatDuringRush), l'arme est toujours permise.
+const _RUSH_FORBIDDEN = /(_pickaxe|_shovel|_hoe|^torch$|^soul_torch$|_bucket$|^bucket$|_boat$|^flint_and_steel$|^shears$|^fishing_rod$)/;
+/** PUR — cet equip 'hand' est-il interdit pendant la charge ? */
+function rushEquipBlocked({ rushing = false, itemName = null, dest = 'hand', weaponName = null } = {}) {
+  if (!rushing || dest !== 'hand' || !itemName) return false;
+  if (itemName === weaponName) return false;
+  if (/_axe$/.test(itemName) && /_axe$/.test(String(weaponName || ''))) return false;
+  return _RUSH_FORBIDDEN.test(itemName);
+}
+
 /** PUR — côté du pas de zigzag à `elapsedMs` depuis le début de la charge (alterne chaque période). */
 function zigzagSide(elapsedMs, periodMs = 400) {
   const k = Math.floor(Math.max(0, elapsedMs || 0) / Math.max(1, periodMs));
@@ -205,6 +234,6 @@ function zigzagSide(elapsedMs, periodMs = 400) {
 
 module.exports = {
   decideSkeletonResponse, rushMinHp, findCoverCell, zigzagSide, shooterSees,
-  rushStopReason, eatDuringRush, callerFromStack, RUSH_ABORT_HP, RUSH_EAT_FOOD,
+  rushStopReason, eatDuringRush, callerFromStack, rushRearmWanted, rushEquipBlocked, REARM_MIN_GAP_MS, RUSH_ABORT_HP, RUSH_EAT_FOOD,
   RUSH_DIST, CONTACT_DIST, RUSH_MIN_HP_CONTACT, RUSH_MIN_HP_CLOSE, RUSH_DESPERATE_HP, MIN_WEAPON_DMG, COVER_RADIUS,
 };

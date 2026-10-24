@@ -213,3 +213,80 @@ test('callerFromStack : nom de la 1re fonction hors des cadres ignorés', () => 
   assert.equal(callerFromStack(st, ['guardedStop', 'PVP.']), 'stopMotion');
   assert.equal(callerFromStack('', []), null);
 });
+
+// ─── Réarmement pendant la charge (24/10, NethBot3 : `rearmed: 13` en 6 s, aucun coup porté) ──────────
+const { rushRearmWanted, rushEquipBlocked, REARM_MIN_GAP_MS } = require('./skeletonResponse');
+
+// Mini-inventaire au comportement de mineflayer `simple_inventory.equip` : l'item porte son `slot`, la
+// main est le slot 36 + quickBarSlot, un item hors barre rapide est DÉPLACÉ (échange) vers un slot de la
+// barre choisi en LRU. Les objets Item d'avant le déplacement gardent leur ancien `slot` (périmé).
+function fakeInventory() {
+  const slots = {};
+  const put = (slot, name) => { slots[slot] = name ? { name, slot } : null; };
+  put(36, 'iron_pickaxe'); put(37, 'torch'); put(38, 'cobblestone'); put(39, 'bread');
+  put(40, 'cobbled_deepslate'); put(41, 'raw_iron'); put(42, 'coal'); put(43, 'stick'); put(44, 'dirt');
+  put(20, 'diamond_sword');
+  const inv = { quickBarSlot: 0, lru: 0, equips: 0,
+    held() { return slots[36 + this.quickBarSlot]; },
+    find(name) { return Object.values(slots).find((it) => it && it.name === name) || null; },
+    equip(item) {                                    // copie de la logique mineflayer
+      this.equips++;
+      const src = item.slot;
+      const dest = 36 + this.quickBarSlot;
+      if (src === dest) return;
+      if (src >= 36 && src < 45) { this.quickBarSlot = src - 36; return; }
+      const d = 36 + this.lru; this.lru = (this.lru + 1) % 9;
+      this.quickBarSlot = d - 36;
+      const a = slots[src], b = slots[d];
+      put(d, a ? a.name : null); put(src, b ? b.name : null);   // nouveaux objets : l'ancien garde son slot
+    },
+  };
+  return inv;
+}
+
+test('PREUVE : rééquiper avec l\'Item capturé au départ (slot périmé) fait du ping-pong dans la main', () => {
+  const inv = fakeInventory();
+  const w = inv.find('diamond_sword');                 // capturé UNE fois, comme `const w = _skelWeapon()`
+  inv.equip(w);                                       // equip initial : l'épée part en barre rapide
+  assert.strictEqual(inv.held().name, 'diamond_sword');
+  inv.quickBarSlot = 1;                               // UN equip étranger (torche, outil) une seule fois
+  let rearmed = 0;
+  for (let t = 0; t < 24; t++) {                     // 6 s de boucle à 250 ms (ancien code : sans délai)
+    if (inv.held() && inv.held().name !== w.name) { inv.equip(w); rearmed++; }
+  }
+  assert.ok(rearmed >= 10, `ping-pong : ${rearmed} rééquipements (vécu : 13)`);
+});
+
+test('CORRECTIF : arme relue à chaque fois + au plus 1×/s → un seul rééquipement, épée en main', () => {
+  const inv = fakeInventory();
+  inv.equip(inv.find('diamond_sword'));
+  inv.quickBarSlot = 1;                               // le même equip étranger
+  let rearmed = 0, last = -Infinity;
+  for (let t = 0; t < 24; t++) {
+    const now = t * 250;
+    if (rushRearmWanted({ heldName: inv.held() && inv.held().name, weaponName: 'diamond_sword', now, lastRearmAt: last })) {
+      inv.equip(inv.find('diamond_sword')); rearmed++; last = now;
+    }
+  }
+  assert.strictEqual(rearmed, 1);
+  assert.strictEqual(inv.held().name, 'diamond_sword');
+});
+
+test('rushRearmWanted : déjà en main / usage en cours / moins d\'1 s depuis le dernier → non', () => {
+  assert.strictEqual(rushRearmWanted({ heldName: 'diamond_sword', weaponName: 'diamond_sword', now: 5000 }), false);
+  assert.strictEqual(rushRearmWanted({ heldName: 'bread', weaponName: 'diamond_sword', usingHeldItem: true, now: 5000 }), false);
+  assert.strictEqual(rushRearmWanted({ heldName: 'torch', weaponName: 'diamond_sword', now: 5000, lastRearmAt: 4500 }), false);
+  assert.strictEqual(rushRearmWanted({ heldName: 'torch', weaponName: 'diamond_sword', now: 5000, lastRearmAt: 5000 - REARM_MIN_GAP_MS }), true);
+  assert.strictEqual(rushRearmWanted({ heldName: null, weaponName: null, now: 1 }), false, 'pas d\'arme : rien');
+});
+
+test('rushEquipBlocked : pendant la charge, pas d\'outil ni de torche en main ; arme, blocs et hors charge permis', () => {
+  const R = { rushing: true, weaponName: 'diamond_sword' };
+  assert.strictEqual(rushEquipBlocked({ ...R, itemName: 'iron_pickaxe' }), true);
+  assert.strictEqual(rushEquipBlocked({ ...R, itemName: 'torch' }), true);
+  assert.strictEqual(rushEquipBlocked({ ...R, itemName: 'diamond_sword' }), false);
+  assert.strictEqual(rushEquipBlocked({ ...R, itemName: 'cobblestone' }), false, 'mur de panique / lave = survie');
+  assert.strictEqual(rushEquipBlocked({ ...R, itemName: 'shield', dest: 'off-hand' }), false);
+  assert.strictEqual(rushEquipBlocked({ rushing: true, weaponName: 'iron_axe', itemName: 'iron_axe' }), false);
+  assert.strictEqual(rushEquipBlocked({ rushing: false, weaponName: 'diamond_sword', itemName: 'iron_pickaxe' }), false);
+});

@@ -766,7 +766,7 @@ test('index.js : desync / rappel confine respectent la retenue de nuit ; ramassa
   const confine = SRC.split('\n').filter((l) => /const busy = !!bot\.targetDigBlock/.test(l));
   assert.strictEqual(confine.length, 2);
   assert.ok(confine.some((l) => /_nightHold/.test(l)), 'le rappel confine (/home) ne tire pas un bot retenu par la nuit');
-  assert.match(SRC, /busy: _imminentBusy \|\| panicInFlight \|\| _armorBusy \|\| _smeltOppBusy \|\| _baseBusy \|\| !!_shelterInFlight( \|\| _huntCookBusy > 0 \|\| _foodTripBusy)?,/);
+  assert.match(SRC, /busy: _imminentBusy \|\| panicInFlight \|\| _armorBusy \|\| _smeltOppBusy \|\| _baseBusy \|\| !!_shelterInFlight( \|\| _huntCookBusy > 0 \|\| _foodTripBusy)?( \|\| _skelRushBusy)?,/);
   assert.match(SRC, /if \(_imminentBusy \|\| panicInFlight \|\| _armorBusy \|\| _baseBusy \|\| _migrating \|\| _shelterInFlight\) return;/);
 });
 

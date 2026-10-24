@@ -1120,3 +1120,17 @@ test('nextObjectiveAfter : phase diamant verrouillée → un coéquipier usé ne
     emptyDoneAt: {}, now: 1000, latched: true });
   assert.strictEqual(d.next, 'diamond');
 });
+
+// ─── GROTTES D'ABORD, PAS L'ESCALIER (Massii en jeu 24/10 : « pourquoi les bots creusent des galeries au
+// lieu d'aller dans les grottes récupérer les diamants visibles ») ─────────────────────────────────────
+// Mesuré sessions 582-584 (NethBot1-3, 106 min) : descend_y54 = 56/34/50 min, diamond_caves = 49/70/43 min,
+// 19/14/14 relances de l'escalier, la plupart depuis y -16..-49 — RETOUR d'une grotte. Chaque diamant de
+// grotte au-dessus de -52 renvoyait le bot creuser un escalier jusqu'à -54 avant la grotte suivante.
+test('DIAMOND descend_y54 : déjà dans la bande des diamants (≤ -16) avec un diamant EXPOSÉ connu → pas d\'escalier', () => {
+  const goal = DIAMOND_CHAIN.find((g) => g.name === 'descend_y54');
+  assert.strictEqual(goal.met({ inv: {}, y: -38, caveDiamondNear: true }), true);
+  assert.strictEqual(goal.met({ inv: {}, y: -38 }), false, 'rien de visible : on redescend à -54');
+  assert.strictEqual(goal.met({ inv: {}, y: 30, caveDiamondNear: true }), false, 'trop haut : escalier');
+  const ctx = { inv: { iron_pickaxe: 1, cobblestone: 16, stick: 4 }, y: -38, caveDiamondNear: true };
+  assert.strictEqual(firstUnmet(DIAMOND_CHAIN, ctx).name, 'diamond_caves');
+});

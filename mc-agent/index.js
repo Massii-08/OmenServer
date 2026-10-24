@@ -104,7 +104,7 @@ const heapGuard = require('./heapGuard');   // OOM « au même endroit » du bra
 const { installToolGuard } = require('./toolGuard');
 const { diaWornCount, armorTier, isIronDonor } = require('./diaArmor');   // armure diamant des mineurs (24/10 soir)   // OOM 23/10 : récursion sans fin de mineflayer-tool
 const loopGuard = require('./loopGuard');   // sync_loop_capped + loop_lag (gels de l'event loop)
-const { caveHunt } = require('./skills/caveHunt');   // cave-first diamant (Massii 26/07)
+const { caveHunt, sharedSkipStore: caveHuntSkip } = require('./skills/caveHunt');   // cave-first diamant (Massii 26/07)
 const { caveIron: caveIronSkill } = require('./skills/caveIron');   // fer en grotte (Massii 20/10)
 const caveIronPick = require('./caveIron');
 const { classifyAuthPrompt, genPassword, resolveAuthChat } = require('./auth');
@@ -150,7 +150,7 @@ const { descentFoodGate, undergroundFoodTripDue, foodGateLoad } = require('./foo
 const { noteDropAhead, turnYaw, shiftTarget } = require('./dropAhead');
 const { canDealWith, attackDamage, boldFightAdvised } = require('./survival');
 const { fleeTarget } = require('./skills/fleeFrom');
-const { decideSkeletonResponse, findCoverCell, zigzagSide, shooterSees, rushStopReason, eatDuringRush, callerFromStack } = require('./skeletonResponse');
+const { decideSkeletonResponse, findCoverCell, zigzagSide, shooterSees, rushStopReason, eatDuringRush, callerFromStack, rushRearmWanted, rushEquipBlocked } = require('./skeletonResponse');
 const { createFightBreaker, isZombieDuel } = require('./fightBreaker');
 // SYSTÈME À 3 HOMES (Massii 27/07) : safe = LA BASE, work = le chantier courant, death = la dette
 // de mort. Le serveur n'autorise que 3 homes et le code en posait 4 → un /sethome échouait EN
@@ -172,7 +172,7 @@ const { junkItems, ITEMS_FOR } = require('./quota');
 const { Y_OPT, pickaxePlan, pickaxeRecraftPlan, armorPlan, ARMOR_PIECES, bestArmorToEquip, armorUpgradePlan, isMinimallyArmored, shieldPlan, smeltPlan, smeltReady, isNearlyBroken } = require('./gear');
 // Torche tous les N paliers de branch-mine (mob-aware phase B) — best-effort : sans torche
 // en poche le minage continue sans (zéro coût en peaceful, sécurité en non-pacifique).
-const TORCH_EVERY = 8;
+const TORCH_EVERY = 12;   // 24/10 (Massii « moins de torches ») : + espacement ≥ 11 blocs (torches.js)
 const { createClaims, createPresence } = require('./claims');
 const { pickMapperTp } = require('./mapperTp'); // TP-au-mappeur : à qui demander le /tpa (décision pure)
 // REGROUPEMENT APRÈS MORT (idée Massii 25/07, flag --regroup, OFF par défaut) : décision pure.
@@ -215,7 +215,7 @@ const { tunnelFlee } = require('./skills/tunnelGuard');
 const { shouldTakeCover } = require('./cover');
 // DISCIPLINE DE TORCHE calée sur la capture réelle (131/97 torches en 33 min chez les humains,
 // torche en main ~10 % du temps) — le bot n'éclairait QUE le tunnel de branch-mine.
-const { shouldPlaceTorch } = require('./torches');
+const { shouldPlaceTorch, nearestTorchDist, sharedTorchRegistry } = require('./torches');
 const { takeCover, pickCoverBlock } = require('./skills/takeCover');
 // PRUDENCE / FIABILITÉ D'ÉQUIPEMENT DU CARTOGRAPHE (mesure live world_mn14 : les 3 mappeurs
 // concentrent la moitié des morts de la flotte, MapBot1 92 morts en respawnant `worn:0` en boucle).
@@ -401,6 +401,8 @@ let _escaping = false;
 // stopMotion, startAutonomous, l'enforcement confine, le squad, le regroupement, le rappel du home et le
 // verrou de repas. Déclarée ICI (tôt) : ces fonctions la lisent toutes.
 let _skelRushBusy = false;
+let _skelRushWeapon = null;   // nom de l'arme de la charge en cours (lu par le garde d'equip, niveau MODULE)
+let _skelRushEquipBlockedAt = -Infinity;
 let _skelRushBlocked = { stops: 0, by: null };   // stopMotion/pvp.stop refusés pendant la charge (diag)
 let _skelPlannerPending = false;                // un startAutonomous est arrivé pendant la charge
 let _skelRushYieldBy = null;                    // chemin VITAL qui a repris la main (lave, noyade, panique, creeper)
@@ -1070,7 +1072,8 @@ function teamAssistTick() {
       mates, hostiles, isFleeOnly: (n) => isFleeOnlyMob(n, bot.health),
     });
     if (!pick) return null;
-    if (nightLockdownNow()) { nightGateNote('team_assist', { mob: pick.mob.name, mate: pick.mate }); return null; }
+    // Sous terre la nuit ne change rien (Massii 24/10) : on secourt le coéquipier comme de jour.
+    if (nightLockdownNow() && !nightUndergroundNow()) { nightGateNote('team_assist', { mob: pick.mob.name, mate: pick.mate }); return null; }
     _lastAssistAt = Date.now();
     _assistBusy = true;
     emit({ type: 'team_assist', mob: pick.mob.name, mate: pick.mate, dist: pick.dist });
@@ -1188,6 +1191,41 @@ function readLoginCommand() {
   } catch (e) { return null; }
 }
 
+// GROTTES D'ABORD (Massii 24/10) : un diamant EXPOSÉ et SEC connu à ≤ 64 blocs (3D) — vu par le bot
+// (scan des chunks chargés, diamants seulement) ou dans la carte — et pas mis de côté comme inatteignable.
+// Lu par goals.descend_y54 : déjà dans la bande des diamants, on ne recreuse pas d'escalier vers -54 avant
+// d'avoir visité cette grotte. Caché 20 s (ctxExtra tourne à chaque pas du planner). NIVEAU MODULE.
+let _caveDiaNearCache = { at: 0, val: false };
+function caveDiamondNearNow() {
+  try {
+    const now = Date.now();
+    if (now - _caveDiaNearCache.at < 20000) return _caveDiaNearCache.val;
+    let val = false;
+    const p = bot && bot.entity && bot.entity.position;
+    const obj = (world && world.objective && world.objective.type) || '';
+    const items = (bot && bot.inventory && bot.inventory.items()) || [];
+    const pick = items.some((i) => i && /^(iron|diamond|netherite)_pickaxe$/.test(i.name));
+    if (p && obj === 'diamond' && pick && p.y <= -16) {
+      const from = { x: p.x, y: p.y, z: p.z };
+      const skip = new Set(caveHuntSkip.keys());
+      const ores = require('./ores');
+      for (const o of (ores.scanExposedOres(bot, { maxDistance: 48, count: 16, names: ['diamond_ore', 'deepslate_diamond_ore'] }) || [])) {
+        if (skip.has(`${o.x},${o.y},${o.z}`)) continue;
+        try { if (ores.isWaterAdjacent(bot, o)) continue; } catch (e) { /* inconnu → gardé */ }
+        if (Math.hypot(o.x - from.x, o.y - from.y, o.z - from.z) <= 64) { val = true; break; }
+      }
+      if (!val && bot._worldMemory) {
+        const t = ores.nextOreTarget(bot._worldMemory, String(bot._worldKey || 'overworld'), from, {
+          allowTypes: ['diamond'], exposedOnly: true, excludeWet: true, pickTier: 3, maxDist: 64, skip,
+        });
+        val = !!t;
+      }
+    }
+    _caveDiaNearCache = { at: now, val };
+    return val;
+  } catch (e) { return false; }
+}
+
 function ctxExtra() {
   const pos = bot && bot.entity && bot.entity.position;
   // worn : pièces d'armure PORTÉES (slots 5-8, absentes de inventory.items()) — les chaînes armure
@@ -1261,6 +1299,7 @@ function ctxExtra() {
     woodRequest: isLumberjackObjective() ? _ljContext() : null,
     ljOwnArmor: ljArmor ? ljArmor.own : null,
     ljForestTrip: isLumberjackObjective() ? _ljForestNeeded() : false,
+    caveDiamondNear: caveDiamondNearNow(),
   };
 }
 
@@ -4337,14 +4376,24 @@ async function runGoalSkill(goal, gen) {
       emit,
       memory: memCH,
       world: String(bot._worldKey || 'overworld'),
-      // Déplacement borné : on ne s'acharne pas sur une cible inatteignable (le skill la met de côté).
+      // Inatteignables mémorisées ENTRE deux reprises du but (TTL 20 min, 24/10 : 203 cave_unreachable
+      // pour 91 cibles distinctes, les mêmes retentées à chaque reprise).
+      skipStore: caveHuntSkip,
+      // Déplacement « joueur » (24/10, même patron que le fer de grotte) : par l'OUVERTURE de la grotte
+      // d'abord (canDig:false), en creusant ensuite si elle n'est pas reliée ; diamant plus BAS de > 4 blocs →
+      // escalier dirigé (le pathfinder rend NoPath dans la roche pleine — l'ancien GoalNear 3D unique
+      // concluait `cave_unreachable` en 6-12 s pour la plupart des cibles).
       goTo: async (t) => {
+        const near = () => {
+          const p = bot.entity && bot.entity.position;
+          return !!(p && Math.hypot(p.x - t.x, p.y - t.y, p.z - t.z) <= 6);
+        };
         try {
-          await withTimeout(bot.pathfinder.goto(new pfGoals.GoalNear(t.x, t.y, t.z, 2)),
-            120000, () => { try { stopMotion(); } catch (e) {} });
+          const p0 = bot.entity && bot.entity.position;
+          if (p0 && p0.y - t.y > 4 && !taskToken.cancelled) { try { await _caveStairTo(t, taskToken); } catch (e) { /* approche fine */ } }
+          if (!near() && !taskToken.cancelled) await _caveGotoOre(t, taskToken);
         } catch (e) { /* inatteignable → false */ }
-        const p = bot.entity && bot.entity.position;
-        return !!(p && Math.hypot(p.x - t.x, p.y - t.y, p.z - t.z) <= 6);
+        return near();
       },
       // Le filon entier, pas juste le bloc visé : un diamant vient rarement seul.
       mineAt: async (t) => {
@@ -5998,7 +6047,20 @@ function _nightId() { return (bot && bot.time && bot.time.day != null) ? bot.tim
 /** Le bot est-il « sous terre » pour la discipline de nuit ? y < 45, ou descendu et scellé cette nuit. */
 function nightUndergroundNow() {
   const p = bot && bot.entity && bot.entity.position;
-  return nightUnderground(_nightWork, { y: p ? p.y : null, night: _nightId(), now: Date.now() });
+  // Ciel au-dessus ? (24/10) seulement dans la frange 45-50 où il départage grotte et vallée : ≥ 2 blocs pleins
+  // (hors feuillage) dans les 24 au-dessus de la tête = sous roche.
+  let covered = false;
+  try {
+    if (p && p.y >= 45 && p.y < 50) {
+      let solid = 0;
+      for (let dy = 2; dy <= 24 && solid < 2; dy++) {
+        const b = bot.blockAt(p.floored().offset(0, dy, 0));
+        if (b && b.boundingBox === 'block' && !/leaves$/.test(b.name)) solid++;
+      }
+      covered = solid >= 2;
+    }
+  } catch (e) { covered = false; }
+  return nightUnderground(_nightWork, { y: p ? p.y : null, night: _nightId(), now: Date.now(), covered });
 }
 
 /** Planner (opts.skip) : but de surface différé à l'aube quand le bot travaille sous terre de nuit. */
@@ -6087,10 +6149,14 @@ async function nightTorch() {
     const p = bot.entity && bot.entity.position;
     const torch = ((bot.inventory && bot.inventory.items()) || []).find((i) => i.name === 'torch');
     if (!p || !torch) return false;
+    // Une torche à ≤ 11 blocs éclaire déjà la cachette (rationnement 24/10) : on n'en rajoute pas.
+    const near = nearestTorchDist(bot, { x: p.x, y: p.y, z: p.z });
+    if (near != null && near <= 11) return false;
     const ref = bot.blockAt(p.floored().offset(0, -1, 0));
     if (!ref || ref.boundingBox !== 'block') return false;
     await bot.equip(torch, 'hand');
     await bot.placeBlock(ref, vec3Lib(0, 1, 0));
+    try { sharedTorchRegistry.note({ x: Math.floor(p.x), y: Math.floor(p.y), z: Math.floor(p.z) }); } catch (e) { /* best-effort */ }
     return true;
   } catch (e) { return false; }
 }
@@ -7270,6 +7336,7 @@ async function _caveTorch() {
     if (!shouldPlaceTorch({
       y: pT.y, lightLevel: light, torches: torch.count, now: Date.now(),
       lastAt: _caveTorchAt, pos: { x: pT.x, z: pT.z }, lastPos: _caveTorchPos,
+      nearestTorch: nearestTorchDist(bot, { x: pT.x, y: pT.y, z: pT.z }),
     })) return;
     const ref = bot.blockAt(pT.floored().offset(0, -1, 0));
     if (!ref || ref.boundingBox !== 'block') return;
@@ -7277,6 +7344,7 @@ async function _caveTorch() {
     await bot.placeBlock(ref, vec3Lib(0, 1, 0));
     _caveTorchAt = Date.now();
     _caveTorchPos = { x: pT.x, z: pT.z };
+    try { sharedTorchRegistry.note({ x: Math.floor(pT.x), y: Math.floor(pT.y), z: Math.floor(pT.z) }); } catch (e) { /* best-effort */ }
     emit({ type: 'torch_placed', from: 'caveIron', y: Math.round(pT.y), light });
   } catch (e) { /* best-effort */ }
 }
@@ -8671,6 +8739,18 @@ function _skelIsFood(item) {
  * Rend true si l'equip est permis.
  */
 function skeletonEquipAllowed(item, dest) {
+  // OUTIL / TORCHE d'un autre timer pendant la charge (24/10, `rearmed: 13`) : chaque changement d'objet en
+  // main remet le délai d'attaque à zéro — refusé tant que la charge court (les blocs de survie passent).
+  if (_skelRushBusy && rushEquipBlocked({ rushing: true, itemName: item && item.name, dest: dest || 'hand', weaponName: _skelRushWeapon })) {
+    const now = Date.now();
+    if (now - _skelRushEquipBlockedAt >= 2000) {
+      _skelRushEquipBlockedAt = now;
+      let by = null;
+      try { by = callerFromStack(new Error().stack, ['skeletonEquipAllowed', 'skeletonGuardedEquip']); } catch (e) { by = null; }
+      emit({ type: 'rush_equip_blocked', item: item && item.name, by });
+    }
+    return false;
+  }
   if (!_skelRushBusy || dest !== 'hand' || !_skelIsFood(item)) return true;
   const now = Date.now();
   const hpFalling = now >= _skelHpDropAt && now - _skelHpDropAt < SKEL_HURT_MS;
@@ -8723,8 +8803,16 @@ function wireSkeletonHurt() {
     bot.equip = function skeletonGuardedEquip(item, dest) {
       let ok = true;
       try { ok = skeletonEquipAllowed(item, dest); } catch (e) { ok = true; }
-      if (!ok) return Promise.reject(new Error('eat_deferred:skeleton_rush'));
+      if (!ok) return Promise.reject(new Error(_skelIsFood(item) ? 'eat_deferred:skeleton_rush' : 'equip_blocked:skeleton_rush'));
       return origEquip.apply(this, arguments);
+    };
+  }
+  // Rengainer l'arme (equipCached sans outil adapté fait `unequip('hand')`) pendant la charge : même refus.
+  if (typeof bot.unequip === 'function') {
+    const origUnequip = bot.unequip;
+    bot.unequip = function skeletonGuardedUnequip(dest) {
+      if (_skelRushBusy && (dest || 'hand') === 'hand') return Promise.reject(new Error('equip_blocked:skeleton_rush'));
+      return origUnequip.apply(this, arguments);
     };
   }
   return true;
@@ -8843,7 +8931,9 @@ async function _skelRush(shooter) {
   let zz = null;
   let endReason = 'timeout';
   let rearmed = 0;
+  let lastRearmAt = -Infinity;
   const w = _skelWeapon();
+  _skelRushWeapon = w ? w.name : null;
   try {
     const sh = _skelShield();
     if (sh) { try { const off = bot.inventory.slots[45]; if (!off || off.name !== 'shield') await bot.equip(sh, 'off-hand'); } catch (e) {} }
@@ -8898,13 +8988,19 @@ async function _skelRush(shooter) {
         try { sit = skeletonSituation(shooter); } catch (e) { sit = null; }
         if (!sit || sit.meleeOthers > 0) { endReason = 'preempted'; lostBy = sit ? 'melee_mix' : 'creeper'; break; }
       }
-      // ÉPÉE EN MAIN : un repas (permis) ou un equip étranger l'a rengainée → on la remet.
-      if (w && !bot.usingHeldItem && (!bot.heldItem || bot.heldItem.name !== w.name)) {
-        try { await bot.equip(w, 'hand'); rearmed++; } catch (e) {}
+      // ÉPÉE EN MAIN : un repas (permis) ou un equip étranger l'a rengainée → on la remet. L'Item est RELU
+      // (son `slot` change quand l'equip le déplace en barre rapide ; l'objet capturé au départ ferait
+      // basculer en main ce qui occupe son ANCIEN slot — ping-pong `rearmed: 13`, 24/10) et au plus 1×/s.
+      if (w && rushRearmWanted({ heldName: bot.heldItem ? bot.heldItem.name : null, weaponName: w.name,
+        usingHeldItem: !!bot.usingHeldItem, now: Date.now(), lastRearmAt })) {
+        lastRearmAt = Date.now();
+        const wNow = ((bot.inventory && bot.inventory.items()) || []).find((i) => i && i.name === w.name);
+        if (wNow) { try { await bot.equip(wNow, 'hand'); rearmed++; } catch (e) {} }
       }
     }
   } finally {
     if (zz) clearInterval(zz);
+    _skelRushWeapon = null;
     try { if (side) bot.setControlState(side, false); } catch (e) {}
     if (pvp) { if (origStop) pvp.stop = origStop; if (origForce) pvp.forceStop = origForce; }
     try { if (_creeperHold.owner === 'skeleton_rush') releaseGoalHold(_creeperHold); } catch (e) {}
@@ -9327,7 +9423,7 @@ async function mineForType(type, needed, opts = {}) {
     // §3.G : cap EXPLICITE vers la région mappée (fourni par resource.js) prioritaire sur le cap
     // persistant — le strip-mining PROGRESSE vers la zone du minerai sans goto-beeline sur le bloc.
     heading: (opts && opts.heading) || bot._branchHeading || null,
-    torchEvery: 4,                          // hole B : torches plus fréquentes (était TORCH_EVERY=8)
+    torchEvery: TORCH_EVERY,                // 24/10 : l'espacement (torches.js) décide, plus la cadence 4
     approachTimeoutMs: 20000,               // hole E : goto d'approche borné → plus de hang en branche
     survivalEvery: 4,
     // hole E : survie + éclairage PENDANT la branche ; + bank mid-branche (fix fable1 : les
@@ -11555,8 +11651,9 @@ async function onSpawn() {
       let _torchLastAt = 0;
       let _torchLastPos = null;
       let _torchBusy = false;
+      let _torchDarkSince = null;   // début de l'obscurité CONTINUE (escalier : torche seulement si elle dure)
       setInterval(async () => {
-        if (_torchBusy || _stillBusy || _imminentBusy || bot.targetDigBlock) return;
+        if (_torchBusy || _stillBusy || _imminentBusy || _skelRushBusy || bot.targetDigBlock) return;
         const pT = bot.entity && bot.entity.position;
         if (!pT) return;
         try {
@@ -11564,9 +11661,17 @@ async function onSpawn() {
           const torches = items.filter((i) => i.name === 'torch').reduce((a, i) => a + i.count, 0);
           let light = null;
           try { const b = bot.blockAt(pT.floored()); if (b && typeof b.light === 'number') light = b.light; } catch (e) {}
+          const _now = Date.now();
+          if (light == null || light <= 3) { if (_torchDarkSince == null) _torchDarkSince = _now; }
+          else _torchDarkSince = null;
+          // RATIONNEMENT (Massii 24/10, « moins de torches ») : pas de torche à ≤ 11 blocs d'une autre
+          // (galerie comprise — ce tick en reposait une 0,5 s après celle de branchMine), et pas
+          // d'escalier jalonné : pendant une descente, seulement après 45 s de noir continu.
           if (!shouldPlaceTorch({
-            y: pT.y, lightLevel: light, torches, now: Date.now(),
+            y: pT.y, lightLevel: light, torches, now: _now,
             lastAt: _torchLastAt, pos: { x: pT.x, z: pT.z }, lastPos: _torchLastPos,
+            nearestTorch: nearestTorchDist(bot, { x: pT.x, y: pT.y, z: pT.z }),
+            stair: _stairDepth > 0, darkForMs: _torchDarkSince == null ? null : _now - _torchDarkSince,
           })) return;
           _torchBusy = true;
           const torch = items.find((i) => i.name === 'torch');
@@ -11576,7 +11681,8 @@ async function onSpawn() {
             await bot.placeBlock(ref, vec3Lib(0, 1, 0));
             _torchLastAt = Date.now();
             _torchLastPos = { x: pT.x, z: pT.z };
-            emit({ type: 'torch_placed', y: Math.round(pT.y), light });
+            try { sharedTorchRegistry.note({ x: Math.floor(pT.x), y: Math.floor(pT.y), z: Math.floor(pT.z) }); } catch (e) { /* best-effort */ }
+            emit({ type: 'torch_placed', from: 'ambient', y: Math.round(pT.y), light, stair: _stairDepth > 0 });
           }
         } catch (e) { /* best-effort : sol impossible, pas grave */ }
         finally { _torchBusy = false; }
@@ -13233,7 +13339,7 @@ setInterval(async () => {
       // `_shelterInFlight` (discipline de nuit, 19/10 soir) : terré, on ne marche pas vers un minerai et
       // on ne creuse pas la paroi de son propre abri pour un bloc de fer.
       // La chasse / l'expédition possèdent le pathfinder (23/10) : un détour vers un minerai annulait leur goto.
-      busy: _imminentBusy || panicInFlight || _armorBusy || _smeltOppBusy || _baseBusy || !!_shelterInFlight || _huntCookBusy > 0 || _foodTripBusy,
+      busy: _imminentBusy || panicInFlight || _armorBusy || _smeltOppBusy || _baseBusy || !!_shelterInFlight || _huntCookBusy > 0 || _foodTripBusy || _skelRushBusy,
       digging: !!bot.targetDigBlock,
       inWater: (function () { try { return isInWater(bot); } catch (e) { return false; } })(),
       hostilesNear: hostile,
@@ -13257,8 +13363,12 @@ setInterval(async () => {
           .filter((x) => x != null);
       }
       if (scope.detour && _oreDetourIds.length) {
-        const rare = bot.findBlocks({ matching: _oreDetourIds, maxDistance: 20, count: 1 });
-        const rp = rare && rare[0];
+        // VISIBLE seulement (24/10 : 376 `ore_detour` diamant pour 28 `ore_grabbed` en 6 sessions) : findBlocks
+        // rend aussi les diamants ENTERRÉS (chunks chargés = la vérité du serveur) — on marchait vers de la
+        // roche pleine, NoPath, 2e essai, puis le suivant (et c'est un tell X-ray). Un joueur ne se
+        // détourne que pour ce qu'il voit : face à l'air.
+        const rare = bot.findBlocks({ matching: _oreDetourIds, maxDistance: 20, count: 6 }) || [];
+        const rp = rare.find((q) => { try { return require('./ores').isExposed(bot, q); } catch (e) { return false; } });
         if (rp) {
           const rb = bot.blockAt(rp);
           const d = rb && rb.position.distanceTo(bot.entity.position);
