@@ -14,6 +14,7 @@ const { FOODS, EMERGENCY_FOODS } = require('./reflexes');
 const { RANGED } = require('./reflexes');
 const { isFleeHostile } = require('./skills/fleeFrom');
 const { createFightBreaker } = require('./fightBreaker');
+const { rushResumesPlanner } = require('./plannerRevive');
 
 const SRC = fs.readFileSync(path.join(__dirname, 'index.js'), 'utf8');
 function grab(re, label) {
@@ -65,20 +66,21 @@ function setup({ health = 9, skel = { x: 2.8, y: 64, z: 0 }, zombie = null, item
     holdGoal: goalHold.hold, releaseGoalHold: goalHold.release, _creeperHold: goalHold.createHoldState(),
     lavaNearby: (b) => !!b._lavaNear,
     _escapeWaterRaw: async () => { calls.escapeWater = (calls.escapeWater || 0) + 1; return { ok: true }; },
-    restartPlannerAfterFlee: async (tok, prev, ev) => { calls.restart.push([prev, ev]); return true; },
+    restartPlannerAfterFlee: async (tok, prev, ev) => { calls.restart.push([prev, ev]); return calls.restartImpl ? calls.restartImpl(tok, prev, ev) : true; },
+    rushResumesPlanner,
   };
   vm.createContext(sb);
   vm.runInContext(`'use strict';
     ${['SKEL_HOLD_MS', 'SKEL_RUSH_MS', 'SKEL_COVER_GOTO_MS', 'SKEL_RANGE', 'SKEL_HURT_MS'].map(constSrc).join('\n')}
     let _skelBusy = false; let _skelHoldUntil = 0; let _skelHurtAt = -Infinity;
-    let _skelRushBusy = false; let _skelRushBlocked = { stops: 0, by: null }; let _skelPlannerPending = false;
+    let _skelRushBusy = false; let _skelRushBlocked = { stops: 0, by: null }; let _skelPlannerPending = false; let _skelRushOwesPlanner = false;
     let _skelHpDropAt = -Infinity; let _skelEatDeferredAt = -Infinity; let _skelRushYieldBy = null;
     let _skelRushWeapon = null; let _skelRushEquipBlockedAt = -Infinity;
     let _pvpAttackRaw = (t) => { rawCalls.push(t.name); bot.pvp.target = t; };
     ${NAMES.map(fnSrc).join('\n')}
     globalThis.api = { skeletonAwareFlee, skeletonFirstFlee, skeletonRespond, get busy() { return _skelBusy; },
       hurtNow() { _skelHurtAt = Date.now(); }, stopMotion, skeletonEquipAllowed,
-      escapeWater, get rushing() { return _skelRushBusy; }, setRushing(v) { _skelRushBusy = v; }, hpDropNow() { _skelHpDropAt = Date.now(); } };`,
+      escapeWater, get rushing() { return _skelRushBusy; }, get owes() { return _skelRushOwesPlanner; }, setRushing(v) { _skelRushBusy = v; }, hpDropNow() { _skelHpDropAt = Date.now(); } };`,
   Object.assign(sb, { rawCalls: calls.raw }));
   return { bot, sb, events, calls };
 }
@@ -181,6 +183,44 @@ test('charge : préempte le planner, puis le relance (skeleton_rush_planner_rest
   await tick(40);
   assert.strictEqual(done(h).endReason, 'killed');
   assert.deepStrictEqual(h.calls.restart.map((r) => r.join('/')), ['autonomous/skeleton_rush_planner_restart']);
+});
+
+test('live 24/10 (NethBot1 s599) : 2e charge 200 ms après la 1re, pendant que la 1re attend de relancer → la 2e HÉRITE de la dette et relance le planner', async () => {
+  const h = setup({ health: 12, prevTask: 'autonomous' });
+  // la relance de la 1re attend le skill du planner (cave_stair) : elle ne rend la main qu'une fois son jeton annulé
+  let firstWait = null;
+  h.calls.restartImpl = (tok) => {
+    if (!firstWait) { firstWait = new Promise((res) => { const iv = setInterval(() => { if (tok.cancelled) { clearInterval(iv); res(false); } }, 1); }); return firstWait; }
+    return true;
+  };
+  await rushing(h);
+  delete h.bot.entities[7];
+  await tick(40);
+  assert.strictEqual(done(h).endReason, 'killed');
+  assert.strictEqual(h.sb.taskCtl.active, 'skeleton_rush', 'la 1re garde la main pendant que sa relance attend');
+  assert.strictEqual(h.sb.api.owes, true);
+  // 2e squelette (riposte) : nouvelle charge, prevTask = 'skeleton_rush'
+  h.bot.entities[9] = { id: 9, name: 'skeleton', type: 'hostile', kind: 'Hostile mobs', position: Object.assign({ offset: () => ({}) }, { x: 1.9, y: 64, z: 0 }) };
+  h.bot.pvp.target = null;
+  await rushing(h);
+  assert.ok(h.events.some((e) => e.type === 'skeleton_rush_chained' && e.owes === true), 'chaînage tracé');
+  assert.strictEqual(await firstWait, false, 'la relance de la 1re est préemptée');
+  delete h.bot.entities[9];
+  await tick(40);
+  assert.strictEqual(h.events.filter((e) => e.type === 'skeleton_rush_done').length, 2);
+  assert.deepStrictEqual(h.calls.restart.map((r) => r.join('/')),
+    ['autonomous/skeleton_rush_planner_restart', 'autonomous/skeleton_rush_planner_restart'],
+    'la 2e charge relance le planner (avant : taskCtl.cancel(), planner mort 18 min)');
+});
+
+test('charge sans planner coupé (prevTask null) → pas de dette, taskCtl rendu', async () => {
+  const h = setup({ health: 12 });
+  await rushing(h);
+  delete h.bot.entities[7];
+  await tick(40);
+  assert.deepStrictEqual(h.calls.restart, []);
+  assert.strictEqual(h.sb.api.owes, false);
+  assert.strictEqual(h.sb.taskCtl.active, null);
 });
 
 test('charge : stopMotion d\'un skill/timer est REFUSÉ pendant la charge et compté (blocked_by)', async () => {

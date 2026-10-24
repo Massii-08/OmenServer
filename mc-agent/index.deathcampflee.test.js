@@ -29,7 +29,7 @@ function sandbox({ gotoImpl, objective = { type: 'iron_armor', status: 'in_progr
     world: { objective },
     _safeHomePos: null, _dzones: [], deathzones: { isBanned: () => false }, deathSpots: { isBanned: () => false },
     safeHomeVeto: () => false, safeWarpHome: async () => {},
-    stopMotion() {}, _escaping: false, _migrating: false, _ljSwitching: false,
+    stopMotion() {}, _escaping: false, _migrating: false, _ljSwitching: false, _skelRushOwesPlanner: false,
     _skillInFlight: 0, _autoRunners: 0, MIGRATION_PREEMPT_WAIT_MS: 30000,
     sleep: async () => { sb._autoRunners = 0; sb._skillInFlight = 0; },   // l'ancien planner sort pendant l'attente
     withTimeout: (p) => p,

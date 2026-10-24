@@ -201,6 +201,7 @@ const { tierRank } = require('./tools');
 const { createTeleportWatcher, wireTeleportDetection } = require('./teleport');
 const { isNight, shelterUntilDawn, exitPendingShelter, shouldShelter, shelterHold, DAWN_WAIT_MAX_MS, DAWN_SAFE_EXIT_MAX_MS } = require('./skills/shelter');
 const { plannerWatchdogVerdict, deriveToken } = require('./plannerWatchdog');
+const { rushResumesPlanner, plannerOrphanVerdict } = require('./plannerRevive');
 const { shelterToken, shelterCancelLoopNote } = require('./shelterToken');
 // LIT (20/10) : réapparaître dans sa base, pas au spawn du monde campé — cf. bed.js.
 const { bedItemIn, bedRecipeName, woolMissing, sheepKnown, bedMemoWith, bedMemoCleared, bedRetryMemo, bedOf, bedRetryActive,
@@ -406,6 +407,9 @@ let _skelRushWeapon = null;   // nom de l'arme de la charge en cours (lu par le 
 let _skelRushEquipBlockedAt = -Infinity;
 let _skelRushBlocked = { stops: 0, by: null };   // stopMotion/pvp.stop refusés pendant la charge (diag)
 let _skelPlannerPending = false;                // un startAutonomous est arrivé pendant la charge
+// DETTE DE RELANCE (live 24/10, NethBot1 s599 / NethBot2 s583) : la charge en cours a coupé le planner et doit
+// le rallumer. Une 2e charge (ou une fuite) qui la préempte HÉRITE de la dette — sinon le planner mourait.
+let _skelRushOwesPlanner = false;
 let _skelRushYieldBy = null;                    // chemin VITAL qui a repris la main (lave, noyade, panique, creeper)
 // EXPÉDITION VERS LE GIBIER EN COURS (marche + chasse sur place, cf. foodTripLock). Garde de niveau
 // MODULE (piège #56), de la même famille que `_migrating`/`_escaping` : lue par l'enforcement confine,
@@ -747,14 +751,22 @@ async function restartPlannerAfterFlee(tok, prevTask, evType = 'death_camp_flee_
   // Une MIGRATION coupée par la fuite (cible dans le camp) est une tâche du planner : on rallume le
   // planner, et la reprise de migration (maybeResumeMigration) repart de lui. Sans ça, plus rien
   // n'avait la main après la fuite (`prevTask` 'migration' ≠ 'autonomous').
-  if (!tok || (prevTask !== 'autonomous' && prevTask !== 'migration')) return false;
+  // Une charge sur squelette qui DEVAIT relancer le planner a été préemptée par nous : la dette passe ici.
+  const owedByRush = prevTask === 'skeleton_rush' && _skelRushOwesPlanner;
+  if (!tok || (prevTask !== 'autonomous' && prevTask !== 'migration' && !owedByRush)) return false;
   const w0 = Date.now();
   const migUnwinding = () => prevTask === 'migration' && _migrating;   // la migration coupée finit de se dérouler
   while ((_skillInFlight > 0 || _autoRunners > 0 || migUnwinding()) && !tok.cancelled && Date.now() - w0 < MIGRATION_PREEMPT_WAIT_MS) {
     await sleep(250);
   }
-  if (tok.cancelled || _migrating || _ljSwitching) return false;     // un autre maître a la main
+  if (tok.cancelled || _migrating || _ljSwitching) {     // un autre maître a la main
+    // Branche autrefois MUETTE (24/10) : qui a repris la main, et la dette est-elle transmise ?
+    emit({ type: 'planner_restart_skipped', ev: evType, why: tok.cancelled ? 'preempted' : (_migrating ? 'migrating' : 'lj_switching'),
+      by: taskCtl.active || null, owes: _skelRushOwesPlanner, waited_ms: Date.now() - w0 });
+    return false;
+  }
   if (!(world.objective && world.objective.status === 'in_progress')) return false;
+  if (owedByRush) _skelRushOwesPlanner = false;
   emit({ type: evType, restart: true, waited_ms: Date.now() - w0 });
   try {
     startAutonomous(null).catch((e) => emit({ type: 'error', message: String((e && e.message) || e) }));
@@ -4696,6 +4708,9 @@ const SHELTER_HARD_MAX_MS = 13 * 60 * 1000 + Math.max(DAWN_WAIT_MAX_MS, DAWN_SAF
 let _lastGoalAt = 0;           // dernier event `goal` du planner (watchdog) — lu par un timer : niveau module
 let _plannerWatchdogAt = 0;    // dernière relance du watchdog (1 / 6 min)
 let _plannerWatchdogBusy = false;
+let _plannerOrphanSince = 0;   // planner orphelin observé depuis (plannerRevive) — lu par un timer : niveau module
+let _plannerReviveAt = 0;      // dernière relance « orphelin »
+let _plannerParked = false;    // stop/afk/guard/follow/pvp d'un JOUEUR : le planner reste éteint jusqu'au prochain départ
 // Un COMPTEUR et pas un booléen (même raison que _skillInFlight/_autoRunners) : un vieux planner qui finit
 // sa retenue (jeton annulé au respawn) ne doit pas déclarer « plus retenu » pendant que le nouveau l'est encore.
 let _nightHold = 0;            // planners retenus par la discipline de nuit : immobilité LÉGITIME (desync, confine)
@@ -5405,6 +5420,40 @@ async function plannerWatchdogTick(at) {
   } finally { _plannerWatchdogBusy = false; }
 }
 setInterval(() => { plannerWatchdogTick().catch(() => {}); }, 30000);
+
+// ─── PLANNER ORPHELIN (live 24/10, NethBot1 s599 : 18 min sans `goal` après deux charges squelette
+// enchaînées) : objectif à chaîne en cours, bot vivant, AUCUN runner, rien de légitime ne le retient, plus un
+// `goal` depuis 3 min → relance `planner_revived`. Le watchdog ci-dessus ne voit pas ce cas : il exige un
+// runner vivant sous `taskCtl.active === 'autonomous'` (planner GELÉ), ici le planner est MORT.
+function plannerOrphanState(at) {
+  const now = Number.isFinite(at) ? at : Date.now();
+  const objType = world.objective && world.objective.type;
+  return {
+    now,
+    chain: !!(world.objective && world.objective.status === 'in_progress') && objType !== 'mapper' && objType !== 'resource',
+    alive: !!(bot.entity && bot.health > 0),
+    runners: _autoRunners, owner: taskCtl.active, parked: _plannerParked,
+    lastGoalAt: _lastGoalAt, orphanSince: _plannerOrphanSince, lastFireAt: _plannerReviveAt,
+    migrating: _migrating || _ljSwitching, shelter: !!_shelterInFlight, sleeping: !!bot.isSleeping,
+    nightHold: _nightHold, skillInFlight: _skillInFlight,
+    survivalBusy: _skelRushBusy || _escaping || _foodTripBusy || _huntCookBusy > 0 || _imminentBusy || _stillBusy || _plannerWatchdogBusy || _baseBusy,
+  };
+}
+function plannerOrphanTick(at) {
+  const now = Number.isFinite(at) ? at : Date.now();
+  const v = plannerOrphanVerdict(plannerOrphanState(now));
+  if (!v.orphan) _plannerOrphanSince = 0;
+  else if (!_plannerOrphanSince) _plannerOrphanSince = now;
+  if (!v.fire) return v;
+  _plannerReviveAt = now;
+  _plannerOrphanSince = 0;
+  emit({ type: 'planner_revived', idle_s: v.idleS, owner: taskCtl.active || null, objective: world.objective && world.objective.type });
+  try {
+    startAutonomous(null).catch((e) => emit({ type: 'error', message: String((e && e.message) || e) }));
+  } catch (e) { /* best-effort */ }
+  return v;
+}
+setInterval(() => { try { plannerOrphanTick(); } catch (e) { /* best-effort */ } }, 15000);
 
 async function migrateZone(reason) {
   if (_migrating) return;
@@ -8961,6 +9010,11 @@ async function _skelRush(shooter) {
   // `token.cancelled` et rend la main au lieu de relancer un goto/stopMotion qui coupe le combat ; le
   // planner est relancé à la fin (même patron que fleeDeathCamp).
   const prevTask = taskCtl.active;
+  // CHARGES ENCHAÎNÉES (24/10) : la charge précédente attend encore de relancer le planner (son jeton va
+  // être annulé par notre begin) → on hérite de sa dette, sinon plus personne ne le rallume.
+  const owesPlanner = rushResumesPlanner({ prevTask, outerOwes: _skelRushOwesPlanner || _skelPlannerPending });
+  if (prevTask === 'skeleton_rush') emit({ type: 'skeleton_rush_chained', owes: owesPlanner });
+  _skelRushOwesPlanner = owesPlanner;
   let tok = null;
   try { tok = taskCtl.begin('skeleton_rush', () => {}); } catch (e) { tok = null; }
   _skelRushBusy = true;
@@ -9071,13 +9125,15 @@ async function _skelRush(shooter) {
     emit(ev);
     // Rendre la main : relancer le planner qu'on a préempté (ou qui a voulu repartir pendant la charge).
     if (tok && !tok.cancelled) {
-      const wasPlanner = prevTask === 'autonomous' || prevTask === 'migration' || _skelPlannerPending;   // migration coupée : le planner la reprendra
+      const wasPlanner = owesPlanner || _skelPlannerPending;   // migration coupée : le planner la reprendra
       _skelPlannerPending = false;
       if (wasPlanner) {
+        _skelRushOwesPlanner = true;   // jusqu'à la relance effective (restartPlannerAfterFlee l'éteint)
         restartPlannerAfterFlee(tok, 'autonomous', 'skeleton_rush_planner_restart')
           .then((ok) => { if (!ok && !tok.cancelled) { try { taskCtl.cancel(); } catch (e) {} } })
           .catch((e) => emit({ type: 'error', message: String((e && e.message) || e) }));
       } else {
+        _skelRushOwesPlanner = false;
         try { taskCtl.cancel(); } catch (e) {}
       }
     }
@@ -11439,6 +11495,9 @@ async function startAutonomous(sender, opts) {
  *  Ne lit JAMAIS le global `taskToken` : uniquement `myTok`, le jeton de CE runner. */
 async function runAutonomousBody(sender, objType, myTok) {
   _lastGoalAt = Date.now();   // watchdog : le compteur repart à chaque démarrage du planner
+  _plannerParked = false;     // un planner repart : plus de « stop » joueur en vigueur
+  _skelRushOwesPlanner = false;   // dette soldée
+  _plannerOrphanSince = 0;
   emit({ type: 'autonomous_start', objective: objType });
   // RÉCUPÉRATION POST-MORT (vécu Surv4 : chaque mort = kit perdu = re-kit de zéro = spirale) :
   // les items restent 5 min au sol → on retourne les ramasser AVANT de reprendre (borné, best-effort).
@@ -13062,6 +13121,8 @@ function runCommand(decision) {
 async function executeOrder(order, sender) {
   const a = order.args || {};
   emit({ type: 'order', verb: order.verb, by: sender });
+  // Un joueur éteint le planner (stop/afk/guard/follow/pvp) : le filet « orphelin » ne doit pas le rallumer.
+  if (['stop', 'afk', 'guard', 'follow', 'pvp'].includes(order.verb)) _plannerParked = true;
   switch (order.verb) {
     case 'take': {
       const token = taskCtl.begin('take', stopMotion);
