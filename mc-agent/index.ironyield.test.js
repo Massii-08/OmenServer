@@ -103,6 +103,7 @@ function caveSandbox(o = {}) {
     homewarp: { bookmark: () => true },
     HOME_WORK: 'work', _workSet: false, _workPos: null, _botXZ: () => ({ x: 0, z: 0 }),
     caveIronSkill: async (opts) => { sb.captured = opts; return sb.results.shift() || { ok: false, reason: 'interrupted' }; },
+    oresScan: { scanExposedOres: () => [], isWaterAdjacent: () => false },   // fer VU (24/10) : rien en vue ici
   };
   vm.createContext(sb);
   run(sb, [constSrc('IRON_CAVE_CACHE_MS'), letSrc('_ironCaveCache'), constSrc('IRON_CAVE_OBJECTIVES'),
@@ -110,7 +111,7 @@ function caveSandbox(o = {}) {
     letSrc('_tpCount'), letSrc('_caveTripBusy'), letSrc('_caveInterrupts'), constSrc('CAVE_INTERRUPT_WINDOW_MS'),
     letSrc('_caveLastRawIron'), letSrc('_caveTooFarEmitAt'),
     fnSrc('_caveRawIron'), fnSrc('_caveBudgetBlocks'), fnSrc('_caveBudgetRecord'),
-    fnSrc('_caveInvTier'), fnSrc('_caveWorld'), fnSrc('loadCaveFails'), fnSrc('noteCaveTried'),
+    fnSrc('_caveInvTier'), fnSrc('_caveLiveIronScan'), fnSrc('_caveWorld'), fnSrc('loadCaveFails'), fnSrc('noteCaveTried'),
     fnSrc('ironCaveCtx'), fnSrc('runCaveIron'),
     'this.runCaveIron = runCaveIron; this.busy = () => _caveTripBusy;'].join('\n'));
   return sb;

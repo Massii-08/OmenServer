@@ -107,6 +107,7 @@ const loopGuard = require('./loopGuard');   // sync_loop_capped + loop_lag (gels
 const { caveHunt, sharedSkipStore: caveHuntSkip } = require('./skills/caveHunt');   // cave-first diamant (Massii 26/07)
 const { caveIron: caveIronSkill } = require('./skills/caveIron');   // fer en grotte (Massii 20/10)
 const caveIronPick = require('./caveIron');
+const oresScan = require('./ores');                          // scan ciblé du fer VU (ironCaveCtx, 24/10)
 const { classifyAuthPrompt, genPassword, resolveAuthChat } = require('./auth');
 const { loadMemory, worldKey, resolveBiome } = require('./worldMemory');
 const { driestCell, oreBase } = require('./ores');         // warp near-spawn DRY-AWARE + normalisation type (fix #8)
@@ -2531,7 +2532,10 @@ async function teamPhaseTick() {
   try { selfDia = buildCtxInv(bot).diamond || 0; } catch (e) { selfDia = 0; }
   let selfDonor = false;
   try { selfDonor = _ironDonorNow(selfDia); } catch (e) { selfDonor = false; }
-  if (pickDivertedMiner({ selfName: bot.username, selfDiamonds: selfDia, selfWorn, selfDonor, mates, now }) !== bot.username) return ph.phase;
+  // Pièces de fer SAINES en poche (24/10) : celui qui peut DONNER passe avant celui qui irait miner.
+  let selfSpare = 0;
+  try { selfSpare = _giftPocket().good.length; } catch (e) { selfSpare = 0; }
+  if (pickDivertedMiner({ selfName: bot.username, selfDiamonds: selfDia, selfWorn, selfDonor, selfSpare, mates, now }) !== bot.username) return ph.phase;
   const target = freshGiftTarget();                             // 4/4 soi-même + réservation `marmor:`
   if (!target) return ph.phase;
   _teamSwitchAt = now;
@@ -4255,6 +4259,11 @@ async function runGoalSkill(goal, gen) {
     // FER INTROUVABLE (24/10 soir, NethBot3 à y -53 : `iron_ore not_found` ×21 en 10 min) : au 3e not_found
     // de la fenêtre, on CREUSE (branch-mine, descente à Y16 d'abord si plus haut) au lieu d'explorer.
     if (isIronOreGather(goal)) {
+      // FER VISIBLE D'ABORD (24/10) : le fer exposé VU (ou mappé) à ≤ 64 blocs avant la récolte en
+      // exploration et avant le branch-mine de repli — un mineur à -54 prend le deepslate_iron_ore de la grotte.
+      const _rc = await ironCaveBeforeGather(goal);
+      if (_rc) return _rc;
+      if (lifeStale(_gen) || taskToken.cancelled) return { ok: false, reason: 'cancelled' };
       const _y = bot.entity && bot.entity.position ? bot.entity.position.y : undefined;
       const plan = ironGatherPlan({ times: _ironGatherFails, now: Date.now(), y: _y });
       if (plan) return await ironGatherBranch(goal, plan, _gen);
@@ -7209,7 +7218,8 @@ let _caveTripBusy = false;           // trajet/minage de grotte en cours — lu 
 let _caveInterrupts = {};            // key de grappe → [instants des coupures]
 const CAVE_INTERRUPT_WINDOW_MS = 10 * 60 * 1000;
 const CAVE_PULLED_AWAY = 8;          // le bot finit ≥ 8 blocs PLUS LOIN qu'au départ = on l'a emmené ailleurs
-const IRON_CAVE_OBJECTIVES = new Set(['iron_armor', 'diamond_armor']);
+// Chaînes armure + chaînes d'équipe (mapper_armor, iron_help — 24/10) : cf. caveIron.IRON_CAVE_OBJECTIVES.
+const IRON_CAVE_OBJECTIVES = caveIronPick.IRON_CAVE_OBJECTIVES;
 
 function _caveInvTier() {
   const t = { stone_pickaxe: 2, iron_pickaxe: 3, diamond_pickaxe: 4, netherite_pickaxe: 5 };
@@ -7218,6 +7228,20 @@ function _caveInvTier() {
     if (t[it.name] && t[it.name] > best) best = t[it.name];
   }
   return best;
+}
+
+/**
+ * Le fer que le bot VOIT (24/10) : scan ciblé fer des chunks chargés (comme le diamant, 8e161ef9 — le fer
+ * d'une grotte à 25 blocs n'entrait pas dans les 40 minerais les plus proches tous types confondus), mis
+ * à la forme mémoire. La carte partagée ne connaît que ce que les cartographes ont vu en surface : à -54,
+ * c'est la seule source. Jamais de throw.
+ */
+function _caveLiveIronScan() {
+  try {
+    const raw = oresScan.scanExposedOres(bot, { maxDistance: caveIronPick.LIVE_IRON_SCAN_DIST,
+      count: caveIronPick.LIVE_IRON_SCAN_COUNT, names: [...caveIronPick.IRON_ORES] });
+    return caveIronPick.liveIronOres(raw, (p) => oresScan.isWaterAdjacent(bot, p));
+  } catch (e) { return []; }
 }
 
 /** Entrée `worlds.<w>` de la mémoire partagée pour le monde courant (même résolution de clé que le dry-steer). */
@@ -7263,10 +7287,14 @@ function ironCaveForPlanner() {
   return ironCaveCtx();
 }
 
-/** La grappe de fer exposé à viser, ou null. Seulement pour les chaînes armure, pioche pierre+ en poche. */
-function ironCaveCtx() {
+/**
+ * La grappe de fer exposé à viser, ou null. Chaînes armure + chaînes d'équipe (IRON_CAVE_OBJECTIVES) ;
+ * `opts.force` pour un autre objectif (récolte de fer de la chaîne diamant). Pioche pierre+ en poche.
+ * Sources (24/10) : la carte partagée ET le fer VU par le bot (_caveLiveIronScan) — la plus rentable.
+ */
+function ironCaveCtx(opts = {}) {
   const objT = world && world.objective && world.objective.type;
-  if (!IRON_CAVE_OBJECTIVES.has(objT)) return null;
+  if (!caveIronPick.ironCaveObjectiveOk(objT, opts)) return null;
   const now = Date.now();
   if (now - _ironCaveCache.at < IRON_CAVE_CACHE_MS) return _ironCaveCache.cave;
   let cave = null;
@@ -7310,7 +7338,13 @@ function ironCaveCtx() {
         });
         // PORTÉE (23/10) : ≤ 48 blocs 3D (≤ 64 si ≥ 6 minerais) — au-delà, le branch-mine local paie mieux.
         const pick = caveIronPick.pickReachableCave(ranked, from);
-        cave = pick.cave;
+        // FER VU (24/10) : mêmes exclusions (ratées, claimées, confine, noyées) ; à score égal, celle qu'on voit.
+        const live = caveIronPick.pickLiveIronCave(_caveLiveIronScan(), from, {
+          now, fails,
+          isClaimed: (k) => { const c = _teamClaims && _teamClaims.peek(k); return !!(c && c.by !== bot.username); },
+          confine: CONFINE || _confineDyn,
+        });
+        cave = caveIronPick.chooseIronCave(pick.cave ? Object.assign({}, pick.cave, { src: 'map' }) : null, live);
         if (pick.tooFar && (now - _caveTooFarEmitAt >= 60000 || now < _caveTooFarEmitAt)) {
           _caveTooFarEmitAt = now;
           const f = pick.tooFar;
@@ -7435,9 +7469,26 @@ async function _caveStairTo(t, tok) {
   return { tried: true, reached, overshot, teleported: tpd };
 }
 
-async function runCaveIron() {
+/**
+ * FER VISIBLE AVANT LA RÉCOLTE / LA GALERIE (24/10). Pour un but de récolte de fer HORS chaîne armure
+ * (chaîne diamant : pioche fer à refaire à -54 ; chaîne pioche fer) : la grappe exposée la plus rentable,
+ * vue ou mappée, à ≤ 64 blocs (ironCaveCtx forcé), sous la garde PV des grottes. Rend le résultat d'un essai
+ * RÉUSSI ; null sinon (rien en vue, blessé, essai raté) → récolte / branch-mine habituels.
+ */
+async function ironCaveBeforeGather(goal) {
+  try {
+    if (!caveIronPick.caveHpOk(bot && bot.health)) return null;
+    const cave = ironCaveCtx({ force: true });
+    if (!cave) return null;
+    emit({ type: 'iron_cave_first', goal: goal && goal.name, src: cave.src || 'map', ores: cave.count, dist: cave.dist });
+    const r = await runCaveIron({ force: true });
+    return (r && r.ok) ? r : null;
+  } catch (e) { return null; }
+}
+
+async function runCaveIron(opts = {}) {
   _ironCaveCache = { at: 0, cave: null };          // relire la carte : un coéquipier a pu passer
-  const cave = ironCaveCtx();
+  const cave = ironCaveCtx(opts);
   _ironCaveCache = { at: 0, cave: null };
   if (!cave) return { ok: false, reason: 'no_cave_target' };
   if (_teamClaims && !_teamClaims.tryClaim(cave.key)) {

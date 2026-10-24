@@ -297,18 +297,25 @@ function latchedTeamPhase({ raw, latch, mates, selfName, selfRole, selfWorn, now
 // DONNEUR DE FER (24/10 soir) : un mineur en armure diamant complète, ≥ 24 diamants en poche et du fer
 // SAIN en poche (son ancienne armure, `ironDonor` du heartbeat / `selfDonor`) passe AVANT les autres :
 // il livre ses pièces sans rien miner (giftBatchFor lit la poche), et son surplus le rend détournable.
-function pickDivertedMiner({ selfName, selfDiamonds, selfWorn, selfDonor, mates, now, freshMs, minWorn = 4 } = {}) {
+// PIÈCES EN POCHE (24/10, heartbeat 22:04) : NethBot2 avait 2 pièces de fer SAINES en poche mais 23 💎 (pas
+// « donneur », seuil 24) — c'est NethBot1, rien en poche, qui était détourné et partait MINER le fer. On ne
+// détourne un mineur pour MINER que si personne n'a de pièce saine à donner : `spareIron` (heartbeat) /
+// `selfSpare` ≥ 1 passe juste après le donneur, avant le classement par diamants.
+function pickDivertedMiner({ selfName, selfDiamonds, selfWorn, selfDonor, selfSpare, mates, now, freshMs, minWorn = 4 } = {}) {
   const t = now || Date.now();
   const fm = freshMs || FRESH_MS;
   const c = [];
-  if (selfName && (Number(selfWorn) || 0) >= minWorn) c.push({ name: String(selfName), d: Number(selfDiamonds) || 0, donor: !!selfDonor });
+  if (selfName && (Number(selfWorn) || 0) >= minWorn) {
+    c.push({ name: String(selfName), d: Number(selfDiamonds) || 0, donor: !!selfDonor, spare: (Number(selfSpare) || 0) >= 1 });
+  }
   for (const m of mates || []) {
     if (!m || !m.name || m.name === selfName || m.role !== 'worker' || (t - (m.at || 0)) > fm) continue;
     if (mapperWorn(m) < minWorn) continue;
-    c.push({ name: String(m.name), d: Number(m.diamonds) || 0, donor: m.ironDonor === true });
+    c.push({ name: String(m.name), d: Number(m.diamonds) || 0, donor: m.ironDonor === true, spare: (Number(m.spareIron) || 0) >= 1 });
   }
   if (!c.length) return null;
-  c.sort((a, b) => (Number(b.donor) - Number(a.donor)) || (a.d - b.d) || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+  c.sort((a, b) => (Number(b.donor) - Number(a.donor)) || (Number(b.spare) - Number(a.spare)) || (a.d - b.d)
+    || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
   return c[0].name;
 }
 

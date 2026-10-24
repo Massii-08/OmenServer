@@ -627,6 +627,10 @@ const IRON_HELP_CHAIN = [
   { name: 'help_pick',     met: (c) => canMineIron(c)
       || (invCount(c.inv, 'raw_iron') + invCount(c.inv, 'iron_ingot')) >= HELP_STOCK,
     skill: 'ensurePick' },
+  // FER VISIBLE D'ABORD (24/10) : même but que gift_cave / iron_cave — la galerie n'est que le repli.
+  { name: 'help_cave',     met: (c) => !c.ironCave
+      || invCount(c.inv, 'raw_iron') + invCount(c.inv, 'iron_ingot') >= HELP_STOCK,
+    skill: 'caveIron',     args: {} },
   { name: 'descend_y16',   met: (c) => (c.y !== undefined && c.y <= 18) || invCount(c.inv, 'iron_ingot') >= HELP_STOCK,
     skill: 'descendDiagonal', args: { targetY: 16 } },
   { name: 'iron_deep',     met: (c) => invCount(c.inv, 'raw_iron') + invCount(c.inv, 'iron_ingot') >= HELP_STOCK,
@@ -703,6 +707,13 @@ const MAPPER_ARMOR_CHAIN = [
       || invCount(c.inv, 'iron_ingot') >= GN(c)
       || !!c.noWood,
     skill: 'gatherLog',    args: { count: 6 } },
+  // FER VISIBLE D'ABORD (24/10, NethBot3 session 590 : 34 min de `gift_iron` en galerie à -55, 0 fer ;
+  // le propriétaire : « ils creusent des galeries au lieu d'aller dans les grottes »). `c.ironCave` = la
+  // grappe EXPOSÉE la plus rentable, carte partagée OU vue par le bot lui-même (ironCaveCtx, ≤ 64 blocs).
+  // SATISFIABLE-OU-SAUTABLE : sans grappe, le branch-mine (gift_descend / gift_iron) reste le repli.
+  { name: 'gift_cave',    met: (c) => !c.mapperTarget || !!c.giftBatch || !c.ironCave
+      || invCount(c.inv, 'raw_iron') + invCount(c.inv, 'iron_ingot') >= GN(c),
+    skill: 'caveIron',     args: {} },
   { name: 'gift_descend', met: (c) => !c.mapperTarget || !!c.giftBatch
       || (c.y !== undefined && c.y <= 18) || invCount(c.inv, 'iron_ingot') >= GN(c),
     skill: 'descendDiagonal', args: { targetY: 16 } },

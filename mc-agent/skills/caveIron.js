@@ -55,7 +55,8 @@ async function caveIron(o = {}, token = null) {
   const safe = async (fn, dflt) => { try { return typeof fn === 'function' ? await fn() : dflt; } catch (e) { return dflt; } };
   const cancelled = () => !!(token && token.cancelled);
 
-  emit({ type: 'cave_target', x: cave.x, y: cave.y, z: cave.z, ores: cave.count || cave.ores.length, dist: cave.dist });
+  emit({ type: 'cave_target', x: cave.x, y: cave.y, z: cave.z, ores: cave.count || cave.ores.length, dist: cave.dist,
+    src: cave.src || 'map' });   // 'live' = fer VU par le bot (24/10), 'map' = carte partagée
   const reached = await safe(() => o.travel(cave), false);
   tTravel = now();
   if (cancelled()) return fail('cancelled');

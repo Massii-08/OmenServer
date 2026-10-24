@@ -1134,3 +1134,28 @@ test('DIAMOND descend_y54 : déjà dans la bande des diamants (≤ -16) avec un 
   const ctx = { inv: { iron_pickaxe: 1, cobblestone: 16, stick: 4 }, y: -38, caveDiamondNear: true };
   assert.strictEqual(firstUnmet(DIAMOND_CHAIN, ctx).name, 'diamond_caves');
 });
+
+// ── FER VISIBLE D'ABORD dans les chaînes d'équipe (24/10, NethBot3 : 34 min de galerie à -55, 0 fer) ──
+const _CAVE = { key: 'cave:1,1,1', x: 10, y: -54, z: 0, count: 2, src: 'live', ores: [] };
+test('MAPPER_ARMOR_CHAIN: mineur à -54 + fer visible → gift_cave (la grotte) AVANT gift_iron (la galerie)', () => {
+  const ctx = { inv: { diamond_pickaxe: 1 }, y: -54, mapperTarget: 'MapBot1', giftReady: false, ironCave: _CAVE };
+  const g = firstUnmet(MAPPER_ARMOR_CHAIN, ctx);
+  assert.strictEqual(g.name, 'gift_cave');
+  assert.strictEqual(g.skill, 'caveIron');
+  const names = MAPPER_ARMOR_CHAIN.map((x) => x.name);
+  assert.ok(names.indexOf('gift_cave') < names.indexOf('gift_descend'), 'avant toute descente');
+  assert.ok(names.indexOf('gift_cave') < names.indexOf('gift_iron'));
+});
+test('MAPPER_ARMOR_CHAIN: gift_cave SAUTABLE (sans grotte, sans cible, lot en poche, fer suffisant)', () => {
+  const base = { inv: { diamond_pickaxe: 1 }, y: -54, mapperTarget: 'MapBot1', giftReady: false };
+  assert.strictEqual(firstUnmet(MAPPER_ARMOR_CHAIN, base).name, 'gift_iron', 'sans grotte → galerie (repli)');
+  assert.strictEqual(firstUnmet(MAPPER_ARMOR_CHAIN, { ...base, ironCave: _CAVE, mapperTarget: null }), null);
+  assert.notStrictEqual(firstUnmet(MAPPER_ARMOR_CHAIN, { ...base, ironCave: _CAVE, giftBatch: true }).name, 'gift_cave');
+  assert.notStrictEqual(firstUnmet(MAPPER_ARMOR_CHAIN, { ...base, ironCave: _CAVE, giftNeed: 4, inv: { diamond_pickaxe: 1, raw_iron: 4 } }).name, 'gift_cave');
+});
+test('IRON_HELP_CHAIN: fer visible → help_cave AVANT descend_y16 / iron_deep ; sans grotte → inchangé', () => {
+  const ctx = { inv: { iron_pickaxe: 1 }, y: 40, ironCave: _CAVE };
+  assert.strictEqual(firstUnmet(IRON_HELP_CHAIN, ctx).name, 'help_cave');
+  assert.strictEqual(firstUnmet(IRON_HELP_CHAIN, { inv: { iron_pickaxe: 1 }, y: 40 }).name, 'descend_y16');
+  assert.notStrictEqual(firstUnmet(IRON_HELP_CHAIN, { ...ctx, inv: { iron_pickaxe: 1, raw_iron: HELP_STOCK } }).name, 'help_cave');
+});

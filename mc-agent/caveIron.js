@@ -466,7 +466,69 @@ function pickReachableCave(ranked, from) {
   return { cave, tooFar };
 }
 
+// ── FER VISIBLE AUTOUR DU BOT (24/10) ────────────────────────────────────────────────────────────
+// Vécu (session 590) : NethBot3, en armure diamant à -55, envoyé armer un cartographe, a passé 34 min
+// dans `gift_iron` à creuser une galerie en lacets — 0 fer de grotte, 0 fer tout court (ironMined 0),
+// alors que le propriétaire voyait les grottes à côté. La mémoire partagée ne connaît que ce que les
+// cartographes ont vu (en surface, pas à -54) : on y ajoute ce que le bot VOIT lui-même (scan ciblé des
+// chunks chargés, fer seulement, comme le diamant le 24/10). Un ou deux minerais à ≤ 24 blocs valent le
+// détour (on est déjà là) ; plus loin il faut une vraie grappe ; jamais au-delà de 64 blocs 3D.
+// Et ce n'est plus réservé aux chaînes armure : armer un cartographe (`mapper_armor`) et l'entraide
+// (`iron_help`) minent aussi du fer. Les autres objectifs (diamant…) passent `force` au cas par cas.
+const IRON_CAVE_OBJECTIVES = new Set(['iron_armor', 'diamond_armor', 'mapper_armor', 'iron_help']);
+const LIVE_IRON_SCAN_DIST = 64;
+const LIVE_IRON_SCAN_COUNT = 48;
+const LIVE_SMALL_NEAR = 24;      // blocs 3D : en dessous, 1-2 minerais vus suffisent
+const LIVE_MAX_3D = 64;
+
+/** PUR — le fer de grotte s'applique-t-il à cet objectif ? */
+function ironCaveObjectiveOk(objT, opts = {}) {
+  return !!(opts && opts.force) || IRON_CAVE_OBJECTIVES.has(String(objT || ''));
+}
+
+/** PUR — résultats de scanExposedOres → forme mémoire ({material,x,y,z,exposed:true,wet}). */
+function liveIronOres(scanned, isWet) {
+  const out = [];
+  const seen = new Set();
+  for (const o of Array.isArray(scanned) ? scanned : []) {
+    if (!_valid(o) || !isIronOre(o.material)) continue;
+    const p = { x: Math.floor(o.x), y: Math.floor(o.y), z: Math.floor(o.z) };
+    const k = `${p.x},${p.y},${p.z}`;
+    if (seen.has(k)) continue;
+    seen.add(k);
+    let wet = false;
+    try { wet = typeof isWet === 'function' ? !!isWet(p) : false; } catch (e) { wet = false; }
+    out.push({ material: o.material, x: p.x, y: p.y, z: p.z, exposed: true, wet });
+  }
+  return out;
+}
+
+/**
+ * PUR — la meilleure grappe parmi le fer VU (liveIronOres) : ≤ LIVE_MAX_3D blocs 3D, et soit une vraie
+ * grappe (≥ CAVE_MIN_ORES), soit à ≤ LIVE_SMALL_NEAR blocs. Mêmes exclusions que la carte (noyée,
+ * ratée < 30 min, claimée, hors confine). `src: 'live'`.
+ */
+function pickLiveIronCave(live, from, o = {}) {
+  if (!_valid(from)) return null;
+  const ranked = rankIronCaves(live, from, Object.assign({}, o, { minOres: 1, maxDist: LIVE_MAX_3D, maxDrop: LIVE_MAX_3D }));
+  for (const c of ranked) {
+    const d3 = Math.hypot(c.x - from.x, c.y - from.y, c.z - from.z);
+    if (d3 > LIVE_MAX_3D) continue;
+    if (c.count >= CAVE_MIN_ORES || d3 <= LIVE_SMALL_NEAR) return Object.assign({}, c, { src: 'live' });
+  }
+  return null;
+}
+
+/** PUR — entre la grappe de la carte et celle qu'on voit : la plus rentable ; à égalité, celle qu'on VOIT. */
+function chooseIronCave(mapCave, liveCave) {
+  if (!mapCave) return liveCave || null;
+  if (!liveCave) return mapCave;
+  return (Number(mapCave.score) || 0) > (Number(liveCave.score) || 0) ? mapCave : liveCave;
+}
+
 module.exports = {
+  IRON_CAVE_OBJECTIVES, LIVE_IRON_SCAN_DIST, LIVE_IRON_SCAN_COUNT, LIVE_SMALL_NEAR, LIVE_MAX_3D,
+  ironCaveObjectiveOk, liveIronOres, pickLiveIronCave, chooseIronCave,
   IRON_ORES, CAVE_LINK, CAVE_MIN_ORES, CAVE_MAX_DIST, CAVE_MAX_DROP, CAVE_FAIL_TTL_MS, CAVE_FAIL_NEAR, CAVE_CELL,
   DEPTH_K, WET_SHARE_MAX, CAVE_FAILS_CAP,
   isIronOre, exposedIronOres, clusterOres, centroid, caveKey, orderOres,

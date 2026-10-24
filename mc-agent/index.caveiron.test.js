@@ -63,6 +63,12 @@ function sandbox(o = {}) {
     homewarp: { bookmark: () => true },
     HOME_WORK: 'work', _workSet: false, _workPos: null, _botXZ: () => ({ x: 0, z: 0 }),
     caveIronSkill: async (opts) => { sb.captured = opts; return o.skillResult || { ok: true, mined: 4 }; },
+    // Scan ciblé des chunks chargés (ores.scanExposedOres) : le fer que le bot VOIT (24/10).
+    scans: [],
+    oresScan: {
+      scanExposedOres: (b, opts) => { sb.scans.push(opts); return o.live || []; },
+      isWaterAdjacent: (b, p) => !!(o.liveWet && o.liveWet(p)),
+    },
   };
   vm.createContext(sb);
   run(sb, [constSrc('IRON_CAVE_CACHE_MS'), letSrc('_ironCaveCache'), constSrc('IRON_CAVE_OBJECTIVES'),
@@ -71,8 +77,9 @@ function sandbox(o = {}) {
     constSrc('CAVE_PULLED_AWAY'), fnSrc('caveTravelVerdict'),
     letSrc('_caveLastRawIron'), letSrc('_caveTooFarEmitAt'),
     fnSrc('_caveRawIron'), fnSrc('_caveBudgetBlocks'), fnSrc('_caveBudgetRecord'),
-    fnSrc('_caveInvTier'), fnSrc('_caveWorld'), fnSrc('_caveWorldOres'), fnSrc('loadCaveFails'), fnSrc('noteCaveTried'),
-    fnSrc('ironCaveCtx'), fnSrc('runCaveIron'),
+    fnSrc('_caveInvTier'), fnSrc('_caveLiveIronScan'), fnSrc('_caveWorld'), fnSrc('_caveWorldOres'), fnSrc('loadCaveFails'), fnSrc('noteCaveTried'),
+    fnSrc('ironCaveCtx'), fnSrc('runCaveIron'), fnSrc('ironCaveBeforeGather'),
+    'this.ironCaveBeforeGather = ironCaveBeforeGather;',
     'this.ironCaveCtx = ironCaveCtx; this.runCaveIron = runCaveIron; this.noteCaveTried = noteCaveTried;',
     'this.resetCache = () => { _ironCaveCache = { at: 0, cave: null }; };'].join('\n'));
   return sb;
@@ -299,4 +306,68 @@ test('runCaveIron : claim refusée → cave_failed porte iron_got 0 (mesure)', a
   const ev = sb.events.find((e) => e.type === 'cave_failed');
   assert.deepStrictEqual([ev.why, ev.iron_got], ['claimed', 0]);
   assert.ok(!sb.base.caveBudget, 'claimed n\'est pas un trajet : non compté');
+});
+
+// ── FER VISIBLE AUTOUR DU BOT (24/10) : scan ciblé fer + chaînes d'équipe ──
+const LIVE = (x, y, z) => ({ material: 'deepslate_iron_ore', x, y, z });
+test('ironCaveCtx : mineur à -54 sans rien sur la carte → le deepslate_iron_ore VU à 10 blocs (src live)', () => {
+  const sb = sandbox({ ores: [], objective: 'mapper_armor', pos: { x: 0, y: -54, z: 0 },
+    items: [{ name: 'diamond_pickaxe', count: 1 }], live: [LIVE(10, -54, 0)] });
+  const c = sb.ironCaveCtx();
+  assert.ok(c, 'la grappe vue');
+  assert.strictEqual(c.src, 'live');
+  assert.strictEqual(c.count, 1);
+  assert.strictEqual(JSON.stringify(sb.scans[0].names.slice().sort()), JSON.stringify(['deepslate_iron_ore', 'iron_ore']));
+  assert.strictEqual(sb.scans[0].maxDistance, 64);
+});
+test('ironCaveCtx : iron_help aussi ; diamond seulement en force ; fer vu noyé → écarté', () => {
+  const o = { ores: [], pos: { x: 0, y: -54, z: 0 }, items: [{ name: 'iron_pickaxe', count: 1 }], live: [LIVE(8, -54, 0)] };
+  assert.ok(sandbox(Object.assign({}, o, { objective: 'iron_help' })).ironCaveCtx());
+  assert.strictEqual(sandbox(Object.assign({}, o, { objective: 'diamond' })).ironCaveCtx(), null);
+  assert.ok(sandbox(Object.assign({}, o, { objective: 'diamond' })).ironCaveCtx({ force: true }));
+  assert.strictEqual(sandbox(Object.assign({}, o, { objective: 'iron_help', liveWet: () => true })).ironCaveCtx(), null);
+});
+test('ironCaveCtx : carte ET vue → la plus rentable (une grappe vue tout près bat une grappe de carte lointaine)', () => {
+  const far = [ore(40, -54, 0), ore(42, -54, 0), ore(44, -54, 0)];
+  const sb = sandbox({ ores: far, objective: 'mapper_armor', pos: { x: 0, y: -54, z: 0 },
+    items: [{ name: 'iron_pickaxe', count: 1 }], live: [LIVE(4, -54, 0), LIVE(5, -54, 1), LIVE(6, -54, 0)] });
+  const c = sb.ironCaveCtx();
+  assert.strictEqual(c.src, 'live');
+  assert.ok(c.x < 10);
+  const sb2 = sandbox({ ores: far, objective: 'mapper_armor', pos: { x: 0, y: -54, z: 0 }, items: [{ name: 'iron_pickaxe', count: 1 }] });
+  assert.strictEqual(sb2.ironCaveCtx().src, 'map', 'sans rien en vue → la carte');
+});
+test('runCaveIron({force}) : objectif diamant → la grappe vue est minée (ironCaveCtx forcé)', async () => {
+  const sb = sandbox({ ores: [], objective: 'diamond', pos: { x: 0, y: -54, z: 0 },
+    items: [{ name: 'diamond_pickaxe', count: 1 }], live: [LIVE(6, -54, 0)] });
+  assert.strictEqual((await sb.runCaveIron()).reason, 'no_cave_target');
+  sb.resetCache();
+  const r = await sb.runCaveIron({ force: true });
+  assert.strictEqual(r.ok, true);
+  assert.strictEqual(sb.captured.cave.src, 'live');
+});
+
+test('ironCaveBeforeGather : chaîne diamant à -54 → grotte VUE minée avant la récolte/galerie ; blessé ou rien en vue → null', async () => {
+  const mk = (o) => sandbox(Object.assign({ ores: [], objective: 'diamond', pos: { x: 0, y: -54, z: 0 },
+    items: [{ name: 'iron_pickaxe', count: 1 }], live: [LIVE(6, -54, 0)] }, o));
+  const sb = mk();
+  sb.bot.health = 20;
+  const r = await sb.ironCaveBeforeGather({ name: 'iron_ore' });
+  assert.strictEqual(r.ok, true);
+  assert.ok(sb.events.some((e) => e.type === 'iron_cave_first' && e.src === 'live' && e.goal === 'iron_ore'));
+  const hurt = mk();
+  hurt.bot.health = 6;
+  assert.strictEqual(await hurt.ironCaveBeforeGather({ name: 'iron_ore' }), null);
+  assert.strictEqual(hurt.captured, null, 'pas de grotte à 6 PV');
+  const none = mk({ live: [] });
+  assert.strictEqual(await none.ironCaveBeforeGather({ name: 'iron_ore' }), null);
+  const failed = mk({ skillResult: { ok: false, reason: 'hidden' } });
+  assert.strictEqual(await failed.ironCaveBeforeGather({ name: 'iron_ore' }), null, 'essai raté → repli récolte/galerie');
+});
+
+test('runGoalSkill : la récolte de fer essaie la grotte AVANT ironGatherPlan (branch-mine de repli)', () => {
+  const src = fnSrc('runGoalSkill');
+  const i = src.indexOf('ironCaveBeforeGather(goal)');
+  assert.ok(i > 0);
+  assert.ok(i < src.indexOf('ironGatherPlan('));
 });

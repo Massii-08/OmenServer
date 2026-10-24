@@ -190,3 +190,18 @@ test('teamPhaseTick : cliquet + mapper_armor (vrai détournement) → jamais ré
   await run(sb, 'teamPhaseTick()');
   assert.ok(!sb.calls.some((c) => c.startsWith('switch:')), JSON.stringify(sb.calls));
 });
+
+test('teamPhaseTick : cartographe nu → le mineur qui a des pièces SAINES en poche est détourné, pas celui qui irait miner (24/10)', async () => {
+  // Heartbeat réel 22:04 : NethBot2 23 💎 + 2 pièces saines en poche ; NethBot1 20 💎, rien.
+  const naked = MP('MapBot1', { worn: 1, missing: ['iron_helmet', 'iron_chestplate', 'iron_boots'] });
+  const giver = sandbox({ name: 'NethBot2', items: [{ name: 'diamond', count: 23 }], base: { teamLatch: { at: T0, last: 'diamond' } },
+    mates: [W('NethBot1', { diamonds: 20, spareIron: 0 }), naked] });
+  giver._giftPocket = () => ({ good: ['iron_helmet', 'iron_boots'], broken: [], ingots: 0 });
+  await run(giver, 'teamPhaseTick()');
+  assert.ok(giver.calls.includes('switch:mapper_armor:team_mappers_armor'), 'celui qui peut DONNER y va');
+  const miner = sandbox({ name: 'NethBot1', items: [{ name: 'diamond', count: 20 }], base: { teamLatch: { at: T0, last: 'diamond' } },
+    mates: [W('NethBot2', { diamonds: 23, spareIron: 2 }), naked] });
+  miner._giftPocket = () => ({ good: [], broken: [], ingots: 0 });
+  await run(miner, 'teamPhaseTick()');
+  assert.ok(!miner.calls.some((c) => c.startsWith('switch:')), 'celui qui irait miner reste au diamant');
+});

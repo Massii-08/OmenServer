@@ -367,3 +367,55 @@ test('pickReachableCave : première grappe à portée du classement, sinon tooFa
   assert.deepStrictEqual(C.pickReachableCave([far], from), { cave: null, tooFar: far });
   assert.deepStrictEqual(C.pickReachableCave([], from), { cave: null, tooFar: null });
 });
+
+// ── FER VISIBLE AUTOUR DU BOT (24/10, chaînes d'équipe + mineur à -54) ──
+test('ironCaveObjectiveOk : chaînes armure ET chaînes d\'équipe (mapper_armor, iron_help) ; force pour le reste', () => {
+  for (const o of ['iron_armor', 'diamond_armor', 'mapper_armor', 'iron_help']) assert.strictEqual(C.ironCaveObjectiveOk(o), true, o);
+  for (const o of ['diamond', 'lumberjack', 'mapper', undefined]) assert.strictEqual(C.ironCaveObjectiveOk(o), false, String(o));
+  assert.strictEqual(C.ironCaveObjectiveOk('diamond', { force: true }), true);
+});
+
+test('liveIronOres : scan → forme mémoire (exposed:true, wet), fer seulement, dédoublonné', () => {
+  const out = C.liveIronOres([
+    { material: 'deepslate_iron_ore', x: 1.2, y: -54, z: 3 },
+    { material: 'deepslate_iron_ore', x: 1, y: -54, z: 3 },
+    { material: 'deepslate_diamond_ore', x: 5, y: -54, z: 3 },
+    null, { material: 'iron_ore', x: 'a', y: 0, z: 0 },
+    { material: 'iron_ore', x: 9, y: -50, z: 9 },
+  ], (o) => o.x === 9);
+  assert.deepStrictEqual(out, [
+    { material: 'deepslate_iron_ore', x: 1, y: -54, z: 3, exposed: true, wet: false },
+    { material: 'iron_ore', x: 9, y: -50, z: 9, exposed: true, wet: true },
+  ]);
+  assert.deepStrictEqual(C.liveIronOres(null), []);
+  // isWet qui lève → considéré sec (on ne jette pas un minerai sur une erreur de lecture)
+  assert.strictEqual(C.liveIronOres([{ material: 'iron_ore', x: 0, y: 0, z: 0 }], () => { throw new Error('x'); })[0].wet, false);
+});
+
+test('pickLiveIronCave : 1-2 minerais vus PRÈS (≤ 24) suffisent ; au-delà il faut une grappe ; ≤ 64 blocs 3D', () => {
+  const from = { x: 0, y: -54, z: 0 };
+  const L = (x, y, z, wet = false) => ({ material: 'deepslate_iron_ore', x, y, z, exposed: true, wet });
+  const near1 = C.pickLiveIronCave([L(10, -54, 0)], from, { now: T });
+  assert.ok(near1 && near1.count === 1 && near1.src === 'live', 'un minerai visible à 10 blocs');
+  assert.strictEqual(C.pickLiveIronCave([L(40, -54, 0)], from, { now: T }), null, 'isolé à 40 blocs : pas le détour');
+  const g = C.pickLiveIronCave([L(40, -54, 0), L(42, -54, 0), L(44, -53, 1)], from, { now: T });
+  assert.ok(g && g.count === 3, 'une grappe à 42 blocs');
+  assert.strictEqual(C.pickLiveIronCave([L(70, -54, 0), L(71, -54, 0), L(72, -54, 0)], from, { now: T }), null, '> 64 blocs');
+  assert.strictEqual(C.pickLiveIronCave([L(5, -54, 0, true)], from, { now: T }), null, 'noyé');
+  // un essai raté récent écarte la grappe (même mémo que la carte)
+  const fails = [{ x: 10, y: -54, z: 0, at: T - 60000, why: 'unreachable' }];
+  assert.strictEqual(C.pickLiveIronCave([L(10, -54, 0)], from, { now: T, fails }), null);
+  assert.strictEqual(C.pickLiveIronCave([], from), null);
+  assert.strictEqual(C.pickLiveIronCave([L(1, 1, 1)], null), null);
+});
+
+test('chooseIronCave : la plus rentable des deux (carte / vue) ; à score égal, celle qu\'on VOIT', () => {
+  const map = { key: 'm', score: 0.2, src: 'map' };
+  const live = { key: 'l', score: 0.3, src: 'live' };
+  assert.strictEqual(C.chooseIronCave(map, live), live);
+  assert.strictEqual(C.chooseIronCave({ ...map, score: 0.5 }, live).key, 'm');
+  assert.strictEqual(C.chooseIronCave({ ...map, score: 0.3 }, live), live);
+  assert.strictEqual(C.chooseIronCave(null, live), live);
+  assert.strictEqual(C.chooseIronCave(map, null), map);
+  assert.strictEqual(C.chooseIronCave(null, null), null);
+});

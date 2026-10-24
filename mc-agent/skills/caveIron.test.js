@@ -171,3 +171,12 @@ test('cave_failed porte iron_got = 0 et le temps de trajet perdu', async () => {
     ['cave_failed', 'unreachable', 0, 175, 0, 175]);
   assert.strictEqual(r.iron_got, 0);
 });
+
+test('cave_target porte la source (live = fer vu par le bot, map = carte) — mesure 24/10', async () => {
+  const d = deps();
+  await caveIron(Object.assign({ cave: Object.assign(cave(1), { src: 'live' }) }, d));
+  assert.strictEqual(d.events[0].src, 'live');
+  const d2 = deps();
+  await caveIron(Object.assign({ cave: cave(1) }, d2));
+  assert.strictEqual(d2.events[0].src, 'map');
+});

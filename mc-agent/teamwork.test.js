@@ -343,3 +343,23 @@ test('pickDivertedMiner : un DONNEUR de fer (armure diamant + surplus) passe ava
   assert.strictEqual(T.pickDivertedMiner({ selfName: 'NethBot1', selfDiamonds: 30, selfWorn: 4, selfDonor: true,
     mates: [mates[0]], now: NOW }), 'NethBot1');
 });
+
+test('pickDivertedMiner : à défaut de donneur, celui qui a des PIÈCES SAINES en poche (spareIron) passe avant celui qui irait miner', () => {
+  // Heartbeat réel 24/10 22:04 (positions-943e2c) : NethBot2 portait 2 pièces de fer saines en poche mais
+  // 23 💎 (< 24, donc pas « donneur ») ; NethBot1 (20 💎, rien en poche) était détourné et partait MINER.
+  const T = require('./teamwork');
+  const NOW = 1e9;
+  const mates = [
+    { name: 'NethBot2', role: 'worker', at: NOW, worn: 4, diamonds: 23, spareIron: 2, ironDonor: false },
+    { name: 'NethBot3', role: 'worker', at: NOW, worn: 4, diamonds: 39, spareIron: 0, ironDonor: false },
+  ];
+  assert.strictEqual(T.pickDivertedMiner({ selfName: 'NethBot1', selfDiamonds: 20, selfWorn: 4, selfSpare: 0, mates, now: NOW }), 'NethBot2');
+  // soi avec des pièces en poche (et un coéquipier plus pauvre en diamants sans rien) → soi
+  assert.strictEqual(T.pickDivertedMiner({ selfName: 'NethBot3', selfDiamonds: 39, selfWorn: 4, selfSpare: 1,
+    mates: [{ name: 'NethBot1', role: 'worker', at: NOW, worn: 4, diamonds: 0, spareIron: 0 }], now: NOW }), 'NethBot3');
+  // le donneur reste devant tout le monde
+  assert.strictEqual(T.pickDivertedMiner({ selfName: 'NethBot1', selfDiamonds: 20, selfWorn: 4, selfSpare: 3,
+    mates: [{ name: 'NethBot3', role: 'worker', at: NOW, worn: 4, diamonds: 40, spareIron: 1, ironDonor: true }], now: NOW }), 'NethBot3');
+  // personne n'a de pièce : le moins de diamants (inchangé)
+  assert.strictEqual(T.pickDivertedMiner({ selfName: 'NethBot1', selfDiamonds: 20, selfWorn: 4, mates: [mates[1]], now: NOW }), 'NethBot1');
+});
