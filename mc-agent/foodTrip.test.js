@@ -940,7 +940,8 @@ test('index.js : gatherWoodSafely (lj_stock/logs) tient _exploreBusy pendant tou
 });
 
 test('index.js : le skill `gather` générique (minerai/autre, chaîne autonome) tient aussi _exploreBusy', () => {
-  assert.match(SRC, /if \(goal\.args\.name === 'stone'\) return gatherStone\(goal\);\n\s+_exploreBusy = true;\n\s+try \{ return await gather\(bot, \{ \.\.\.goal\.args, explore: true \}, taskToken\); \}\n\s+finally \{ _exploreBusy = false; \}/);
+  // (24/10 soir) le repli branch-mine du fer introuvable passe AVANT ; le gather lui-même garde le verrou
+  assert.match(SRC, /_exploreBusy = true;\n\s+let _gr;\n\s+try \{ _gr = await gather\(bot, \{ \.\.\.goal\.args, explore: true \}, taskToken\); \}\n\s+finally \{ _exploreBusy = false; \}/);
 });
 
 test('index.js : les garde-fous des appelants laissent la place à l expédition (+ FOOD_TRIP_MS) — sinon ils la couperaient', () => {

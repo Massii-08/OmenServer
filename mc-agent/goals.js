@@ -167,6 +167,26 @@ const diamondPickCount = (c) => DIAMOND_PICKS.reduce((s, n) => s + invCount(c.in
 // pioche). Les buts `dia_spare_*` ci-dessous évitent d'en arriver là (pioche de rechange).
 const DI = (c) => D(c) && diamondPickCount(c) >= 1;
 const _TOOL_GOALS = new Set(['wooden_pickaxe', 'stone_pickaxe', 'iron_pickaxe']);
+// PIOCHE EN DIAMANT (24/10 soir) — NethBot3, 18 💎 en poche, pioche fer cassée à y -53 : il repartait
+// chercher du fer (`iron_ore not_found` ×21). Un joueur fait une pioche en diamant sur place (3 💎 +
+// 2 bâtons) : 1561 coups au lieu de 250, plus rapide, et récolte tout ce que récolte le fer.
+//  - sans pioche fer+ : dès 3 diamants, bâtons et table posable → pioche diamant, au lieu du fer ;
+//  - avec une pioche fer valide : l'amélioration est rentable aussi, mais UNE fois (`c.diaPickUpgraded`,
+//    mémo base) — on ne la rejoue pas à chaque casse tant qu'une pioche fer reste en poche.
+// Les 3 diamants dépensés sont comptés à part (`diamond_progress.spent`) : l'objectif reste 192 EN POCHE.
+const DIA_PICK_COST = 3;
+const tablePlaceable = (c) => invCount(c.inv, 'crafting_table') >= 1 || !!c.hasTable
+  || anyPlanks(c.inv) >= 4 || anyLog(c.inv) >= 1;
+/** PUR — faut-il fabriquer une pioche en diamant maintenant ? */
+function wantsDiamondPick(c) {
+  if (!c || !c.inv) return false;
+  if (invCount(c.inv, 'diamond_pickaxe') + invCount(c.inv, 'netherite_pickaxe') >= 1) return false;
+  if (invCount(c.inv, 'diamond') < DIA_PICK_COST || invCount(c.inv, 'stick') < 2 || !tablePlaceable(c)) return false;
+  if (invCount(c.inv, 'iron_pickaxe') < 1) return true;
+  return !c.diaPickUpgraded;
+}
+const DIA_PICK_GOAL = { name: 'dia_pick', met: (c) => !wantsDiamondPick(c),
+  skill: 'craft', args: { name: 'diamond_pickaxe', count: 1 } };
 const _diamondChains = new Map();
 /** Chaîne diamant pour une cible donnée (mémoïsée : la chaîne est un tableau stable par cible). */
 function diamondChain(target) {
@@ -174,7 +194,13 @@ function diamondChain(target) {
   if (_diamondChains.has(T)) return _diamondChains.get(T);
   const DT = (c) => invCount(c.inv, 'diamond') >= T;       // vraie fin de l'objectif
   const chain = [
-    ...IRON_CHAIN.map((g) => (_TOOL_GOALS.has(g.name) ? g : withFinal(g, DI))),
+    // Pioche diamant d'abord : avec 3 💎 en poche, le fer n'est plus un détour nécessaire.
+    DIA_PICK_GOAL,
+    // Buts d'OUTIL : satisfaits aussi par une pioche diamant RÉELLEMENT en poche (sinon un bot à pioche
+    // diamant seule re-crafterait pioche bois → pierre → fer).
+    ...IRON_CHAIN.map((g) => (_TOOL_GOALS.has(g.name)
+      ? Object.assign({}, g, { met: (c) => g.met(c) || invCount(c.inv, 'diamond_pickaxe') + invCount(c.inv, 'netherite_pickaxe') >= 1 })
+      : withFinal(g, DI))),
     // PIOCHE DE RECHANGE (24/10) : des heures à -54, une pioche fer dure ~250 blocs. On n'y consacre que
     // ce qui est DÉJÀ en poche (fer brut / lingots ramassés en route, bâtons, bois) : buts SAUTABLES
     // (`optional` : un échec les met de côté 10 min, cf. index.js), jamais une remontée.
@@ -704,6 +730,7 @@ const MAPPER_ARMOR_CHAIN = [
 // FORÊT : au 2e échec `lj_stock` en 10 min, expédition vers la forêt connue la plus proche (lj_forest).
 const { LUMBERJACK_STOCK, LUMBERJACK_MIN_WORN, wornIronCount } = require('./lumberjack');
 const { mapperUnserved } = require('./teamwork');
+const { latchedMinerObjective } = require('./diamondPhase');
 const _giftGoal = (n) => MAPPER_ARMOR_CHAIN.find((g) => g.name === n);
 const LUMBERJACK_CHAIN = [
   { name: 'lj_deliver', met: (c) => !c.woodRequest, skill: 'deliverWood' },
@@ -875,7 +902,15 @@ const POST_IRON_ARMOR_OBJECTIVES = new Set(['iron_help', 'mapper_armor']);
 /** PUR — objectif à lancer vraiment : `iron_armor` si l'objectif persisté suppose une armure qu'on n'a plus. */
 // Bûcheron (22/10, NethBot1 session 239) : même angle mort — élu à 4/4, inventaire vidé, il repartait
 // bûcheron au respawn. Sa règle d'éligibilité est l'armure PORTÉE (lumberjack.js), pas « couverte ».
+// CLIQUET DIAMANT (24/10 soir, diamondPhase.latchedMinerObjective) : `ctx.latched` (cliquet d'équipe actif)
+// prime — un mineur repart au diamant (ou en détour fer borné s'il est vraiment nu), quel que soit
+// l'objectif que le backend a re-seedé au respawn (toujours celui du lancement, ex. iron_armor).
 function objectiveForStart(objective, ctx) {
+  if (ctx && ctx.latched) {
+    const d = latchedMinerObjective({ objective, latched: true, isMapper: !!ctx.isMapper,
+      worn: wornIronCount(ctx.worn || []), detourAt: ctx.detourAt, now: ctx.now, fromSpawn: !!ctx.fromSpawn });
+    if (d) return d.objective;
+  }
   if (objective === 'lumberjack' && ctx && ctx.inv) {
     return wornIronCount(ctx.worn || []) >= LUMBERJACK_MIN_WORN ? objective : 'iron_armor';
   }
@@ -915,4 +950,4 @@ function firstUnmet(chain, ctx, skip) {
 
 module.exports = {
   BED_GOAL, nextObjectiveAfter, chainAfterDone, objectiveForStart, POST_IRON_ARMOR_OBJECTIVES, CHAIN_EMPTY_WINDOW_MS, CHAIN_BASE_DELAY_MS, CHAIN_BACKOFF_MS, CHAIN_FALLBACK,
-  IRON_HELP_CHAIN, HELP_STOCK, MAPPER_ARMOR_CHAIN, LUMBERJACK_CHAIN, GIFT_SET_INGOTS, DIAMOND_TARGET, diamondChain, diamondTargetOf, diamondPickCount, hasShield, posableCount, hasSword, hasAxe, buildCtxInv, invCount, anyLog, anyPlanks, MVP_CHAIN, IRON_CHAIN, DIAMOND_CHAIN, IRON_ARMOR_CHAIN, DIAMOND_ARMOR_CHAIN, MAPPER_KIT, chainFor, firstUnmet, armorNeed, armorWornOk, wantsOpportunisticArmor, ARMOR_FORGE_OBJECTIVES };
+  IRON_HELP_CHAIN, HELP_STOCK, wantsDiamondPick, DIA_PICK_COST, MAPPER_ARMOR_CHAIN, LUMBERJACK_CHAIN, GIFT_SET_INGOTS, DIAMOND_TARGET, diamondChain, diamondTargetOf, diamondPickCount, hasShield, posableCount, hasSword, hasAxe, buildCtxInv, invCount, anyLog, anyPlanks, MVP_CHAIN, IRON_CHAIN, DIAMOND_CHAIN, IRON_ARMOR_CHAIN, DIAMOND_ARMOR_CHAIN, MAPPER_KIT, chainFor, firstUnmet, armorNeed, armorWornOk, wantsOpportunisticArmor, ARMOR_FORGE_OBJECTIVES };

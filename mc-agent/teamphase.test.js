@@ -106,7 +106,11 @@ test('DIAMOND_TARGET = 192 (3 piles) ; cible surchargée par l’objectif', () =
 });
 
 test('DIAMOND : pioche fer CASSÉE après des diamants → la chaîne fer se rouvre (plus de stall sur iron_pickaxe)', () => {
+  // (24/10 soir) avec ≥ 3 💎 + bâtons + table, la pioche se refait en DIAMANT (diamondPhase.test.js) ;
+  // la réouverture de la chaîne fer reste le chemin quand les diamants ne suffisent pas.
   const ctx = { inv: { diamond: 40, stone_pickaxe: 1, furnace: 1, cobblestone: 20, stick: 4, crafting_table: 1 }, y: -54 };
+  assert.strictEqual(G.firstUnmet(G.DIAMOND_CHAIN, ctx).name, 'dia_pick');
+  ctx.inv.diamond = 2;
   assert.strictEqual(G.firstUnmet(G.DIAMOND_CHAIN, ctx).name, 'iron_ore');
   ctx.inv.raw_iron = 3;
   assert.strictEqual(G.firstUnmet(G.DIAMOND_CHAIN, ctx).name, 'iron_ingot');
@@ -114,7 +118,9 @@ test('DIAMOND : pioche fer CASSÉE après des diamants → la chaîne fer se rou
 
 test('DIAMOND : pioche de rechange avec le fer DÉJÀ en poche, buts optionnels et sautables', () => {
   const base = { iron_pickaxe: 1, cobblestone: 16, diamond: 5, furnace: 1, coal: 2 };
-  const goal = (inv) => G.firstUnmet(G.DIAMOND_CHAIN, { inv: Object.assign({}, base, inv), y: -54, hasTable: false });
+  // diaPickUpgraded : l'amélioration fer → diamant (unique) est déjà faite — sinon dia_pick passe devant.
+  const goal = (inv) => G.firstUnmet(G.DIAMOND_CHAIN, { inv: Object.assign({}, base, inv), y: -54, hasTable: false, diaPickUpgraded: true });
+  assert.strictEqual(G.firstUnmet(G.DIAMOND_CHAIN, { inv: Object.assign({}, base, { stick: 2, crafting_table: 1 }), y: -54 }).name, 'dia_pick');
   // rien à fondre ni à forger → droit à la chasse
   assert.strictEqual(goal({}).name, 'diamond_caves');
   // 3 fer brut + four + charbon → fondre
@@ -145,7 +151,8 @@ const SRC = fs.readFileSync(path.join(__dirname, 'index.js'), 'utf8');
 test('câblage : tick de phase, events team_phase / diamond_progress, heartbeat diamonds, retour diamant → mapper_armor', () => {
   assert.match(SRC, /setInterval\(\(\) => \{ teamPhaseTick\(\)\.catch\(\(\) => \{\}\); \}, TEAM_PHASE_TICK_MS\);/);
   assert.match(SRC, /type: 'team_phase', phase: ph\.phase/);
-  assert.match(SRC, /type: 'diamond_progress', have: buildCtxInv\(bot\)\.diamond \|\| 0, target: diamondTargetOf\(world\.objective\)/);
+  assert.match(SRC, /const _have = buildCtxInv\(bot\)\.diamond \|\| 0;/);
+  assert.match(SRC, /type: 'diamond_progress', have: _have, target: diamondTargetOf\(world\.objective\)/);
   assert.match(SRC, /ironZone: _zoneIronMined, diamonds: _dia/);
   assert.match(SRC, /switchObjective\('mapper_armor', 'team_mappers_armor'\)/);
   assert.match(SRC, /why === 'team_diamond' \? 'diamond'/);

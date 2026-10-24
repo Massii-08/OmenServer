@@ -393,7 +393,7 @@ test('index.js : onSpawn passe par guardSpawn (attendu) AVANT la base, la dette 
   assert.ok(guard > 0, 'guardSpawn() doit être ATTENDU dans onSpawn');
   assert.ok(body.indexOf('poseSafeHomeAtSpawn()') > guard, 'le home safe se pose APRÈS la décision de spawn');
   assert.ok(body.indexOf('loadDeathDebt()') > guard, 'la dette de mort attend la décision de spawn');
-  assert.ok(body.indexOf('startAutonomous(null)') > guard, 'le planner attend la décision de spawn');
+  assert.ok(body.indexOf('startAutonomous(null') > guard, 'le planner attend la décision de spawn');
   assert.ok(!/armSpawnEscapeIfDanger|await escapeDeathCamp\(\)/.test(body), 'plus de chemin parallèle : guardSpawn décide seul');
   assert.match(fnSrc('guardSpawn'), /_escapeOnSpawn = false;/, 'guardSpawn CONSOMME le drapeau (une décision par spawn)');
 });

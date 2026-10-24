@@ -182,6 +182,8 @@ const lawnMine = require('./lawnMine');
 // fer ils se séparent »). Décisions PURES ; l'exécution (marche + toss) est ci-dessous.
 const { teamStatus, pickDonation, allArmored, pickMobAssist, pickMapperToEquip, giftSetPlan, teamPhase,
   latchedTeamPhase, pickDivertedMiner, armorRepairs, TEAM_LATCH_STALE_MS, NAKED_MAPPER_MAX_WORN } = require('./teamwork');
+// PHASE DIAMANT (24/10 soir) : objectif d'un mineur sous le cliquet + repli branch-mine du fer introuvable.
+const { latchedMinerObjective, isIronOreGather, noteIronGatherFail, ironGatherPlan } = require('./diamondPhase');
 const {
   isWoodGoal, woodWantFor, logCount, activeLumberjack, woodWaitDecision, WOOD_UNDERGROUND_Y, preferredLumberjack,
   lumberjackVerdict, pickWoodRequest, tossPlan, WOOD_REQUEST_TTL_MS, WOOD_MIN_GIFT, LUMBERJACK_STOCK,
@@ -1238,9 +1240,12 @@ function ctxExtra() {
   // LIT (but `bed`) : lit posé / essai raté en attente / mouton vu ou connu. Jamais de throw.
   let bedCtx = { bedPlaced: false, bedRetryLater: false, sheepNear: false };
   try { bedCtx = bedCtxNow(); } catch (e) { /* best-effort : sans info, le but est sauté */ }
+  // Pioche diamant (goals.wantsDiamondPick) : l'amélioration fer → diamant déjà faite (une fois).
+  let diaPickUpgraded = false;
+  try { diaPickUpgraded = _diaPickState().upgraded; } catch (e) { diaPickUpgraded = false; }
   return {
     ...bedCtx,
-    hasTable: !!_nearestTable(bot), y: pos ? pos.y : undefined, worn: [..._wornArmor()], offhand,
+    hasTable: !!_nearestTable(bot), y: pos ? pos.y : undefined, worn: [..._wornArmor()], offhand, diaPickUpgraded,
     mapperTarget: gift.target, giftReady: gift.ready, giftBatch: !!gift.batch, noWood, passiveNear,
     giftNeed: (gift.target && Number.isFinite(gift.need)) ? gift.need : undefined,
     // Fer en grotte : la grappe EXPOSÉE la plus rentable (null → but `iron_cave` sauté). Caché 30 s.
@@ -2233,6 +2238,15 @@ let _teamPhaseLast = null;
 // respawn : pas de `team_phase from:null` à chaque process), propagé par le heartbeat (`phaseLatched`).
 let _teamLatch = null;
 let _teamLatchLoaded = false;
+// DÉTOUR FER D'UN MINEUR NU (diamondPhase.latchedMinerObjective) : début du dernier détour, persisté dans le
+// mémo base `ironDetour: {at}` (le self-healing relance le bot à chaque mort). NIVEAU MODULE (#56).
+let _ironDetourAt = null;
+let _ironDetourLoaded = false;
+// Récolte de fer `not_found` (fenêtre 10 min, diamondPhase.ironGatherPlan). NIVEAU MODULE.
+let _ironGatherFails = [];
+// PIOCHE DIAMANT (goals.wantsDiamondPick) : diamants dépensés en pioches + amélioration fer→diamant déjà
+// faite, persistés dans le mémo base `diamondPick: {spent, upgraded}`. NIVEAU MODULE (#56).
+let _diaPick = null;
 let _diamondProgressAt = 0;
 let _teamSwitchAt = 0;
 let _objSwitching = false;
@@ -2259,6 +2273,70 @@ async function switchObjective(to, why) {
     startAutonomous(null).catch((e) => emit({ type: 'error', message: String((e && e.message) || e) }));
     return true;
   } finally { _objSwitching = false; }
+}
+
+/** Début du détour fer en cours/récent (mémo base, relu une fois par process). */
+function _loadIronDetour() {
+  if (_ironDetourLoaded) return _ironDetourAt;
+  _ironDetourLoaded = true;
+  try {
+    const d = (loadBaseState() || {}).ironDetour;
+    const at = d ? Number(d.at) : NaN;
+    if (Number.isFinite(at)) _ironDetourAt = at;
+  } catch (e) { /* best-effort */ }
+  return _ironDetourAt;
+}
+
+/** Pose le début du détour (null = aucun) et le persiste (mémo FUSIONNÉ, piège #73d). */
+function _setIronDetour(at) {
+  const v = Number.isFinite(at) ? at : null;
+  _ironDetourLoaded = true;
+  if (v === _ironDetourAt) return;
+  _ironDetourAt = v;
+  try {
+    const st = Object.assign({}, loadBaseState() || {});
+    st.ironDetour = { at: v };
+    saveBaseState(st);
+  } catch (e) { /* best-effort */ }
+}
+
+/** État pioche diamant {spent, upgraded} (mémo base, relu une fois par process). */
+function _diaPickState() {
+  if (_diaPick) return _diaPick;
+  _diaPick = { spent: 0, upgraded: false };
+  try {
+    const d = (loadBaseState() || {}).diamondPick;
+    if (d) _diaPick = { spent: Math.max(0, Number(d.spent) || 0), upgraded: !!d.upgraded };
+  } catch (e) { /* best-effort */ }
+  return _diaPick;
+}
+
+/** But `dia_pick` : craft de la pioche diamant + comptabilité des 3 diamants (progression). */
+async function craftDiamondPick(goal) {
+  const inv0 = buildCtxInv(bot);
+  const hadIron = (inv0.iron_pickaxe || 0) >= 1;
+  const r = await craftSmart(goal.args);
+  const inv1 = buildCtxInv(bot);
+  if ((inv1.diamond_pickaxe || 0) > (inv0.diamond_pickaxe || 0)) {
+    const used = Math.max(0, (inv0.diamond || 0) - (inv1.diamond || 0));
+    const st = _diaPickState();
+    _diaPick = { spent: st.spent + used, upgraded: st.upgraded || hadIron };
+    try { const b = Object.assign({}, loadBaseState() || {}); b.diamondPick = _diaPick; saveBaseState(b); } catch (e) { /* best-effort */ }
+    emit({ type: 'diamond_pick_crafted', used, had_iron_pick: hadIron, spent: _diaPick.spent, have: inv1.diamond || 0 });
+    return { ok: true };
+  }
+  return (r && r.ok === false) ? r : { ok: false, reason: 'craft_no_effect' };
+}
+
+/** Décision cliquet pour CE bot (null = pas concernée). Ne touche à rien. */
+function latchedObjectiveNow(objective, fromSpawn) {
+  let latched = false;
+  try { latched = _teamLatchActive(); } catch (e) { latched = false; }
+  if (!latched) return null;
+  let worn = 0;
+  try { worn = wornIronCount([..._wornArmor()]); } catch (e) { worn = 0; }
+  return latchedMinerObjective({ objective, latched, isMapper: !!IS_MAPPER, worn,
+    detourAt: _loadIronDetour(), now: Date.now(), fromSpawn: !!fromSpawn });
 }
 
 /** Relit le cliquet du mémo base (une fois par process). */
@@ -2312,10 +2390,28 @@ async function teamPhaseTick() {
     _teamPhaseLast = ph.phase;
   }
   _saveTeamLatch();
-  const objT = world.objective && world.objective.type;
+  let objT = world.objective && world.objective.type;
+  // CLIQUET DIAMANT : un mineur sous le cliquet est au diamant (iron_armor/iron_help re-seedés au respawn,
+  // pièces usées) — sauf détour fer borné s'il est vraiment nu ; détour fini ou ≥ 2 pièces → diamant.
+  if (!IS_MAPPER && ph.latched && world.objective && world.objective.status === 'in_progress'
+      && (objT === 'diamond' || objT === 'iron_armor' || objT === 'iron_help')) {
+    const lat = latchedObjectiveNow(objT, false);
+    if (lat && lat.objective !== objT) {
+      const ok = await switchObjective(lat.objective, 'latched_' + lat.why);
+      if (ok) {
+        _setIronDetour(lat.detourAt);
+        emit({ type: 'objective_latched', from: objT, to: lat.objective, why: lat.why, worn: selfWorn, at: 'tick' });
+        objT = lat.objective;
+      }
+    }
+  }
   if (objT === 'diamond' && now - _diamondProgressAt >= DIAMOND_PROGRESS_EVERY_MS) {
     _diamondProgressAt = now;
-    emit({ type: 'diamond_progress', have: buildCtxInv(bot).diamond || 0, target: diamondTargetOf(world.objective) });
+    const _have = buildCtxInv(bot).diamond || 0;
+    let _spent = 0;
+    try { _spent = _diaPickState().spent; } catch (e) { _spent = 0; }
+    // have = en poche (l'objectif) ; spent = dépensés en pioches ; mined = have + spent (tout ce qui a été miné).
+    emit({ type: 'diamond_progress', have: _have, target: diamondTargetOf(world.objective), spent: _spent, mined: _have + _spent });
   }
   if (IS_MAPPER || objT !== 'diamond') return ph.phase;
   // Cliquet posé : seul un cartographe VRAIMENT nu rappelle un mineur ; une pièce usée ne rappelle personne.
@@ -3837,6 +3933,25 @@ async function gatherStone(goal) {
   return r;
 }
 
+/** Repli du but « minerai de fer » (diamondPhase.ironGatherPlan) : descente à Y16 si besoin, puis
+ *  branch-mine qui s'arrête dès que le fer manquant (pioche fer : 3 bruts) est ramassé. Passe par
+ *  runGoalSkill (mêmes pré-hooks : /home work, armure-avant-profondeur, four de mine, lacets…). */
+async function ironGatherBranch(goal, plan, gen) {
+  const _gen = gen != null ? gen : _lifeGen;
+  emit({ type: 'iron_gather_fallback', goal: goal.name, action: plan.action, fails: plan.fails,
+    y: bot.entity && bot.entity.position ? Math.round(bot.entity.position.y) : null });
+  if (plan.action === 'descend_then_branch') {
+    const rD = await runGoalSkill({ name: goal.name, skill: 'descendDiagonal', args: plan.descendArgs }, _gen);
+    if (lifeStale(_gen) || taskToken.cancelled) return rD;
+    const yy = bot.entity && bot.entity.position ? bot.entity.position.y : 99;
+    if (!(yy <= plan.branchArgs.targetY + 2)) return (rD && rD.ok === false) ? rD : { ok: false, reason: 'wrong_depth' };
+  }
+  let left = 3;
+  try { left = Math.max(1, 3 - (buildCtxInv(bot).raw_iron || 0)); } catch (e) { left = 3; }
+  const args = Object.assign({}, plan.branchArgs, { stopOre: { items: ['raw_iron'], count: left } });
+  return runGoalSkill({ name: goal.name, skill: 'branchMine', args }, _gen);
+}
+
 async function runGoalSkill(goal, gen) {
   const _gen = gen != null ? gen : _lifeGen;   // vie du lancement (cf. _lifeGen, runSkillWithTelemetry)
   // #1 retours live : coincé dans l'eau → s'en sortir AVANT de tenter le skill (sinon le pathfinder
@@ -4028,9 +4143,21 @@ async function runGoalSkill(goal, gen) {
     // PIERRE : inutile de roamer (timeouts ×3 vécus Surv6) — la couche de pierre est à 3-5 blocs
     // sous l'herbe PARTOUT → pas de pierre visible ≤32 ? on creuse 4 blocs et on mine sur place.
     if (goal.args.name === 'stone') return gatherStone(goal);
+    // FER INTROUVABLE (24/10 soir, NethBot3 à y -53 : `iron_ore not_found` ×21 en 10 min) : au 3e not_found
+    // de la fenêtre, on CREUSE (branch-mine, descente à Y16 d'abord si plus haut) au lieu d'explorer.
+    if (isIronOreGather(goal)) {
+      const _y = bot.entity && bot.entity.position ? bot.entity.position.y : undefined;
+      const plan = ironGatherPlan({ times: _ironGatherFails, now: Date.now(), y: _y });
+      if (plan) return await ironGatherBranch(goal, plan, _gen);
+    }
     _exploreBusy = true;
-    try { return await gather(bot, { ...goal.args, explore: true }, taskToken); }
+    let _gr;
+    try { _gr = await gather(bot, { ...goal.args, explore: true }, taskToken); }
     finally { _exploreBusy = false; }
+    if (isIronOreGather(goal) && _gr && _gr.ok === false && _gr.reason === 'not_found') {
+      _ironGatherFails = noteIronGatherFail(_ironGatherFails, Date.now());
+    }
+    return _gr;
   }
   if (goal.skill === 'craftPlanks') {
     // logBase exclut les bûches écorcées (stripped_*) : minecraft-data n'a aucune recette
@@ -4045,6 +4172,7 @@ async function runGoalSkill(goal, gen) {
   if (goal.skill === 'craft') {
     // torches : adapter le nb de lots au charbon disponible (1 charbon → 1 lot de 4 au lieu d'un
     // craft_failed ; le but torches reste unmet → la chaîne refait du charbon puis le 2e lot).
+    if (goal.name === 'dia_pick') return craftDiamondPick(goal);
     if (goal.args.name === 'torch') {
       const coalHave = _invTotal((i) => i.name === 'coal' || i.name === 'charcoal');
       if (coalHave < 1) return { ok: false, reason: 'no_coal' };
@@ -11023,7 +11151,7 @@ function autonomousDupStart({ runners, live, active, objective } = {}) {
     && live.objective === objective;
 }
 
-async function startAutonomous(sender) {
+async function startAutonomous(sender, opts) {
   // Charge sur squelette en cours : le planner attend la fin (la charge le relance elle-même).
   if (_skelRushBusy) {
     _skelPlannerPending = true;
@@ -11032,9 +11160,25 @@ async function startAutonomous(sender) {
   }
   // objectif : depuis le world (seedé par le backend/launch), sinon --objective, sinon pioche pierre.
   let objType = (world.objective && world.objective.type) || args.objective || 'stone_pickaxe';
+  // CLIQUET DIAMANT (24/10 soir) : le backend relance chaque mort avec l'objectif du LANCEMENT (iron_armor)
+  // → sous le cliquet, un mineur repart au diamant (détour fer borné s'il est vraiment nu). Prime sur
+  // objectiveForStart (qui ramènerait iron_help/mapper_armor à iron_armor faute d'armure couverte).
+  let _latchedStart = false;
+  try {
+    const lat = latchedObjectiveNow(objType, !!(opts && opts.fromSpawn));
+    if (lat) {
+      _latchedStart = true;
+      _setIronDetour(lat.detourAt);
+      if (lat.objective !== objType) {
+        if (objType === 'mapper_armor') { try { if (_giftTarget) releaseGiftTarget(_giftTarget); } catch (e) { /* best-effort */ } }
+        emit({ type: 'objective_latched', from: objType, to: lat.objective, why: lat.why, at: 'start' });
+        objType = lat.objective;
+      }
+    }
+  } catch (e) { /* best-effort : chemin historique */ }
   // Objectif persisté d'APRÈS l'armure (iron_help, mapper_armor) mais armure disparue (inventaire vidé,
   // pièces cassées) → on repart sur iron_armor et sa chaîne de démarrage (21/10, cf. goals.objectiveForStart).
-  try {
+  if (!_latchedStart) try {
     const back = objectiveForStart(objType, { inv: buildCtxInv(bot), worn: [..._wornArmor()] });
     if (back !== objType) {
       emit({ type: 'objective_regressed', from: objType, to: back });
@@ -12283,7 +12427,7 @@ async function onSpawn() {
     emit({ type: 'autonomous_resume', objective: world.objective.type });
     // jam_loop RÉPÉTÉ au même endroit (20/10, NethBot1 : 4 sessions emmuré à y 40) : escalier d'abord,
     // le planner repart à la sortie (digOutAndResume le relance, succès ou échec).
-    if (!digOutAtSpawnIfLooping()) startAutonomous(null);
+    if (!digOutAtSpawnIfLooping()) startAutonomous(null, { fromSpawn: true });
   }
 }
 

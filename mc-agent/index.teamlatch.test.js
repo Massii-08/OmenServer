@@ -13,6 +13,7 @@ const vm = require('node:vm');
 const T = require('./teamwork');
 const L = require('./lumberjack');
 const { buildCtxInv, diamondTargetOf } = require('./goals');
+const P = require('./diamondPhase');
 
 const SRC = fs.readFileSync(path.join(__dirname, 'index.js'), 'utf8');
 function grab(re, label) {
@@ -68,12 +69,13 @@ function sandbox(o = {}) {
     switchObjective: async (to, why) => { sb.calls.push('switch:' + to + ':' + why); return true; },
     switchLumberjack: async (toLj, why) => { sb.calls.push('lj:' + toLj + ':' + why); return true; },
     _ljSwitching: false,
+    latchedMinerObjective: P.latchedMinerObjective,
   };
   sb._teamClaims = fakeClaims(sb);
   vm.createContext(sb);
   for (const c of ['TEAM_PHASE_TICK_MS', 'DIAMOND_PROGRESS_EVERY_MS', 'TEAM_SWITCH_COOLDOWN_MS', 'LJ_CLAIM']) run(sb, constSrc(c));
-  for (const l of ['_teamPhaseLast', '_diamondProgressAt', '_teamSwitchAt', '_teamLatch', '_teamLatchLoaded']) run(sb, letSrc(l));
-  for (const f of ['_loadTeamLatch', '_teamLatchActive', '_saveTeamLatch', 'currentTeamPhase', 'teamPhaseTick',
+  for (const l of ['_teamPhaseLast', '_diamondProgressAt', '_teamSwitchAt', '_teamLatch', '_teamLatchLoaded', '_ironDetourAt', '_ironDetourLoaded']) run(sb, letSrc(l));
+  for (const f of ['_loadTeamLatch', '_teamLatchActive', '_saveTeamLatch', '_loadIronDetour', '_setIronDetour', 'latchedObjectiveNow', 'currentTeamPhase', 'teamPhaseTick',
     'isLumberjackObjective', 'lumberjackTick']) run(sb, fnSrc(f));
   run(sb, 'globalThis.__get = (n) => eval(n); globalThis.__set = (n, v) => eval(n + " = v");');
   return sb;
@@ -154,4 +156,37 @@ test('câblage : heartbeat phaseLatched, armor_repair, pickMapperToEquip maxWorn
   assert.match(fnSrc('lumberjackTick'), /preferredLumberjack\(\{ selfName: bot\.username, selfArmor, selfWorn, selfDiamonds, mates, now \}\)/);
   assert.match(fnSrc('lumberjackTick'), /currentTeamPhase\(mates, selfWorn, now\)/);
   for (const v of ['_teamLatch', '_teamLatchLoaded', '_teamPhaseLast']) assert.match(SRC, new RegExp('^let ' + v + ' = ', 'm'), v);
+});
+
+// ── CLIQUET → OBJECTIF DIAMANT (24/10 soir, 1 h sans diamant : NethBot1/2 re-seedés iron_armor) ──────
+test('teamPhaseTick : cliquet + objectif iron_armor (3 pièces) → rebascule au diamant, diamond_progress dans le même tick', async () => {
+  const sb = sandbox({ name: 'NethBot2', objective: { type: 'iron_armor' }, worn: FULL.slice(0, 3),
+    base: { teamLatch: { at: T0, last: 'diamond' } }, mates: [W('NethBot1'), W('NethBot3'), MP('MapBot1')] });
+  sb.switchObjective = async (to, why) => { sb.calls.push('switch:' + to + ':' + why); sb.world.objective.type = to; return true; };
+  await run(sb, 'teamPhaseTick()');
+  assert.ok(sb.calls.includes('switch:diamond:latched_latched'), JSON.stringify(sb.calls));
+  assert.ok(sb.events.some((e) => e.type === 'objective_latched' && e.from === 'iron_armor' && e.to === 'diamond' && e.at === 'tick'));
+  assert.ok(sb.events.some((e) => e.type === 'diamond_progress'));
+});
+
+test('teamPhaseTick : cliquet + mineur nu au diamant → détour iron_armor (persisté), puis retour au diamant au bout de 20 min', async () => {
+  const sb = sandbox({ name: 'NethBot1', worn: [], base: { teamLatch: { at: T0, last: 'diamond' } },
+    mates: [W('NethBot2'), W('NethBot3'), MP('MapBot1')] });
+  sb.switchObjective = async (to, why) => { sb.calls.push('switch:' + to + ':' + why); sb.world.objective.type = to; return true; };
+  await run(sb, 'teamPhaseTick()');
+  assert.ok(sb.calls.includes('switch:iron_armor:latched_naked_detour'), JSON.stringify(sb.calls));
+  assert.strictEqual(sb.base.ironDetour.at, T0);
+  sb.clock.t += 10 * 60000;
+  await run(sb, 'teamPhaseTick()');
+  assert.strictEqual(sb.calls.filter((c) => c.startsWith('switch:')).length, 1, 'détour en cours : pas de va-et-vient');
+  sb.clock.t += 10 * 60000;
+  await run(sb, 'teamPhaseTick()');
+  assert.ok(sb.calls.includes('switch:diamond:latched_detour_spent'), JSON.stringify(sb.calls));
+});
+
+test('teamPhaseTick : cliquet + mapper_armor (vrai détournement) → jamais réécrit par le tick', async () => {
+  const sb = sandbox({ name: 'NethBot3', objective: { type: 'mapper_armor' }, base: { teamLatch: { at: T0, last: 'diamond' } },
+    mates: [W('NethBot1'), MP('MapBot1', { worn: 0, missing: ['iron_chestplate'] })] });
+  await run(sb, 'teamPhaseTick()');
+  assert.ok(!sb.calls.some((c) => c.startsWith('switch:')), JSON.stringify(sb.calls));
 });

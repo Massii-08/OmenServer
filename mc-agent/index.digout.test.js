@@ -135,7 +135,7 @@ test('digOutAtSpawnIfLooping : 2e jam_loop ici → escalier au démarrage ; 1er 
   assert.deepStrictEqual(sb2.kicked, ['jam_loop_repeat']);
   assert.ok(sb2.events.some((e) => e.type === 'jam_loop_repeat'));
   // et onSpawn ne lance PAS le planner en parallèle
-  assert.match(SRC, /if \(!digOutAtSpawnIfLooping\(\)\) startAutonomous\(null\);/);
+  assert.match(SRC, /if \(!digOutAtSpawnIfLooping\(\)\) startAutonomous\(null, \{ fromSpawn: true \}\);/);
 });
 
 test('digOutAndResume : préempte, creuse, nettoie le jam_loop, relance le planner', async () => {
