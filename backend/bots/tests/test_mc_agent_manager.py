@@ -1011,14 +1011,31 @@ def test_natural_death_cleans_login_file(monkeypatch, tmp_path):
     Régression revue finale : le login-<sid>.txt contient le secret en clair — il ne doit pas
     s'accumuler dans RUNS_DIR quand un bot crashe/est kické (cas fréquent des cartographes)."""
     import os
+    import threading
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
     monkeypatch.setattr(mgr, "RUNS_DIR", tmp_path / "runs")
-    monkeypatch.setattr(mgr.subprocess, "Popen", lambda cmd, **kw: _MapperProc())
+    # stdout d'un bot VIVANT : bloque (comme un vrai pipe) jusqu'à sa mort, puis fin du flux.
+    # Le stdout de _MapperProc est épuisé d'office : la pompe nettoyait AVANT même le retour de
+    # _spawn_bot → « le fichier existe pendant la vie du bot » échouait à chaque run.
+    died = threading.Event()
+
+    def _stdout():
+        died.wait()
+        yield from ()
+
+    proc = _MapperProc()
+    proc.stdout = _stdout()
+    monkeypatch.setattr(mgr.subprocess, "Popen", lambda cmd, **kw: proc)
     sid = mgr._spawn_bot("h", 25565, "U", login_command="/login abc")
     s = mgr._sessions[sid]
     lp = s["login_path"]
-    assert os.path.exists(lp)
-    s["thread"].join(timeout=5)  # _MapperProc.stdout est fini → la pompe se termine seule
+    try:
+        assert os.path.exists(lp)  # bot vivant : la pompe attend sur son stdout
+        assert s["status"] != "stopped"
+    finally:
+        died.set()  # mort naturelle : fin du flux stdout (même si une assertion a échoué)
+        s["thread"].join(timeout=5)
+    assert not s["thread"].is_alive()
     assert s["status"] == "stopped"
     assert not os.path.exists(lp)  # nettoyé par la pompe, sans stop_session
 
