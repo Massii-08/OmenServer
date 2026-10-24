@@ -153,9 +153,12 @@ function wearRatio(item) {
 }
 
 /** PUR — cet objet est-il assez usé pour qu'on le considère comme À REMPLACER ? */
-function isNearlyBroken(item, threshold = WEAR_REPLACE) {
+function isNearlyBroken(item, threshold) {
   if (!item || !item.maxDurability) return false;
-  return wearRatio(item) > threshold;
+  // Armure diamant/netherite : à remplacer seulement sous 10 % de durabilité restante (armorWear.js,
+  // boucle d'usure du 24/10). Seuil explicite de l'appelant = prioritaire.
+  const th = threshold != null ? threshold : require('./armorWear').wearThresholdFor(item.name);
+  return wearRatio(item) > th;
 }
 
 function smeltPlan(items, opts = {}) {

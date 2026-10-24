@@ -51,7 +51,8 @@ function armorTier(worn) {
  *   tableOk (table posable), reserve (diamants à garder ; défaut 3 sans pioche de rechange).
  * @returns {null|{act:'equip',name,slot}|{act:'craft',name,slot,units}}
  */
-function diamondArmorNext({ inv, worn, pocketGood, pickCount, tableOk, reserve } = {}) {
+function diamondArmorNext({ inv, worn, pocketGood, pickCount, tableOk, reserve, cooldownSlots } = {}) {
+  const cooling = new Set(_list(cooldownSlots));
   const i = inv || {};
   const w = _list(worn);
   const pocket = pocketGood !== undefined && pocketGood !== null
@@ -63,6 +64,8 @@ function diamondArmorNext({ inv, worn, pocketGood, pickCount, tableOk, reserve }
     if (_hasSlot(w, p.suffix, _DIA_RE)) continue;
     const inPocket = pocket.find((n) => _DIA_RE.test(String(n)) && String(n).endsWith('_' + p.suffix));
     if (inPocket) return { act: 'equip', name: inPocket, slot: p.slot };
+    // Reforgée il y a < 10 min (armorWear.recraftCooling) : jamais deux fois la même pièce → on passe.
+    if (cooling.has(p.slot)) continue;
     if (picks < 1 || !tableOk) return null;
     if (diamonds - keep >= p.units) return { act: 'craft', name: p.name, slot: p.slot, units: p.units };
     return null;                                   // ordre strict : on attend la pièce suivante

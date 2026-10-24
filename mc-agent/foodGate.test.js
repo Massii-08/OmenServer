@@ -102,3 +102,21 @@ test('descentFoodGate : le troupeau visé est déjà marqué raté → herd_gate
   const r = G.descentFoodGate({ points: 0, y: 70, refusals: [], now: T, herdNear: true, herdTried: true });
   assert.deepStrictEqual([r.allow, r.reason], [true, 'herd_gate_spent']);
 });
+
+// ── 24/10 : mineurs coincés en surface (descend_y54 food_gate ×20 / ×8) ──
+test('descentFoodGate : un repas en poche + 1 refus → on descend (some_food)', () => {
+  const r = G.descentFoodGate({ points: 3, y: 70, refusals: [T - 60000], now: T });
+  assert.deepStrictEqual([r.allow, r.reason], [true, 'some_food']);
+  const r0 = G.descentFoodGate({ points: 3, y: 70, refusals: [], now: T });
+  assert.deepStrictEqual([r0.allow, r0.reason], [false, 'gate']);
+});
+test('descentFoodGate : 8 refus en 30 min → on descend même à 0 point (troupeau connu compris)', () => {
+  const refusals = [1, 2, 3, 4, 5, 6, 7, 8].map((k) => T - k * 3 * 60000);
+  const r = G.descentFoodGate({ points: 0, y: 70, refusals, now: T, herdNear: true });
+  assert.deepStrictEqual([r.allow, r.reason], [true, 'gate_long_spent']);
+});
+test('descentFoodGate : les refus persistés couvrent la fenêtre longue', () => {
+  const r = G.descentFoodGate({ points: 0, y: 70, refusals: [T - 20 * 60000], now: T, herdNear: true });
+  assert.strictEqual(r.allow, false);
+  assert.strictEqual(r.refusals.length, 2);
+});

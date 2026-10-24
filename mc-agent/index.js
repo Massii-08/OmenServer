@@ -100,11 +100,12 @@ const { smelt, logsToConvert, fuelUnits } = require('./skills/smelt');
 const { descendDiagonal: _descendDiagonalRaw } = require('./skills/descendDiagonal');   // gardé plus bas (anti-vide)
 const { pickTier, stoneBatchWant, stoneStairPlan } = require('./stoneDig');
 const { pickWornOutToReport } = require('./wornOut');
+const { equipPlan: armorEquipPlan, coolingSlots: armorCoolingSlots, recraftCooling: armorRecraftCooling, ironCraftBlocked } = require('./armorWear');
 const { branchMine: _branchMineRaw, bmBail, floodFillVein, currentPhase: bmCurrentPhase } = require('./skills/branchMine');   // gardé plus bas (disjoncteur OOM)
 const heapGuard = require('./heapGuard');   // OOM « au même endroit » du branch-mine (23/10)
 const { installToolGuard } = require('./toolGuard');
 const { diaWornCount, armorTier, isIronDonor } = require('./diaArmor');   // armure diamant des mineurs (24/10 soir)   // OOM 23/10 : récursion sans fin de mineflayer-tool
-const { diamondFree, cautionNight } = require('./freeRoam');   // diamant complet = libre la nuit (24/10)
+const { diamondFree, cautionNight, diamondNightPlan } = require('./freeRoam');   // diamant complet = libre la nuit (24/10)
 const loopGuard = require('./loopGuard');   // sync_loop_capped + loop_lag (gels de l'event loop)
 const { caveHunt, sharedSkipStore: caveHuntSkip, nearSkipped: caveNearSkipped, approachBudgetMs: caveApproachBudgetMs, legWaypoint: caveLegWaypoint } = require('./skills/caveHunt');   // cave-first diamant (Massii 26/07)
 const { caveIron: caveIronSkill } = require('./skills/caveIron');   // fer en grotte (Massii 20/10)
@@ -591,7 +592,33 @@ function abandonWorkIfDeathSpot(x, z) {
 let _drySteerTries = 0;       // NO_GIVE : marches tentées vers la cellule 128 sèche (arrivée VÉRIFIÉE, ≤3 —
                               // vécu live NethBot2 : goto interrompu par un réflexe → « arrivé » à 180 blocs
                               // de la cible avec l'ancien one-shot → descente en zone humide quand même)
-let _wornOutReported = new Set();     // pièces d'ARMURE déjà signalées gear_worn_out (dédup, cf. wornOut.js)
+// REFORGE D'ARMURE (armorWear.js, boucle d'usure 24/10) : {slot: ts} de la dernière pièce forgée par slot.
+// Jamais deux fois la même pièce en 10 min. PERSISTÉ dans le mémo de base (le self-healing relance le bot
+// à chaque mort : un état en mémoire repartait à zéro). Niveau MODULE (piège #56).
+let _armorCraftAt = null;
+function _armorCraftMap() {
+  if (_armorCraftAt) return _armorCraftAt;
+  _armorCraftAt = {};
+  try { const m = (loadBaseState() || {}).armorCraftAt; if (m && typeof m === 'object') _armorCraftAt = Object.assign({}, m); } catch (e) {}
+  return _armorCraftAt;
+}
+function _noteArmorCraft(slot) {
+  if (!slot) return;
+  const m = _armorCraftMap(); m[slot] = Date.now();
+  try { const b = Object.assign({}, loadBaseState() || {}); b.armorCraftAt = m; saveBaseState(b); } catch (e) {}
+}
+/** Slots d'armure tels qu'ils sont RÉELLEMENT occupés (pièces usées comprises, avec le drapeau). */
+function _armorOccupants() {
+  const out = [];
+  try {
+    for (const it of (bot.inventory && bot.inventory.slots ? bot.inventory.slots.slice(5, 9) : [])) {
+      if (it && it.name) out.push({ name: it.name, broken: isNearlyBroken(it) });
+    }
+  } catch (e) {}
+  return out;
+}
+let _wornOutReported = new Set();
+const _wornOutAt = {};               // dernier gear_worn_out émis par pièce (TTL 10 min, cf. _wornArmor)     // pièces d'ARMURE déjà signalées gear_worn_out (dédup, cf. wornOut.js)
 let _offhandWornReported = new Set();  // idem pour la MAIN SECONDAIRE (bouclier usé)
 let _deathMark = null;        // dernière position marquée death {x,y,z,at} → dédup anti-spam du watchdog
 let _imminentBusy = false;    // anti-rafale : un seul warp de sauvetage PV à la fois
@@ -1389,8 +1416,11 @@ function ctxExtra() {
   // Épée (goals.SWORD_GOAL / sword.js) : épées SAINES en poche — une épée à bout de course est refaite.
   let swordsGood = [];
   try { swordsGood = _swordsGood(); } catch (e) { swordsGood = []; }
+  // Armure : slots reforgés il y a < 10 min (armorWear) — jamais deux fois la même pièce.
+  let armorCooldownSlots = [];
+  try { armorCooldownSlots = armorCoolingSlots(_armorCraftMap(), Date.now()); } catch (e) { armorCooldownSlots = []; }
   return {
-    pocketArmorGood, swordsGood,
+    pocketArmorGood, swordsGood, armorCooldownSlots,
     ...bedCtx,
     hasTable: !!_nearestTable(bot), y: pos ? pos.y : undefined, worn: [..._wornArmor()], offhand, diaPickUpgraded,
     mapperTarget: gift.target, giftReady: gift.ready, giftBatch: !!gift.batch, noWood, passiveNear,
@@ -2543,6 +2573,7 @@ async function craftDiamondArmorPiece() {
     return (r && r.ok === false) ? r : { ok: false, reason: 'craft_no_effect' };
   }
   const used = Math.max(0, (inv0.diamond || 0) - (inv1.diamond || 0));
+  _noteArmorCraft(plan.slot);   // jamais deux fois la même pièce en 10 min (armorWear)
   const st = _diaPickState();
   _diaPick = { spent: st.spent + used, upgraded: st.upgraded, armor: (st.armor || 0) + used };
   _saveDiaPick();
@@ -4779,8 +4810,9 @@ async function runGoalSkill(goal, gen) {
   if (goal.skill === 'craftDiamondArmor') {
     const itemsOf = () => ((bot.inventory && bot.inventory.items()) || []).map((i) => ({ name: i.name, count: i.count }));
     let progressed = false;
-    for (const piece of bestArmorToEquip(itemsOf(), _wornArmor())) {
-      const it = ((bot.inventory && bot.inventory.items()) || []).find((i) => i.name === piece.name);
+    const _pw = ((bot.inventory && bot.inventory.items()) || []).map((i) => ({ name: i.name, broken: isNearlyBroken(i) }));
+    for (const piece of armorEquipPlan(_pw, _armorOccupants())) {
+      const it = ((bot.inventory && bot.inventory.items()) || []).find((i) => i.name === piece.name && !isNearlyBroken(i));
       if (it) { try { await bot.equip(it, ARMOR_SLOTS[piece.slot]); progressed = true; } catch (e) {} }
     }
     const plan = armorUpgradePlan(itemsOf(), _wornArmor(), { material: 'diamond' });
@@ -4883,6 +4915,7 @@ let _plannerParked = false;    // stop/afk/guard/follow/pvp d'un JOUEUR : le pla
 let _nightHold = 0;            // planners retenus par la discipline de nuit : immobilité LÉGITIME (desync, confine)
 let _lockdownShelters = null;  // comptabilité des abris de la nuit (caution.lockdownShelterNote → `shelter_reenter`)
 const _nightGateAt = {};       // throttle des events `night_gate` : 1×/min par routine retenue
+let _preShelterGoal = null;    // but que le planner va lancer (lu par maybeNightShelter, freeRoam.diamondNightPlan)
 let _freeRoamNoteAt = 0;       // throttle de `night_free_roam` (diamant complet, pas d'abri) : 1×/10 min
 const NIGHT_HOLD_POLL_MS = 2000;            // pas de re-décision du planner retenu
 const NIGHT_HOLD_MAX_MS = 15 * 60 * 1000;   // garde-fou : une nuit MC ≈ 8,7 min (+ 2 min d'aube) — jamais retenu à vie sur une heure figée
@@ -4987,13 +5020,60 @@ async function maybeNightShelter(proactive = false, opts = {}) {
     try { await _shelterInFlight; } catch (e) { /* l'abri en cours a ses propres garde-fous */ }
     return true;
   }
-  // ARMURE DIAMANT COMPLÈTE (Massii 24/10) : pas d'abri de nuit, pas d'attente d'aube — il travaille.
+  // ARMURE DIAMANT COMPLÈTE (Massii 24/10) : sous terre il travaille, sans abri. EN SURFACE la nuit
+  // (correctif 24/10 soir — morts de nuit et à l'aube en surface, squelettes/creepers) : il n'y reste que
+  // pour un VRAI besoin (nourriture critique, bois indispensable), sinon il redescend au chantier
+  // (/home work, deepWork) ; sans chantier connu, l'abri de surface historique (freeRoam.diamondNightPlan).
+  let _diaForceNaked = false;
   if (diamondFreeNow()) {
-    if (bot.time && bot.time.timeOfDay != null && isNight(bot) && Date.now() - _freeRoamNoteAt >= 10 * 60 * 1000) {
-      _freeRoamNoteAt = Date.now();
-      emit({ type: 'night_free_roam', y: bot.entity && bot.entity.position ? Math.round(bot.entity.position.y) : null });
+    let plan = 'work';
+    let _dwPlan = null;
+    try {
+      const known = !!(bot.time && bot.time.timeOfDay != null);
+      const p = bot.entity && bot.entity.position;
+      const g = opts.goal || _curGoal || _preShelterGoal || null;
+      let foodCritical = false;
+      try { foodCritical = (bot.food != null && bot.food <= 6) && foodPoints(buildCtxInv(bot)) < 6; } catch (e) { foodCritical = false; }
+      let underground = false;
+      try { underground = !!nightUndergroundNow(); } catch (e) { underground = !!(p && p.y < 45); }
+      if (known && isNight(bot) && !underground && NO_GIVE && p) {
+        let _deaths = [];
+        try { _deaths = _recentDeathPositions(); } catch (e) { _deaths = []; }
+        try { _dwPlan = deepWorkWarpPlan({ deepWork: _loadDeepWork(), pos: { x: p.x, y: p.y, z: p.z }, now: Date.now(), deaths: _deaths }); } catch (e) { _dwPlan = null; }
+      }
+      plan = diamondNightPlan({ free: true, night: known ? isNight(bot) : null, underground,
+        goalName: g && g.name, goalSkill: g && g.skill, foodCritical, deepWorkWarp: !!(_dwPlan && _dwPlan.warp) });
+    } catch (e) { plan = 'work'; }
+    if (plan === 'work' || plan === 'need') {
+      if (bot.time && bot.time.timeOfDay != null && isNight(bot) && Date.now() - _freeRoamNoteAt >= 10 * 60 * 1000) {
+        _freeRoamNoteAt = Date.now();
+        emit({ type: 'night_free_roam', why: plan, y: bot.entity && bot.entity.position ? Math.round(bot.entity.position.y) : null });
+      }
+      return false;
     }
-    return false;
+    if (plan === 'go_deep') {
+      const dw = _loadDeepWork();
+      emit({ type: 'night_go_deep', x: dw && dw.x, y: dw && dw.y, z: dw && dw.z,
+        from_y: bot.entity && bot.entity.position ? Math.round(bot.entity.position.y) : null });
+      _stairDepth++;
+      try {
+        try { homewarp.goHome(bot, HOME_WORK); } catch (e) {}
+        await awaitWarp({ maxMs: 8000 });
+        await sleep(1200);
+      } finally { _stairDepth = Math.max(0, _stairDepth - 1); }
+      const _pl = bot.entity && bot.entity.position;
+      let _wet = false;
+      try { _wet = isInWater(bot); } catch (e) { _wet = false; }
+      if (_pl && dw && deepWorkLanded(dw, { x: _pl.x, y: _pl.y, z: _pl.z }) && !_wet) {
+        _workSet = true; _workPos = _botXZ();
+        emit({ type: 'deep_work_landed', y: Math.round(_pl.y), ctx: 'night' });
+        return true;   // a bougé : l'appelant re-dérive son but
+      }
+      _forgetDeepWork(_wet ? 'landed_wet' : 'not_landed');
+      if (_wet) { try { await escapeWater(bot, { emit }); } catch (e) {} }
+      // pas arrivé : abri de surface ci-dessous
+    }
+    _diaForceNaked = true;   // 'shelter' (ou go_deep raté) : traité comme un bot à armure incomplète
   }
   const deathsRecent = deathTimes.filter((t) => Date.now() - t < 10 * 60 * 1000).length;
   // Décision d'abri déléguée à shouldShelter (skills/shelter) : sensible à l'OBSCURITÉ (lightLevel
@@ -5003,7 +5083,7 @@ async function maybeNightShelter(proactive = false, opts = {}) {
   // « nu » au sens de l'abri = armure INCOMPLÈTE, pas « zéro pièce ». Une seule botte suffisait à
   // désactiver l'abri nocturne, alors qu'en hard un zombie tue un bot à 3 pièces presque aussi vite
   // qu'un bot nu. Les porteurs de set complet (mappeurs via /kit) restent libres de travailler.
-  const naked = _wornArmor().size < 4;
+  const naked = _diaForceNaked || _wornArmor().size < 4;
   let lightLevel = null;
   try { const b = _pp && bot.blockAt(_pp.floored()); if (b && typeof b.light === 'number') lightLevel = b.light; } catch (e) {}
   const hostilesNear = (() => { try { const e = bot.nearestEntity((x) => x && x.kind === 'Hostile mobs'); return !!(e && bot.entity && e.position.distanceTo(bot.entity.position) <= 8); } catch (e) { return false; } })();
@@ -6809,6 +6889,7 @@ async function runSkillWithTelemetry(g) {
   if (_night.held) return { held: 'night' };
   // NUIT + (mort récente OU PV bas) pendant le kit → ABRI jusqu'à l'aube (vécu Surv4 : 7 morts
   // nocturnes en boucle ; un trou couvert coûte 2 blocs et sauve le kit).
+  try { _preShelterGoal = g; } catch (e) { /* bacs à sable de test */ }   // lu par maybeNightShelter (nuit du mineur diamant)
   if (await maybeNightShelter() && (taskToken.cancelled || lifeStale(_gen))) return { ok: false, reason: 'cancelled' };
   if (migrationOwnsBot()) return { ok: false, reason: 'cancelled' };   // l'abri peut durer : re-vérifier
   // BÛCHERON D'ÉQUIPE : un but bois → demander au bûcheron et attendre AU CHANTIER (≤ 4 min) au lieu
@@ -8595,7 +8676,14 @@ function _wornArmor() {
     }
     const wr = pickWornOutToReport(nearlyBroken, _wornOutReported);
     _wornOutReported = wr.reported;
-    for (const name of wr.toEmit) emit({ type: 'gear_worn_out', item: name, slot: 'armor' });
+    // + 10 min de silence par pièce (boucle d'usure 24/10 : la pièce entrait/sortait du slot et
+    // ré-émettait à chaque transition — 294 gear_worn_out dans une session).
+    const _nowW = Date.now();
+    for (const name of wr.toEmit) {
+      if (_nowW - (_wornOutAt[name] || 0) < 10 * 60 * 1000) continue;
+      _wornOutAt[name] = _nowW;
+      emit({ type: 'gear_worn_out', item: name, slot: 'armor' });
+    }
   } catch (e) {}
   return worn;
 }
@@ -8620,7 +8708,8 @@ async function ensureArmor(opts = {}) {
   // bot en set complet, et les chemins de craft plus bas passent par le même helper.
   const equipFails = [];
   const equipOnce = async (name, dest, isRetry) => {
-    const it = ((bot.inventory && bot.inventory.items()) || []).find((i) => i.name === name);
+    const _all = ((bot.inventory && bot.inventory.items()) || []).filter((i) => i.name === name);
+    const it = _all.find((i) => !isNearlyBroken(i)) || _all[0];   // la pièce SAINE d'abord (armorWear)
     if (!it) return { ok: false, reason: 'gone' };   // consommé/perdu entre-temps : rien à signaler
     try {
       await bot.equip(it, dest);
@@ -8671,11 +8760,26 @@ async function ensureArmor(opts = {}) {
   //    ⚠️ L'ancienne boucle ne connaissait QUE ARMOR_PIECES (fer) → un kit DIAMANT fourni restait en
   //    poche, le bot combattait NON ARMURÉ → morts en boucle (vécu live cette nuit : ResBot2 0 armure).
   //    bestArmorToEquip (pur, testé) couvre diamant/netherite/fer/… → on équipe le kit donné.
-  for (const piece of bestArmorToEquip(items(), worn)) {
+  //    BOUCLE D'USURE (24/10, armorWear.equipPlan) : la poche est lue AVEC la durabilité et les slots
+  //    AVEC leurs pièces usées — jamais une pièce usée ré-enfilée, jamais de fer par-dessus un diamant
+  //    usé, jamais de re-équipement d'une pièce déjà en place (586 armor_equipped dans une session).
+  const _pocketWithWear = ((bot.inventory && bot.inventory.items()) || [])
+    .filter((i) => i && i.name).map((i) => ({ name: i.name, broken: isNearlyBroken(i) }));
+  const _occ = _armorOccupants();
+  for (const piece of armorEquipPlan(_pocketWithWear, _occ)) {
     const dest = ARMOR_SLOTS[piece.slot];
     noteFail(piece.name, dest, await equipOnce(piece.name, dest, false));
   }
   await flushEquipRetry();
+  // Slots où forger du FER est interdit : occupés par du diamant (même usé — la chaîne diamant le
+  // reforge en diamant), ou reforgés il y a < 10 min. On les déclare « couverts » pour la forge fer.
+  {
+    const _now = Date.now(); const _cmap = _armorCraftMap();
+    for (const pc of ARMOR_PIECES) {
+      const occ = _occ.find((o) => ARMOR_SLOTS[pc.slot] && new RegExp('_' + pc.name.split('_')[1] + '$').test(o.name));
+      if ((occ && ironCraftBlocked(occ.name)) || armorRecraftCooling(_cmap, pc.slot, _now)) worn.add(pc.name);
+    }
+  }
   // 2) Craft la prochaine pièce. ironKeep FIXE bas (8) — l'armure PRIME (survie #1 Massii) : le
   //    bot re-mine le quota fer, l'armure survit aux morts (keepInventory). Le gate quota-strict
   //    bloquait tout (armorPlan null en boucle, vécu : 0 armure craftée). Smelt FORCÉ du raw_iron
@@ -8709,6 +8813,7 @@ async function ensureArmor(opts = {}) {
     try {
       const r = await craftSmart({ name: plan.craft, count: 1 });
       if (r && r.ok) {
+        _noteArmorCraft(plan.slot);   // jamais deux fois la même pièce en 10 min (armorWear)
         // même helper instrumenté : une pièce FRAÎCHEMENT forgée qui ne s'équipe pas est le même
         // bug (le bot la trimballe au lieu de la porter), et l'échec était muet ici aussi.
         noteFail(plan.craft, ARMOR_SLOTS[plan.slot], await equipOnce(plan.craft, ARMOR_SLOTS[plan.slot], false));
@@ -8901,8 +9006,8 @@ function installPickupEquip() {
         ? isEquipPickup(name)
         : (() => {
           try {
-            const inv = ((bot.inventory && bot.inventory.items()) || []).map((i) => ({ name: i.name, count: i.count }));
-            if (bestArmorToEquip(inv, _wornArmor()).length > 0) return true;
+            const inv = ((bot.inventory && bot.inventory.items()) || []).map((i) => ({ name: i.name, count: i.count, broken: isNearlyBroken(i) }));
+            if (armorEquipPlan(inv, _armorOccupants()).length > 0) return true;
             const off = bot.inventory && bot.inventory.slots && bot.inventory.slots[45];
             return !!(inv.some((i) => i.name === 'shield') && (!off || off.name !== 'shield'));
           } catch (e) { return false; }
@@ -14376,7 +14481,7 @@ function descentFoodGateCheck(opts = {}) {
     saveBaseState(Object.assign({}, st, { foodGate: Object.assign({}, st.foodGate || {}, { refusals: r.refusals }) }));
     emit({ type: 'food_gate', need: r.need, points, allow: false, refusals: r.refusals.length, reason: r.reason,
       herd: herd ? { x: herd.x, z: herd.z, dist: Math.round(herd.dist) } : undefined });
-  } else if ((r.reason === 'gate_spent' || r.reason === 'no_prey') && Date.now() - _foodGateEvAt >= 60000) {
+  } else if ((r.reason === 'gate_spent' || r.reason === 'no_prey' || r.reason === 'some_food' || r.reason === 'gate_long_spent') && Date.now() - _foodGateEvAt >= 60000) {
     _foodGateEvAt = Date.now();
     emit({ type: 'food_gate', need: r.need, points, allow: true, reason: r.reason });
   }

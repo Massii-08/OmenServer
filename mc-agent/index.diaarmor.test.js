@@ -29,7 +29,7 @@ function sandbox(o = {}) {
     events: [], base: o.base || {}, slots,
     items: (o.items || []).map((i) => Object.assign({ count: 1 }, i)),
     emit(e) { sb.events.push(e); },
-    Object, Math, Number, Array, JSON, Promise, Set, Map, String, RegExp,
+    Object, Math, Number, Array, JSON, Promise, Set, Map, String, RegExp, Date,
     loadBaseState: () => sb.base,
     saveBaseState: (st) => { sb.base = st; return true; },
     buildCtxInv: G.buildCtxInv, diamondArmorPlanOf: G.diamondArmorPlanOf, diaWornCount: DA.diaWornCount, isNearlyBroken,
@@ -56,7 +56,8 @@ function sandbox(o = {}) {
   vm.createContext(sb);
   run(sb, constSrc('ARMOR_SLOTS'));
   run(sb, letSrc('_diaPick'));
-  for (const f of ['_diaPickState', '_saveDiaPick', '_pocketArmorGood', 'craftDiamondArmorPiece']) run(sb, fnSrc(f));
+  run(sb, letSrc('_armorCraftAt'));
+  for (const f of ['_diaPickState', '_saveDiaPick', '_pocketArmorGood', '_armorCraftMap', '_noteArmorCraft', 'craftDiamondArmorPiece']) run(sb, fnSrc(f));
   run(sb, 'globalThis.__get = (n) => eval(n);');
   return sb;
 }

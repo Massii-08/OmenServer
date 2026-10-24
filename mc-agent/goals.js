@@ -203,7 +203,7 @@ const DIA_PICK_GOAL = { name: 'dia_pick', met: (c) => !wantsDiamondPick(c),
 function diamondArmorPlanOf(c) {
   if (!c || !c.inv) return null;
   return diamondArmorNext({ inv: c.inv, worn: c.worn, pocketGood: c.pocketArmorGood,
-    pickCount: diamondPickCount(c), tableOk: tablePlaceable(c) });
+    pickCount: diamondPickCount(c), tableOk: tablePlaceable(c), cooldownSlots: c.armorCooldownSlots });
 }
 const DIA_ARMOR_GOAL = { name: 'dia_armor', optional: true, met: (c) => !diamondArmorPlanOf(c),
   skill: 'diaArmor', args: {} };
@@ -216,6 +216,23 @@ function swordPlanOf(c) {
   return swordPlan({ inv: c.inv, swordsGood: c.swordsGood, pickCount: diamondPickCount(c), tableOk: tablePlaceable(c) });
 }
 const SWORD_GOAL = { name: 'sword', optional: true, met: (c) => !swordPlanOf(c), skill: 'sword', args: {} };
+// BOIS EN PHASE DIAMANT (24/10 : NethBot3 `logs not_found` ×28, coincé en surface). Le bois n'y sert qu'à
+// un VRAI besoin : 2 bâtons + une table pour refaire une pioche. Si la poche le permet déjà (bâtons ou
+// planches pour les faire, table en poche/posée ou planches pour la faire), le but est satisfait ; sinon
+// il reste dû (pioche cassée sans bâtons = vrai besoin).
+const _DIA_WOOD_GOALS = new Set(['logs', 'planks']);
+function diaWoodEnough(c) {
+  if (!c || !c.inv) return false;
+  const sticks = invCount(c.inv, 'stick');
+  const planks = anyPlanks(c.inv);
+  const planksForSticks = sticks >= 2 ? 0 : 2;
+  const planksForTable = (invCount(c.inv, 'crafting_table') >= 1 || !!c.hasTable) ? 0 : 4;
+  return planks >= planksForSticks + planksForTable;
+}
+function diaWoodGoal(g) {
+  // gaté par `_diaProof` : en début de partie (aucun diamant) la chaîne fer garde ses besoins de bois.
+  return Object.assign({}, g, { met: (c) => g.met(c) || DI(c) || (_diaProof(c) && diaWoodEnough(c)) });
+}
 const CAVE_DIAMOND_BAND_Y = -16;   // au-dessous, on est dans la bande des grottes à diamant
 const _diamondChains = new Map();
 /** Chaîne diamant pour une cible donnée (mémoïsée : la chaîne est un tableau stable par cible). */
@@ -232,7 +249,7 @@ function diamondChain(target) {
     // diamant seule re-crafterait pioche bois → pierre → fer).
     ...IRON_CHAIN.map((g) => (_TOOL_GOALS.has(g.name)
       ? Object.assign({}, g, { met: (c) => g.met(c) || invCount(c.inv, 'diamond_pickaxe') + invCount(c.inv, 'netherite_pickaxe') >= 1 })
-      : withFinal(g, DI))),
+      : (_DIA_WOOD_GOALS.has(g.name) ? diaWoodGoal(g) : withFinal(g, DI)))),
     // ÉPÉE (24/10) : une fois l'outillage assuré (pioche d'abord : sans elle on ne mine rien), l'arme —
     // diamant si la marge le permet. On ne se bat plus au poing (ou à la terre) au fond de la mine.
     SWORD_GOAL,
@@ -1001,4 +1018,4 @@ function firstUnmet(chain, ctx, skip) {
 
 module.exports = {
   BED_GOAL, SWORD_GOAL, swordPlanOf, nextObjectiveAfter, chainAfterDone, objectiveForStart, POST_IRON_ARMOR_OBJECTIVES, CHAIN_EMPTY_WINDOW_MS, CHAIN_BASE_DELAY_MS, CHAIN_BACKOFF_MS, CHAIN_FALLBACK,
-  IRON_HELP_CHAIN, HELP_STOCK, wantsDiamondPick, diamondArmorPlanOf, DIA_PICK_COST, MAPPER_ARMOR_CHAIN, LUMBERJACK_CHAIN, GIFT_SET_INGOTS, DIAMOND_TARGET, diamondChain, diamondTargetOf, diamondPickCount, hasShield, posableCount, hasSword, hasAxe, buildCtxInv, invCount, anyLog, anyPlanks, MVP_CHAIN, IRON_CHAIN, DIAMOND_CHAIN, IRON_ARMOR_CHAIN, DIAMOND_ARMOR_CHAIN, MAPPER_KIT, chainFor, firstUnmet, armorNeed, armorWornOk, wantsOpportunisticArmor, ARMOR_FORGE_OBJECTIVES };
+  IRON_HELP_CHAIN, HELP_STOCK, wantsDiamondPick, diaWoodEnough, diamondArmorPlanOf, DIA_PICK_COST, MAPPER_ARMOR_CHAIN, LUMBERJACK_CHAIN, GIFT_SET_INGOTS, DIAMOND_TARGET, diamondChain, diamondTargetOf, diamondPickCount, hasShield, posableCount, hasSword, hasAxe, buildCtxInv, invCount, anyLog, anyPlanks, MVP_CHAIN, IRON_CHAIN, DIAMOND_CHAIN, IRON_ARMOR_CHAIN, DIAMOND_ARMOR_CHAIN, MAPPER_KIT, chainFor, firstUnmet, armorNeed, armorWornOk, wantsOpportunisticArmor, ARMOR_FORGE_OBJECTIVES };

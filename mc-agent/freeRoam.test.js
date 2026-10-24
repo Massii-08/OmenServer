@@ -25,3 +25,26 @@ test('cautionNight : la nuit disparaît pour le diamant complet, intacte pour le
   assert.strictEqual(cautionNight(null, []), null);
   assert.strictEqual(cautionNight(false, []), false);
 });
+
+// ── nuit du mineur diamant (24/10 soir) ──
+{
+  const test = require('node:test');
+  const assert = require('assert');
+  const { diamondNightPlan } = require('./freeRoam');
+  test('diamondNightPlan : non concerné sans diamant complet', () => {
+    assert.strictEqual(diamondNightPlan({ free: false, night: true }), 'none');
+  });
+  test('diamondNightPlan : jour ou sous terre → il travaille', () => {
+    assert.strictEqual(diamondNightPlan({ free: true, night: false }), 'work');
+    assert.strictEqual(diamondNightPlan({ free: true, night: true, underground: true }), 'work');
+  });
+  test('diamondNightPlan : nuit en surface + vrai besoin → reste', () => {
+    assert.strictEqual(diamondNightPlan({ free: true, night: true, goalName: 'logs' }), 'need');
+    assert.strictEqual(diamondNightPlan({ free: true, night: true, goalSkill: 'huntCook' }), 'need');
+    assert.strictEqual(diamondNightPlan({ free: true, night: true, foodCritical: true }), 'need');
+  });
+  test('diamondNightPlan : nuit en surface sans besoin → redescend, sinon abri', () => {
+    assert.strictEqual(diamondNightPlan({ free: true, night: true, goalName: 'descend_y54', deepWorkWarp: true }), 'go_deep');
+    assert.strictEqual(diamondNightPlan({ free: true, night: true, goalName: 'descend_y54' }), 'shelter');
+  });
+}

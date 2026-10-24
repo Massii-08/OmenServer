@@ -23,6 +23,9 @@ const DESCENT_MIN_POINTS = 6;          // ~1 steak, 3 chairs de zombie : de quoi
 const GATE_WINDOW_MS = 10 * 60 * 1000;
 const GATE_MAX_REFUSALS = 2;
 const HERD_GATE_MAX_REFUSALS = 6;    // porte « troupeau connu » : au plus 6 refus / 10 min
+const LONG_WINDOW_MS = 30 * 60 * 1000;   // fenêtre longue des refus (24/10)
+const LONG_MAX_REFUSALS = 8;            // au-delà : on descend quand même
+const MEAL_MIN_POINTS = 2;              // « un repas » : 1 viande crue / 1 chair de zombie
 const SURFACE_Y = 45;                  // même plancher que caution.FOOD_SURFACE_Y
 const UNDER_HUNGER = 8;
 const UNDER_TRIP_COOLDOWN_MS = 4 * 60 * 1000;
@@ -50,6 +53,15 @@ function _times(arr, now, windowMs) {
 function descentFoodGate(s = {}) {
   const now = Number.isFinite(s.now) ? s.now : Date.now();
   const refusals = _times(s.refusals, now, GATE_WINDOW_MS);
+  // Fenêtre LONGUE (24/10 : `descend_y54` refusé 20 fois chez un bot, 8 chez l'autre — mineurs coincés en
+  // surface pendant que les autres minaient) : les refus de 30 min sont gardés et comptés à part. Au-delà de
+  // LONG_MAX_REFUSALS on descend quoi qu'il arrive — une heure en surface à attendre du gibier tue le quota,
+  // et sous terre la porte 2 (undergroundFoodTripDue) remonte à faim ≤ 8.
+  const longRefusals = _times(s.refusals, now, LONG_WINDOW_MS);
+  if (longRefusals.length >= LONG_MAX_REFUSALS && Number.isFinite(s.y) && s.y >= SURFACE_Y
+      && !((Number(s.points) || 0) >= DESCENT_MIN_POINTS)) {
+    return { allow: true, reason: 'gate_long_spent', refusals: longRefusals, need: DESCENT_MIN_POINTS };
+  }
   const need = DESCENT_MIN_POINTS;
   const points = Number(s.points) || 0;
   if (points >= need) return { allow: true, reason: 'stocked', refusals, need };
@@ -63,11 +75,14 @@ function descentFoodGate(s = {}) {
   // descend avec ce qu'on a (sinon un bot devant une bête injoignable restait jusqu'à 1 h en surface).
   if (points <= 0 && s.herdNear === true) {
     if (s.herdTried === true || refusals.length >= HERD_GATE_MAX_REFUSALS) return { allow: true, reason: 'herd_gate_spent', refusals, need };
-    return { allow: false, reason: 'herd_known', refusals: refusals.concat([now]), need };
+    return { allow: false, reason: 'herd_known', refusals: longRefusals.concat([now]), need };
   }
   if (s.noPrey === true) return { allow: true, reason: 'no_prey', refusals, need };
   if (refusals.length >= GATE_MAX_REFUSALS) return { allow: true, reason: 'gate_spent', refusals, need };
-  return { allow: false, reason: 'gate', refusals: refusals.concat([now]), need };
+  // Un repas en poche (viande crue, chair de zombie comprise : food.foodPoints) et déjà un refus : on
+  // descend — on mange aussi sous terre, et une seconde attente en surface ne rapporte presque jamais rien.
+  if (points >= MEAL_MIN_POINTS && refusals.length >= 1) return { allow: true, reason: 'some_food', refusals, need };
+  return { allow: false, reason: 'gate', refusals: longRefusals.concat([now]), need };
 }
 
 /**
@@ -96,5 +111,5 @@ function foodGateLoad(st) {
 
 module.exports = {
   descentFoodGate, undergroundFoodTripDue, foodGateLoad,
-  DESCENT_MIN_POINTS, GATE_WINDOW_MS, GATE_MAX_REFUSALS, HERD_GATE_MAX_REFUSALS, SURFACE_Y, UNDER_HUNGER, UNDER_TRIP_COOLDOWN_MS,
+  DESCENT_MIN_POINTS, GATE_WINDOW_MS, LONG_WINDOW_MS, LONG_MAX_REFUSALS, MEAL_MIN_POINTS, GATE_MAX_REFUSALS, HERD_GATE_MAX_REFUSALS, SURFACE_Y, UNDER_HUNGER, UNDER_TRIP_COOLDOWN_MS,
 };
