@@ -10,7 +10,7 @@ const { FOODS, FLEE_ONLY_ALWAYS, FLEE_ONLY_LOWHP, FLEE_ONLY_LOWHP_THRESHOLD, isF
 const { bestWeapon } = require('./tools');
 const { creeperPlan } = require('./creeper');
 const { HUNT_MAX_DY } = require('./huntReach');
-const { engageAllowedByHp, isZombieDuel, DUEL_MIN_HP } = require('./fightBreaker');
+const { engageAllowedByHp, isZombieDuel, isLoneZombieContact, DUEL_MIN_HP } = require('./fightBreaker');
 
 const SWARM_COUNT = 3;   // ≥3 hostiles = submergé → fuite (AVEC armure)
 const LOW_HEALTH = 8;    // PV ≤ 8 (4 cœurs) → fuite (AVEC armure)
@@ -57,7 +57,7 @@ const PASSIVE_FOOD_MOBS = new Set(['cow', 'pig', 'chicken', 'sheep', 'rabbit', '
  * `food` (optionnel, 0-20) : hard = pas de régén sous 18 (REGEN_FOOD) ni de sprint sous 7
  * (CRITICAL_HUNGER). Absent/undefined → comportement STRICTEMENT inchangé (rétro-compat).
  */
-function combatDecision({ health, hostileCount, armored, hasCreeper, lavaNear, preferFlee, nearestDist, fleeOnly, capability, food, canDealWith, fightCount, night, duel }) {
+function combatDecision({ health, hostileCount, armored, hasCreeper, lavaNear, preferFlee, nearestDist, fleeOnly, capability, food, canDealWith, fightCount, night, duel, lastStand }) {
   if (!hostileCount) return null;
   // CREEPER : JAMAIS de mêlée (il explose au contact → mort instantanée même en armure diamant, vécu
   // live R3 22/06 : fight creeper ×2 → dead en deep mining). On FUIT pour casser la ligne d'explosion ;
@@ -76,6 +76,9 @@ function combatDecision({ health, hostileCount, armored, hasCreeper, lavaNear, p
   // DUEL CONTRE UN ZOMBIE (23/10, fightBreaker.isZombieDuel) : seul, armé (≥ épée de pierre) → on se bat
   // jusqu'à DUEL_MIN_HP (6) au lieu de fuir sous 12 / 16 — fuir un zombie finissait en mort 55 % du temps,
   // le combattre 22 %. Jamais devant creeper / lave / flee-only / mappeur (traités au-dessus).
+  // DERNIER CARRÉ (25/10, fightBreaker.isLoneZombieContact) : zombie seul et COLLÉ → on finit le combat à
+  // tout PV (fuir = 6 morts sur 7 abandons, en ≤ 20 s). Toujours après creeper / lave / flee-only / mappeur.
+  if (lastStand) return 'fight';
   if (duel && health != null) return health >= DUEL_MIN_HP ? 'fight' : 'flee';
   // RÈGLE D'ENGAGEMENT (22/10, fightBreaker.js) : 6 morts sur 10 suivaient un engagement à ≤ 16,8 PV,
   // dont `fight_chosen {hostiles:2, health:14.12}` → mort 3 s plus tard. ≥ 2 hostiles exige 18 PV,
@@ -319,7 +322,9 @@ async function survivalTick(bot, deps = {}) {
   const night = _isNightTod(bot.time && bot.time.timeOfDay);
   // Duel : TOUS les hostiles proches (creeper calme compris — un creeper dans les parages n'est pas un duel).
   const duel = isZombieDuel({ names: all.filter(Boolean).map((h) => h.name), attackDamage: attackDamage(bot) });
-  const decision = combatDecision({ health: bot.health, hostileCount: hostiles.length, armored: isArmored(bot), hasCreeper, lavaNear, preferFlee: !!deps.preferFlee, nearestDist, fleeOnly, capability, food: bot.food, canDealWith: cdw, fightCount: fighters.length, night, duel });
+  // Dernier carré (25/10) : zombie seul, creeper calme compris dans le décompte, déjà à portée de coup.
+  const lastStand = isLoneZombieContact({ names: all.filter(Boolean).map((h) => h.name), nearestDist, attackDamage: attackDamage(bot) });
+  const decision = combatDecision({ health: bot.health, hostileCount: hostiles.length, armored: isArmored(bot), hasCreeper, lavaNear, preferFlee: !!deps.preferFlee, nearestDist, fleeOnly, capability, food: bot.food, canDealWith: cdw, fightCount: fighters.length, night, duel, lastStand });
   // ABRI TENU (live 22/10, NethBot1 session 206) : enterré dans sa case, ni fuite ni poursuite pvp — elles
   // le sortaient du trou en pleine nuit. On frappe SUR PLACE ce qui est à portée de coup (deps.strikeInPlace).
   let hold = false;
@@ -341,7 +346,7 @@ async function survivalTick(bot, deps = {}) {
   let refusedWhy = null;
   if (decided === 'fight' && typeof deps.canEngage === 'function') {
     let g = null;
-    try { g = deps.canEngage({ hostiles: hostiles.length, nearestDist, health: bot.health, duel }); } catch (e) { g = null; }
+    try { g = deps.canEngage({ hostiles: hostiles.length, nearestDist, health: bot.health, duel, lastStand }); } catch (e) { g = null; }
     if (g && g.ok === false) { decided = 'flee'; refusedWhy = g.reason || 'refused'; }
   }
   if (decided === 'flee') {

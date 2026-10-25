@@ -39,7 +39,24 @@ const ZOMBIE_FAMILY = new Set(['zombie', 'husk', 'drowned', 'zombie_villager']);
 const DUEL_MIN_HP = 6;             // en duel : on engage à ≥ 6 PV, on lâche sous 6
 const DUEL_MIN_DAMAGE = 5;         // dégât plein (survival.attackDamage) d'une épée / hache de pierre
 
+// DERNIER CARRÉ (25/10, run keepInventory OFF, 22 morts en 2 h) : 7 `fight_aborted` contre UN seul hostile,
+// 6 morts dans les 20 s (4 en ≤ 4 s), toutes « slain by Zombie » — le bot nu, à 4-10 PV, tourne le dos au
+// zombie COLLÉ et prend le coup suivant dans le dos. Seul contre un zombie déjà à portée de coup, on finit
+// le combat : ni coupure du disjoncteur, ni fuite réflexe sur PV bas, l'engagement reste permis. Au-delà de
+// la portée de coup, ou dès qu'un 2ᵉ hostile (creeper compris) est là, les règles d'origine reprennent.
+const LAST_STAND_REACH = 3.5;      // = CORNERED_REACH : l'assaillant frappe encore
+// Une VRAIE arme (épée/hache de bois ou mieux) : aux poings un zombie de 20 PV ne se tue pas, la fuite reste
+// la seule chance — ce cas garde la règle d'origine (test survival_duel « zombie à 9 PV SANS arme → fuite »).
+const LAST_STAND_MIN_DAMAGE = 4;
+
 function _num(x) { return typeof x === 'number' && Number.isFinite(x); }
+
+/** PUR — un seul hostile proche (creeper compris), de la famille zombie, à portée de coup, et une arme ? */
+function isLoneZombieContact({ names, nearestDist, attackDamage } = {}) {
+  if (!Array.isArray(names) || names.length !== 1 || !ZOMBIE_FAMILY.has(names[0])) return false;
+  if (!_num(attackDamage) || attackDamage < LAST_STAND_MIN_DAMAGE) return false;
+  return _num(nearestDist) && nearestDist <= LAST_STAND_REACH;
+}
 
 /**
  * PUR — duel contre un zombie ? `names` = TOUS les hostiles proches (creeper compris) ; exactement un,
@@ -75,8 +92,9 @@ function hpDrop(samples, now, health, windowMs = ABORT_WINDOW_MS) {
 }
 
 /** PUR — faut-il lâcher le combat en cours ? Rend 'floor' | 'drop' | null. */
-function shouldAbortFight({ inFight, health, drop, duel } = {}) {
+function shouldAbortFight({ inFight, health, drop, duel, lastStand } = {}) {
   if (!inFight || !_num(health)) return null;
+  if (lastStand) return null;
   if (duel) return health < DUEL_MIN_HP ? 'floor' : null;
   if (health < ABORT_FLOOR_HP) return 'floor';
   if (_num(drop) && drop >= ABORT_DROP_HP) return 'drop';
@@ -143,12 +161,13 @@ function createFightBreaker() {
     samples = samples.filter((s) => s.t <= t && t - s.t <= ABORT_WINDOW_MS);
   }
 
-  function check({ inFight, health, t, duel } = {}) {
+  function check({ inFight, health, t, duel, lastStand } = {}) {
     const drop = hpDrop(samples, t, health);
     if (!inFight) return { abort: false, reason: null, drop };
     if (_num(t) && t < corneredUntil) return { abort: false, reason: 'cornered', drop };
     if (_num(t) && t >= lastAbortAt && t - lastAbortAt < ABORT_MIN_GAP_MS) return { abort: false, reason: null, drop };
     const reason = shouldAbortFight({ inFight, health, drop, duel });
+    if (reason && lastStand) return { abort: false, reason: 'last_stand', drop };
     return { abort: !!reason, reason, drop };
   }
 
@@ -167,7 +186,8 @@ function createFightBreaker() {
     noteFlee({ t, pos, fleeOk, reset: true, health });
   }
 
-  function canEngage({ t, pos, health, hostiles, nearestDist, duel } = {}) {
+  function canEngage({ t, pos, health, hostiles, nearestDist, duel, lastStand } = {}) {
+    if (lastStand) return { ok: true, cornered: true, reason: 'last_stand' };
     const sinceFleeMs = flee && _num(flee.t) && _num(t) ? t - flee.t : null;
     const fleeRecent = sinceFleeMs != null && sinceFleeMs >= 0 && sinceFleeMs <= REENGAGE_COOLDOWN_MS;
     const cornered = fleeRecent && isCornered({ fleePos: flee.pos, pos: _copy(pos), sinceFleeMs, nearestDist, fleeFailed: flee.failed });
@@ -194,7 +214,7 @@ function createFightBreaker() {
 }
 
 module.exports = {
-  engageAllowedByHp, isZombieDuel, ZOMBIE_FAMILY, DUEL_MIN_HP, DUEL_MIN_DAMAGE, hpDrop, shouldAbortFight, isCornered, fleeLosing, reengageAllowed, createFightBreaker,
+  engageAllowedByHp, isZombieDuel, isLoneZombieContact, LAST_STAND_REACH, LAST_STAND_MIN_DAMAGE, ZOMBIE_FAMILY, DUEL_MIN_HP, DUEL_MIN_DAMAGE, hpDrop, shouldAbortFight, isCornered, fleeLosing, reengageAllowed, createFightBreaker,
   OUTRUN_LOSS_HP, OUTRUN_AFTER_MS,
   FIGHT_GROUP_MIN_HP, FIGHT_SOLO_MIN_HP, ABORT_DROP_HP, ABORT_WINDOW_MS, ABORT_FLOOR_HP,
   REENGAGE_COOLDOWN_MS, CORNERED_AFTER_MS, CORNERED_MOVE, CORNERED_REACH, ABORT_MIN_GAP_MS,

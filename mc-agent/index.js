@@ -156,7 +156,7 @@ const { noteDropAhead, turnYaw, shiftTarget } = require('./dropAhead');
 const { canDealWith, attackDamage, boldFightAdvised } = require('./survival');
 const { fleeTarget } = require('./skills/fleeFrom');
 const { decideSkeletonResponse, findCoverCell, zigzagSide, shooterSees, rushStopReason, eatDuringRush, callerFromStack, rushRearmWanted, rushEquipBlocked } = require('./skeletonResponse');
-const { createFightBreaker, isZombieDuel } = require('./fightBreaker');
+const { createFightBreaker, isZombieDuel, isLoneZombieContact } = require('./fightBreaker');
 // SYSTÈME À 3 HOMES (Massii 27/07) : safe = LA BASE, work = le chantier courant, death = la dette
 // de mort. Le serveur n'autorise que 3 homes et le code en posait 4 → un /sethome échouait EN
 // SILENCE sur chaque bot (bug prouvé world_mn5). Voir homes.js.
@@ -12899,6 +12899,7 @@ async function onSpawn() {
       onFlee: (r) => { const d = fightGateDeps(); if (d.onFlee) d.onFlee(r); },
       // DUEL CONTRE UN ZOMBIE (23/10) : mineurs seulement (le cartographe garde sa fuite par défaut).
       isDuel: () => !IS_MAPPER && _fightBreakerWired && _fightSituation().duel,
+      isLastStand: () => !IS_MAPPER && _fightBreakerWired && _fightSituation().lastStand,
       // DÉLAI DE RÉACTION humain sur les réflexes (anti aimbot 0 ms / anti-ban) — TOUJOURS actif
       // (sécurité, pas seulement en humanize) : ~300 ms par défaut (les captures ne mesurent pas
       // encore reaction.*). Coût nul sur le minage (ce n'est pas un réflexe). Cf. paquet 1.
@@ -13569,13 +13570,16 @@ function _fightSituation() {
   // famille zombie, arme ≥ épée de pierre → engagement jusqu'à 6 PV et pas de coupure sur la chute.
   let duel = false;
   try { duel = isZombieDuel({ names, attackDamage: attackDamage(bot) }); } catch (e) { duel = false; }
-  return { hostiles, nearestDist, duel };
+  // DERNIER CARRÉ (25/10, fightBreaker.isLoneZombieContact) : zombie seul et collé → on finit le combat.
+  let lastStand = false;
+  try { lastStand = isLoneZombieContact({ names, nearestDist, attackDamage: attackDamage(bot) }); } catch (e) { lastStand = false; }
+  return { hostiles, nearestDist, duel, lastStand };
 }
 
 function _fightCanEngage() {
   const sit = _fightSituation();
   const p = bot.entity && bot.entity.position;
-  return _fightBreaker.canEngage({ t: Date.now(), pos: p ? { x: p.x, y: p.y, z: p.z } : null, health: bot.health, hostiles: sit.hostiles, nearestDist: sit.nearestDist, duel: sit.duel });
+  return _fightBreaker.canEngage({ t: Date.now(), pos: p ? { x: p.x, y: p.y, z: p.z } : null, health: bot.health, hostiles: sit.hostiles, nearestDist: sit.nearestDist, duel: sit.duel, lastStand: sit.lastStand });
 }
 
 function _fightNoteFlee(ok) {
@@ -13599,11 +13603,19 @@ function _fightInProgress() {
   } catch (e) { return false; }
 }
 
+// NIVEAU MODULE (piège #56) : horodatage de la dernière trace `fight_last_stand`.
+let _lastStandEmitAt = -Infinity;
 function _fightBreakerCheck() {
   if (!_fightInProgress()) return;
   const t = Date.now();
   const sit = _fightSituation();
-  const r = _fightBreaker.check({ inFight: true, health: bot.health, t, duel: sit.duel });
+  const r = _fightBreaker.check({ inFight: true, health: bot.health, t, duel: sit.duel, lastStand: sit.lastStand });
+  // Trace du dernier carré (au plus une fois toutes les 8 s) : un abandon évité doit se voir dans les logs.
+  if (r.reason === 'last_stand' && t - _lastStandEmitAt >= 8000) {
+    _lastStandEmitAt = t;
+    emit({ type: 'fight_last_stand', hp: Math.round((bot.health || 0) * 10) / 10, drop: Math.round((r.drop || 0) * 10) / 10,
+      dist: sit.nearestDist != null ? Math.round(sit.nearestDist * 10) / 10 : null });
+  }
   if (!r.abort) return;
   try { if (bot.pvp && typeof bot.pvp.stop === 'function') bot.pvp.stop(); }
   catch (e) { emit({ type: 'fight_abort_stop_failed', err: String(e && e.message || e) }); }

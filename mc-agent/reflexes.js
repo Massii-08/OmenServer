@@ -123,14 +123,17 @@ async function tryEat(bot) {
 /** Vrai s'il faut fuir : PV bas (relevé si affamé, cf. NO_REGEN_HP_MARGIN) OU creeper à fuir / à
  *  s'écarter (creeper.creeperPlan : gonfle à ≤ 7, ou calme à ≤ 4 — un creeper calme plus loin n'est
  *  pas une raison de fuir, AltoClef 20/10). */
-function shouldFlee(bot, { duel = false } = {}) {
+function shouldFlee(bot, { duel = false, lastStand = false } = {}) {
   // DUEL CONTRE UN ZOMBIE (23/10, fightBreaker.isZombieDuel) : on riposte jusqu'à DUEL_MIN_HP, sans la
   // marge de faim — fuir un zombie collé finissait en mort (7/7 à 6-12 PV sous terre). Le creeper reste
   // évalué plus bas (un duel n'en compte aucun dans les parages, mais la vérification ne coûte rien).
   // food absent/undefined → seuil INCHANGÉ (rétro-compat totale). Sous REGEN_FOOD (régén coupée)
   // chaque PV perdu est définitif tant qu'on n'a pas mangé → on décroche NO_REGEN_HP_MARGIN PV plus tôt.
   const lowHealth = (bot.food != null && bot.food <= REGEN_FOOD) ? HEALTH_THRESHOLD + NO_REGEN_HP_MARGIN : HEALTH_THRESHOLD;
-  const tooLow = duel ? (bot.health != null && bot.health < DUEL_MIN_HP) : (bot.health != null && bot.health <= lowHealth);
+  // DERNIER CARRÉ (25/10, fightBreaker.isLoneZombieContact) : zombie seul et collé → fuir sur PV bas, c'est
+  // lui tendre le dos (6 abandons sur 7 → mort en ≤ 20 s). Le creeper, lui, reste évalué ci-dessous.
+  const tooLow = lastStand ? false
+    : duel ? (bot.health != null && bot.health < DUEL_MIN_HP) : (bot.health != null && bot.health <= lowHealth);
   if (tooLow) return true;
   const self = (bot.entity && bot.entity.position) || { x: 0, y: 0, z: 0 };
   const creeper = bot.nearestEntity((e) => {
@@ -280,6 +283,8 @@ function installReflexes(bot, opts = {}) {
   // DUEL CONTRE UN ZOMBIE (23/10) : `isDuel()` vrai = un seul hostile proche, de la famille zombie, et une
   // arme ≥ épée de pierre (index.js : _fightSituation). Absent / erreur → pas de duel (comportement inchangé).
   const isDuel = typeof opts.isDuel === 'function' ? opts.isDuel : null;
+  // DERNIER CARRÉ (25/10) : `isLastStand()` vrai = un seul hostile, zombie, à portée de coup. Absent → inchangé.
+  const isLastStand = typeof opts.isLastStand === 'function' ? opts.isLastStand : null;
   const panicCooldownMs = opts.panicCooldownMs != null ? opts.panicCooldownMs : 8000;
   const defensiveCooldownMs = opts.defensiveCooldownMs != null ? opts.defensiveCooldownMs : 6000;
   let lastPanic = -Infinity;    // -∞ : le 1er panic n'est jamais bloqué par le cooldown
@@ -332,7 +337,9 @@ function installReflexes(bot, opts = {}) {
     }
     let duel = false;
     try { duel = !!(isDuel && isDuel()); } catch (e) { duel = false; }
-    if (shouldFlee(bot, { duel })) {
+    let lastStand = false;
+    try { lastStand = !!(isLastStand && isLastStand()); } catch (e) { lastStand = false; }
+    if (shouldFlee(bot, { duel, lastStand })) {
       // COUVERT PLUTÔT QUE FUITE face à un TIREUR (autopsie live world_ax4 25/07 : CHAQUE mort
       // était précédée d'un `reflex: flee` — ils fuyaient et mouraient quand même, le squelette
       // pesant 52 des 103 morts). Fuir un archer à découvert, c'est courir dans sa ligne de tir
