@@ -68,7 +68,7 @@ function pickRescueMate(o = {}) {
   const freshMs = _num(o.freshMs) ? o.freshMs : MATE_FRESH_MS;
   const self = o.self && _num(o.self.x) && _num(o.self.z) ? o.self : camp;
   const cands = (Array.isArray(o.mates) ? o.mates : []).filter((m) => m && m.name && m.name !== o.selfName
-    && m.role !== 'mapper' && m.role !== 'lumberjack'
+    && m.role !== 'mapper' && (m.role !== 'lumberjack' || o.allowLumberjack === true)
     && _num(m.x) && _num(m.z) && _num(m.at) && m.at <= o.now + 5000 && o.now - m.at <= freshMs
     && _num(m.worn) && m.worn >= minWorn
     && _d2(m, camp) >= CAMP_ESCAPE_MIN_DIST);

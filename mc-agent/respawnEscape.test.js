@@ -91,3 +91,11 @@ test('ré-ancrage : lumière — torche (bloc ≥ 8) OU ciel ouvert de jour ; ga
   assert.strictEqual(ready({ blockLight: 10, skyLight: 15, night: true }).ok, true);
   assert.strictEqual(ready({ blockLight: null, skyLight: null }).ok, true, 'illisible : on ne bloque pas');
 });
+
+test('pickRescueMate : le bûcheron n est accepté qu en mode relâché (allowLumberjack)', () => {
+  const { pickRescueMate } = require('./respawnEscape');
+  const now = 1e6;
+  const mates = [{ name: 'B3', role: 'lumberjack', x: 0, z: 200, at: now, worn: 0 }];
+  assert.strictEqual(pickRescueMate({ camp: { x: 0, z: 0 }, now, mates, minWorn: 0 }), null);
+  assert.strictEqual(pickRescueMate({ camp: { x: 0, z: 0 }, now, mates, minWorn: 0, allowLumberjack: true }).name, 'B3');
+});
