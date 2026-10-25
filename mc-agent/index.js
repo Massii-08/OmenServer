@@ -111,6 +111,8 @@ const { caveHunt, sharedSkipStore: caveHuntSkip, sharedStrikeStore: caveHuntStri
 const { digVisibleOre, oreStateOf: diamondOreStateOf, DIAMOND_ORES } = require('./skills/diamondDig');   // casse VÉRIFIÉE d'un diamant visible (25/10)
 const { caveIron: caveIronSkill } = require('./skills/caveIron');   // fer en grotte (Massii 20/10)
 const caveIronPick = require('./caveIron');
+const mountainIronPick = require('./mountainIron');   // fer visible au-dessus de y 64 (anti-xray, 25/10)
+const nightDeep = require('./nightDeep');             // la nuit sous terre plutôt qu'en surface (25/10)
 const oresScan = require('./ores');                          // scan ciblé du fer VU (ironCaveCtx, 24/10)
 const { classifyAuthPrompt, genPassword, resolveAuthChat } = require('./auth');
 const { loadMemory, worldKey, resolveBiome } = require('./worldMemory');
@@ -475,6 +477,18 @@ function _botXZ() {
   return p ? { x: p.x, z: p.z } : null;
 }
 
+// ALTITUDE DU CHANTIER `work` (25/10, nightDeep) : `_workPos` ne garde que XZ. Pour décider au crépuscule
+// si `/home work` ramène SOUS TERRE (nightDeep.duskDeepPlan), on persiste l'endroit exact de la dernière
+// pose dans le mémo base (`workDepth`, FUSION) — il survit aux morts, contrairement à `_workSet`.
+function _noteWorkDepth() {
+  try {
+    const p = bot && bot.entity && bot.entity.position;
+    if (!p) return;
+    const st = loadBaseState() || {};
+    saveBaseState(Object.assign({}, st, { workDepth: { x: Math.floor(p.x), y: Math.floor(p.y), z: Math.floor(p.z), at: Date.now() } }));
+  } catch (e) { /* best-effort */ }
+}
+
 // ── CHANTIER DE DIAMANT PERSISTÉ (deepWork.js, Massii 24/10) ─────────────────────────────────────
 // Le home `work` profond (y ≤ -40, case sûre) est posé/rafraîchi PENDANT le travail et survit à la mort
 // (mémo base `deepWork`) : `descend_y54` y retourne par /home work avant tout escalier. `_workSet` (le
@@ -554,7 +568,7 @@ function deepWorkTick() {
   try { ok = !!homewarp.bookmark(bot, HOME_WORK); } catch (e) { ok = false; } finally { _deepWorkPosing = false; }
   if (!ok) return;
   _setDeepWork({ x: Math.floor(p.x), y: Math.floor(p.y), z: Math.floor(p.z), at: now });
-  _workSet = true; _workPos = _botXZ(); _workDrownTimes = []; _workStuckTimes = [];
+  _workSet = true; _workPos = _botXZ(); if (typeof _noteWorkDepth === 'function') _noteWorkDepth(); _workDrownTimes = []; _workStuckTimes = [];
   emit({ type: 'work_bookmarked', ctx: 'deep_site', x: Math.floor(p.x), y: Math.floor(p.y), z: Math.floor(p.z) });
 }
 
@@ -1440,6 +1454,8 @@ function ctxExtra() {
     // Fer en grotte : la grappe EXPOSÉE la plus rentable (null → but `iron_cave` sauté). Caché 30 s.
     // …et seulement à ≥ 12 PV (caveIron.caveHpOk, chrono 22/10) : blessé, on mine en galerie.
     ironCave: ironCaveForPlanner(),
+    // Fer des montagnes (25/10) : grappe de fer VISIBLE au-dessus de y 64 (null → but `mountain_iron` sauté).
+    mountainIron: (typeof mountainIronForPlanner === 'function') ? mountainIronForPlanner() : null,
     // Bûcheron : la demande réservée à servir (LUMBERJACK_CHAIN.lj_deliver). Null hors rôle.
     woodRequest: isLumberjackObjective() ? _ljContext() : null,
     ljOwnArmor: ljArmor ? ljArmor.own : null,
@@ -2106,7 +2122,7 @@ function bookmarkCuttingSpot(why) {
       return false;
     }
     if (!homewarp.bookmark(bot, HOME_WORK)) return false;
-    _workSet = true; _workPos = _botXZ();
+    _workSet = true; _workPos = _botXZ(); if (typeof _noteWorkDepth === 'function') _noteWorkDepth();
     emit({ type: 'work_bookmarked', why });
     return true;
   } catch (e) { return false; }
@@ -3427,6 +3443,8 @@ function lowHpSignals() {
   return {
     health: bot.health, food: bot.food, hasFood, threatDist,
     foodRunTriedRecently: _lowHpFoodRunAt > 0 && Date.now() - _lowHpFoodRunAt < LOWHP_FOOD_RUN_TTL_MS,
+    // Sous terre (25/10) : lowHpStep ne mure plus que l'urgence réelle (hostile collé à PV critiques).
+    underground: (() => { try { return typeof nightUndergroundNow === 'function' && !!nightUndergroundNow(); } catch (e) { return false; } })(),
   };
 }
 
@@ -3639,7 +3657,7 @@ const SKILL_TIMEOUT_MS = Number(args.skillTimeout || 90000);
 // (vécu V3Res1/4 : 480s × 4 tentatives = 32 min d'anneaux stériles avant le stall).
 // huntCook + FOOD_TRIP_MS (75 s) : l'EXPÉDITION vers le gibier (marche vers la cellule à animaux la plus
 // proche connue) a son propre plafond, hors du budget de 60 s — un garde-fou de 90 s la couperait en route.
-const SKILL_TIMEOUTS = { descendDiagonal: 900000, branchMine: 900000, caveHunt: 900000, caveIron: 600000, huntCook: 90000 + FOOD_TRIP_MS + FOOD_TRIP_LONG_EXTRA_MS + COOK_LOT_HARD_MS, ensureBed: 240000, smeltCharcoal: 300000, gather: 480000, gatherLog: 180000, ensurePick: 480000, fish: 300000, deliverWood: 120000, lumberjackIdle: 330000, lumberjackArmor: 160000, lumberjackForestTrip: LJ_FOREST_TRIP_MS + 20000, deliverMapperArmor: 180000 };   // /tpa 20 s + remise prouvée ≤ 2 × ~40 s (24/10)
+const SKILL_TIMEOUTS = { descendDiagonal: 900000, branchMine: 900000, caveHunt: 900000, caveIron: 600000, mountainIron: 300000, huntCook: 90000 + FOOD_TRIP_MS + FOOD_TRIP_LONG_EXTRA_MS + COOK_LOT_HARD_MS, ensureBed: 240000, smeltCharcoal: 300000, gather: 480000, gatherLog: 180000, ensurePick: 480000, fish: 300000, deliverWood: 120000, lumberjackIdle: 330000, lumberjackArmor: 160000, lumberjackForestTrip: LJ_FOREST_TRIP_MS + 20000, deliverMapperArmor: 180000 };   // /tpa 20 s + remise prouvée ≤ 2 × ~40 s (24/10)
 function timeoutFor(skill) { return SKILL_TIMEOUTS[skill] || SKILL_TIMEOUT_MS; }
 /** Champs « pourquoi » d'un résultat takeCover pour l'event `take_cover` (22/10 : `placed:0 ok:false`
  *  sans raison, session 155 — on ne savait pas si rien n'était posable, refusé, ou expiré). */
@@ -4344,7 +4362,7 @@ async function runGoalSkill(goal, gen) {
     if (!safeHomeVeto('wood_trip')) {
       try {
         if (!_workSet && !isInWater(bot)) {
-          homewarp.bookmark(bot, HOME_WORK); _workSet = true; _workPos = _botXZ();
+          homewarp.bookmark(bot, HOME_WORK); _workSet = true; _workPos = _botXZ(); if (typeof _noteWorkDepth === 'function') _noteWorkDepth();
           emit({ type: 'work_bookmarked', why: 'wood_trip' });
         }
         emit({
@@ -4358,7 +4376,7 @@ async function runGoalSkill(goal, gen) {
   }
   // ARMURE-AVANT-PROFONDEUR pour le chemin planner (chaîne diamant + kit mappeur, hole A §1.3) :
   // avant une descente/branche, tente armure+bouclier (best-effort, borné, idempotent si déjà armé).
-  if (goal.skill === 'descendDiagonal' || goal.skill === 'branchMine' || goal.skill === 'caveIron') {
+  if (goal.skill === 'descendDiagonal' || goal.skill === 'branchMine' || goal.skill === 'caveIron' || goal.skill === 'mountainIron') {
     try { await withTimeout(armorUp(), 120000, () => { try { stopMotion(); } catch (e) {} }); } catch (e) {}
     // TORCHES AVANT DE DESCENDRE : sans charbon, une bûche au four (cf. ensureTorches). En surface seulement.
     if (goal.skill === 'descendDiagonal') {
@@ -4548,6 +4566,23 @@ async function runGoalSkill(goal, gen) {
       if (coalHave < 1) return { ok: false, reason: 'no_coal' };
       return craftSmart({ name: 'torch', count: Math.min(goal.args.count || 2, coalHave) });
     }
+    // BOUCLIER (25/10, `shield_early` / `shield`) : forgé puis ENFILÉ en main secondaire tout de suite — un
+    // bouclier dans le sac n'arrête aucune flèche, et le bot part juste après en grotte / descente.
+    if (goal.args.name === 'shield') {
+      const r = await craftSmart(goal.args);
+      if (r && r.ok) {
+        let equipped = false;
+        try {
+          const sh = ((bot.inventory && bot.inventory.items()) || []).find((i) => i.name === 'shield');
+          const off = bot.inventory && bot.inventory.slots && bot.inventory.slots[45];
+          if (sh && (!off || off.name !== 'shield')) { await bot.equip(sh, 'off-hand'); }
+          const off2 = bot.inventory && bot.inventory.slots && bot.inventory.slots[45];
+          equipped = !!(off2 && off2.name === 'shield');
+        } catch (e) { equipped = false; }
+        emit({ type: 'gear_craft', item: 'shield', ok: true, why: goal.name, offhand: equipped });
+      }
+      return r;
+    }
     return craftSmart(goal.args);    // pose une table portable si craft 3×3
   }
   // ENTRAIDE/CARTOGRAPHES (piège world_mn8 27/07) : un bot dont la pioche a cassé refait une pioche
@@ -4589,7 +4624,7 @@ async function runGoalSkill(goal, gen) {
         let _wet = false;
         try { _wet = isInWater(bot); } catch (e) { _wet = false; }
         if (landed && deepWorkLanded(_dw, landed) && !_wet) {
-          _workSet = true; _workPos = _botXZ();
+          _workSet = true; _workPos = _botXZ(); if (typeof _noteWorkDepth === 'function') _noteWorkDepth();
           emit({ type: 'deep_work_landed', y: Math.round(landed.y) });
           return { ok: true, viaHome: true };
         }
@@ -4644,7 +4679,7 @@ async function runGoalSkill(goal, gen) {
       _descendWaterFails = 0;
       _workStuckTimes = [];
       // chantier profond atteint & SEC → mémoriser (les re-descentes suivantes = /home work, pas de creusage)
-      if (NO_GIVE && !isInWater(bot)) { try { homewarp.bookmark(bot, HOME_WORK); } catch (e) {} _workSet = true; _workPos = _botXZ(); _workDrownTimes = []; emit({ type: 'work_bookmarked' }); }
+      if (NO_GIVE && !isInWater(bot)) { try { homewarp.bookmark(bot, HOME_WORK); } catch (e) {} _workSet = true; _workPos = _botXZ(); if (typeof _noteWorkDepth === 'function') _noteWorkDepth(); _workDrownTimes = []; emit({ type: 'work_bookmarked' }); }
     } else if (NO_GIVE && _workSet && r && r.ok === false && /drop_ahead|max_depth|no_progress|air_at_y|lava_ahead/i.test(String(r.reason || ''))) {
       // Le chantier mène en boucle à une impasse SÈCHE (grotte/vide/lave minée autour du puits) : miroir
       // SEC de workDrown (live NethBot4 world_mn9 : 15× descend_via_home_work→drop_ahead, 0 minerai).
@@ -4662,6 +4697,8 @@ async function runGoalSkill(goal, gen) {
   // tunnel COURT (16 blocs, 4 galeries) vers la zone suivante — pas le strip de 48 × 16 d'avant.
   // FER EN GROTTE (Massii 20/10) : cf. runCaveIron (niveau module) et caveIron.js.
   if (goal.skill === 'caveIron') return await runCaveIron();
+  // FER DES MONTAGNES (25/10) : cf. runMountainIron et mountainIron.js.
+  if (goal.skill === 'mountainIron') return await runMountainIron();
   if (goal.skill === 'caveHunt') {
     const memCH = (args['wm-live'] && args['world-memory']) ? loadMemory(args['world-memory']) : bot._worldMemory;
     const _count = (name) => ((bot.inventory && bot.inventory.items()) || [])
@@ -4775,7 +4812,7 @@ async function runGoalSkill(goal, gen) {
           () => { try { stopMotion(); } catch (e) {} });
       } catch (e) {}
       if (isInWater(bot)) { _workSet = false; _forgetDeepWork('landed_wet'); try { await escapeWater(bot, { emit }); } catch (e) {} }
-      else { try { homewarp.bookmark(bot, HOME_WORK); _workSet = true; _workPos = _botXZ(); emit({ type: 'work_bookmarked', ctx: 'waterlocked_relocate' }); } catch (e) {} }
+      else { try { homewarp.bookmark(bot, HOME_WORK); _workSet = true; _workPos = _botXZ(); if (typeof _noteWorkDepth === 'function') _noteWorkDepth(); emit({ type: 'work_bookmarked', ctx: 'waterlocked_relocate' }); } catch (e) {} }
     }
     return rBM;
   }
@@ -5086,6 +5123,71 @@ function strikeInPlace(foe) {
     _auraLastHitAt = Date.now();   // l'aura respecte le cooldown de ce coup
   } catch (e) { /* best-effort */ }
 }
+// Trace (≤ 1 / min) d'un abri REFUSÉ parce que le bot travaille sous terre (nightDeep.undergroundShelterVeto).
+let _undergroundVetoAt = 0;
+function _undergroundVetoNote(where) {
+  const now = Date.now();
+  if (now - _undergroundVetoAt < 60000 && now >= _undergroundVetoAt) return;
+  _undergroundVetoAt = now;
+  let y = null;
+  try { y = Math.round(bot.entity.position.y); } catch (e) { y = null; }
+  emit({ type: 'shelter_vetoed', why: 'underground', where, y, hp: bot && bot.health });
+}
+// ⚠️ NIVEAU MODULE (piège #56) : lus par maybeNightShelter (appelé depuis le planner, holdForNight, timers).
+let _duskDeepTriedNight = null;     // nuit (bot.time.day) où le /home work de crépuscule a déjà été tenté
+/**
+ * Crépuscule / nuit, bot nu ou peu armé en surface : /home work vers le chantier profond, sinon escalier
+ * (tryNightWork). true = le bot est maintenant sous terre (l'appelant re-dérive son but). Jamais de throw.
+ */
+async function _duskDeepStep(sig) {
+  const p = bot && bot.entity && bot.entity.position;
+  if (!p || taskToken.cancelled) return false;
+  let worn = 0;
+  try { worn = _wornArmor().size; } catch (e) { worn = 0; }
+  const items = (bot.inventory && bot.inventory.items()) || [];
+  let deaths = [];
+  try { deaths = _recentDeathPositions(); } catch (e) { deaths = []; }
+  let work = null;
+  try { const st = loadBaseState() || {}; work = st.workDepth || null; } catch (e) { work = null; }
+  const night = _nightId();
+  let inWater = false;
+  try { inWater = isInWater(bot); } catch (e) { inWater = false; }
+  const plan = nightDeep.duskDeepPlan({
+    dusk: !!sig.dusk, night: !!sig.night, underground: !!sig.underground, worn, inWater,
+    isMapper: IS_MAPPER, isLumberjack: isLumberjackObjective(), hasPick: items.some((i) => i && /_pickaxe$/.test(i.name)),
+    work: (_workSet || work) ? work : null, pos: { x: p.x, y: p.y, z: p.z }, now: Date.now(), deaths,
+  });
+  if (plan.action === 'work_home' && !(night != null && _duskDeepTriedNight === night)) {
+    _duskDeepTriedNight = night;
+    emit({ type: 'night_go_deep', who: 'naked', why: sig.dusk ? 'dusk' : 'night', worn,
+      x: work && work.x, y: work && work.y, z: work && work.z, from_y: Math.round(p.y) });
+    _stairDepth++;
+    try {
+      try { homewarp.goHome(bot, HOME_WORK); } catch (e) {}
+      await awaitWarp({ maxMs: 8000 });
+      await sleep(1200);
+    } finally { _stairDepth = Math.max(0, _stairDepth - 1); }
+    const q = bot.entity && bot.entity.position;
+    let wet = false;
+    try { wet = isInWater(bot); } catch (e) { wet = false; }
+    if (q && !wet && q.y < nightDeep.WORK_DEEP_Y && Math.hypot(q.x - work.x, q.y - work.y, q.z - work.z) <= 8) {
+      _workSet = true; _workPos = _botXZ();
+      _nightWork = { surfaceY: Math.floor(p.y), night, at: Date.now() };   // nightUnderground : il travaille en bas
+      let torch = false;
+      try { torch = await nightTorch(); } catch (e) { torch = false; }
+      emit({ type: 'deep_work_landed', y: Math.round(q.y), ctx: 'naked_night', torch });
+      return true;
+    }
+    emit({ type: 'night_go_deep_failed', who: 'naked', y: q ? Math.round(q.y) : null, wet });
+    if (wet) { try { await escapeWater(bot, { emit }); } catch (e) {} }
+    // pas arrivé : escalier ci-dessous
+  }
+  if (plan.action === 'work_home' || plan.action === 'descend') {
+    try { return !!(await tryNightWork()); } catch (e) { return false; }
+  }
+  return false;
+}
+
 async function maybeNightShelter(proactive = false, opts = {}) {
   if (_shelterInFlight) {
     try { await _shelterInFlight; } catch (e) { /* l'abri en cours a ses propres garde-fous */ }
@@ -5136,7 +5238,7 @@ async function maybeNightShelter(proactive = false, opts = {}) {
       let _wet = false;
       try { _wet = isInWater(bot); } catch (e) { _wet = false; }
       if (_pl && dw && deepWorkLanded(dw, { x: _pl.x, y: _pl.y, z: _pl.z }) && !_wet) {
-        _workSet = true; _workPos = _botXZ();
+        _workSet = true; _workPos = _botXZ(); if (typeof _noteWorkDepth === 'function') _noteWorkDepth();
         emit({ type: 'deep_work_landed', y: Math.round(_pl.y), ctx: 'night' });
         return true;   // a bougé : l'appelant re-dérive son but
       }
@@ -5171,6 +5273,15 @@ async function maybeNightShelter(proactive = false, opts = {}) {
   try { inWater = isInWater(bot); } catch (e) { inWater = false; }
   const lockdown = !inWater && nightLockdownNow();
   const _shelterGap = lockdown ? NIGHT_SHELTER_GAP_MS : (opts.force ? FORCED_SHELTER_MIN_GAP_MS : 10 * 60 * 1000);
+  // LA NUIT SOUS TERRE (25/10, nightDeep.duskDeepPlan) : nu ou peu armé (< 2 pièces) en surface au crépuscule
+  // ou la nuit → le chantier profond (/home work) ou un escalier vers le bas (tryNightWork), PAS un puits de
+  // surface à attendre l'aube. L'abri ci-dessous reste le dernier recours (mappeur, bûcheron, sans pioche…).
+  try {
+    const _dec = shouldShelter(sig);
+    if (_dec.shelter && (_dec.reason === 'dusk' || _dec.reason === 'night') && typeof _duskDeepStep === 'function') {
+      if (await _duskDeepStep(sig)) return true;
+    }
+  } catch (e) { /* best-effort : l'abri historique */ }
   if (shouldShelter(sig).shelter && Date.now() - lastShelterT > _shelterGap) {
     lastShelterT = Date.now();
     // RÉ-ABRI (2e abri ou plus de la même nuit) = un abri INTERROMPU : le compteur à lire en live.
@@ -7554,7 +7665,7 @@ function markWorkBeforeTrip(why) {
   try {
     if (isInWater(bot)) return false;
     if (!homewarp.bookmark(bot, HOME_WORK)) return false;
-    _workSet = true; _workPos = _botXZ();
+    _workSet = true; _workPos = _botXZ(); if (typeof _noteWorkDepth === 'function') _noteWorkDepth();
     emit({ type: 'work_bookmarked', why });
     return true;
   } catch (e) { return false; }
@@ -8193,7 +8304,7 @@ async function runCaveIron(opts = {}) {
         if (isLumberjackObjective()) return false;
         if (isInWater(bot)) return false;
         if (!homewarp.bookmark(bot, HOME_WORK)) return false;
-        _workSet = true; _workPos = _botXZ();
+        _workSet = true; _workPos = _botXZ(); if (typeof _noteWorkDepth === 'function') _noteWorkDepth();
         emit({ type: 'work_bookmarked', why: 'iron_cave' });
         return true;
       },
@@ -8215,6 +8326,137 @@ async function runCaveIron(opts = {}) {
     if (recent.length >= 2) noteCaveTried(cave, 'interrupted');   // mise de côté 30 min, hors disjoncteur
   } else if (r && r.reason !== 'cancelled') noteCaveTried(cave, r.ok ? 'done' : r.reason);
   return r;
+}
+
+// ─── FER DES MONTAGNES (25/10, mountainIron.js) ──────────────────────────────────────────────────
+// Anti-xray serveur `max-block-height: 64` : au-dessus de 64, le fer enterré dans une colline est envoyé
+// au client — le bot le voit. Il creuse jusqu'à lui de jour, avant toute grotte ou descente.
+// ⚠️ NIVEAU MODULE (piège #56) : lus par ctxExtra à chaque pas du planner et par runMountainIron.
+const MOUNTAIN_CACHE_MS = 30000;
+let _mountainCache = { at: 0, target: null, visible: 0 };
+let _mountainGateEmitAt = 0;
+
+/** Scan BORNÉ du fer au-dessus de 64 (findBlocks, nom réel lu par blockAt). Jamais de throw. */
+function _mountainScan() {
+  try {
+    if (!bot || typeof bot.findBlocks !== 'function' || typeof bot.blockAt !== 'function') return [];
+    const reg = bot.registry && bot.registry.blocksByName;
+    if (!reg) return [];
+    const ids = [...mountainIronPick.IRON_NAMES].map((n) => reg[n] && reg[n].id).filter((id) => typeof id === 'number');
+    if (!ids.length) return [];
+    const positions = bot.findBlocks({ matching: ids, maxDistance: mountainIronPick.MOUNTAIN_SCAN_DIST,
+      count: mountainIronPick.MOUNTAIN_SCAN_COUNT }) || [];
+    const raw = [];
+    for (const p of positions) {
+      if (!p || p.y < mountainIronPick.MOUNTAIN_MIN_Y) continue;
+      const b = bot.blockAt(vec3Lib(Math.floor(p.x), Math.floor(p.y), Math.floor(p.z)));
+      if (b) raw.push({ material: b.name, x: p.x, y: p.y, z: p.z });
+    }
+    return mountainIronPick.mountainOres(raw, (q) => oresScan.isWaterAdjacent(bot, q));
+  } catch (e) { return []; }
+}
+
+/** La grappe de fer de montagne visée par le but `mountain_iron`, ou null. Cache 30 s. */
+function mountainIronForPlanner() {
+  const now = Date.now();
+  if (now - _mountainCache.at < MOUNTAIN_CACHE_MS && now >= _mountainCache.at) return _mountainCache.target;
+  let target = null;
+  let visible = 0;
+  try {
+    const objT = world && world.objective && world.objective.type;
+    const p = bot && bot.entity && bot.entity.position;
+    let inWater = false;
+    try { inWater = isInWater(bot); } catch (e) { inWater = false; }
+    let worn = 0;
+    try { worn = _wornArmor().size; } catch (e) { worn = 0; }
+    const known = !!(bot && bot.time && bot.time.timeOfDay != null);
+    const gate = mountainIronPick.mountainGate({
+      objectiveOk: caveIronPick.ironCaveObjectiveOk(objT, {}), pickTier: _caveInvTier(),
+      hp: bot && bot.health, y: p ? p.y : null, night: known ? isNight(bot) : false, worn, inWater,
+    });
+    if (gate.ok && p) {
+      const ores = _mountainScan();
+      visible = ores.length;
+      const st = loadBaseState() || {};
+      target = mountainIronPick.pickMountainIron(ores, { x: p.x, y: p.y, z: p.z }, {
+        now, fails: st.mountainFails,
+        isClaimed: (k) => { const c = _teamClaims && _teamClaims.peek(k); return !!(c && c.by !== bot.username); },
+      });
+      if (target) target.visible = visible;
+    } else if (gate.why === 'night' && (now - _mountainGateEmitAt >= 60000 || now < _mountainGateEmitAt)) {
+      _mountainGateEmitAt = now;
+      emit({ type: 'mountain_iron', phase: 'skipped', why: 'night', worn });
+    }
+  } catch (e) { target = null; }
+  _mountainCache = { at: now, target, visible };
+  return target;
+}
+
+/** Note la grappe comme essayée (mémo base, FUSION) : plus visée pendant 30 min. */
+function _mountainNoteTried(key, why) {
+  try {
+    const st = loadBaseState() || {};
+    saveBaseState(Object.assign({}, st, { mountainFails: mountainIronPick.mountainFailAdd(st.mountainFails, key, why, Date.now()) }));
+  } catch (e) { /* best-effort */ }
+  _mountainCache = { at: 0, target: null, visible: 0 };
+}
+
+/**
+ * Skill `mountainIron` : rejoindre chaque minerai de la grappe en CREUSANT (le fer est dans la roche,
+ * _caveGotoOre passe en canDig au 2e essai), puis floodFillVein (outil récoltant + garde lave + bornes).
+ * Borné à MOUNTAIN_MAX_MS. Trace `mountain_iron` (start / done) avec le compte de blocs visibles.
+ */
+async function runMountainIron() {
+  _mountainCache = { at: 0, target: null, visible: 0 };
+  const target = mountainIronForPlanner();
+  _mountainCache = { at: 0, target: null, visible: 0 };
+  if (!target) return { ok: false, reason: 'no_mountain_target' };
+  if (_teamClaims && !_teamClaims.tryClaim(target.key)) {
+    emit({ type: 'mountain_iron', phase: 'done', outcome: 'claimed', visible: target.visible, x: target.x, y: target.y, z: target.z, ores: target.count, mined: 0, iron_got: 0, took_s: 0 });
+    return { ok: false, reason: 'claimed' };
+  }
+  const tok = taskToken;                        // CAPTURÉ : une préemption ne nous le vole pas
+  const t0 = Date.now();
+  const rawIron = () => ((bot.inventory && bot.inventory.items()) || [])
+    .reduce((s, i) => s + (i.name === 'raw_iron' ? i.count : 0), 0);
+  const iron0 = rawIron();
+  const p0 = bot.entity && bot.entity.position;
+  emit({ type: 'mountain_iron', phase: 'start', visible: target.visible, x: target.x, y: target.y, z: target.z,
+    ores: target.count, dist: target.dist, from_y: p0 ? Math.round(p0.y) : null });
+  let mined = 0, reached = 0, gone = 0;
+  let outcome = 'done';
+  _caveTripBusy = true;                         // trySquad / tryRegroup ne nous arrachent pas au filon
+  try {
+    for (const ore of target.ores) {
+      if (tok.cancelled) { outcome = 'cancelled'; break; }
+      if (Date.now() - t0 > mountainIronPick.MOUNTAIN_MAX_MS) { outcome = 'timeout'; break; }
+      if (_teamClaims) { try { _teamClaims.refresh(target.key); } catch (e) {} }
+      const b = bot.blockAt(vec3Lib(ore.x, ore.y, ore.z));
+      if (!b) continue;
+      if (!caveIronPick.isIronOre(b.name)) { gone++; continue; }
+      // Pioche pierre+ en main de quoi récolter, sinon rien (toolGuard / canHarvestWith) — floodFillVein le
+      // revérifie bloc par bloc ; ici on évite juste un trajet pour rien.
+      if (_caveInvTier() < 2) { outcome = 'no_pick'; break; }
+      try { await branchSurvivalTick(); } catch (e) { /* best-effort */ }
+      if (tok.cancelled) { outcome = 'cancelled'; break; }
+      const near = await _caveGotoOre(ore, tok, null, 45000);
+      if (!near) continue;
+      reached++;
+      if (isInWater(bot)) { try { await escapeWater(bot, { emit }); } catch (e) {} if (isInWater(bot)) { outcome = 'water'; break; } }
+      try { mined += await withTimeout(floodFillVein(bot, ore, tok), 90000, () => { try { stopMotion(); } catch (e) {} }) || 0; }
+      catch (e) { /* bloc suivant */ }
+    }
+  } finally {
+    _caveTripBusy = false;
+    try { if (_teamClaims) _teamClaims.release(target.key); } catch (e) {}
+  }
+  const got = Math.max(0, rawIron() - iron0);
+  if (outcome === 'done' && reached === 0) outcome = gone >= target.ores.length ? 'gone' : 'unreachable';
+  emit({ type: 'mountain_iron', phase: 'done', outcome, visible: target.visible, x: target.x, y: target.y, z: target.z,
+    ores: target.count, reached, gone, mined, iron_got: got, took_s: Math.round((Date.now() - t0) / 1000) });
+  if (outcome !== 'cancelled') _mountainNoteTried(target.key, outcome);
+  if (got > 0) return { ok: true, iron_got: got };
+  return { ok: false, reason: outcome === 'done' ? 'no_iron' : outcome };
 }
 
 /**
@@ -9913,7 +10155,7 @@ function ironLawnEnd(r) {
   try { if (isInWater(bot)) return true; } catch (e) { return true; }
   const moved = !_workPos || Math.hypot(front.x - _workPos.x, front.z - _workPos.z) >= IRON_LAWN_WORK_MOVE;
   if (moved && homewarp.bookmark(bot, HOME_WORK)) {
-    _workSet = true; _workPos = _botXZ();
+    _workSet = true; _workPos = _botXZ(); if (typeof _noteWorkDepth === 'function') _noteWorkDepth();
     emit({ type: 'work_bookmarked', ctx: 'lawn_front', x: front.x, y: front.y, z: front.z });
   }
   return true;
@@ -10807,6 +11049,16 @@ async function hideFromThreat(why, danger, opts = {}) {
     try { await _shelterInFlight; } catch (e) { /* l'abri en cours a ses propres garde-fous */ }
     return { ok: true, joined: true };
   }
+  // SOUS TERRE (Massii 25/10 : « s'ils passent leur temps sous terre à miner, pas besoin de se faire un
+  // couvert ») : pas de puits ni d'attente — il se défend (aura, réflexes) et continue. Seule l'urgence
+  // réelle (hostile ≤ 3 blocs ET PV ≤ 6) garde l'abri (nightDeep.undergroundShelterVeto).
+  try {
+    if (typeof nightDeep !== 'undefined' && nightDeep.undergroundShelterVeto({
+      underground: nightUndergroundNow(), hp: bot.health, threatDist: _nearestThreatDist() })) {
+      if (typeof _undergroundVetoNote === 'function') _undergroundVetoNote('threat_hide:' + why);
+      return { ok: false, reason: 'underground' };
+    }
+  } catch (e) { /* lecture ratée : comportement historique */ }
   const maxWaitMs = Number.isFinite(opts.maxWaitMs) ? opts.maxWaitMs : THREAT_HIDE_MAX_MS;
   // GRAPPE DE MÊLÉE AU CONTACT (live 22/10, NethBot3 : 4 zombies à 0,5-1,7 bloc) : ni la fuite (coincé) ni
   // le puits (pas le temps de le creuser) — le pilier, tout de suite. Raté (pas de bloc, pose ratée) → l'abri d'avant.
@@ -11406,7 +11658,7 @@ function invalidateVoidHome(name, at, reason) {
       saveBaseState(st);
     } catch (e) {}
   }
-  if (name === HOME_WORK) { _workSet = false; _forgetDeepWork('delhome'); _workPos = null; }
+  if (name === HOME_WORK) { _workSet = false; _forgetDeepWork('delhome'); _workPos = null; try { const _st = loadBaseState() || {}; if (_st.workDepth) saveBaseState(Object.assign({}, _st, { workDepth: null })); } catch (e) {} }
   emit({ type: 'home_invalidated_void', name, reason, ...(at || {}) });
 }
 

@@ -58,7 +58,9 @@ test('IRON_ARMOR_CHAIN: pioche fer + kit bois sûr + four + food + 24 lingots �
     iron_ingot: 24, stone_sword: 1, stone_axe: 1, cobblestone: 12, oak_planks: 24,
   };
   const g = firstUnmet(IRON_ARMOR_CHAIN, ctx(inv));
-  assert.strictEqual(g.name, 'shield');
+  // 25/10 : le bouclier est désormais exigé AVANT de quitter la base (shield_early, même craft que `shield`).
+  assert.strictEqual(g.name, 'shield_early');
+  assert.deepStrictEqual(g.args, { name: 'shield', count: 1 });
 });
 
 test('IRON_ARMOR_CHAIN: bouclier DÉJÀ équipé (main secondaire) → on passe à l\'armure', () => {
@@ -87,6 +89,7 @@ test('IRON_ARMOR_CHAIN: fer insuffisant, en surface → descend_y16 ; déjà à 
   const inv = {
     iron_pickaxe: 1, stone_pickaxe: 1, crafting_table: 1, stick: 4, furnace: 1, cooked_beef: 6,
     iron_ingot: 2, raw_iron: 1, stone_sword: 1, stone_axe: 1, cobblestone: 12, oak_planks: 24,
+    shield: 1,   // 25/10 : sans bouclier, shield_early passerait avant la descente (testé à part)
   };
   assert.strictEqual(firstUnmet(IRON_ARMOR_CHAIN, ctx(inv, [], 64)).name, 'descend_y16');
   assert.strictEqual(firstUnmet(IRON_ARMOR_CHAIN, ctx(inv, [], 16)).name, 'iron_deep');
@@ -95,7 +98,7 @@ test('IRON_ARMOR_CHAIN: fer insuffisant, en surface → descend_y16 ; déjà à 
 test('IRON_ARMOR_CHAIN: sous terre SANS food → food_stock ne stalle pas (met via y<45)', () => {
   const inv = {
     iron_pickaxe: 1, stone_pickaxe: 1, crafting_table: 1, stick: 4, furnace: 1,
-    iron_ingot: 2, stone_sword: 1, stone_axe: 1, cobblestone: 12, oak_planks: 24,
+    iron_ingot: 2, stone_sword: 1, stone_axe: 1, cobblestone: 12, oak_planks: 24, shield: 1,
   };
   const g = firstUnmet(IRON_ARMOR_CHAIN, ctx(inv, [], 16));
   assert.strictEqual(g.name, 'iron_deep'); // pas food_stock ni descend
@@ -379,4 +382,15 @@ test('wood-desert : noWood sans effet si le buffer est déjà constitué (bois p
   );
   // plank_buffer est déjà met (8 bûches ×4 = 32 ≥ 24) → firstUnmet ne s'y arrête pas, noWood ou pas.
   assert.notStrictEqual(firstUnmet(IRON_ARMOR_CHAIN, withWood).name, 'plank_buffer');
+});
+
+test('IRON_ARMOR_CHAIN (25/10) : 1 lingot + 6 planches sans bouclier → shield_early AVANT la descente', () => {
+  const inv = {
+    iron_pickaxe: 1, stone_pickaxe: 1, crafting_table: 1, stick: 4, furnace: 1, cooked_beef: 6,
+    iron_ingot: 2, raw_iron: 1, stone_sword: 1, stone_axe: 1, cobblestone: 12, oak_planks: 24,
+  };
+  assert.strictEqual(firstUnmet(IRON_ARMOR_CHAIN, ctx(inv, [], 64)).name, 'shield_early');
+  // sans lingot : jamais bloquant, la descente part
+  const noIngot = Object.assign({}, inv, { iron_ingot: 0, raw_iron: 2 });
+  assert.notStrictEqual(firstUnmet(IRON_ARMOR_CHAIN, ctx(noIngot, [], 64)).name, 'shield_early');
 });

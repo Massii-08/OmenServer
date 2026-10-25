@@ -1159,3 +1159,34 @@ test('IRON_HELP_CHAIN: fer visible → help_cave AVANT descend_y16 / iron_deep ;
   assert.strictEqual(firstUnmet(IRON_HELP_CHAIN, { inv: { iron_pickaxe: 1 }, y: 40 }).name, 'descend_y16');
   assert.notStrictEqual(firstUnmet(IRON_HELP_CHAIN, { ...ctx, inv: { iron_pickaxe: 1, raw_iron: HELP_STOCK } }).name, 'help_cave');
 });
+
+test('T1 (25/10) : shield_early puis mountain_iron AVANT iron_cave / descend_y16 / iron_deep', () => {
+  for (const obj of ['iron_armor', 'diamond_armor']) {
+    const names = chainFor(obj).map((g) => g.name);
+    const i = (n) => names.indexOf(n);
+    assert.ok(i('shield_early') >= 0 && i('mountain_iron') >= 0, obj);
+    assert.ok(i('shield_early') < i('mountain_iron'), obj + ' bouclier avant le fer de montagne');
+    assert.ok(i('mountain_iron') < i('iron_cave'), obj + ' montagne avant grotte');
+    assert.ok(i('iron_cave') < i('descend_y16') && i('descend_y16') < i('iron_deep'), obj);
+  }
+});
+
+test('shield_early : 1 lingot + 6 planches de même essence → craft ; sinon sautable', () => {
+  const g = chainFor('iron_armor').find((x) => x.name === 'shield_early');
+  assert.deepStrictEqual(g.args, { name: 'shield', count: 1 });
+  const ctx = (inv, extra) => Object.assign({ inv, y: 70, worn: [] }, extra || {});
+  assert.strictEqual(g.met(ctx({ iron_ingot: 1, oak_planks: 6 })), false, 'de quoi faire → à faire');
+  assert.strictEqual(g.met(ctx({ iron_ingot: 1, oak_log: 4 })), false, 'bûches convertibles comptent');
+  assert.strictEqual(g.met(ctx({ oak_planks: 6 })), true, 'sans lingot : sauté');
+  assert.strictEqual(g.met(ctx({ iron_ingot: 1, oak_planks: 3, birch_planks: 3 })), true, 'essences mêlées : sauté');
+  assert.strictEqual(g.met(ctx({ iron_ingot: 1, oak_planks: 6, shield: 1 })), true);
+  assert.strictEqual(g.met(ctx({ iron_ingot: 1, oak_planks: 6 }, { offhand: 'shield' })), true);
+});
+
+test('mountain_iron : sautable sans grappe en vue, à faire avec une grappe et du fer manquant', () => {
+  const g = chainFor('iron_armor').find((x) => x.name === 'mountain_iron');
+  assert.strictEqual(g.skill, 'mountainIron');
+  const ctx = (extra) => Object.assign({ inv: { stone_pickaxe: 1 }, y: 80, worn: [] }, extra || {});
+  assert.strictEqual(g.met(ctx({})), true);
+  assert.strictEqual(g.met(ctx({ mountainIron: { x: 1, y: 80, z: 1, count: 3 } })), false);
+});

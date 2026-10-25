@@ -85,3 +85,15 @@ test('low_hp BRUT (garde PV de caveHunt, 24/10) : reconnu, et la récupération 
   assert.strictEqual(lowHpStep({ health: 9, food: 4, hasFood: false, targetHp: 12 }), 'food_run');
   assert.strictEqual(lowHpStep({ health: 12, food: 4, hasFood: false, targetHp: 12 }), 'ok');
 });
+
+test('lowHpStep sous terre : pas de mur sauf hostile collé à PV critiques (Massii 25/10)', () => {
+  // un hostile à 5 blocs, PV critiques : sous terre on mange au lieu de se murer
+  assert.strictEqual(lowHpStep({ health: 4, food: 13, hasFood: true, threatDist: 5, underground: true }), 'eat');
+  assert.strictEqual(lowHpStep({ health: 4, food: 13, threatDist: 5, underground: true }), 'wait');
+  // collé ET critique : l'urgence réelle reste permise
+  assert.strictEqual(lowHpStep({ health: 4, food: 13, threatDist: 2, underground: true }), 'seal');
+  // garde de grotte (cible 12) à 9 PV, hostile collé : pas critique → pas de mur sous terre
+  assert.strictEqual(lowHpStep({ health: 9, food: 13, hasFood: true, threatDist: 2, underground: true, targetHp: 12 }), 'eat');
+  // en surface : inchangé
+  assert.strictEqual(lowHpStep({ health: 4, food: 13, threatDist: 5, underground: false }), 'seal');
+});

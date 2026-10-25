@@ -475,6 +475,19 @@ const IRON_ARMOR_CHAIN = [
   { name: 'spare_pick',   met: (c) => ironOK(c) || IA(c) || pickCount(c) >= 2
                                        || invCount(c.inv, 'cobblestone') < 3 || invCount(c.inv, 'stick') < 2,
     skill: 'craft',       args: { name: 'stone_pickaxe', count: 1 } },
+  // BOUCLIER AVANT DE QUITTER LA BASE (25/10, run Hard keepInventory OFF : squelettes = tueur n°2). Le but
+  // `shield` de la chaîne vient APRÈS la pioche fer : un bot qui a déjà 1 lingot + 6 planches de la même
+  // essence partait quand même en grotte/descente bouclier en poche… sans bouclier. Même prédicat que
+  // `shield` (SATISFIABLE-OU-SAUTABLE : sans lingot ou sans planches, atteint d'office — jamais bloquant) ;
+  // la skill craft l'enfile en main secondaire (runSkill, branche craft).
+  { name: 'shield_early', met: (c) => hasShield(c) || invCount(c.inv, 'iron_ingot') < 1 || !plankable(c.inv, 6) || IA(c),
+    skill: 'craft',       args: { name: 'shield', count: 1 } },
+  // FER DES MONTAGNES (25/10). Anti-xray serveur `max-block-height: 64` : au-dessus de 64 le fer n'est pas
+  // masqué — à flanc de colline, le bot le VOIT à travers la roche (mountainIron.js). Il creuse jusqu'à lui
+  // de jour, sans descente ni grotte. `c.mountainIron` = la grappe visée (ctxExtra, cache 30 s) ; absente
+  // (rien en vue, nuit d'un bot nu, sous terre, blessé, pas de pioche pierre) → but atteint d'office.
+  { name: 'mountain_iron', met: (c) => ironOK(c) || IA(c) || !c.mountainIron,
+    skill: 'mountainIron', args: {} },
   { name: 'iron_cave',    met: (c) => ironOK(c) || IA(c) || !c.ironCave,
     skill: 'caveIron',    args: {} },
   { name: 'descend_y16',  met: (c) => (c.y !== undefined && c.y <= 18) || ironOK(c) || IA(c),

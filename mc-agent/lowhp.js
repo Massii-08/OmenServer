@@ -18,6 +18,7 @@ const { REGEN_FOOD } = require('./reflexes');
 
 const LOWHP_THREAT_RADIUS = 16;        // un hostile en vue : il peut revenir pendant le craft
 const LOWHP_SEAL_RADIUS = 8;           // assez près pour se murer plutôt qu'attendre à découvert
+const LOWHP_UNDERGROUND_SEAL_DIST = 3; // sous terre : seulement un hostile COLLÉ (urgence réelle)
 const LOWHP_RECOVERY_BUDGET_MS = 60000;   // une récupération rend la main au planner au bout d'1 min
 const LOWHP_FOOD_RUN_TTL_MS = 5 * 60000;  // une sortie nourriture tentée vaut pour 5 min
 const LOWHP_MAX_EAT_FAILS = 3;         // eat_failed répété → on cesse d'essayer (pas de spin)
@@ -51,7 +52,11 @@ function lowHpStep(s = {}) {
   const threat = typeof s.threatDist === 'number' && Number.isFinite(s.threatDist) ? s.threatDist : null;
   // 24/10 : se murer AVANT de manger quand un hostile est collé — une bouchée rengaine l'arme 1,6 s et
   // le coup suivant tombe pendant le repas (« reculer/se murer d'abord »). Muré, on mange.
-  if (threat != null && threat <= LOWHP_SEAL_RADIUS && !s.sealed) return 'seal';
+  // SOUS TERRE (Massii 25/10 : « s'ils passent leur temps sous terre à miner, pas besoin de se faire un
+  // couvert ») : pas de mur sauf URGENCE RÉELLE — hostile collé (≤ 3 blocs) ET PV critiques (≤ 6). Sinon
+  // il mange / attend en se défendant (l'aura), comme tout le reste du minage.
+  const sealOk = !s.underground || (isCritical(s.health) && threat != null && threat <= LOWHP_UNDERGROUND_SEAL_DIST);
+  if (threat != null && threat <= LOWHP_SEAL_RADIUS && !s.sealed && sealOk) return 'seal';
   if (s.hasFood && !regen && (s.eatFails || 0) < LOWHP_MAX_EAT_FAILS) return 'eat';
   if (threat != null && threat <= LOWHP_THREAT_RADIUS) return 'wait';
   if (regen) return 'wait';
@@ -99,5 +104,5 @@ function shelterCraftThrottled({ blocked, lastSkipAt, now } = {}) {
 module.exports = {
   shelterCraftThrottled, LOWHP_SKIP_RETRY_MS,
   lowHpStep, craftBlockedAtLowHp, isCritical, isLowHpSkip, lowHpTargetFor, LOWHP_CAVE_TARGET,
-  LOWHP_THREAT_RADIUS, LOWHP_SEAL_RADIUS, LOWHP_RECOVERY_BUDGET_MS, LOWHP_FOOD_RUN_TTL_MS, LOWHP_MAX_EAT_FAILS,
+  LOWHP_THREAT_RADIUS, LOWHP_SEAL_RADIUS, LOWHP_UNDERGROUND_SEAL_DIST, LOWHP_RECOVERY_BUDGET_MS, LOWHP_FOOD_RUN_TTL_MS, LOWHP_MAX_EAT_FAILS,
 };
