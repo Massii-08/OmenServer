@@ -91,7 +91,7 @@ const { huntPassive } = require('./skills/hunt');
 const { fishCatch, rodPlan } = require('./skills/fish');   // pêche : la nourriture qui ne s'épuise pas
 const { nearestPassive, survivalTick, nearbyHostiles, lavaNearby, armorPoints, weaponDamage } = require('./survival');
 const { loadWorld, saveWorld, setObjective, clearObjective } = require('./worldModel');
-const { _nearestTable, tableKey, tablePlan, TABLE_REACH, TABLE_SEEK, pickJunkToToss } = require('./skills/craft'); // craftItem déjà importé plus haut
+const { _nearestTable, tableKey, tablePlan, TABLE_REACH, TABLE_SEEK, pickJunkToToss, needsRoomFor } = require('./skills/craft'); // craftItem déjà importé plus haut
 const { fillOverflow, fillCapDue, tossTarget } = require('./fillCap');   // plafond de remblai (23/10)
 const { noPickWhy } = require('./noPick');                   // pioche irremplaçable (23/10)
 const { recycleWorthIt, createNoSpaceMemo, stepAsideCells } = require('./tableSpot');
@@ -3147,6 +3147,25 @@ async function stepAsideForTable() {
 // `opts.inPlace` (22/10, crafts DANS l'abri de nuit) : ne JAMAIS marcher — ni vers une table lointaine,
 // ni pour en reprendre une abandonnée, ni vers un sol dégagé si la pose rate. Seule une table À PORTÉE
 // compte ; sinon la table de poche est posée ICI (paroi du puits) puis reprise.
+// TABLE PERDUE EN PHASE DIAMANT (25/10, NethBot1 session 679 : pioche diamant cassée, 61 diamants, aucune
+// table → remontée chercher du bois). La pose libère la case de la table… que le PRODUIT du craft reprend
+// aussitôt : poche à 0 case (`craft_fail_ctx … empty:0`, 110-180 cobble chez les mineurs) → collectBlock
+// casse la table mais ne peut pas la ramasser → `reclaim_failed` + `table_abandoned` (×6 dans les sessions
+// 676-682). Avant la reprise, on jette UNE pile de déchet (pickJunkToToss : jamais l'outil, garde cobble et
+// remblai) si la table n'a nulle part où aller (needsRoomFor, PUR). Best-effort, jamais de throw.
+async function makeRoomForTableReclaim() {
+  try {
+    const inv = bot.inventory;
+    if (!inv || typeof inv.emptySlotCount !== 'function' || typeof bot.tossStack !== 'function') return;
+    const items = inv.items();
+    if (!needsRoomFor({ emptySlots: inv.emptySlotCount(), items, product: 'crafting_table', need: 1 })) return;
+    const junk = pickJunkToToss(items, { exclude: ['crafting_table'] });
+    if (!junk) { emit({ type: 'table_reclaim_no_room' }); return; }
+    await bot.tossStack(junk);
+    emit({ type: 'table_reclaim_room', tossed: junk.name + ':' + junk.count, empty: inv.emptySlotCount() });
+  } catch (e) { /* best-effort */ }
+}
+
 async function withCraftingTable(fn, opts = {}) {
   const inPlace = !!(opts && opts.inPlace);
   // On CHERCHE loin (TABLE_SEEK) puis on marche jusqu'à la table : réutiliser une table déjà
@@ -3257,6 +3276,7 @@ async function withCraftingTable(fn, opts = {}) {
     else if (far != null && far > TABLE_REACH - 1) r = Object.assign({}, r, { reason: 'no_recipe:table_out_of_reach' });
   }
   await sleep(250);                                // craft 100% terminé AVANT de casser la table
+  await makeRoomForTableReclaim();                 // poche pleine = table jamais ramassée (cf. ci-dessous)
   await reclaimBlock(place.pos);                   // garder la table PORTABLE (1 seule)
   // reclaimBlock retourne en SILENCE quand il ne retrouve pas le bloc (il suppose « déjà repris »).
   // C'est ainsi que les tables s'accumulaient sans qu'aucun event ne le signale : on vérifie.

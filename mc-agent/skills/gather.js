@@ -2,7 +2,24 @@
 // `take <bloc> [n]` : récolte n× le bloc le + proche avec le meilleur outil, en se défendant.
 const { bestToolFor, bestWeapon } = require('../tools');
 const { NEUTRAL_NO_PROVOKE } = require('../survival');   // bug #3 (Massii) : jamais l'enderman (neutre)
-const { explore } = require('./explore');
+const { explore, findAliveBlock } = require('./explore');
+
+// BLOCS MORTS PERSISTANTS (25/10, NethBot1 session 679 : `logs not_found` ×21 en 10 min, 4 tours/s) : la
+// liste des cibles ratées était LOCALE à l'appel de gather → chaque tour du planner re-tentait la même
+// bûche inrécoltable, et explore la « re-trouvait » sur sa cible dirigée (donc jamais épuisée). Rangée
+// sur le bot (survit aux tours et aux respawns du process), à OUBLI : le terrain change (un coéquipier
+// coupe l'arbre, un pont s'ouvre). PUR côté décision : `deadBlockIsLive(map, key, now)`.
+const DEAD_BLOCK_TTL_MS = 10 * 60 * 1000;
+function deadBlockIsLive(map, key, now, ttlMs = DEAD_BLOCK_TTL_MS) {
+  if (!map || !map.has(key)) return false;
+  if (now - map.get(key) < ttlMs) return true;
+  map.delete(key);
+  return false;
+}
+function _deadMap(bot) {
+  if (!(bot._mcaDeadBlocks instanceof Map)) bot._mcaDeadBlocks = new Map();
+  return bot._mcaDeadBlocks;
+}
 const { materialFoundEvent, resolveBiome } = require('../worldMemory');
 
 // Expédition bois (Massii 15/07) : quand le spawn est déboisé, revenir chercher 3 bûches à la fois
@@ -114,14 +131,15 @@ async function gather(bot, { name, count = 1, maxDistance = 64, explore: doExplo
   let explorations = 0;
   // Cibles dont le collect a échoué ×2 (enterrées/inatteignables, vu live HarvT6) : on ne s'y
   // racharne pas — findBlock les ignore → l'explore/directed peut chercher AILLEURS.
-  const failed = new Set();
+  const dead = _deadMap(bot);
   const keyOf = (p) => `${p.x},${p.y},${p.z}`;
+  const isDead = (p) => !!p && deadBlockIsLive(dead, keyOf(p), Date.now());
   for (let i = 0; i < count; i++) {
     if (token && token.cancelled) return { ok: true, got, cancelled: true };
     if (_dangerNow(danger)) return { ok: got > 0, got, reason: 'danger' };
     await defendIfNeeded(bot);
-    let block = bot.findBlock({ matching: ids, maxDistance });
-    if (block && failed.has(keyOf(block.position))) block = null; // cible déjà ratée = comme absente
+    // cible déjà ratée (ce tour OU un tour récent) = comme absente → la plus proche encore vivante
+    let block = findAliveBlock(bot, ids, maxDistance, isDead);
     // Rien à portée → exploration de surface autonome (opt-in `explore`, borné). Le bot voyage en
     // anneaux et re-scanne jusqu'à trouver. Désactivé par défaut : les gather opportunistes (type
     // branchMine à maxDistance:6 sur un minerai entrevu) ne doivent PAS partir roamer 256 blocs.
@@ -129,13 +147,12 @@ async function gather(bot, { name, count = 1, maxDistance = 64, explore: doExplo
       explorations++;
       // emit : les events explore (explore_directed/explore_waypoint) remontent dans le flux stdout
       // du bot → observables en live (run.log / manager). Sans ça le biais dirigé est invisible.
-      const ex = await explore(bot, Object.assign({ name, matching: ids, scanRadius: maxDistance, token, emit: bot._emit || null },
+      const ex = await explore(bot, Object.assign({ name, matching: ids, scanRadius: maxDistance, token, emit: bot._emit || null, skipBlock: isDead },
         exploreShape || {}, typeof danger === 'function' ? { danger } : {}));
       if (token && token.cancelled) return { ok: true, got, cancelled: true };
       if (ex && ex.reason === 'danger') return { ok: got > 0, got, reason: 'danger' };
       if (ex && ex.ok) {
-        block = bot.findBlock({ matching: ids, maxDistance });
-        if (block && failed.has(keyOf(block.position))) block = null;
+        block = findAliveBlock(bot, ids, maxDistance, isDead);
       }
     }
     if (!block) {
@@ -155,7 +172,7 @@ async function gather(bot, { name, count = 1, maxDistance = 64, explore: doExplo
         await collectBounded(block); got++;
       } catch (e2) {
         stopResidual(bot);                       // collectBlock laisse son goal actif → creusage fantôme
-        failed.add(keyOf(block.position));       // ne plus viser cette cible morte
+        dead.set(keyOf(block.position), Date.now());   // ne plus viser cette cible morte (persiste DEAD_BLOCK_TTL_MS)
         if (doExplore && explorations <= count) { i--; continue; } // l'explore du tour suivant cherche AILLEURS
         if (got === 0) return { ok: false, reason: 'collect_failed' };
         break;
@@ -170,5 +187,5 @@ async function gather(bot, { name, count = 1, maxDistance = 64, explore: doExplo
   return { ok: true, got };
 }
 
-module.exports = { gather, nearbyHostile, defendIfNeeded, woodExpeditionCount, WOOD_EXPEDITION, NO_MELEE,
+module.exports = { gather, deadBlockIsLive, DEAD_BLOCK_TTL_MS, nearbyHostile, defendIfNeeded, woodExpeditionCount, WOOD_EXPEDITION, NO_MELEE,
   woodExploreShape, WOOD_NAKED_STEP, WOOD_NAKED_MAX_RADIUS };

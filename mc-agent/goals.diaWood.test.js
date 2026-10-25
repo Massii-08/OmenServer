@@ -12,7 +12,10 @@ test('phase diamant : bâtons + table en poche → pas de bois', () => {
 });
 test('phase diamant : planches pour bâtons et table → pas de bois', () => {
   assert.strictEqual(G.diaWoodEnough({ inv: { oak_planks: 6 } }), true);
-  assert.strictEqual(G.diaWoodEnough({ inv: { oak_planks: 2 }, hasTable: true }), true);
+  // une table POSÉE à côté ne suit pas le bot : il faut la table EN POCHE, ou 4 planches de plus
+  assert.strictEqual(G.diaWoodEnough({ inv: { oak_planks: 2 }, hasTable: true }), false);
+  assert.strictEqual(G.diaWoodEnough({ inv: { oak_planks: 2, crafting_table: 1 }, hasTable: true }), true);
+  assert.strictEqual(G.diaWoodEnough({ inv: { stick: 2, oak_planks: 4 }, hasTable: true }), true);
 });
 test('phase diamant : ni bâtons ni planches → bois dû (vrai besoin)', () => {
   const c = { inv: { diamond: 1 }, worn: [] };

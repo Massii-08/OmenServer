@@ -229,7 +229,9 @@ function diaWoodEnough(c) {
   let planks = 0;
   for (const [k, v] of Object.entries(c.inv)) if (/_planks$/.test(k)) planks = Math.max(planks, Number(v) || 0);
   const planksForSticks = sticks >= 2 ? 0 : 2;
-  const planksForTable = (invCount(c.inv, 'crafting_table') >= 1 || !!c.hasTable) ? 0 : 4;
+  // Table EN POCHE seulement (25/10, NethBot1 : 61 diamants, pioche cassée, `no_table:unknown_item`) :
+  // une table POSÉE près du chantier (`c.hasTable`) ne suit pas le bot — au prochain craft elle est loin.
+  const planksForTable = invCount(c.inv, 'crafting_table') >= 1 ? 0 : 4;
   return planks >= planksForSticks + planksForTable;
 }
 function diaWoodGoal(g) {

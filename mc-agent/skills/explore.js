@@ -117,6 +117,30 @@ function gotoWithTimeout(bot, goal, ms, abortIf = null) {
   });
 }
 
+// BLOC MORT (25/10, NethBot1 : boucle `logs not_found` ×21) : une bûche que collectBlock ne sait pas
+// récolter (cime d'arbre, désync) est notée « ratée » par gather. Si explore la RE-TROUVE en arrivant sur
+// sa cible dirigée, il rend « trouvé » → la cible n'est jamais épuisée et gather rejette aussitôt la même
+// bûche : boucle chaude. `isDead(pos)` (optionnel) fait sauter ces blocs ; on prend alors le suivant
+// non mort parmi les plus proches (findBlocks), sinon null. Sans `isDead` = findBlock d'origine.
+function findAliveBlock(bot, matching, maxDistance, isDead = null) {
+  const hit = bot.findBlock({ matching, maxDistance });
+  if (!hit || typeof isDead !== 'function') return hit;
+  let dead = false;
+  try { dead = !!isDead(hit.position); } catch (e) { dead = false; }
+  if (!dead) return hit;
+  if (typeof bot.findBlocks !== 'function' || typeof bot.blockAt !== 'function') return null;
+  let list = [];
+  try { list = bot.findBlocks({ matching, maxDistance, count: 32 }) || []; } catch (e) { list = []; }
+  for (const p of list) {
+    let d = false;
+    try { d = !!isDead(p); } catch (e) { d = false; }
+    if (d) continue;
+    const b = bot.blockAt(p);
+    if (b) return b;
+  }
+  return null;
+}
+
 /**
  * explore(bot, opts) → {ok:true, found:pos, traveled} | {ok:false, reason:'not_found'|'cancelled'|'no_pos', stuck?:true}
  *  name      : nom du bloc (pour log)            matching : ids findBlock (résolus par l'appelant)
@@ -164,6 +188,8 @@ async function exploreRun(bot, opts, origin, stats) {
   const token = opts.token || null;
   const emit = opts.emit || null;
   const now = opts.now || Date.now;
+  const skipBlock = typeof opts.skipBlock === 'function' ? opts.skipBlock : null;
+  const scan = () => findAliveBlock(bot, matching, scanRadius, skipBlock);
   // DANGER (run 10, 20/10) : `opts.danger()` vrai = un bot nu a un hostile à portée → on arrête d'explorer
   // TOUT DE SUITE (avant chaque trajet ET pendant, via gotoWithTimeout/abortIf) et on rend
   // {ok:false, reason:'danger'} : l'appelant s'abrite puis reprend. Jamais de markExhausted sur ce motif
@@ -251,7 +277,7 @@ async function exploreRun(bot, opts, origin, stats) {
         try {
           await gotoWithTimeout(bot, buildDirectedGoal(target, 8), directedGotoTimeoutMs, dangerFn);
           if (token && token.cancelled) return { ok: false, reason: 'cancelled' };
-          const hit = bot.findBlock({ matching, maxDistance: scanRadius });
+          const hit = scan();
           if (hit) return { ok: true, found: hit.position, traveled: 0, directed: true };
           markExhausted(target); // arrivé mais rien sur place → cible épuisée, ne plus la proposer
           break; // → anneaux depuis ici
@@ -276,7 +302,20 @@ async function exploreRun(bot, opts, origin, stats) {
   // Anneaux centrés sur la position COURANTE (≠ origin) : après un trajet dirigé vers une cible
   // épuisée, on ratisse AUTOUR du gisement appris (bon prior local) au lieu de retraverser la carte.
   const ringOrigin = (bot.entity && bot.entity.position) || origin;
-  const wps = nextWaypoints({ x: ringOrigin.x, y: ringOrigin.y, z: ringOrigin.z }, { step, maxRadius, bounds });
+  let wps = nextWaypoints({ x: ringOrigin.x, y: ringOrigin.y, z: ringOrigin.z }, { step, maxRadius, bounds });
+  // POCHE HORS DE PORTÉE (25/10, NethBot1 après une migration de zone) : le bot est si loin de l'ancre
+  // confine que TOUS les points de ses anneaux tombent hors poche → 0 waypoint → `not_found` instantané,
+  // en boucle. On recentre la spirale sur le CENTRE de la poche (là où l'on a le droit d'explorer) plutôt
+  // que de rendre la main sans avoir bougé : le premier anneau (rayon `step` ≤ rayon de la poche) y tient.
+  if (!wps.length && bounds) {
+    wps = nextWaypoints({ x: bounds.x, y: ringOrigin.y, z: bounds.z }, { step, maxRadius, bounds });
+    if (emit) {
+      try {
+        emit({ type: 'explore_recentred', x: Math.round(bounds.x), z: Math.round(bounds.z),
+          fromX: Math.round(ringOrigin.x), fromZ: Math.round(ringOrigin.z), waypoints: wps.length });
+      } catch (e) { /* best-effort */ }
+    }
+  }
   // RAPPEL dirigé : si le préambule dirigé est mort-né (NoPath transitoire — chunks pas chargés au
   // spawn/tp frais, vu live HarvT9), on RE-TENTE la route dirigée au début de chaque NOUVEL anneau
   // (le bot a bougé → monde chargé) au lieu de ratisser toute la spirale. Borné à 3 rappels.
@@ -292,7 +331,7 @@ async function exploreRun(bot, opts, origin, stats) {
         try {
           await gotoWithTimeout(bot, buildDirectedGoal(dTarget, 8), directedGotoTimeoutMs, dangerFn);
           if (token && token.cancelled) return { ok: false, reason: 'cancelled' };
-          const hit = bot.findBlock({ matching, maxDistance: scanRadius });
+          const hit = scan();
           if (hit) return { ok: true, found: hit.position, traveled: 0, directed: true };
           markExhausted(dTarget); // arrivé mais rien sur place → cible épuisée, ne plus la proposer
           ringRecalls = 0; // plus de rappel
@@ -339,7 +378,7 @@ async function exploreRun(bot, opts, origin, stats) {
     // pas de scan (le réflexe anti-noyade gère la sortie). Hook injectable pour les tests.
     const inWater = opts.inWater || bot._mcaInWater || null;
     if (inWater) { try { if (inWater(bot)) continue; } catch (e) { /* best-effort */ } }
-    const block = bot.findBlock({ matching, maxDistance: scanRadius });
+    const block = scan();
     if (block) return { ok: true, found: block.position, traveled: wp.r };
   }
   // Sortie ENFERMÉ : pas de markExhausted — une cible jamais approchée n'est pas « épuisée » (la marquer
@@ -353,4 +392,4 @@ async function exploreRun(bot, opts, origin, stats) {
   return { ok: false, reason: 'not_found' };
 }
 
-module.exports = { explore, nextWaypoints, pointsOnRing, gotoWithTimeout };
+module.exports = { explore, nextWaypoints, pointsOnRing, gotoWithTimeout, findAliveBlock };
