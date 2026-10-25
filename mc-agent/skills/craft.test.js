@@ -620,9 +620,14 @@ test('pickJunkToToss : entrées bizarres → null sans crash, et l\'entrée n\'e
 test('JUNK_TIERS : liste blanche exacte, dans l\'ordre demandé', () => {
   assert.deepStrictEqual(JUNK_TIERS.map((t) => t.names), [
     ['dirt', 'coarse_dirt', 'rooted_dirt'], ['gravel'], ['granite', 'diorite', 'andesite', 'tuff', 'calcite'],
-    ['netherrack'], ['cobbled_deepslate'], ['cobblestone'],
+    ['netherrack'],
+    ['dripstone_block', 'pointed_dripstone', 'flint', 'feather', 'bone', 'egg', 'wheat_seeds', 'leather',
+      'armadillo_scute', 'oak_sapling', 'birch_sapling', 'spruce_sapling', 'acacia_sapling', 'jungle_sapling',
+      'dark_oak_sapling', 'cherry_sapling', 'mangrove_propagule', 'amethyst_shard', 'clay_ball', 'sand', 'red_sand',
+      'spider_eye', 'sandstone', 'mossy_cobblestone', 'smooth_basalt'],
+    ['cobbled_deepslate'], ['cobblestone'],
   ]);
-  assert.deepStrictEqual(JUNK_TIERS.map((t) => t.keep), [0, 0, 0, 0, 32, 32]);
+  assert.deepStrictEqual(JUNK_TIERS.map((t) => t.keep), [0, 0, 0, 0, 0, 32, 32]);
 });
 
 test('needsRoomFor : seulement si AUCUNE case vide ET pas de place dans les piles du produit', () => {

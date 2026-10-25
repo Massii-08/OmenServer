@@ -185,11 +185,20 @@ const JUNK_TIERS = [
   { names: ['gravel'], keep: 0 },
   { names: ['granite', 'diorite', 'andesite', 'tuff', 'calcite'], keep: 0 },
   { names: ['netherrack'], keep: 0 },
+  // BUTIN INUTILE à la chaîne diamant (25/10, NethBot2 : 34 cases pleines dont redstone ×192, lapis ×48,
+  // cuivre/or bruts, 94 dripstone, plumes, cuir, os, silex… → table perdue faute de place, 6 fois).
+  // Jamais : ficelle (canne), charbon, torches, fer brut, laine (lit), diamant, nourriture — ni les minerais
+  // de quota (redstone, lapis, or, cuivre) ni les flèches, protégés par la liste blanche des tests.
+  { names: ['dripstone_block', 'pointed_dripstone', 'flint', 'feather', 'bone', 'egg', 'wheat_seeds', 'leather',
+    'armadillo_scute', 'oak_sapling', 'birch_sapling', 'spruce_sapling', 'acacia_sapling', 'jungle_sapling',
+    'dark_oak_sapling', 'cherry_sapling', 'mangrove_propagule', 'amethyst_shard', 'clay_ball', 'sand', 'red_sand',
+    'spider_eye', 'sandstone', 'mossy_cobblestone', 'smooth_basalt'], keep: 0 },
   { names: ['cobbled_deepslate'], keep: COBBLE_KEEP },   // « au-delà de 32 », par nom
   { names: ['cobblestone'], keep: COBBLE_KEEP },
 ];
 // Remblai : tout ce que JUNK_TIERS sait jeter sert aussi à poser (tours, abris, murs de lave).
-const FILL_NAMES = new Set(JUNK_TIERS.reduce((a, t) => a.concat(t.names), []));
+// Le palier BUTIN (dripstone, plumes…) ne se pose pas : il ne compte pas comme remblai.
+const FILL_NAMES = new Set(JUNK_TIERS.filter((t) => !t.names.includes('dripstone_block')).reduce((a, t) => a.concat(t.names), []));
 const FILL_KEEP = 64;     // stock de remblai qu'on préfère garder AU TOTAL (toutes roches confondues)
 
 // Quelle pile jeter pour libérer UNE case ? Fonction PURE : `items` = [{ name, count, … }] (l'inventaire
