@@ -12,7 +12,8 @@
 // Décisions PURES ici (aucun accès au bot) ; l'exécution vit dans index.js (skeletonRespond).
 const { hasLineOfSight } = require('./threatgate');
 
-const RUSH_DIST = 8;          // blocs : au-delà, la course sous les flèches coûte plus qu'elle ne rapporte
+const RUSH_DIST = 8;
+const RUSH_DIST_SHIELD = 14;   // bouclier levé : la course n'expose plus (presque) rien de face          // blocs : au-delà, la course sous les flèches coûte plus qu'elle ne rapporte
 const CONTACT_DIST = 3.5;     // blocs : déjà au corps-à-corps — reculer = offrir des tirs gratuits
 const RUSH_MIN_HP_CONTACT = 6;
 const RUSH_MIN_HP_CLOSE = 10;
@@ -49,13 +50,31 @@ function decideSkeletonResponse(s = {}) {
   // AU CONTACT (live 23/10 : `cover no_los` à 2 blocs pendant 6 s, puis mort) : un squelette à portée
   // de coup fait le tour d'un muret d'un pas ; rester planté = attendre la flèche. On frappe — à l'épée,
   // et sans arme au poing / à la pioche plutôt que rien. Ligne de vue et PV ne changent rien ici.
-  if (dist <= CONTACT_DIST) return { action: 'rush', reason: armed ? 'contact' : 'contact_unarmed' };
+  if (dist <= CONTACT_DIST) {
+    // …SAUF (live 25/10 : 7 morts sur 22 juste après une charge à PV bas ou au poing — 13:01 2 PV
+    // `contact_unarmed`, 15:40 1,9 PV, 18:09 1,5 PV) : VU, sans bouclier, et PV sous le seuil de charge ou
+    // sans arme → on tourne un coin si on le peut. Avec un bouclier on charge (levé à l'approche,
+    // baissé pour frapper — shieldGuard). Rien pour se couvrir : on frappe quand même (dernier recours).
+    const seen = s.los !== false || !!s.hurt;
+    const weak = !armed || hp < rushMinHp({ dist, hasShield: s.hasShield, armorPoints: s.armorPoints });
+    // Seulement un COIN (un pas hors de sa vue) : un muret posé au contact, il le contourne d'un pas
+    // (leçon live du 23/10) — dans ce cas on frappe, comme avant.
+    if (seen && weak && !s.hasShield && s.coverCell) return { action: 'cover', reason: 'contact_low' };
+    return { action: 'rush', reason: armed ? 'contact' : 'contact_unarmed' };
+  }
   // « caché » démenti par une flèche reçue : on raisonne comme s'il nous voyait.
   if (s.los === false && !s.hurt) return { action: 'cover', reason: 'no_los' };
   const solo = !_num(s.shooters) || s.shooters <= 1;
   const close = dist <= RUSH_DIST;
   if (solo && armed && close && hp >= rushMinHp({ dist, hasShield: s.hasShield, armorPoints: s.armorPoints })) {
     return { action: 'rush', reason: dist <= CONTACT_DIST ? 'contact' : 'close' };
+  }
+  // BOUCLIER (25/10) : un squelette isolé ne perce pas un bouclier levé de face → on approche couvert et
+  // on le tue (une flèche par seconde évitée vaut mieux qu'un muret qu'il contourne). Plusieurs tireurs :
+  // le bouclier ne couvre qu'un angle → couvert, comme avant.
+  if (solo && armed && s.hasShield && dist <= RUSH_DIST_SHIELD
+      && hp >= rushMinHp({ dist, hasShield: true, armorPoints: s.armorPoints })) {
+    return { action: 'rush', reason: 'shielded' };
   }
   if (s.coverCell) return { action: 'cover', reason: 'corner' };
   if (s.hasBlock) return { action: 'block', reason: 'wall' };
@@ -233,6 +252,7 @@ function zigzagSide(elapsedMs, periodMs = 400) {
 }
 
 module.exports = {
+  RUSH_DIST_SHIELD,
   decideSkeletonResponse, rushMinHp, findCoverCell, zigzagSide, shooterSees,
   rushStopReason, eatDuringRush, callerFromStack, rushRearmWanted, rushEquipBlocked, REARM_MIN_GAP_MS, RUSH_ABORT_HP, RUSH_EAT_FOOD,
   RUSH_DIST, CONTACT_DIST, RUSH_MIN_HP_CONTACT, RUSH_MIN_HP_CLOSE, RUSH_DESPERATE_HP, MIN_WEAPON_DMG, COVER_RADIUS,

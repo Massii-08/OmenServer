@@ -290,3 +290,56 @@ test('rushEquipBlocked : pendant la charge, pas d\'outil ni de torche en main ; 
   assert.strictEqual(rushEquipBlocked({ rushing: true, weaponName: 'iron_axe', itemName: 'iron_axe' }), false);
   assert.strictEqual(rushEquipBlocked({ rushing: false, weaponName: 'diamond_sword', itemName: 'iron_pickaxe' }), false);
 });
+
+// ─── Retour live 25/10 (22 morts « shot by Skeleton ») : 7 morts juste après une charge à PV bas ou
+// sans arme (13:01 contact_unarmed 2 PV, 15:40 contact 1,9 PV, 18:09 contact 1,5 PV, 18:26
+// contact_unarmed…), aucune avec bouclier. Joueur : on ne charge jamais à PV bas sans bouclier ; on casse
+// la ligne de vue. Avec un bouclier, on approche couvert et on frappe à portée.
+test('contact VU, PV bas, sans bouclier, coin disponible → cover (plus de charge à 2 PV)', () => {
+  const r = decideSkeletonResponse(base({ dist: 2.4, los: true, health: 2, coverCell: true }));
+  assert.equal(r.action, 'cover');
+  assert.equal(r.reason, 'contact_low');
+});
+
+test('contact VU, sans arme ni bouclier, coin à 1 pas → cover (20 coups de poing = mort)', () => {
+  const r = decideSkeletonResponse(base({ dist: 2.8, los: true, health: 13, attackDamage: 1, coverCell: true }));
+  assert.equal(r.action, 'cover');
+  assert.equal(r.reason, 'contact_low');
+});
+
+test('contact VU, PV bas, pas de coin mais des blocs → rush, PAS de muret (il le contourne d\'un pas, 23/10)', () => {
+  const r = decideSkeletonResponse(base({ dist: 2.5, los: true, health: 2.5, coverCell: false, hasBlock: true }));
+  assert.equal(r.action, 'rush');
+});
+
+test('contact VU, PV bas, rien pour se couvrir → on frappe quand même (dernier recours)', () => {
+  const r = decideSkeletonResponse(base({ dist: 2, los: true, health: 2, coverCell: false, hasBlock: false }));
+  assert.equal(r.action, 'rush');
+});
+
+test('contact VU, PV bas AVEC bouclier → rush (bouclier levé à l\'approche, baissé pour frapper)', () => {
+  const r = decideSkeletonResponse(base({ dist: 2.4, los: true, health: 3, hasShield: true, coverCell: true }));
+  assert.equal(r.action, 'rush');
+});
+
+test('contact VU, PV corrects, armé → rush inchangé (bots rapides)', () => {
+  const r = decideSkeletonResponse(base({ dist: 2.4, los: true, health: 12, coverCell: true }));
+  assert.equal(r.action, 'rush');
+  assert.equal(r.reason, 'contact');
+});
+
+test('bouclier + armé + seul à 12 blocs → rush « shielded » (on approche couvert au lieu de reculer)', () => {
+  const r = decideSkeletonResponse(base({ dist: 12, health: 14, hasShield: true, coverCell: true }));
+  assert.equal(r.action, 'rush');
+  assert.equal(r.reason, 'shielded');
+});
+
+test('bouclier mais DEUX tireurs à 12 blocs → à couvert, pas de charge', () => {
+  const r = decideSkeletonResponse(base({ dist: 12, health: 14, hasShield: true, shooters: 2, coverCell: true }));
+  assert.equal(r.action, 'cover');
+});
+
+test('sans bouclier à 12 blocs → jamais de charge longue (inchangé)', () => {
+  const r = decideSkeletonResponse(base({ dist: 12, health: 20, hasShield: false, coverCell: true }));
+  assert.equal(r.action, 'cover');
+});

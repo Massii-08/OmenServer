@@ -157,6 +157,7 @@ const { descentFoodGate, undergroundFoodTripDue, foodGateLoad } = require('./foo
 const { noteDropAhead, turnYaw, shiftTarget } = require('./dropAhead');
 const { canDealWith, attackDamage, boldFightAdvised } = require('./survival');
 const { fleeTarget } = require('./skills/fleeFrom');
+const { shieldItem, shieldStance, shieldAction } = require('./shieldGuard');
 const { decideSkeletonResponse, findCoverCell, zigzagSide, shooterSees, rushStopReason, eatDuringRush, callerFromStack, rushRearmWanted, rushEquipBlocked } = require('./skeletonResponse');
 const { createFightBreaker, isZombieDuel, isLoneZombieContact } = require('./fightBreaker');
 // SYSTÈME À 3 HOMES (Massii 27/07) : safe = LA BASE, work = le chantier courant, death = la dette
@@ -428,6 +429,15 @@ let _skelRushBusy = false;
 let _skelRushWeapon = null;   // nom de l'arme de la charge en cours (lu par le garde d'equip, niveau MODULE)
 let _skelRushEquipBlockedAt = -Infinity;
 let _skelRushBlocked = { stops: 0, by: null };   // stopMotion/pvp.stop refusés pendant la charge (diag)
+// BOUCLIER TENU EN CONTINU (25/10, shieldGuard.js) : état de NIVEAU MODULE (piège #56) lu par le tick
+// du garde ET par les impulsions historiques (_skelShieldUp, onDefensive) qui ne doivent plus le baisser.
+let _shieldRaised = false;        // dernier ordre envoyé = use_item main secondaire (et pas de relâche depuis)
+let _shieldGuardWant = false;     // le garde veut le bouclier levé (un squelette nous voit)
+let _shieldWrappedBot = null;     // bot dont activateItem/deactivateItem sont instrumentés
+let _shieldEquipAt = -Infinity;
+let _shieldEmitAt = -Infinity;
+let _shieldRaises = 0;
+setInterval(() => { try { shieldGuardTick(); } catch (e) { /* best-effort */ } }, 150);
 let _skelPlannerPending = false;                // un startAutonomous est arrivé pendant la charge
 // DETTE DE RELANCE (live 24/10, NethBot1 s599 / NethBot2 s583) : la charge en cours a coupé le planner et doit
 // le rallumer. Une 2e charge (ou une fuite) qui la préempte HÉRITE de la dette — sinon le planner mourait.
@@ -9866,7 +9876,93 @@ function _skelWeapon() {
   try { return bestWeapon(bot); } catch (e) { return null; }
 }
 function _skelShield() {
+  // ⚠️ items() = slots 9..44 : la MAIN SECONDAIRE (45) n'y est pas — un bouclier équipé était invisible
+  // (25/10 : hasShield:false dans la décision, jamais levé). Slot 45 d'abord.
+  const off = bot.inventory && bot.inventory.slots && bot.inventory.slots[45];
+  if (off && off.name === 'shield') return off;
   return ((bot.inventory && bot.inventory.items()) || []).find((i) => i.name === 'shield') || null;
+}
+
+/** Relâche d'une impulsion de bouclier — SAUF si le garde continu le veut levé (un squelette voit le bot). */
+function shieldPulseRelease() {
+  if (typeof _shieldGuardWant !== 'undefined' && _shieldGuardWant) return false;
+  try { bot.deactivateItem(); } catch (e) {}
+  return true;
+}
+
+/** Instrumente activateItem/deactivateItem une fois par objet bot : `_shieldRaised` suit le vrai état. */
+function wireShieldGuard() {
+  if (!bot || _shieldWrappedBot === bot) return false;
+  if (typeof bot.activateItem !== 'function' || typeof bot.deactivateItem !== 'function') return false;
+  _shieldWrappedBot = bot;
+  const act = bot.activateItem, deact = bot.deactivateItem;
+  bot.activateItem = function shieldTrackedActivate(offHand) {
+    _shieldRaised = !!offHand && !!(bot.inventory && bot.inventory.slots && bot.inventory.slots[45]
+      && bot.inventory.slots[45].name === 'shield');
+    return act.apply(this, arguments);
+  };
+  bot.deactivateItem = function shieldTrackedDeactivate() {
+    _shieldRaised = false;
+    return deact.apply(this, arguments);
+  };
+  try { bot.on('spawn', () => { _shieldRaised = false; _shieldGuardWant = false; }); } catch (e) {}
+  return true;
+}
+
+/**
+ * Tick du bouclier (150 ms) : levé TANT QU'UN TIREUR VOIT LE BOT, baissé pour frapper une cible à portée
+ * et pendant un repas ; relevé seulement sur transition (le délai vanilla de 5 ticks repartirait à zéro).
+ */
+function shieldGuardTick() {
+  if (!bot || !bot.entity || !bot.entity.position || !(bot.health > 0)) { _shieldGuardWant = false; return; }
+  wireShieldGuard();
+  const inv = bot.inventory;
+  const off = inv && inv.slots && inv.slots[45];
+  const sh = shieldItem({ offhand: off, items: (inv && inv.items && inv.items()) || [] });
+  const me = bot.entity.position;
+  const threats = [];
+  let nearest = null;
+  for (const e of Object.values(bot.entities || {})) {
+    if (!e || !e.position || e === bot.entity || !RANGED.has(e.name)) continue;
+    const dist = Math.hypot(e.position.x - me.x, e.position.y - me.y, e.position.z - me.z);
+    if (!(dist <= SKEL_RANGE)) continue;
+    const los = skeletonSees(e);
+    threats.push({ dist, los });
+    if (los && (!nearest || dist < nearest.dist)) nearest = { e, dist };
+  }
+  if (!threats.length && !_shieldRaised) { _shieldGuardWant = false; return; }
+  const eating = !!bot.usingHeldItem && !_shieldRaised;
+  let strikeDist = null;
+  const tgt = bot.pvp && bot.pvp.target;
+  if (tgt && tgt.position) strikeDist = Math.hypot(tgt.position.x - me.x, tgt.position.y - me.y, tgt.position.z - me.z);
+  const hasShield = !!(off && off.name === 'shield');
+  // Bouclier encore dans le sac et un tireur nous voit : l'équiper (hors charge — l'equip est refusé
+  // pendant un rush — et hors repas), au plus 1×/3 s.
+  if (!hasShield && sh && nearest && !eating && !_skelRushBusy && Date.now() - _shieldEquipAt > 3000) {
+    _shieldEquipAt = Date.now();
+    bot.equip(sh, 'off-hand').catch(() => {});
+  }
+  const stance = shieldStance({ hasShield, threats, eating, strikeDist });
+  _shieldGuardWant = stance === 'up';
+  const act = shieldAction({ stance, raised: _shieldRaised });
+  if (act === 'raise') {
+    // le bouclier ne couvre que l'avant : face au tireur, sauf si le pathfinder / pvp tiennent le regard
+    const moving = !!(bot.pathfinder && typeof bot.pathfinder.isMoving === 'function' && bot.pathfinder.isMoving());
+    if (nearest && !moving && !tgt) {
+      try { bot.lookAt(nearest.e.position.offset(0, 1.5, 0), true).catch(() => {}); } catch (e) {}
+    }
+    try { bot.activateItem(true); } catch (e) { return; }
+    _shieldRaises++;
+    const now = Date.now();
+    if (now - _shieldEmitAt >= 3000) {
+      _shieldEmitAt = now;
+      emit({ type: 'shield_guard', act: 'raise', n: _shieldRaises, dist: nearest ? Math.round(nearest.dist * 10) / 10 : null,
+        hp: Math.round((bot.health || 0) * 10) / 10, shooters: threats.length, rushing: !!_skelRushBusy });
+      _shieldRaises = 0;
+    }
+  } else if (act === 'lower') {
+    try { bot.deactivateItem(); } catch (e) {}
+  }
 }
 async function _skelShieldUp(shooter, ms) {
   const sh = _skelShield();
@@ -9877,8 +9973,9 @@ async function _skelShieldUp(shooter, ms) {
     if (shooter && shooter.position) {
       await bot.lookAt(shooter.position.offset(0, 1.5, 0), true);
     }
-    bot.activateItem(true);
-    setTimeout(() => { try { bot.deactivateItem(); } catch (e) {} }, ms);
+    // déjà levé par le garde continu : ne pas relancer use_item (le délai de 5 ticks repartirait à zéro)
+    if (!(typeof _shieldRaised !== 'undefined' && _shieldRaised)) bot.activateItem(true);
+    setTimeout(() => { try { if (typeof shieldPulseRelease === 'function') shieldPulseRelease(); else bot.deactivateItem(); } catch (e) {} }, ms);
     return true;
   } catch (e) { emit({ type: 'skeleton_shield_failed', err: String((e && e.message) || e).slice(0, 120) }); return false; }
 }
@@ -13233,7 +13330,7 @@ async function onSpawn() {
         }
         (async () => {
           try {
-            const sh = ((bot.inventory && bot.inventory.items()) || []).find((i) => i.name === 'shield');
+            const sh = _skelShield();   // main secondaire comprise (items() ne la voit pas)
             // BANDE DÉFENSIVE (6-10 PV) : SANS bouclier, « lever le bouclier » est un no-op et le
             // bot continue d'encaisser les flèches jusqu'au seuil de fuite — souvent trop tard
             // (mesure live : le couvert au seuil de fuite ne se déclenchait presque jamais, les
@@ -13264,8 +13361,8 @@ async function onSpawn() {
               const off = bot.inventory && bot.inventory.slots && bot.inventory.slots[45];
               if (!off || off.name !== 'shield') { try { await bot.equip(sh, 'off-hand'); } catch (e) {} }
             }
-            try { bot.activateItem(true); } catch (e) {}          // lève le bouclier (main secondaire)
-            setTimeout(() => { try { bot.deactivateItem(); } catch (e) {} }, 2000);
+            if (!_shieldRaised) { try { bot.activateItem(true); } catch (e) {} }   // lève le bouclier (main secondaire)
+            setTimeout(() => { try { shieldPulseRelease(); } catch (e) {} }, 2000);
           } catch (e) { /* best-effort */ }
         })();
       },
@@ -13274,7 +13371,7 @@ async function onSpawn() {
       onRanged: (foe) => {
         (async () => {
           try {
-            const sh = ((bot.inventory && bot.inventory.items()) || []).find((i) => i.name === 'shield');
+            const sh = _skelShield();   // main secondaire comprise (items() ne la voit pas)
             // COUVERT AVANT CHARGE (preuve live world_ax4 25/07 : « was shot by Skeleton » ×8 en
             // 4 min sur un seul bot — les squelettes sont le tueur n°1 des bots NUS). Charger à
             // découvert sur 10-16 blocs sans bouclier ni armure = encaisser 3-4 flèches pour rien.
