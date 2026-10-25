@@ -15054,7 +15054,9 @@ function creeperTick() {
     }
     if (_shelterInFlight) return;   // terré dans l'abri : on ne sort pas du trou
     if (!best) return;
-    const plan = creeperPlan(best, self);
+    // Nu (< 2 pièces) : une explosion tue — fuite d'un creeper calme dès 8 blocs (creeper.NAKED_CLOSE_FLEE_RADIUS).
+    let _cWorn = 4; try { _cWorn = _wornArmor().size; } catch (e) { /* inconnu → seuil d'origine */ }
+    const plan = creeperPlan(best, self, _cWorn < 2 ? { closeRadius: 8 } : {});
     const fusing = isCreeperFusing(best);
     if (plan === 'ignore') { _auraEmit('creeper_ignored', { dist, fusing }); return; }
     const dest = creeperAwayPoint(self, best.position, CREEPER_FLEE_KEEP);

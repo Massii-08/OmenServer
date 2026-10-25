@@ -73,3 +73,10 @@ test('fleeDone : fini à ≥ 8 blocs s il est calme ; s il gonfle encore, seulem
   assert.strictEqual(C.fleeDone(creeper(3, idle(), { isValid: false }), at0), true);
   assert.strictEqual(C.fleeDone(creeper(3, idle()), null), false, 'position inconnue : on continue');
 });
+
+test('creeperPlan : closeRadius élargit la fuite (bot nu)', () => {
+  const { creeperPlan } = require('./creeper');
+  const c = { name: 'creeper', position: { x: 6, y: 0, z: 0 }, metadata: [] };
+  assert.strictEqual(creeperPlan(c, { x: 0, y: 0, z: 0 }), 'ignore');
+  assert.strictEqual(creeperPlan(c, { x: 0, y: 0, z: 0 }, { closeRadius: 8 }), 'flee');
+});

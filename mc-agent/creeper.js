@@ -29,6 +29,7 @@ const IGNITED_INDEX = 18;
 const FUSE_FLEE_RADIUS = 7;    // gonfle à ≤ 7 blocs → fuite (vanilla : la mèche s'éteint au-delà de 7)
 const CLOSE_FLEE_RADIUS = 4.5;  // calme à ≤ 4,5 blocs → fuite franche (il gonfle sous 3, explose 1,5 s après)
 const STEP_AWAY_RADIUS = CLOSE_FLEE_RADIUS;   // compat (ancien nom)
+const NAKED_CLOSE_FLEE_RADIUS = 8;   // bot nu (< 2 pièces) : fuite d'un creeper calme dès 8 blocs
 const SAFE_DIST = 8;           // la fuite dure jusqu'à ≥ 8 blocs du creeper
 const FLEE_KEEP = 10;          // fuite : se placer à 10 blocs du creeper
 const STEP_AWAY_KEEP = FLEE_KEEP;   // compat : plus de « petit pas »
@@ -65,7 +66,10 @@ function creeperPlan(entity, selfPos, opts = {}) {
   const d = _dist(selfPos, entity.position);
   if (d == null) return 'flee';
   if (fusing) return d <= FUSE_FLEE_RADIUS ? 'flee' : 'ignore';
-  return d <= CLOSE_FLEE_RADIUS ? 'flee' : 'ignore';
+  // `closeRadius` (25/10, keepInventory OFF) : un bot NU meurt d'une seule explosion — l'appelant élargit
+  // la fuite d'un creeper calme (8 au lieu de 4,5) ; deux morts en 20 s fuyaient à 4,2 blocs, trop tard.
+  const close = Number.isFinite(opts.closeRadius) ? opts.closeRadius : CLOSE_FLEE_RADIUS;
+  return d <= close ? 'flee' : 'ignore';
 }
 
 /** PUR — ce creeper est-il une MENACE (cachette / but abandonné) ? Seulement s'il GONFLE à ≤ 7 blocs. */
@@ -102,4 +106,5 @@ function awayPoint(selfPos, creeperPos, keep) {
 module.exports = {
   isCreeperFusing, creeperPlan, creeperIsThreat, awayPoint, fleeDone,
   SWELL_DIR_INDEX, IGNITED_INDEX, FUSE_FLEE_RADIUS, CLOSE_FLEE_RADIUS, STEP_AWAY_RADIUS, SAFE_DIST, FLEE_KEEP, STEP_AWAY_KEEP,
+  NAKED_CLOSE_FLEE_RADIUS,
 };
