@@ -216,6 +216,27 @@ function shouldLootAfterCombat(s) {
   return { go: true, reason: 'ok' };
 }
 
+// BALAYAGE DES DROPS COMESTIBLES (25/10) : le butin post-combat ne part qu'à la FIN d'un combat et
+// renonce si un autre hostile est encore là (`hostiles`) — sous terre, avec 2-3 zombies, la chair du
+// premier restait au sol pour de bon. Un tick court la reprend dès que la voie est libre.
+const FOOD_DROP_RADIUS = 8;
+const FOOD_DROP_NAMES = new Set(Object.keys(FOOD_POINTS).concat(['string']));
+
+/**
+ * PUR — le drop comestible (ou ficelle) le plus proche. drops = [{name, dist}] (name absent = illisible).
+ * → {name, dist} | null
+ */
+function pickFoodDrop(drops, radius = FOOD_DROP_RADIUS) {
+  let best = null;
+  for (const d of Array.isArray(drops) ? drops : []) {
+    if (!d || typeof d.name !== 'string' || !FOOD_DROP_NAMES.has(d.name)) continue;
+    const dist = Number(d.dist);
+    if (!(Number.isFinite(dist) && dist >= 0 && dist <= radius)) continue;
+    if (!best || dist < best.dist) best = { name: d.name, dist };
+  }
+  return best;
+}
+
 // ─── 4) LA SOURCE DURABLE : LA PÊCHE (22/10) ──────────────────────────────────────────────────────
 // Mesure (chrono de 146 min, 3 mineurs, 44 morts dont 10 « PV bas > 20 s sans régénération ») : les
 // mineurs MANGENT 4, 28 et 181 points de faim par heure (NethBot1/2/3 — le dernier à 65 % de chair
@@ -305,7 +326,7 @@ module.exports = {
   SMELT_ITEM_MS, SMELT_OVERHEAD_MS, SMELT_SLACK_MS, COOK_MIN_RAW,
   createBudget, boundedToken, cookPlan, fishPlan,
   COMBAT_LOOT_RADIUS, COMBAT_LOOT_ITEMS, COMBAT_LOOT_MS, COMBAT_LOOT_HOSTILE_RADIUS, COMBAT_LOOT_NEAR, COMBAT_LOOT_SETTLE_MS,
-  isHostileKill, shouldLootAfterCombat,
+  isHostileKill, shouldLootAfterCombat, FOOD_DROP_RADIUS, pickFoodDrop,
   FISH_SESSION_MS, FISH_SESSION_RADIUS, FISH_SESSION_GOTO_MS, FISH_SESSION_CATCH_MS, FISH_SESSION_MISSES,
   FISH_CATCH_POINTS, FISH_SESSION_MAX_CATCH, STRING_HUNT_MS, STRING_HUNT_RADIUS, STRING_HUNT_MIN_HP, ROD_STRING_NEED,
   fishTargetFor, fishWindow, stringHuntPlan,

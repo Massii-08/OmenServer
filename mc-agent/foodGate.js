@@ -31,6 +31,7 @@ const STARVING_HUNGER = 6;              // faim ≤ 6 et poche vide : sortie lon
 const STARVING_LONG_TRIP_MS = 15 * 60000;   // une longue tentée depuis < 15 min : on reprend les règles habituelles
 const STARVING_MAX_REFUSALS = 16;           // refus « starving » au plus sur 30 min, puis on descend
 const UNDER_HUNGER = 8;
+const FAMINE_HUNGER = 4;                // surface STÉRILE : on descend quand même, sauf faim ≤ 4 à 0 point
 const UNDER_TRIP_COOLDOWN_MS = 4 * 60 * 1000;
 
 function _times(arr, now, windowMs) {
@@ -54,8 +55,20 @@ function _times(arr, now, windowMs) {
  * → { allow, reason: 'stocked'|'underground'|'herd_known'|'herd_gate_spent'|'no_prey'|'gate'|'gate_spent', refusals: number[] (à persister), need }
  * Sous la surface on ne bloque jamais (il n'y a plus rien à chasser : c'est la porte 2 qui s'en occupe).
  */
+// SURFACE STÉRILE (25/10, monde de 8 h) : 10 refus en 10 min (`herd_known` / `starving`) alors qu'il ne
+// restait AUCUN animal à 96 blocs (les animaux ne réapparaissent pas) et que le dernier troupeau visé
+// avait rendu 0 (`food_trip_done {arrived:true, got:0}`). Rester en haut ne pouvait rien rapporter ; en
+// bas il y a des zombies (chair, food.foodPoints) et la porte 2 remonte à faim ≤ 8.
+// `animalsInView === false` (rien à ≤ 64 blocs) ET (`herdBarren` : dernière arrivée bredouille < 30 min,
+// OU aucun troupeau connu) → on descend. Garde-fou anti-famine conservé : faim ≤ 4 à 0 point = refus
+// `starving` (borné comme avant). `animalsInView` absent = inconnu → comportement d'avant.
+function _barrenSurface(s) {
+  return s.animalsInView === false && (s.herdBarren === true || s.herdNear !== true);
+}
+
 function descentFoodGate(s = {}) {
   const now = Number.isFinite(s.now) ? s.now : Date.now();
+  const barren = _barrenSurface(s);
   const refusals = _times(s.refusals, now, GATE_WINDOW_MS);
   // Fenêtre LONGUE (24/10 : `descend_y54` refusé 20 fois chez un bot, 8 chez l'autre — mineurs coincés en
   // surface pendant que les autres minaient) : les refus de 30 min sont gardés et comptés à part. Au-delà de
@@ -71,7 +84,8 @@ function descentFoodGate(s = {}) {
   const hunger = Number(s.hunger);
   const lt = Number(s.longTripAt);
   const longRecent = Number.isFinite(lt) && lt > 0 && lt <= now && now - lt < STARVING_LONG_TRIP_MS;
-  if (pts0 <= 0 && Number.isFinite(hunger) && hunger <= STARVING_HUNGER && Number.isFinite(s.y) && s.y >= SURFACE_Y && !longRecent) {
+  const barrenOk = barren && !(pts0 <= 0 && Number.isFinite(hunger) && hunger <= FAMINE_HUNGER);
+  if (pts0 <= 0 && Number.isFinite(hunger) && hunger <= STARVING_HUNGER && Number.isFinite(s.y) && s.y >= SURFACE_Y && !longRecent && !barrenOk) {
     if (longRefusals.length >= STARVING_MAX_REFUSALS) return { allow: true, reason: 'starving_spent', refusals: longRefusals, need: DESCENT_MIN_POINTS };
     return { allow: false, reason: 'starving', refusals: longRefusals.concat([now]), need: DESCENT_MIN_POINTS };
   }
@@ -83,6 +97,7 @@ function descentFoodGate(s = {}) {
   const points = Number(s.points) || 0;
   if (points >= need) return { allow: true, reason: 'stocked', refusals, need };
   if (!(Number.isFinite(s.y) && s.y >= SURFACE_Y)) return { allow: true, reason: 'underground', refusals, need };
+  if (barrenOk) return { allow: true, reason: 'barren_surface', refusals, need };
   // 23/10 : ZÉRO point en poche et un troupeau CONNU à portée de marche (`herdNear`, huntReach.knownHerdNear
   // ≤ 200 blocs) → descendre, c'est mourir de faim au fond (NethBot1 15:40, NethBot3 15:45 : `gate_spent`
   // puis « starved to death » alors que `herds_seen` rapportait 6-12 bêtes). La porte ne se dépense plus :
@@ -129,5 +144,6 @@ function foodGateLoad(st) {
 module.exports = {
   descentFoodGate, undergroundFoodTripDue, foodGateLoad,
   STARVING_HUNGER, STARVING_LONG_TRIP_MS, STARVING_MAX_REFUSALS,
+  FAMINE_HUNGER,
   DESCENT_MIN_POINTS, GATE_WINDOW_MS, LONG_WINDOW_MS, LONG_MAX_REFUSALS, MEAL_MIN_POINTS, GATE_MAX_REFUSALS, HERD_GATE_MAX_REFUSALS, SURFACE_Y, UNDER_HUNGER, UNDER_TRIP_COOLDOWN_MS,
 };

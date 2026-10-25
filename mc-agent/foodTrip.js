@@ -302,6 +302,26 @@ function longTripRecord(state, o = {}, now = Date.now()) {
   return st;
 }
 
+// TROUPEAU BREDOUILLE (25/10) : arrivé sur la cible, rien rapporté. Persisté (mémo de base, clé
+// HERD_BARREN_MEMO_KEY) : la porte de descente (foodGate) s'en sert pour ne plus retenir en surface
+// un bot qui ne voit aucun animal — les animaux ne réapparaissent pas.
+const HERD_BARREN_MEMO_KEY = 'herdBarrenAt';
+const HERD_BARREN_TTL_MS = 30 * 60000;
+
+/** PUR — nouvel horodatage « bredouille » après une expédition. o = { arrived, got }. */
+function herdBarrenRecord(prevAt, o = {}, now = Date.now()) {
+  if ((Number(o.got) || 0) > 0) return 0;                   // une expédition qui rapporte efface
+  if (o.arrived === true) return now;
+  const p = Number(prevAt);
+  return Number.isFinite(p) && p > 0 && p <= now + 60000 ? p : 0;
+}
+
+/** PUR — la dernière arrivée bredouille date-t-elle de moins de 30 min ? */
+function herdBarrenRecent(at, now = Date.now()) {
+  const a = Number(at);
+  return Number.isFinite(a) && a > 0 && a <= now + 60000 && now - a < HERD_BARREN_TTL_MS;
+}
+
 /** PUR — les plafonds de la marche (courte ou longue). */
 function tripLimits(long) {
   return long
@@ -317,7 +337,9 @@ function tripLimits(long) {
  * s = { kills, got, aborted, walked, arrived }
  */
 function tripFailed(s = {}) {
-  if ((Number(s.kills) || 0) > 0 || (Number(s.got) || 0) > 0) return false;
+  // 25/10 : seul ce qui est RAPPORTÉ compte. `kills:4, got:0, arrived:true` (proies sorties de portée de
+  // suivi, comptées tuées) n'écartait pas la cible et le troupeau périmé restait proposé à la porte.
+  if ((Number(s.got) || 0) > 0) return false;
   if (!s.aborted) return true;
   return !!s.walked && !s.arrived;
 }
@@ -344,4 +366,5 @@ module.exports = {
   FOOD_TRIP_LONG_COOLDOWN_MS, FOOD_TRIP_LONG_MEMO_KEY, FOOD_TRIP_LONG_EXTRA_MS,
   TRIP_FILL_POINTS, TRIP_FILL_WAVES, TRIP_FILL_HUNT_MS,
   longTripLoad, longTripDue, longTripRecord, tripLimits, tripFailed,
+  HERD_BARREN_MEMO_KEY, HERD_BARREN_TTL_MS, herdBarrenRecord, herdBarrenRecent,
 };

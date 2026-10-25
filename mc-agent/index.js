@@ -260,6 +260,7 @@ const {
   FISH_RADIUS, FISH_TARGET, FISH_MIN_MS, boundedToken, shouldLootAfterCombat,
   FISH_SESSION_RADIUS, FISH_SESSION_GOTO_MS, FISH_SESSION_CATCH_MS, FISH_SESSION_MISSES, STRING_HUNT_RADIUS,
   COMBAT_LOOT_RADIUS, COMBAT_LOOT_ITEMS, COMBAT_LOOT_MS, COMBAT_LOOT_HOSTILE_RADIUS, COMBAT_LOOT_SETTLE_MS,
+  FOOD_DROP_RADIUS, pickFoodDrop,
 } = require('./food');
 const { runEnsureFood, runHuntCook, foodRunPreempt } = require('./foodRun');
 const { isRawMeat, rawEatAllowed, ateFields, cookLotPlan, ironFuelReserve, COOK_LOT_MAX_MS, COOK_LOT_HARD_MS, COOK_FAIL_COOLDOWN_MS } = require('./cookMeat');
@@ -271,6 +272,7 @@ const {
   pickGrazingCell, foodTripLeg, triedCellsLoad, triedCellsAdd, FOOD_TRIP_MEMO_KEY, isOrderOwner,
   FOOD_TRIP_MS, FOOD_TRIP_YIELD_MAX_MS, FOOD_TRIP_NEAR, FOOD_TRIP_ARRIVED, FOOD_TRIP_LEG_MS, FOOD_TRIP_LEG_MIN_MS, FOOD_TRIP_MAX_LEGS, FOOD_TRIP_STUCK_MAX,
   FOOD_TRIP_LONG_EXTRA_MS, FOOD_TRIP_LONG_MEMO_KEY, longTripLoad, longTripDue, longTripRecord,
+  HERD_BARREN_MEMO_KEY, herdBarrenRecord, herdBarrenRecent,
 } = require('./foodTrip');
 // TROUPEAUX VUS (22/10, huntReach.js) : chaque animal de bot.entities (jusqu'à 96 blocs) est noté par
 // cellule de 32 dans le mémo de base ; l'expédition vise le troupeau connu le plus proche AVANT les biomes.
@@ -709,6 +711,8 @@ let _movesKeeper = null;
 let _combatLootWired = false;
 let _combatLootBusy = false;      // un seul ramassage post-combat à la fois
 let _combatTarget = null;         // {name,kind,type} de la cible du combat en cours (relevé à startedAttacking)
+let _foodDropSweepWired = false;  // timer posé une fois par process (cf. wireFoodDropSweep)
+let _foodDropSweepAt = 0;         // balayage des drops comestibles (25/10) : dernier passage, au plus 1 / 4 s
 // DISJONCTEUR DE COMBAT (22/10, fightBreaker.js) : état lu par l'event `health`, le wrapper de
 // `bot.pvp.attack` et les ticks de survie → NIVEAU MODULE (piège #56). Posé une fois par process.
 const _fightBreaker = createFightBreaker();
@@ -3850,7 +3854,9 @@ function foodTripOutcome(o) {
   const now = Date.now();
   const st = loadBaseState() || {};
   const next = longTripRecord(st[FOOD_TRIP_LONG_MEMO_KEY], o, now);
-  saveBaseState(Object.assign({}, st, { [FOOD_TRIP_LONG_MEMO_KEY]: next }));
+  // Arrivé bredouille (25/10) : noté pour la porte de descente (foodGate, surface stérile).
+  const barrenAt = herdBarrenRecord(st[HERD_BARREN_MEMO_KEY], o, now);
+  saveBaseState(Object.assign({}, st, { [FOOD_TRIP_LONG_MEMO_KEY]: next, [HERD_BARREN_MEMO_KEY]: barrenAt }));
 }
 
 /** Verrou de l'expédition (niveau MODULE) : true = pris ; false = une autre expédition est déjà en vol. */
@@ -12696,6 +12702,7 @@ async function onSpawn() {
     // même event s'exécutent dans l'ordre d'enregistrement, la nominale est donc déjà rendue quand on
     // lance lootNearby. Une seule fois par process (garde de NIVEAU MODULE `_combatLootWired`).
     try { wireCombatLoot(); } catch (e) { /* best-effort : sans ça, comportement d'avant */ }
+    try { wireFoodDropSweep(); } catch (e) { /* best-effort */ }
     // DISJONCTEUR DE COMBAT (22/10) : mineurs seulement — les cartographes gardent leur fuite par défaut.
     if (!IS_MAPPER) {
       try { wireFightBreaker(); } catch (e) { emit({ type: 'fight_breaker_wire_failed', err: String(e && e.message || e) }); }
@@ -13420,6 +13427,62 @@ function wireCombatLoot() {
     lootAfterCombat(target).catch(() => { /* best-effort */ });
   });
   return true;
+}
+
+/** Rattrapage (25/10) : la chair d'un zombie tué pendant qu'un autre était encore là n'était jamais reprise. Une fois par process. */
+function wireFoodDropSweep() {
+  if (_foodDropSweepWired) return false;
+  _foodDropSweepWired = true;
+  const t = setInterval(() => { sweepFoodDrop().catch(() => { /* best-effort */ }); }, 4000);
+  if (t && t.unref) t.unref();
+  return true;
+}
+
+/**
+ * Balayage des drops COMESTIBLES (chair de zombie, viande, ficelle) laissés au sol (food.pickFoodDrop).
+ * Mêmes gardes que le butin post-combat (shouldLootAfterCombat, cible « hostile » implicite) + jamais
+ * pendant une casse de bloc ni un combat : il ne vole un trajet en cours que pour un objet à ≤ 4 blocs.
+ */
+async function sweepFoodDrop() {
+  if (_combatLootBusy || Date.now() - _foodDropSweepAt < 4000) return;
+  const me = bot.entity && bot.entity.position;
+  if (!me || bot.isAlive === false || bot.targetDigBlock) return;
+  let drops = [];
+  try {
+    drops = homewarp.dropsWithin(bot.entities, me, FOOD_DROP_RADIUS).map((d) => {
+      let name = null;
+      try { const it = d.entity.getDroppedItem && d.entity.getDroppedItem(); name = it ? it.name : null; } catch (e) { name = null; }
+      return { name, dist: d.dist, entity: d.entity };
+    }).filter((d) => !(d.entity && d.entity._mcaSweepTried));   // une tentative par objet : jamais de boucle sur un drop inatteignable
+  } catch (e) { drops = []; }
+  const pick = pickFoodDrop(drops);
+  if (!pick) return;
+  let hostilesNear = false;
+  try { hostilesNear = nearbyHostiles(bot, COMBAT_LOOT_HOSTILE_RADIUS).length > 0; } catch (e) { hostilesNear = true; }
+  let inWater = false;
+  try { inWater = isInWater(bot); } catch (e) { inWater = false; }
+  const owner = taskCtl.active;
+  const verdict = shouldLootAfterCombat({
+    target: { kind: 'Hostile mobs' },
+    hostilesNear,
+    migrating: _migrating,
+    busy: !!(_imminentBusy || panicInFlight || _armorBusy || _baseBusy || _escaping || _deathDebtBusy || inWater
+      || (bot.pvp && bot.pvp.target) || (owner && owner !== 'autonomous')),
+    goalActive: !!(bot.pathfinder && bot.pathfinder.goal),
+    dropDist: pick.dist,
+  });
+  if (!verdict.go) return;
+  const ent = (drops.find((d) => d.name === pick.name && d.dist === pick.dist) || {}).entity;
+  if (!ent || !ent.position) return;
+  _combatLootBusy = true;
+  _foodDropSweepAt = Date.now();
+  try { ent._mcaSweepTried = true; } catch (e) {}
+  try {
+    await withTimeout(bot.pathfinder.goto(new pfGoals.GoalNear(ent.position.x, ent.position.y, ent.position.z, 1)),
+      4000, () => { try { stopMotion(); } catch (e) {} });
+    await sleep(400);
+    emit({ type: 'food_drop_swept', item: pick.name, dist: Math.round(pick.dist) });
+  } catch (e) { /* inatteignable : tant pis */ } finally { _combatLootBusy = false; }
 }
 
 // ─── DISJONCTEUR DE COMBAT (22/10, cf. fightBreaker.js) ─────────────────────────────────────────────
@@ -14523,6 +14586,8 @@ let _dropSites = [];                  // derniers drop_ahead {x,z,t} (dropAhead.
 let _dropShiftSeed = 0;               // fait tourner le cap du décalage 30-50 blocs
 let _descendHeading = null;           // { yaw, at } : cap imposé à la prochaine descente
 let _foodGateEvAt = 0;                // throttle de food_gate quand la porte est « dépensée »
+const GATE_ANIMAL_SIGHT = 64;         // porte de descente : « un animal en vue » (surface stérile, 25/10)
+const GATE_ANIMAL_NAMES = new Set(['cow', 'pig', 'chicken', 'sheep', 'rabbit', 'mooshroom']);
 
 /** emit throttlé (≤ 1 / ENDER_EVENT_EVERY_MS par type). */
 function _enderEmit(type, payload) {
@@ -14707,13 +14772,23 @@ function descentFoodGateCheck(opts = {}) {
   } catch (e) { herd = null; herdTried = false; }
   let longTripAt = 0;
   try { longTripAt = longTripLoad(st, Date.now()).longAt; } catch (e) { longTripAt = 0; }
+  // SURFACE STÉRILE (25/10) : un animal (n'importe lequel, falaise comprise) à ≤ 64 blocs ? Illisible = inconnu.
+  let animalsInView;
+  try {
+    if (p && typeof bot.nearestEntity === 'function') {
+      const a = bot.nearestEntity((x) => x && GATE_ANIMAL_NAMES.has(x.name) && x.position && x.isValid !== false);
+      animalsInView = !!(a && a.position.distanceTo && a.position.distanceTo(p) <= GATE_ANIMAL_SIGHT);
+    }
+  } catch (e) { animalsInView = undefined; }
+  let herdBarren = false;
+  try { herdBarren = herdBarrenRecent(st[HERD_BARREN_MEMO_KEY], Date.now()); } catch (e) { herdBarren = false; }
   const r = descentFoodGate({ points, y: p ? p.y : NaN, refusals: foodGateLoad(st).refusals, now: Date.now(), noPrey: !!opts.noPrey, herdNear: !!herd, herdTried,
-    hunger: bot.food, longTripAt });
+    hunger: bot.food, longTripAt, animalsInView, herdBarren });
   if (!r.allow) {
     saveBaseState(Object.assign({}, st, { foodGate: Object.assign({}, st.foodGate || {}, { refusals: r.refusals }) }));
-    emit({ type: 'food_gate', need: r.need, points, allow: false, refusals: r.refusals.length, reason: r.reason,
+    emit({ type: 'food_gate', need: r.need, points, allow: false, refusals: r.refusals.length, reason: r.reason, animals: animalsInView, herd_barren: herdBarren,
       herd: herd ? { x: herd.x, z: herd.z, dist: Math.round(herd.dist) } : undefined });
-  } else if ((r.reason === 'gate_spent' || r.reason === 'no_prey' || r.reason === 'some_food' || r.reason === 'gate_long_spent' || r.reason === 'starving_spent') && Date.now() - _foodGateEvAt >= 60000) {
+  } else if ((r.reason === 'gate_spent' || r.reason === 'no_prey' || r.reason === 'some_food' || r.reason === 'gate_long_spent' || r.reason === 'starving_spent' || r.reason === 'barren_surface') && Date.now() - _foodGateEvAt >= 60000) {
     _foodGateEvAt = Date.now();
     emit({ type: 'food_gate', need: r.need, points, allow: true, reason: r.reason });
   }

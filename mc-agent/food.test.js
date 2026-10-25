@@ -392,3 +392,12 @@ test('stringHuntPlan : une araignée EN VUE, seulement si la ficelle manque, jam
   assert.strictEqual(F2.stringHuntPlan({ ...base, leftMs: 2000 }).reason, 'no_time');
   assert.strictEqual(F2.stringHuntPlan({ ...base, leftMs: 10000 }).ms, 10000, 'rognée par le budget');
 });
+
+test('pickFoodDrop : chair de zombie / viande / ficelle au sol à ≤ 8 blocs, le plus proche ; le reste ignoré', () => {
+  const F2 = require('./food');
+  assert.deepStrictEqual(F2.pickFoodDrop([{ name: 'cobblestone', dist: 1 }, { name: 'rotten_flesh', dist: 5 }, { name: 'beef', dist: 3 }]), { name: 'beef', dist: 3 });
+  assert.deepStrictEqual(F2.pickFoodDrop([{ name: 'string', dist: 2 }]), { name: 'string', dist: 2 });
+  assert.strictEqual(F2.pickFoodDrop([{ name: 'rotten_flesh', dist: 12 }]), null);
+  assert.strictEqual(F2.pickFoodDrop([{ dist: 1 }, null]), null);
+  assert.strictEqual(F2.pickFoodDrop(undefined), null);
+});

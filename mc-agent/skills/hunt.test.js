@@ -118,3 +118,42 @@ test('huntPassive : approche par défaut — NoPath répété sans se rapprocher
   assert.deepStrictEqual(bot.attacked, []);
   assert.deepStrictEqual(r, { ok: false, kills: 0, fails: 1 });
 });
+
+// ─── Comptage honnête (25/10 : kills:4, got:0) ──────────────────────────────────────────────────
+const { EventEmitter } = require('events');
+const { preyOutcome } = require('./hunt');
+
+function trackedBot(entities, { dies = true, drop = 'beef' } = {}) {
+  const bot = Object.assign(new EventEmitter(), fakeBot(entities));
+  const items = [];
+  bot.inventory = { items: () => items.slice() };
+  bot.pvp.attack = (e) => {
+    bot.attacked.push(e.name);
+    if (dies) { bot.emit('entityDead', e); if (drop) items.push({ name: drop, count: 1 }); }
+    e.isValid = false;                      // mort OU sortie de portée de suivi : même symptôme
+  };
+  return bot;
+}
+
+test('preyOutcome : PUR — mort vue ou nourriture gagnée = kill ; sinon perdue', () => {
+  assert.strictEqual(preyOutcome({ tracked: false }), 'kill', 'historique sans événements');
+  assert.strictEqual(preyOutcome({ tracked: true, died: true, foodBefore: 0, foodAfter: 0 }), 'kill');
+  assert.strictEqual(preyOutcome({ tracked: true, died: false, foodBefore: 1, foodAfter: 3 }), 'kill');
+  assert.strictEqual(preyOutcome({ tracked: true, died: false, foodBefore: 2, foodAfter: 2 }), 'lost');
+});
+
+test('huntPassive : proie qui devient invalide SANS mourir (sortie de portée) → pas un kill, comptée perdue', async () => {
+  const bot = trackedBot([{ name: 'cow', position: at(5), isValid: true }], { dies: false });
+  let gotos = 0;
+  const r = await huntPassive(bot, { count: 1, maxDistance: 96, maxFails: 1 }, null, { sleep: async () => {}, goto: async () => { gotos++; }, pickupMs: 0, approach: async () => true });
+  assert.deepStrictEqual(r, { ok: false, kills: 0, fails: 1, lost: 1 });
+  assert.strictEqual(gotos, 0, 'pas de ramassage : rien n est tombé');
+  assert.strictEqual(bot.listenerCount('entityDead'), 0, 'écouteur retiré');
+});
+
+test('huntPassive : mort vue → kill, même forme de retour qu avant', async () => {
+  const bot = trackedBot([{ name: 'cow', position: at(5), isValid: true }]);
+  const r = await huntPassive(bot, { count: 1, maxDistance: 96 }, null, { sleep: async () => {}, goto: async () => {}, pickupMs: 0, approach: async () => true });
+  assert.deepStrictEqual(r, { ok: true, kills: 1, fails: 0 });
+  assert.strictEqual(bot.listenerCount('entityDead'), 0);
+});

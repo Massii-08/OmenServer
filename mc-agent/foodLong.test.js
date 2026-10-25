@@ -42,7 +42,9 @@ test('tripFailed : la marche COMPLÈTE sans arriver puis coupée compte comme un
   assert.strictEqual(T.tripFailed({ kills: 0, got: 0, aborted: true, walked: false, arrived: false }), false, 'coupée en route');
   assert.strictEqual(T.tripFailed({ kills: 0, got: 0, aborted: true, walked: true, arrived: true }), false, 'arrivée puis coupée : la cible n est pas en cause');
   assert.strictEqual(T.tripFailed({ kills: 0, got: 0, aborted: false }), true);
-  assert.strictEqual(T.tripFailed({ kills: 1, got: 0, aborted: false }), false);
+  assert.strictEqual(T.tripFailed({ kills: 1, got: 0, aborted: false }), true, '25/10 : un kill sans viande ne sauve pas la cible');
+  assert.strictEqual(T.tripFailed({ kills: 4, got: 0, aborted: false, walked: true, arrived: true }), true, 'le cas du 25/10');
+  assert.strictEqual(T.tripFailed({ kills: 1, got: 3, aborted: false }), false);
 });
 
 test('tripLimits : la longue = 4 min, 400 blocs ; le garde-fou des appelants couvre marche + plein', () => {
@@ -184,4 +186,14 @@ test('index.js : sortie longue, plein et porte affamé câblés', () => {
   assert.match(SRC, /HUNT_COOK_TIMEOUT_MS \+ FOOD_TRIP_MS \+ FOOD_TRIP_LONG_EXTRA_MS/);
   assert.match(SRC, /FOOD_TRIP_YIELD_MAX_MS \+ FOOD_TRIP_LONG_EXTRA_MS/);
   assert.match(SRC, /legs < maxLegs/);
+});
+
+test('herdBarrenRecord / herdBarrenRecent : arrivé bredouille = horodaté ; rapporté = effacé ; TTL 30 min', () => {
+  const now = 1e12, MIN = 60000;
+  assert.strictEqual(T.herdBarrenRecord(0, { arrived: true, got: 0 }, now), now);
+  assert.strictEqual(T.herdBarrenRecord(now, { arrived: false, got: 0 }, now + MIN), now, 'pas arrivé : on garde');
+  assert.strictEqual(T.herdBarrenRecord(now, { arrived: true, got: 4 }, now + MIN), 0, 'rapporté : effacé');
+  assert.strictEqual(T.herdBarrenRecent(now, now + 10 * MIN), true);
+  assert.strictEqual(T.herdBarrenRecent(now, now + 31 * MIN), false);
+  assert.strictEqual(T.herdBarrenRecent(0, now), false);
 });

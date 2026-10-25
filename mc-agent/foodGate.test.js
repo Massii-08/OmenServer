@@ -120,3 +120,32 @@ test('descentFoodGate : les refus persistés couvrent la fenêtre longue', () =>
   assert.strictEqual(r.allow, false);
   assert.strictEqual(r.refusals.length, 2);
 });
+
+// ─── Surface stérile (25/10) ────────────────────────────────────────────────────────────────────
+{
+  const G2 = require('./foodGate');
+  const base = { y: 70, now: 1e12, refusals: [] };
+  test('surface stérile : aucun animal en vue + dernier troupeau bredouille → descend (plus de herd_known)', () => {
+    const r = G2.descentFoodGate(Object.assign({}, base, { points: 0, hunger: 8, herdNear: true, animalsInView: false, herdBarren: true }));
+    assert.strictEqual(r.allow, true);
+    assert.strictEqual(r.reason, 'barren_surface');
+  });
+  test('surface stérile : aucun animal + aucun troupeau connu, faim 6 → descend (plus de starving)', () => {
+    const r = G2.descentFoodGate(Object.assign({}, base, { points: 0, hunger: 6, animalsInView: false }));
+    assert.strictEqual(r.reason, 'barren_surface');
+  });
+  test('surface stérile : garde-fou anti-famine — faim ≤ 4 à 0 point → refus starving', () => {
+    const r = G2.descentFoodGate(Object.assign({}, base, { points: 0, hunger: 4, animalsInView: false, herdBarren: true }));
+    assert.strictEqual(r.allow, false);
+    assert.strictEqual(r.reason, 'starving');
+  });
+  test('surface stérile : de la chair de zombie en poche, faim 3 → descend (ce n est plus la famine à sec)', () => {
+    const r = G2.descentFoodGate(Object.assign({}, base, { points: 2, hunger: 3, animalsInView: false }));
+    assert.strictEqual(r.allow, true);
+  });
+  test('animaux EN VUE ou troupeau connu pas encore bredouille → règles d avant', () => {
+    assert.strictEqual(G2.descentFoodGate(Object.assign({}, base, { points: 0, hunger: 8, herdNear: true, animalsInView: true, herdBarren: true })).reason, 'herd_known');
+    assert.strictEqual(G2.descentFoodGate(Object.assign({}, base, { points: 0, hunger: 8, herdNear: true, animalsInView: false, herdBarren: false })).reason, 'herd_known');
+    assert.strictEqual(G2.descentFoodGate(Object.assign({}, base, { points: 0, hunger: 8, herdNear: true })).reason, 'herd_known', 'inconnu = avant');
+  });
+}
