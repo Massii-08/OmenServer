@@ -399,6 +399,7 @@ const _bootAt = Date.now();        // démarrage de CE process : sépare ses mor
 // relevé au moment de la mort, comparé au respawn par homes.inventoryKept. Lu par recoverDeathDebt (timer
 // compris) → NIVEAU MODULE (piège #56). -1 = pas de mort vue dans ce process (aucune preuve).
 let _invAtDeath = -1;
+const DEATH_INV_SETTLE_MS = 3000;   // attente avant de juger « inventaire gardé » (cf. recoverDeathDebt)
 let _escapeOnSpawn = false; // anti-camping : 2 morts <60 s → au prochain spawn, escapeDeathCamp()
                             // (sans-give : fuite À PIED puis re-spawnpoint SEULEMENT si au calme)
                             // Lu et CONSOMMÉ par guardSpawn (qui observe aussi le danger visible au spawn) ; armé aussi par un
@@ -8630,6 +8631,11 @@ function deferDeathDebt(debt, reason) {
  */
 async function recoverDeathDebt() {
   if (_deathDebtBusy) return;
+  // INVENTAIRE PÉRIMÉ AU RESPAWN (25/10, keepInventory OFF) : juste après la réapparition, le client a
+  // encore les slots de la vie précédente — le serveur ne les vide qu'un instant plus tard. Lu trop tôt,
+  // `inventoryKept` concluait « gardé » (NethBot1, tué par une araignée → `kept_inventory` en 4 s, home
+  // death effacé, objets abandonnés au sol). On laisse l'inventaire se mettre à jour avant de juger.
+  if (_invAtDeath > 0) { try { await sleep(DEATH_INV_SETTLE_MS); } catch (e) { /* best-effort */ } }
   const debt0 = loadDeathDebt();
   // Heure + armure relues à CHAQUE décision (la première, puis le re-contrôle après l'attente plus bas).
   // `bot.time` peut manquer juste après un spawn/une reconnexion : `null` = inconnu → pas de garde-fou
