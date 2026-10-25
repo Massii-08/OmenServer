@@ -11841,6 +11841,10 @@ async function respawnCampRescue() {
     let mate = null;
     try {
       mate = presence ? respawnEscape.pickRescueMate({ camp, self: pos, selfName: bot.username, mates: presence.list(), now }) : null;
+      // keepInventory OFF (25/10) : toute l'équipe est souvent NUE — aucun coéquipier « armé », donc fuite à
+      // pied, qui échoue au milieu des zombies (NethBot1 : 5 morts en 80 s, `escaped:false dist:1`). Un
+      // coéquipier nu mais LOIN du camp vaut toujours mieux que mourir sur place.
+      if (!mate && presence) mate = respawnEscape.pickRescueMate({ camp, self: pos, selfName: bot.username, mates: presence.list(), now, minWorn: 0 });
     } catch (e) { mate = null; }
     if (mate && !isAllowed('/tpa ' + mate.name, whitelist)) { emit({ type: 'respawn_camp_tpa_blocked', to: mate.name }); mate = null; }
     if (mate) {

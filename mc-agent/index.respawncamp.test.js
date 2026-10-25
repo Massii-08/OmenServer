@@ -85,12 +85,13 @@ test('rescue : pas de camp → null, rien envoyé, aucune attente', async () => 
   assert.strictEqual(sb._campReanchor, null);
 });
 
-test('rescue : camp mais coéquipiers nus (le run du 23/10 : worn 0 partout) → fuite à pied, pas de /tpa', async () => {
+// 25/10 (keepInventory OFF) : remplace la règle du 23/10. La fuite à pied échouait sur place au milieu des
+// zombies (NethBot1 : 5 morts en 80 s, `escaped:false dist:1`) ; un coéquipier nu mais LOIN du camp sauve.
+test('rescue : camp et coéquipiers nus → /tpa chez le plus armé d entre eux, loin du camp', async () => {
   const sb = rescueSb({ mates: [armedMate({ worn: 0 }), armedMate({ name: 'NethBot2', worn: 1 })] });
   const r = await sb.respawnCampRescue();
-  assert.strictEqual(r.via, 'foot');
-  assert.deepStrictEqual({ x: r.camp.x, z: r.camp.z }, { x: 5, z: -605 });
-  assert.deepStrictEqual(sb.chat, []);
+  assert.strictEqual(r.via, 'tpa');
+  assert.strictEqual(r.to, 'NethBot2');
 });
 
 test('rescue : /tpa non coché, /tpa raté, ou sans présence → fuite à pied ; mort pendant l attente → la vie suivante décide', async () => {
