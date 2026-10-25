@@ -14995,9 +14995,11 @@ setInterval(async () => {
     const hasGoal = !!(bot.pathfinder && bot.pathfinder.goal);
     const now = Date.now();
     if (!hasGoal || digging) { _jamSample = null; return; }
-    if (!_jamSample) { _jamSample = { x: p.x, z: p.z, t: now }; return; }
-    const d = Math.sqrt((p.x - _jamSample.x) ** 2 + (p.z - _jamSample.z) ** 2);
-    if (d >= 0.8) { _jamSample = { x: p.x, z: p.z, t: now }; return; }   // ça avance → resample
+    if (!_jamSample) { _jamSample = { x: p.x, y: p.y, z: p.z, t: now }; return; }
+    // 3D (25/10) : monter/descendre dans une grotte est un progrès — en XZ seul, un bot qui grimpe vers un
+    // diamant passait pour coincé et le watchdog coupait son trajet (6 `interrupted` sur 16).
+    const d = Math.sqrt((p.x - _jamSample.x) ** 2 + ((p.y - (_jamSample.y ?? p.y))) ** 2 + (p.z - _jamSample.z) ** 2);
+    if (d >= 0.8) { _jamSample = { x: p.x, y: p.y, z: p.z, t: now }; return; }   // ça avance → resample
     // 7 s (Massii 2026-07-26 : « quand ils n'arrivent pas à avancer, ils cassent les blocs devant
     // eux »). Le dig-devant existait déjà, mais il attendait 18 s : à l'écran le bot semblait
     // simplement planté. Un joueur réel insiste 2-3 s puis casse.
