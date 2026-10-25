@@ -119,6 +119,12 @@ const IRON_CHAIN = [
     skill: 'craft',         args: { name: 'crafting_table', count: 1 } },
   { name: 'sticks',         met: (c) => invCount(c.inv, 'stick') >= 2 || I(c),
     skill: 'craft',         args: { name: 'stick', count: 2 } }, // 2×4 = 8 sticks (3 pioches × 2, reste ≥2)
+  // ÉPÉE DE BOIS (25/10, keepInventory OFF) : un bot réapparu nu se battait contre les zombies avec la
+  // pioche — 4 combats sur 4 mortels. 2 planches + 1 bâton, juste après les bâtons ; sautée dès qu'une
+  // épée est en poche ou que la matière manque (jamais bloquante). La pierre la remplace plus loin (t1_sword).
+  { name: 'wood_sword',     met: (c) => hasSword(c.inv) || invCount(c.inv, 'wooden_sword') >= 1 || I(c)
+                                         || anyPlanks(c.inv) < 2 || invCount(c.inv, 'stick') < 1,
+    skill: 'craft',         args: { name: 'wooden_sword', count: 1 } },
   // no_pickaxe churn-breaker : si cobble+sticks+table en poche → pioche pierre craftable direct, on
   // saute la pioche bois (et donc le bois de surface). Sinon comportement inchangé.
   { name: 'wooden_pickaxe', met: (c) => W(c) || I(c) || canStonePick(c),

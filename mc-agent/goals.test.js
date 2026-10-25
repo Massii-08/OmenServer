@@ -63,7 +63,7 @@ test('chainFor selectionne MVP (pierre) ou IRON selon l\'objectif', () => {
 test('ordre exact de la chaine FER (12 buts, cobble scindé pick/four)', () => {
   assert.deepStrictEqual(
     IRON_CHAIN.map((g) => g.name),
-    ['logs', 'planks', 'crafting_table', 'sticks', 'wooden_pickaxe',
+    ['logs', 'planks', 'crafting_table', 'sticks', 'wood_sword', 'wooden_pickaxe',
      'cobble_pick', 'stone_pickaxe', 'cobble_furnace', 'furnace',
      'iron_ore', 'iron_ingot', 'iron_pickaxe'],
   );
@@ -113,7 +113,7 @@ test('DIAMOND_CHAIN contient les 12 buts IRON + 3 buts diamant en queue', () => 
   const names = DIAMOND_CHAIN.map((g) => g.name);
   assert.deepStrictEqual(
     names,
-    ['dia_pick', 'dia_armor', 'logs', 'planks', 'crafting_table', 'sticks', 'wooden_pickaxe',
+    ['dia_pick', 'dia_armor', 'logs', 'planks', 'crafting_table', 'sticks', 'wood_sword', 'wooden_pickaxe',
      'cobble_pick', 'stone_pickaxe', 'cobble_furnace', 'furnace',
      'iron_ore', 'iron_ingot', 'iron_pickaxe', 'sword',
      'dia_spare_sticks', 'dia_spare_smelt', 'dia_spare_pick',
