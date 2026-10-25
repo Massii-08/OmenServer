@@ -7324,6 +7324,28 @@ async function tossJunkBehind(b) {
   }
 }
 
+// POCHE TOUJOURS RESPIRABLE (25/10) : 0-2 cases libres, 110-180 cobble + 60-130 deepslate chez les 3 mineurs
+// en phase diamant → la viande des chasses (`kills:4, after:0`), la ficelle de la canne et des diamants
+// (`drop_lost`) restaient par terre. Toutes les 20 s, sous 4 cases libres, on jette du déchet (pickJunkToToss :
+// garde 32 cobble et 64 de remblai) jusqu'à 6 cases libres. Garde de NIVEAU MODULE (piège #56).
+let _roomBusy = false;
+setInterval(async () => {
+  if (_roomBusy || !bot || !bot.inventory || !bot.entity || typeof bot.inventory.emptySlotCount !== 'function') return;
+  if (bot.inventory.emptySlotCount() >= 4 || bot.targetDigBlock) return;
+  _roomBusy = true;
+  const tossed = [];
+  try {
+    for (let i = 0; i < 6 && bot.inventory.emptySlotCount() < 6; i++) {
+      const junk = pickJunkToToss(bot.inventory.items(), { exclude: [] });
+      if (!junk) break;
+      await bot.tossStack(junk);
+      tossed.push(junk.name + ':' + junk.count);
+    }
+  } catch (e) { /* best-effort */ }
+  finally { _roomBusy = false; }
+  if (tossed.length) emit({ type: 'room_freed', tossed, empty: bot.inventory.emptySlotCount() });
+}, 20000);
+
 // H4 : libérer un slot SUR PLACE (JAMAIS remonter en surface sur inventaire plein). tossJunk d'abord
 // (garde quota/outils/bouffe, jamais le quota, jamais re-ramassé) ; si toujours plein → creuser DEVANT
 // (idiome du watchdog anti-jam) pour ouvrir de l'espace, puis re-toss. Branché comme `cleanup` du
