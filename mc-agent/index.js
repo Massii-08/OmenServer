@@ -3442,10 +3442,10 @@ const LOWHP_PROCEED_PAUSE_MS = 15000;
 // PAS DE RÉGÉNÉRATION POSSIBLE (25/10, NethBot1 : faim 3, 4 PV, aucune nourriture, sortie nourriture vide) :
 // la garde PV des grottes (< 12) refusait le minage, la récupération rendait `no_regen`, et le bot restait
 // immobile une heure (la faim ne tombait jamais à 0 pour le tuer). Après un `no_regen`, pendant 5 min, on
-// mine quand même au-dessus de 4 PV — attendre ne rapporte rien. Niveau MODULE (piège #56).
+// mine quand même, quels que soient les PV — attendre ne rapporte rien (25/10 bis : NethBot1 figé à 2 PV). Niveau MODULE (piège #56).
 let _noRegenAt = 0;
 const NO_REGEN_MINE_MS = 5 * 60000;
-const NO_REGEN_MINE_MIN_HP = 4;
+const NO_REGEN_MINE_MIN_HP = 0;   // keepInventory : une mort coûte moins qu'une heure d'immobilité à 2 PV
 function caveHpAllowed() {
   const hp = bot && bot.health;
   if (caveIronPick.caveHpOk(hp)) return true;
@@ -7368,9 +7368,16 @@ async function tossJunkBehind(b) {
 // (`drop_lost`) restaient par terre. Toutes les 20 s, sous 4 cases libres, on jette du déchet (pickJunkToToss :
 // garde 32 cobble et 64 de remblai) jusqu'à 6 cases libres. Garde de NIVEAU MODULE (piège #56).
 let _roomBusy = false;
+// Un bot IMMOBILE re-ramasse ce qu'il vient de jeter (délai de ramassage de 2 s) : NethBot1 a jeté les
+// mêmes 32 deepslate toutes les 20 s pendant 10 min, `empty` toujours à 1. Si le jet précédent n'a rien
+// gagné, on attend 5 min avant de recommencer.
+let _roomLast = { at: 0, empty: -1, gained: true };
 setInterval(async () => {
   if (_roomBusy || !bot || !bot.inventory || !bot.entity || typeof bot.inventory.emptySlotCount !== 'function') return;
   if (bot.inventory.emptySlotCount() >= 4 || bot.targetDigBlock) return;
+  const _e0 = bot.inventory.emptySlotCount();
+  if (_roomLast.at && !(_e0 > _roomLast.empty)) _roomLast.gained = false;
+  if (!_roomLast.gained && Date.now() - _roomLast.at < 5 * 60000) return;
   _roomBusy = true;
   const tossed = [];
   try {
@@ -7382,7 +7389,10 @@ setInterval(async () => {
     }
   } catch (e) { /* best-effort */ }
   finally { _roomBusy = false; }
-  if (tossed.length) emit({ type: 'room_freed', tossed, empty: bot.inventory.emptySlotCount() });
+  if (tossed.length) {
+    _roomLast = { at: Date.now(), empty: bot.inventory.emptySlotCount(), gained: true };
+    emit({ type: 'room_freed', tossed, empty: bot.inventory.emptySlotCount() });
+  }
 }, 20000);
 
 // H4 : libérer un slot SUR PLACE (JAMAIS remonter en surface sur inventaire plein). tossJunk d'abord
