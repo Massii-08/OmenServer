@@ -265,3 +265,92 @@ test('helpers purs : nearSkipped rayon 4 · approachBudgetMs [45 s, 90 s] · leg
   assert.deepStrictEqual(H.normalizeTravel(true), { reached: true, interrupted: false, why: null });
   assert.strictEqual(H.normalizeTravel(false).why, 'unreachable');
 });
+
+// ─── 25/10 : minage VÉRIFIÉ, cibles périmées, échecs par bloc ─────────────────────────────────────
+const { createStrikeStore } = require('./diamondDig');
+const oneTarget = (t) => { let given = 0; return () => (given++ < 10 ? t : null); };
+
+test('REJEU 25/10 : cible périmée (air) relue AVANT le départ → ore_gone, aucun trajet, aucun échec', async () => {
+  const events = [];
+  const t = { x: -313, y: -34, z: 315 };
+  const r = await caveHunt(botWith([['iron_pickaxe', 1]]), {
+    material: 'diamond', count: 1, emit: (e) => events.push(e), scanLocal: () => null,
+    nextOreTarget: (m, w, f, o) => (o.skip.has('-313,-34,315') ? null : t),
+    oreState: () => 'gone',
+    goTo: async () => { throw new Error('ne doit pas partir vers une cible disparue'); },
+    mineTarget: async () => { throw new Error('ne doit pas miner'); },
+  });
+  assert.strictEqual(r.reason, 'no_cave_target');
+  const gone = events.find((e) => e.type === 'ore_gone');
+  assert.deepStrictEqual([gone.x, gone.y, gone.z, gone.world], [-313, -34, 315, 'overworld']);
+  const res = events.filter((e) => e.type === 'diamond_cave_result');
+  assert.deepStrictEqual(res.map((e) => [e.outcome, e.why]), [['gone', 'stale_target']]);
+  assert.strictEqual(events.some((e) => e.type === 'cave_target'), false);
+});
+
+test('mineTarget mined → ore_mined (la carte oublie le bloc) et cave_mined', async () => {
+  const events = [];
+  const r = await caveHunt(botWith([['iron_pickaxe', 1]]), {
+    material: 'diamond', count: 1, emit: (e) => events.push(e), scanLocal: () => null,
+    nextOreTarget: oneTarget({ x: 1, y: -50, z: 1 }), oreState: () => 'ore', goTo: async () => true,
+    mineTarget: async () => ({ outcome: 'mined', mined: 2, broken: true }),
+  });
+  assert.deepStrictEqual({ ok: r.ok, got: r.got }, { ok: true, got: 2 });
+  assert.ok(events.some((e) => e.type === 'ore_mined' && e.x === 1 && e.material === 'diamond'));
+  assert.deepStrictEqual(events.filter((e) => e.type === 'diamond_cave_result').map((e) => [e.outcome, e.mined]), [['mined', 2]]);
+});
+
+test('blocked : la RAISON est dans le résultat, retenté une fois puis écarté (2 échecs = banni 10 min)', async () => {
+  const events = [];
+  const strikes = createStrikeStore();
+  const t = { x: -311, y: -14, z: 321 };
+  let tries = 0;
+  const r = await caveHunt(botWith([['iron_pickaxe', 1]]), {
+    material: 'diamond', count: 1, emit: (e) => events.push(e), strikeStore: strikes,
+    scanLocal: (bot, m, ex) => (ex.has('-311,-14,321') ? null : t), nextOreTarget: () => null,
+    oreState: () => 'ore', goTo: async () => true,
+    mineTarget: async () => { tries++; return { outcome: 'blocked', why: 'not_visible', mined: 0 }; },
+  });
+  assert.strictEqual(r.reason, 'no_cave_target');
+  assert.strictEqual(tries, 2);
+  const res = events.filter((e) => e.type === 'diamond_cave_result');
+  assert.deepStrictEqual(res.map((e) => [e.outcome, e.why, e.strikes]), [['blocked', 'not_visible', 1], ['blocked', 'not_visible', 2]]);
+  assert.strictEqual(strikes.banned('-311,-14,321'), true);
+  assert.strictEqual(strikes.banned('-311,-14,322'), false, 'clé exacte : le voisin de la grappe reste visable');
+});
+
+test('blocked sans strikeStore : pas de seconde tentative dans le même appel', async () => {
+  let tries = 0;
+  const t = { x: 5, y: -50, z: 5 };
+  const r = await caveHunt(botWith([['iron_pickaxe', 1]]), {
+    material: 'diamond', count: 1, scanLocal: (b, m, ex) => (ex.has('5,-50,5') ? null : t), nextOreTarget: () => null,
+    goTo: async () => true, mineTarget: async () => { tries++; return { outcome: 'blocked', why: 'out_of_reach' }; },
+  });
+  assert.strictEqual(r.reason, 'no_cave_target');
+  assert.strictEqual(tries, 1);
+});
+
+test('mineTarget gone (disparu à l\'arrivée) → ore_gone, sans strike', async () => {
+  const events = [];
+  const strikes = createStrikeStore();
+  const t = { x: -318, y: -36, z: 315 };
+  await caveHunt(botWith([['iron_pickaxe', 1]]), {
+    material: 'diamond', count: 1, emit: (e) => events.push(e), strikeStore: strikes,
+    scanLocal: (b, m, ex) => (ex.has('-318,-36,315') ? null : t), nextOreTarget: () => null,
+    oreState: () => 'ore', goTo: async () => true, mineTarget: async () => ({ outcome: 'gone', why: 'gone' }),
+  });
+  assert.ok(events.some((e) => e.type === 'ore_gone' && e.x === -318));
+  assert.strictEqual(strikes.count('-318,-36,315'), 0);
+});
+
+test('coupure : QUI a coupé (by) remonte dans diamond_cave_result', async () => {
+  const events = [];
+  const replies = [{ reached: false, interrupted: true, why: 'goal_changed', by: 'fleeFrom@fleeFrom.js:12' }, true];
+  await caveHunt(botWith([['iron_pickaxe', 1]]), {
+    material: 'diamond', count: 1, emit: (e) => events.push(e), scanLocal: () => null,
+    nextOreTarget: oneTarget({ x: 2, y: -50, z: 2 }), goTo: async () => replies.shift(),
+    mineTarget: async () => ({ outcome: 'mined', mined: 1, broken: true }),
+  });
+  const res = events.filter((e) => e.type === 'diamond_cave_result');
+  assert.deepStrictEqual([res[0].outcome, res[0].why, res[0].by], ['interrupted', 'goal_changed', 'fleeFrom@fleeFrom.js:12']);
+});

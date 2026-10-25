@@ -101,13 +101,14 @@ const { descendDiagonal: _descendDiagonalRaw } = require('./skills/descendDiagon
 const { pickTier, stoneBatchWant, stoneStairPlan } = require('./stoneDig');
 const { pickWornOutToReport } = require('./wornOut');
 const { equipPlan: armorEquipPlan, coolingSlots: armorCoolingSlots, recraftCooling: armorRecraftCooling, ironCraftBlocked } = require('./armorWear');
-const { branchMine: _branchMineRaw, bmBail, floodFillVein, currentPhase: bmCurrentPhase } = require('./skills/branchMine');   // gardé plus bas (disjoncteur OOM)
+const { branchMine: _branchMineRaw, bmBail, floodFillVein, currentPhase: bmCurrentPhase, neighborsHaveLava: bmNeighborsHaveLava, wallLava: bmWallLava } = require('./skills/branchMine');   // gardé plus bas (disjoncteur OOM)
 const heapGuard = require('./heapGuard');   // OOM « au même endroit » du branch-mine (23/10)
 const { installToolGuard } = require('./toolGuard');
 const { diaWornCount, armorTier, isIronDonor } = require('./diaArmor');   // armure diamant des mineurs (24/10 soir)   // OOM 23/10 : récursion sans fin de mineflayer-tool
 const { diamondFree, cautionNight, diamondNightPlan } = require('./freeRoam');   // diamant complet = libre la nuit (24/10)
 const loopGuard = require('./loopGuard');   // sync_loop_capped + loop_lag (gels de l'event loop)
-const { caveHunt, sharedSkipStore: caveHuntSkip, nearSkipped: caveNearSkipped, approachBudgetMs: caveApproachBudgetMs, legWaypoint: caveLegWaypoint } = require('./skills/caveHunt');   // cave-first diamant (Massii 26/07)
+const { caveHunt, sharedSkipStore: caveHuntSkip, sharedStrikeStore: caveHuntStrikes, nearSkipped: caveNearSkipped, approachBudgetMs: caveApproachBudgetMs, legWaypoint: caveLegWaypoint } = require('./skills/caveHunt');   // cave-first diamant (Massii 26/07)
+const { digVisibleOre, oreStateOf: diamondOreStateOf, DIAMOND_ORES } = require('./skills/diamondDig');   // casse VÉRIFIÉE d'un diamant visible (25/10)
 const { caveIron: caveIronSkill } = require('./skills/caveIron');   // fer en grotte (Massii 20/10)
 const caveIronPick = require('./caveIron');
 const oresScan = require('./ores');                          // scan ciblé du fer VU (ironCaveCtx, 24/10)
@@ -4635,12 +4636,14 @@ async function runGoalSkill(goal, gen) {
         goTo: (t) => diamondCaveGoto(t, tokCH),
         settle: () => _caveSettle(tokCH),
         hpOk: () => caveIronPick.caveHpOk(bot && bot.health),
-        // Le filon entier, pas juste le bloc visé : un diamant vient rarement seul.
-        mineAt: async (t) => {
-          const before = _count('diamond');
-          try { await floodFillVein(bot, t, tokCH); } catch (e) { /* best-effort */ }
-          return Math.max(0, _count('diamond') - before);
-        },
+        // CASSE VÉRIFIÉE (25/10, `empty nothing_mined` ×30 en 30 min avec le diamant TOUJOURS LÀ) : se
+        // placer à portée et en vue, murer la lave, équiper la pioche qui récolte, casser, ramasser, puis
+        // le filon — chaque refus a sa raison (cf. skills/diamondDig.js). Remplace floodFillVein seul.
+        mineTarget: (t) => _digDiamondAt(t, tokCH),
+        // Cible relue AVANT le départ : un minerai déjà cassé (la carte ne l'oubliait pas) est sauté.
+        oreState: (t) => { try { return diamondOreStateOf(bot.blockAt(vec3Lib(t.x, t.y, t.z))); } catch (e) { return 'unknown'; } },
+        // 2 refus sur la même case → écartée 10 min (partagé entre reprises du but).
+        strikeStore: caveHuntStrikes,
       }, goal.args || {}), tokCH);
     } finally { _diamondHuntBusy = false; }
     if (rCH && rCH.reason === 'no_cave_target') {
@@ -7752,7 +7755,13 @@ async function diamondCaveGoto(t, tok) {
   const ok = (why) => ({ reached: true, interrupted: false, why });
   const fail = (why) => {
     const v = caveTravelVerdict({ teleported: _tpCount !== tp0, errs, d0, d1: dist() });
-    if (v === 'interrupted') return { reached: false, interrupted: true, why: _tpCount !== tp0 ? 'teleported' : 'interrupted' };
+    if (v === 'interrupted') {
+      // QUI a coupé (25/10 : 32 `interrupted` en 30 min, coupable inconnu) : la cause lue dans les erreurs
+      // du pathfinder, et le dernier appelant de setGoal qui a INTERROMPU un but depuis notre départ.
+      const by = (() => { try { return _goalTrace.lastInterrupter(t0); } catch (e) { return null; } })();
+      const cause = _tpCount !== tp0 ? 'teleported' : caveInterruptCause(errs, d0, dist());
+      return Object.assign({ reached: false, interrupted: true, why: cause }, by ? { by } : {});
+    }
     return { reached: false, interrupted: false, why };
   };
   const cut = () => tok.cancelled || _tpCount !== tp0 || caveTravelVerdict({ errs, d0, d1: dist() }) === 'interrupted';
@@ -7849,6 +7858,107 @@ async function _caveGotoOre(t, tok, errs = null, ms = 60000) {
     try { await go(goal); } catch (e) { /* inatteignable */ }
   });
   return near();
+}
+
+/**
+ * CASSE VÉRIFIÉE D'UN DIAMANT DE GROTTE (25/10). Câblage des effets de skills/diamondDig.digVisibleOre :
+ * diamondCaveGoto rend « arrivé » à ≤ 6 blocs, mais on ne casse qu'à ≤ 4,5 de l'œil ET en ligne de vue
+ * — l'ancien chemin (floodFillVein → collectBlock.collect) refaisait un trajet GoalLookAtBlock avec les
+ * Movements du plugin sous un catch muet de 30 s : 30 `empty nothing_mined` en 30 min, diamant intact.
+ * NIVEAU MODULE (lit _goalTrace, taskToken capturé par l'appelant).
+ * @returns {Promise<{outcome:string, why:string|null, mined:number, broken:boolean}>}
+ */
+const _DIA_FACES = [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]];
+function _diamondFaceVisible(t) {
+  try {
+    const b = bot.blockAt(vec3Lib(t.x, t.y, t.z));
+    if (!b) return false;
+    try { if (typeof bot.canSeeBlock === 'function' && bot.canSeeBlock(b)) return true; } catch (e) { /* raycast ci-dessous */ }
+    // canSeeBlock ne vise que le CENTRE : un rayon qui frôle l'arête d'un bloc voisin le rend aveugle
+    // alors qu'une face est bien visible. On essaie le centre de chaque face (ce que fait dig 'raycast').
+    const p = bot.entity && bot.entity.position;
+    if (!p || !bot.world || typeof bot.world.raycast !== 'function') return false;
+    const eye = p.offset(0, 1.62, 0);
+    for (const [dx, dy, dz] of _DIA_FACES) {
+      const target = vec3Lib(t.x + 0.5 + dx * 0.5, t.y + 0.5 + dy * 0.5, t.z + 0.5 + dz * 0.5);
+      const v = target.minus(eye);
+      const len = v.norm();
+      if (!(len > 0) || len > 5.5) continue;
+      const hit = bot.world.raycast(eye, v.scaled(1 / len), len + 0.6);
+      if (hit && hit.position && hit.position.x === t.x && hit.position.y === t.y && hit.position.z === t.z) return true;
+    }
+  } catch (e) { /* inconnu = non visible */ }
+  return false;
+}
+async function _digDiamondAt(t, tok) {
+  const at = vec3Lib(t.x, t.y, t.z);
+  const stop = () => { try { stopMotion(); } catch (e) {} };
+  const diamonds = () => ((bot.inventory && bot.inventory.items()) || []).reduce((s, i) => s + (i.name === 'diamond' ? i.count : 0), 0);
+  return digVisibleOre(t, {
+    cancelled: () => !!(tok && tok.cancelled),
+    blockAt: () => bot.blockAt(at),
+    eye: () => { const p = bot.entity && bot.entity.position; return p ? { x: p.x, y: p.y + 1.62, z: p.z } : null; },
+    canSee: () => _diamondFaceVisible(t),
+    // Se placer d'où la face est à portée ET en vue — NOS Movements (lavaGuard/bridgeGuard), creuser permis.
+    approachLook: async () => {
+      await withTempMovements(bot, Movements, { canDig: true }, async () => {
+        try { await withTimeout(bot.pathfinder.goto(new pfGoals.GoalLookAtBlock(at, bot.world, { reach: 4.3 })), 20000, stop); } catch (e) { /* on relit l'état */ }
+      });
+    },
+    clearLava: async () => {
+      let left = bmNeighborsHaveLava(bot, t);
+      for (let pass = 0; left && pass < 6; pass++) {
+        if (!(await bmWallLava(bot, left.ahead))) break;
+        left = bmNeighborsHaveLava(bot, t);
+      }
+      if (left) { try { emit({ type: 'lava_avoided', where: 'diamond_cave', x: t.x, y: t.y, z: t.z }); } catch (e) {} }
+      return !left;
+    },
+    equipPick: async (block) => {
+      const tool = bestToolFor(bot, block);
+      if (tool && !(bot.heldItem && bot.heldItem.name === tool.name)) { try { await bot.equip(tool, 'hand'); } catch (e) { /* le verdict lit la main */ } }
+      return (bot.heldItem && bot.heldItem.name) || null;
+    },
+    dig: async (block) => {
+      let err = null;
+      try { stopMotion(); } catch (e) {}
+      await withTimeout(Promise.resolve(bot.dig(block, true, 'raycast')).catch((e) => { err = e; }), 15000,
+        () => { err = { name: 'DigTimeout' }; try { bot.stopDigging(); } catch (e) {} });
+      if (err) throw err;
+    },
+    // Le drop tombe parfois d'un ou deux blocs (plancher de grotte) : on va le chercher, borné.
+    pickup: async () => {
+      const n0 = diamonds();
+      await sleep(400);
+      if (diamonds() > n0) return;
+      let drop = null, best = Infinity;
+      try {
+        for (const e of Object.values(bot.entities || {})) {
+          if (!e || !e.position || (e.name !== 'item' && e.objectType !== 'Item')) continue;
+          const d = e.position.distanceTo(at.offset(0.5, 0.5, 0.5));
+          if (d < 4 && d < best) { best = d; drop = e; }
+        }
+      } catch (e) { drop = null; }
+      const goal = drop ? new pfGoals.GoalNear(drop.position.x, drop.position.y, drop.position.z, 1)
+        : new pfGoals.GoalNear(t.x, t.y, t.z, 1);
+      await withTempMovements(bot, Movements, { canDig: false }, async () => {
+        try { await withTimeout(bot.pathfinder.goto(goal), 6000, stop); } catch (e) { /* le compte tranche */ }
+      });
+      for (let i = 0; i < 6 && diamonds() <= n0; i++) await sleep(250);
+    },
+    // Le reste du filon (voisins par les FACES, anti x-ray), floodFillVein garde lave + outil récoltant.
+    vein: async () => {
+      for (const [dx, dy, dz] of _DIA_FACES) {
+        if (tok && tok.cancelled) return;
+        const q = { x: t.x + dx, y: t.y + dy, z: t.z + dz };
+        let b = null;
+        try { b = bot.blockAt(vec3Lib(q.x, q.y, q.z)); } catch (e) { b = null; }
+        if (!b || !DIAMOND_ORES.has(b.name)) continue;
+        await withTimeout(floodFillVein(bot, q, tok), 60000, stop);
+      }
+    },
+    count: diamonds,
+  });
 }
 
 /**
@@ -8046,6 +8156,24 @@ function caveTravelVerdict({ teleported, errs, d0, d1, stairMissed } = {}) {
   // d'atteinte → raison propre, mise de côté 30 min, hors disjoncteur `unreachable`.
   if (stairMissed) return 'stair_missed';
   return false;
+}
+
+/**
+ * PUR — la cause d'une coupure de trajet, pour le log : 'goal_changed' (un autre a posé son but),
+ * 'path_stopped' (quelqu'un a arrêté le pathfinder), 'pulled_away' (bot emmené plus loin), sinon
+ * 'interrupted'. Même lecture que caveTravelVerdict (notre propre échéance n'est pas une coupure).
+ */
+function caveInterruptCause(errs, d0, d1) {
+  const list = Array.isArray(errs) ? errs : [];
+  const own = list.some((e) => e && e.name === 'OwnTimeout');
+  for (const e of list) {
+    const name = String((e && e.name) || '');
+    const msg = String((e && e.message) || e || '');
+    if (name === 'GoalChanged' || /goal was changed/i.test(msg)) return 'goal_changed';
+    if (!own && (name === 'PathStopped' || /path was stopped/i.test(msg))) return 'path_stopped';
+  }
+  if (Number.isFinite(d0) && Number.isFinite(d1) && d1 >= d0 + CAVE_PULLED_AWAY) return 'pulled_away';
+  return 'interrupted';
 }
 
 /** Lit la dette persistée (ou null). */

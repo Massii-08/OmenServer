@@ -62,7 +62,8 @@ function sandbox({ bot0 = { x: 121, y: -39, z: 105 }, reach = 10, script = null 
     },
   };
   vm.createContext(sb);
-  run(sb, [letSrc('_tpCount'), constSrc('CAVE_PULLED_AWAY'), fnSrc('withTimeout'), fnSrc('caveTravelVerdict'),
+  sb._goalTrace = { lastInterrupter: () => sb.interrupter || null };
+  run(sb, [letSrc('_tpCount'), constSrc('CAVE_PULLED_AWAY'), fnSrc('withTimeout'), fnSrc('caveTravelVerdict'), fnSrc('caveInterruptCause'),
     fnSrc('_caveGotoOre'), fnSrc('_caveLegsTo'), fnSrc('diamondCaveGoto'),
     'this.go = diamondCaveGoto; this.gotoOre = _caveGotoOre; this.tp = () => { _tpCount++; };'].join('\n'));
   return sb;
@@ -132,4 +133,51 @@ test('câblage : la chasse diamant passe par diamondCaveGoto / _caveSettle / cav
   assert.match(SRC, /^let _diamondHuntBusy = false;/m, '_diamondHuntBusy au NIVEAU MODULE (lu par le timer du ramassage)');
   assert.match(SRC, /rareHunt: _diamondHuntBusy/);
   assert.ok(fnSrc('_caveSettle'));
+});
+
+test('coupure : la CAUSE (goal_changed) et QUI a coupé (goalTrace) sont rendues — 25/10, 32 interrupted anonymes', async () => {
+  const sb = sandbox({ script: (g, canDig) => (canDig ? undefined : err('GoalChanged', 'The goal was changed before it could be completed!')) });
+  sb.interrupter = 'fleeFrom@fleeFrom.js:42';
+  const r = await sb.go(T_UP, { cancelled: false });
+  assert.deepStrictEqual({ interrupted: r.interrupted, why: r.why, by: r.by }, { interrupted: true, why: 'goal_changed', by: 'fleeFrom@fleeFrom.js:42' });
+});
+
+// ─── 25/10 : _digDiamondAt — le VRAI texte d'index.js (piège #56 : tout identifiant hors module casse ici) ──
+test('_digDiamondAt : arrivé à 6 blocs → se place (GoalLookAtBlock), équipe la pioche fer, casse, ramasse → mined', async () => {
+  const vec3 = require('vec3');
+  const dd = require('./skills/diamondDig');
+  const T = { x: -386, y: -14, z: 322 };
+  const state = { ore: 'deepslate_diamond_ore', inv: [{ name: 'iron_pickaxe', count: 1 }, { name: 'shield', count: 1 }], held: { name: 'shield' } };
+  const calls = [];
+  const bot = {
+    entity: { position: vec3(-380.5, -14, 322.5) },
+    get heldItem() { return state.held; },
+    inventory: { items: () => state.inv },
+    blockAt: (p) => (p.x === T.x && p.y === T.y && p.z === T.z ? { name: state.ore, position: p } : { name: 'cave_air', position: p }),
+    canSeeBlock: () => true,
+    entities: {},
+    world: { raycast: () => null },
+    equip: async (item) => { calls.push('equip:' + item.name); state.held = item; },
+    dig: async (b, force, face) => { calls.push('dig:' + face); state.ore = 'air'; state.inv.push({ name: 'diamond', count: 1 }); },
+    stopDigging() {},
+    pathfinder: { goto: async (g) => { calls.push('goto:' + g.kind); if (g.kind === 'look') bot.entity.position = vec3(-383.5, -14, 322.5); } },
+  };
+  const sb = {
+    Math, Promise, Number, Array, String, Object, JSON, Infinity,
+    setTimeout: (f) => setTimeout(f, 0), clearTimeout, Date,
+    bot, vec3Lib: vec3, events: [], emit(e) { sb.events.push(e); }, stopMotion() {},
+    sleep: async () => {}, Movements: function () {},
+    withTempMovements: async (b, M, t, fn) => fn(),
+    pfGoals: { GoalLookAtBlock: function () { this.kind = 'look'; }, GoalNear: function () { this.kind = 'near'; } },
+    bmNeighborsHaveLava: () => null, bmWallLava: async () => false,
+    bestToolFor: () => state.inv[0],
+    floodFillVein: async () => 0,
+    digVisibleOre: dd.digVisibleOre, DIAMOND_ORES: dd.DIAMOND_ORES,
+  };
+  vm.createContext(sb);
+  run(sb, [fnSrc('withTimeout'), constSrc('_DIA_FACES'), fnSrc('_diamondFaceVisible'), fnSrc('_digDiamondAt'),
+    'this.dig = _digDiamondAt;'].join('\n'));
+  const r = await sb.dig(T, { cancelled: false });
+  assert.deepStrictEqual([r.outcome, r.mined, r.broken], ['mined', 1, true]);
+  assert.deepStrictEqual(calls.slice(0, 3), ['goto:look', 'equip:iron_pickaxe', 'dig:raycast']);
 });

@@ -415,3 +415,14 @@ test('index.js : trace au NIVEAU MODULE, wrapper posé une seule fois, event goa
   assert.match(src, /emit\(\{ type: 'goal_trace_on', ok: traced \}\)/,
     'l\'event `goal_trace_on { ok }` doit confirmer l\'installation du wrapper');
 });
+
+test('lastInterrupter : dernier appelant qui a INTERROMPU un but, borné par une date', () => {
+  let now = 1000;
+  const t = createGoalTrace({ now: () => now });
+  assert.strictEqual(t.lastInterrupter(), null);
+  t.note('a@x.js:1', false);
+  assert.strictEqual(t.lastInterrupter(), null, 'un appel sans interruption ne compte pas');
+  now = 2000; t.note('fleeFrom@fleeFrom.js:9', true);
+  assert.strictEqual(t.lastInterrupter(1500), 'fleeFrom@fleeFrom.js:9');
+  assert.strictEqual(t.lastInterrupter(2500), null);
+});

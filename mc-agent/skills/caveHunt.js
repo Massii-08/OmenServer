@@ -13,6 +13,7 @@
 // borné et court, jamais un strip-mine.
 
 const { nextOreTarget, oreBase, requiredPickTier, scanExposedOres, isWaterAdjacent } = require('../ores');
+const { createStrikeStore } = require('./diamondDig');
 
 /**
  * Cible EXPOSÉE vue par le bot lui-même, ici et maintenant. (défaut de `opts.scanLocal`)
@@ -64,6 +65,9 @@ function createSkipStore(ttlMs = 20 * 60 * 1000, nowFn = Date.now) {
   };
 }
 const sharedSkipStore = createSkipStore();
+// Échecs « arrivé mais pas cassé » PAR BLOC (25/10) : 2 sur la même case → écartée 10 min. Partagé
+// entre reprises du but (même raison que sharedSkipStore). Cf. diamondDig.createStrikeStore.
+const sharedStrikeStore = createStrikeStore();
 
 /**
  * Mise de côté par GRAPPE (24/10, NethBot1 : (120,-9,108) puis (119,-9,109) puis (120,-8,108) — trois blocs
@@ -110,11 +114,15 @@ function legWaypoint(from, to, step = 8) {
   return { x: Math.round(from.x + dx * k), y: Math.round(from.y + dy * k), z: Math.round(from.z + dz * k), last: false };
 }
 
-/** Résultat d'un `goTo` : booléen (historique), 'interrupted', ou { reached, interrupted, why }. PUR. */
+/** Résultat d'un `goTo` : booléen (historique), 'interrupted', ou { reached, interrupted, why, by }. PUR. */
 function normalizeTravel(r) {
   if (r === true) return { reached: true, interrupted: false, why: null };
   if (r === 'interrupted') return { reached: false, interrupted: true, why: 'interrupted' };
-  if (r && typeof r === 'object') return { reached: !!r.reached, interrupted: !!r.interrupted, why: r.why || null };
+  if (r && typeof r === 'object') {
+    const o = { reached: !!r.reached, interrupted: !!r.interrupted, why: r.why || null };
+    if (r.by) o.by = String(r.by);          // QUI a coupé (goalTrace), quand on le sait
+    return o;
+  }
   return { reached: false, interrupted: false, why: 'unreachable' };
 }
 
@@ -138,7 +146,11 @@ function pickTierOf(inv) {
  *   memory/world : mémoire de monde + clé (défaut bot._worldMemory / bot._worldKey)
  *   maxDist    : rayon de recherche autour du bot (défaut 256)
  *   goTo(pos)  : déplacement borné, injecté (défaut : pathfinder de l'appelant)
- *   mineAt(pos): minage + filon, injecté
+ *   mineAt(pos): minage + filon, injecté (historique : rend un nombre ; 0 → outcome 'empty')
+ *   mineTarget(pos): minage VÉRIFIÉ (diamondDig.digVisibleOre) → { outcome:'mined'|'gone'|'blocked'|
+ *              'cancelled', why, mined, broken } ; prioritaire sur mineAt
+ *   oreState(pos): 'ore'|'gone'|'unknown' — relu AVANT le départ (cible périmée = sautée sans échec)
+ *   strikeStore: échecs par bloc (défaut : aucun) — 2 `blocked` sur la même case → écartée 10 min
  *   emit       : événements
  *
  * → { ok:true, got } | { ok:false, reason:'no_cave_target'|'no_pick'|'cancelled', got }
@@ -167,6 +179,10 @@ async function caveHunt(bot, opts = {}, token = null) {
   const store = opts.skipStore || null;     // persistant entre appels (index : sharedSkipStore)
   if (store) { for (const k of store.keys()) skip.add(k); }
   const markSkip = (t) => { const k = keyOf(t); skip.add(k); if (store) store.add(k); };
+  // Clés EXACTES écartées (pas la grappe) : cibles disparues (`gone`) et blocs à 2 échecs (strikes).
+  const strikes = opts.strikeStore || null;
+  const goneKeys = new Set();
+  const exactOut = (k) => goneKeys.has(k) || !!(strikes && strikes.banned(k));
   // Coupures (réflexe de combat, fuite, détour d'un timer, TP) : pas un verdict sur la grappe — on la
   // retente après que le pathfinder s'est libéré, au plus MAX_INTERRUPTS fois PAR GRAPPE et par appel.
   const interrupts = [];                     // [{ k, n }]
@@ -191,7 +207,7 @@ async function caveHunt(bot, opts = {}, token = null) {
     // enchaînait 6 grappes à 5,9 PV (NethBot1, 24/10) pendant que les réflexes lui volaient le pathfinder.
     if (opts.hpOk && !opts.hpOk()) return { ok: got > 0, reason: got > 0 ? undefined : 'low_hp', got };
     if (++attempts > maxAttempts) return { ok: got > 0, reason: got > 0 ? undefined : 'attempts', got };
-    const excluded = { has: (k) => skip.has(k) || softSkip.has(k), [Symbol.iterator]: function* () { yield* skip; yield* softSkip; } };
+    const excluded = { has: (k) => skip.has(k) || softSkip.has(k) || exactOut(k), [Symbol.iterator]: function* () { yield* skip; yield* softSkip; } };
     const from = bot.entity && bot.entity.position ? bot.entity.position : null;
     // ORDRE : ce que le bot VOIT d'abord, la carte ensuite. Mesure live 26/07 : avec la carte en
     // premier, 95 cibles sur 98 étaient `cave_unreachable` et pas un seul diamant miné — on visait
@@ -207,7 +223,7 @@ async function caveHunt(bot, opts = {}, token = null) {
     if (!target) {
       // La carte ne connaît que les clés exactes : une cible voisine d'une grappe mise de côté est
       // ajoutée au filtre exact et on redemande (borné).
-      const exact = new Set([...skip, ...softSkip]);
+      const exact = new Set([...skip, ...softSkip, ...goneKeys, ...(strikes ? strikes.bannedKeys() : [])]);
       for (let i = 0; i < 32; i++) {
         target = pickNext(memory, world, from, {
           allowTypes: [oreBase(material)],
@@ -225,6 +241,19 @@ async function caveHunt(bot, opts = {}, token = null) {
     }
     if (!target) return { ok: got > 0, reason: got > 0 ? undefined : 'no_cave_target', got };
 
+    // CIBLE PÉRIMÉE (25/10 : `empty took_s 0` sur de l'air) : la carte garde les minerais déjà cassés
+    // (caveHunt ne lui disait jamais rien). On relit la case AVANT de partir ; plus un diamant → on
+    // l'oublie (ore_gone → remove_ore backend) et on passe, sans compter d'échec.
+    if (opts.oreState) {
+      let st = 'unknown';
+      try { st = opts.oreState(target); } catch (e) { st = 'unknown'; }
+      if (st === 'gone') {
+        goneKeys.add(keyOf(target));
+        emit({ type: 'ore_gone', world, x: target.x, y: target.y, z: target.z, src });
+        result(target, nowFn(), 'gone', { why: 'stale_target', src });
+        continue;
+      }
+    }
     emit({ type: 'cave_target', material, x: target.x, y: target.y, z: target.z, d: got });
     if (oreBase(material) === 'diamond') {
       const dist = from ? Math.round(Math.hypot(target.x - from.x, target.y - from.y, target.z - from.z)) : null;
@@ -237,7 +266,7 @@ async function caveHunt(bot, opts = {}, token = null) {
     if (!tr.reached && tr.interrupted) {
       const e = interruptCount(target);
       e.n++;
-      result(target, t0, 'interrupted', { why: tr.why || 'interrupted', tries: e.n });
+      result(target, t0, 'interrupted', Object.assign({ why: tr.why || 'interrupted', tries: e.n }, tr.by ? { by: tr.by } : {}));
       if (e.n >= MAX_INTERRUPTS) softSkip.add(keyOf(target));
       // Laisser le réflexe finir (fuite, couvert, détour) AVANT de reposer notre but : sinon on lui vole
       // le pathfinder à notre tour.
@@ -250,6 +279,33 @@ async function caveHunt(bot, opts = {}, token = null) {
       result(target, t0, 'unreachable', { why: tr.why || 'unreachable' });
       continue;
     }
+    if (opts.mineTarget) {
+      // Minage VÉRIFIÉ (25/10) : chaque refus a sa raison (out_of_reach, not_visible, no_tool, lava,
+      // dig_error:…, drop_lost…) au lieu d'un `empty nothing_mined` muet suivi de 20 min de mise de côté.
+      let m;
+      try { m = (await opts.mineTarget(target)) || {}; } catch (e) { m = { outcome: 'blocked', why: 'error' }; }
+      const k = keyOf(target);
+      const minedN = Number(m.mined) || 0;
+      if (m.broken || minedN > 0) emit({ type: 'ore_mined', world, material: oreBase(material), x: target.x, y: target.y, z: target.z });
+      if (minedN > 0) {
+        got += minedN;
+        emit({ type: 'cave_mined', material, got });
+        result(target, t0, 'mined', { mined: minedN });
+      } else if (m.outcome === 'gone') {
+        goneKeys.add(k);
+        emit({ type: 'ore_gone', world, x: target.x, y: target.y, z: target.z, src });
+        result(target, t0, 'gone', { why: m.why || 'gone' });
+      } else if (m.outcome === 'cancelled' || (token && token.cancelled)) {
+        result(target, t0, 'cancelled', { why: 'cancelled' });
+        return { ok: false, reason: 'cancelled', got };
+      } else {
+        if (m.broken) goneKeys.add(k);          // cassé, drop perdu : plus rien à viser ici
+        const n = strikes ? strikes.fail(k) : 1;
+        result(target, t0, 'blocked', { why: m.why || 'blocked', strikes: n });
+        if (!strikes) softSkip.add(k);          // sans store : pas deux fois dans le même appel
+      }
+      continue;
+    }
     let mined = 0;
     try { mined = (await mineAt(target)) || 0; } catch (e) { mined = 0; }
     if (mined > 0) { got += mined; emit({ type: 'cave_mined', material, got }); result(target, t0, 'mined', { mined }); }
@@ -259,6 +315,6 @@ async function caveHunt(bot, opts = {}, token = null) {
 }
 
 module.exports = {
-  caveHunt, pickTierOf, createSkipStore, sharedSkipStore, oreNamesOf,
+  caveHunt, pickTierOf, createSkipStore, sharedSkipStore, sharedStrikeStore, oreNamesOf,
   CLUSTER_R, nearSkipped, approachBudgetMs, legWaypoint, normalizeTravel, MAX_INTERRUPTS,
 };

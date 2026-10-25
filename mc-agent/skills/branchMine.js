@@ -1052,4 +1052,4 @@ function deltaOres(a, b) {
   return { diamond: Math.max(0, b.diamond - a.diamond), iron: Math.max(0, b.iron - a.iron), coal: Math.max(0, b.coal - a.coal) };
 }
 
-module.exports = { galleryTorchDecision, safeDigAndOpportunism, branchMine, bmBail, currentPhase, approach, cardinalFromYaw, leftOf, ORE_NAMES, WALL_BLOCKS, floodFillVein, oreFamily, sealCaveOpenings, placeTorchAt, CAVE_MIN_AIR, TORCH_JITTER, TORCH_CORNER_MIN };
+module.exports = { galleryTorchDecision, safeDigAndOpportunism, branchMine, bmBail, currentPhase, approach, cardinalFromYaw, leftOf, ORE_NAMES, WALL_BLOCKS, floodFillVein, oreFamily, neighborsHaveLava, wallLava, sealCaveOpenings, placeTorchAt, CAVE_MIN_AIR, TORCH_JITTER, TORCH_CORNER_MIN };

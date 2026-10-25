@@ -129,6 +129,7 @@ function callerFromStack(stack) {
 function createGoalTrace({ now = Date.now, windowMs = DEFAULT_WINDOW_MS } = {}) {
   let counts = new Map();                              // callerKey → { calls, interrupted }
   let since = now();
+  let last = null;                                     // dernière INTERRUPTION { by, at } (25/10)
 
   function note(callerKey, interrupted) {
     try {
@@ -138,8 +139,13 @@ function createGoalTrace({ now = Date.now, windowMs = DEFAULT_WINDOW_MS } = {}) 
       let e = counts.get(key);
       if (!e) { e = { calls: 0, interrupted: 0 }; counts.set(key, e); }
       e.calls += 1;
-      if (interrupted) e.interrupted += 1;
+      if (interrupted) { e.interrupted += 1; last = { by: key, at: now() }; }
     } catch (e) { /* diagnostic : ne lève jamais */ }
+  }
+
+  /** Qui a interrompu un but en dernier, s'il l'a fait depuis `sinceMs` (sinon null). */
+  function lastInterrupter(sinceMs = -Infinity) {
+    return last && last.at >= sinceMs ? last.by : null;
   }
 
   function drain() {
@@ -154,7 +160,7 @@ function createGoalTrace({ now = Date.now, windowMs = DEFAULT_WINDOW_MS } = {}) 
     return { windowS: Number.isFinite(elapsed) && elapsed > 0 ? elapsed : 0, top: rows.slice(0, TOP_N) };
   }
 
-  return { note, drain, windowMs };
+  return { note, drain, lastInterrupter, windowMs };
 }
 
 /**
