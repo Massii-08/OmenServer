@@ -14112,9 +14112,13 @@ async function eatBite(food, tag) {
   let res;
   try {
     res = await withTimeout((async () => {
-      await bot.equip(food, 'hand');
-      await bot.consume();
-      return 'done';
+      try {
+        // Objet RELU à l'instant (piège : un `item.slot` périmé fait échouer equip après un tri/ramassage).
+        const fresh = (bot.inventory.items() || []).find((i) => i.name === food.name) || food;
+        await bot.equip(fresh, 'hand');
+        await bot.consume();
+        return 'done';
+      } catch (e) { return { reason: 'error:' + String((e && e.message) || e).slice(0, 60) }; }
     })(), 8000, () => {});
   } catch (e) { res = { reason: String((e && e.message) || e).slice(0, 60) }; }
   finally { bot._eatLockUntil = 0; }
