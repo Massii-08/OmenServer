@@ -12181,7 +12181,10 @@ async function runAutonomousBody(sender, objType, myTok) {
   // une marche funèbre — respawn nu → 90 s de pathfinding vers l'endroit exact où campe le tueur →
   // re-mort (intervalle 60-120 s observé = burst<60 s jamais déclenché). Le kit est re-provisionné
   // par /give de toute façon → on ABANDONNE le stuff au sol, on se TERRE jusqu'à l'aube, kit ensuite.
-  if (lastDeath && isNight(bot)) {
+  // keepInventory OFF (25/10) : l'abandon nocturne n'est permis que si rien de précieux n'est tombé — armure,
+  // fer ou diamants au sol valent la marche (5 min avant le despawn, aucun /give ne les rendra).
+  const _valuableDrop = (typeof _valuableAtDeath !== 'undefined') && _valuableAtDeath;
+  if (lastDeath && isNight(bot) && !_valuableDrop) {
     lastDeath = null;
     emit({ type: 'death_recovery_skipped', reason: 'night' });
     lastShelterT = 0;                       // une mort de nuit = urgence, on saute le cooldown 10 min
