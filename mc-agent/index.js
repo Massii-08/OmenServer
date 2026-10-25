@@ -3438,7 +3438,19 @@ function craftLowHpBlocked() {
  * collé → sortie nourriture si la faim coupe la régénération → sinon rester immobile jusqu'à PV > seuil.
  * Rend { outcome } : healed | no_regen (rien à gagner à attendre) | timeout | cancelled | dead | busy.
  */
-const LOWHP_PROCEED_PAUSE_MS = 15000;   // garde de skill sans issue : pause avant la relance du but
+const LOWHP_PROCEED_PAUSE_MS = 15000;
+// PAS DE RÉGÉNÉRATION POSSIBLE (25/10, NethBot1 : faim 3, 4 PV, aucune nourriture, sortie nourriture vide) :
+// la garde PV des grottes (< 12) refusait le minage, la récupération rendait `no_regen`, et le bot restait
+// immobile une heure (la faim ne tombait jamais à 0 pour le tuer). Après un `no_regen`, pendant 5 min, on
+// mine quand même au-dessus de 4 PV — attendre ne rapporte rien. Niveau MODULE (piège #56).
+let _noRegenAt = 0;
+const NO_REGEN_MINE_MS = 5 * 60000;
+const NO_REGEN_MINE_MIN_HP = 4;
+function caveHpAllowed() {
+  const hp = bot && bot.health;
+  if (caveIronPick.caveHpOk(hp)) return true;
+  return _noRegenAt > 0 && Date.now() - _noRegenAt < NO_REGEN_MINE_MS && Number(hp) >= NO_REGEN_MINE_MIN_HP;
+}   // garde de skill sans issue : pause avant la relance du but
 async function recoverLowHp(goalName, opts = {}) {
   if (_lowHpRecoverBusy) { await sleep(2000); return { outcome: 'busy' }; }
   // `targetHp` (24/10) : garde PV d'un skill (caveHunt `low_hp` < 12) → récupérer jusqu'à elle.
@@ -3483,6 +3495,7 @@ async function recoverLowHp(goalName, opts = {}) {
     }
   } finally {
     _lowHpRecoverBusy = false;
+    if (outcome === 'no_regen') { try { _noRegenAt = Date.now(); } catch (e) { /* bac à sable de test */ } }
     emit({ type: 'low_hp_recover_done', goal: goalName, outcome, hp: bot.health, food: bot.food, eats, sealed, took_ms: Date.now() - t0 });
   }
   return { outcome };
@@ -4665,7 +4678,7 @@ async function runGoalSkill(goal, gen) {
         // Approche « joueur » bornée (diamondCaveGoto) : coupure (réflexe, TP) ≠ inatteignable.
         goTo: (t) => diamondCaveGoto(t, tokCH),
         settle: () => _caveSettle(tokCH),
-        hpOk: () => caveIronPick.caveHpOk(bot && bot.health),
+        hpOk: () => caveHpAllowed(),
         // CASSE VÉRIFIÉE (25/10, `empty nothing_mined` ×30 en 30 min avec le diamant TOUJOURS LÀ) : se
         // placer à portée et en vue, murer la lave, équiper la pioche qui récolte, casser, ramasser, puis
         // le filon — chaque refus a sa raison (cf. skills/diamondDig.js). Remplace floodFillVein seul.

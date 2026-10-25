@@ -128,7 +128,7 @@ test('câblage : la chasse diamant passe par diamondCaveGoto / _caveSettle / cav
   const body = SRC.slice(i, i + 2500);
   assert.match(body, /goTo: \(t\) => diamondCaveGoto\(t, tokCH\)/);
   assert.match(body, /settle: \(\) => _caveSettle\(tokCH\)/);
-  assert.match(body, /hpOk: \(\) => caveIronPick\.caveHpOk/);
+  assert.match(body, /hpOk: \(\) => caveHpAllowed\(\)/);
   assert.match(body, /_diamondHuntBusy = true;[\s\S]*finally \{ _diamondHuntBusy = false; \}/);
   assert.match(SRC, /^let _diamondHuntBusy = false;/m, '_diamondHuntBusy au NIVEAU MODULE (lu par le timer du ramassage)');
   assert.match(SRC, /rareHunt: _diamondHuntBusy/);
