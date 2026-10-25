@@ -25,3 +25,9 @@ test('début de partie (aucun diamant) : 6 planches ne dispensent PAS du bois', 
 test('phase diamant : pioche fer+ en poche → bois satisfait', () => {
   assert.strictEqual(logsGoal().met({ inv: { diamond_pickaxe: 1 }, worn: [] }), true);
 });
+
+test('diaWoodEnough : planches de deux essences ne font pas des bâtons', () => {
+  const { diaWoodEnough } = require('./goals');
+  assert.strictEqual(diaWoodEnough({ inv: { oak_planks: 1, birch_planks: 1, crafting_table: 1 } }), false);
+  assert.strictEqual(diaWoodEnough({ inv: { oak_planks: 2, crafting_table: 1 } }), true);
+});

@@ -224,7 +224,10 @@ const _DIA_WOOD_GOALS = new Set(['logs', 'planks']);
 function diaWoodEnough(c) {
   if (!c || !c.inv) return false;
   const sticks = invCount(c.inv, 'stick');
-  const planks = anyPlanks(c.inv);
+  // UNE seule essence compte (25/10) : minecraft-data n'a pas de recette « planches mélangées » —
+  // 1 chêne + 1 bouleau passaient pour « 2 planches », bois sauté, puis `sticks` échouait en boucle.
+  let planks = 0;
+  for (const [k, v] of Object.entries(c.inv)) if (/_planks$/.test(k)) planks = Math.max(planks, Number(v) || 0);
   const planksForSticks = sticks >= 2 ? 0 : 2;
   const planksForTable = (invCount(c.inv, 'crafting_table') >= 1 || !!c.hasTable) ? 0 : 4;
   return planks >= planksForSticks + planksForTable;
