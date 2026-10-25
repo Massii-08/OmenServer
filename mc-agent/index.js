@@ -399,6 +399,7 @@ const _bootAt = Date.now();        // démarrage de CE process : sépare ses mor
 // relevé au moment de la mort, comparé au respawn par homes.inventoryKept. Lu par recoverDeathDebt (timer
 // compris) → NIVEAU MODULE (piège #56). -1 = pas de mort vue dans ce process (aucune preuve).
 let _invAtDeath = -1;
+let _valuableAtDeath = false;   // armure/diamants/fer au moment de la mort → récupération même de nuit
 const DEATH_INV_SETTLE_MS = 3000;   // attente avant de juger « inventaire gardé » (cf. recoverDeathDebt)
 let _escapeOnSpawn = false; // anti-camping : 2 morts <60 s → au prochain spawn, escapeDeathCamp()
                             // (sans-give : fuite À PIED puis re-spawnpoint SEULEMENT si au calme)
@@ -8648,7 +8649,7 @@ async function recoverDeathDebt() {
     let keptInventory = false;
     try { keptInventory = inventoryKept({ before: _invAtDeath, after: _invTotal(() => true) }); } catch (e) { keptInventory = false; }
     return debtAction({
-      debt: debt0, now: Date.now(), worn, keptInventory,
+      debt: debt0, now: Date.now(), worn, keptInventory, valuable: (typeof _valuableAtDeath !== 'undefined') && _valuableAtDeath,
       night: (bot.time && bot.time.timeOfDay != null) ? isNight(bot) : null,
     });
   };
@@ -14063,6 +14064,12 @@ bot.on('death', () => {
   // Relevé AVANT que le serveur ne vide l'inventaire (keepInventory OFF) : à l'event `death`, les slots
   // sont encore ceux de la vie qui s'achève. Jamais de throw dans ce handler (il persiste l'historique).
   try { _invAtDeath = _invTotal(() => true); } catch (e) { _invAtDeath = -1; }
+  // Ce qui tombe au sol vaut-il une sortie de nuit ? Armure portée, ou diamants / outils fer-diamant en poche.
+  try {
+    let worn0 = 0; try { worn0 = _wornArmor().size; } catch (e) {}
+    const rich = (bot.inventory.items() || []).some((i) => /^(diamond|iron_ingot|raw_iron)$|^(iron|diamond)_(pickaxe|sword|helmet|chestplate|leggings|boots)$/.test(i.name));
+    _valuableAtDeath = worn0 > 0 || rich;
+  } catch (e) { /* bac à sable de test / inventaire absent */ }
   const p = bot.entity && bot.entity.position;
   if (p) lastDeath = { x: p.x, y: p.y, z: p.z, t: Date.now() };
   // LIEUX DE MORT RÉPÉTÉE (deathspots.js, toute cause confondue — chutes/ravins compris, ≠

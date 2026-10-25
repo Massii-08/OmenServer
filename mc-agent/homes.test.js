@@ -318,3 +318,10 @@ test('relances : une armure trouvee en route (2 pieces) => la tentative suivante
   assert.strictEqual(debtAction({ debt: d, now: 60000, night: true, worn: 1 }).act, 'defer');
   assert.strictEqual(debtAction({ debt: d, now: 120000, night: true, worn: 2 }).act, 'recover');
 });
+
+test('debtAction : de nuit, nu, mais armure/diamants au sol → on récupère tout de suite (keepInventory OFF)', () => {
+  const { debtAction } = require('./homes');
+  const d = { at: 1000 };
+  assert.strictEqual(debtAction({ debt: d, now: 5000, night: true, worn: 0 }).act, 'defer');
+  assert.strictEqual(debtAction({ debt: d, now: 5000, night: true, worn: 0, valuable: true }).act, 'recover');
+});

@@ -157,7 +157,11 @@ function debtAction(o = {}) {
   if (o.arrived && (o.dropsLeft || 0) <= 0) return { act: 'settle', reason: 'recovered' };
   if (o.arrived) return { act: 'recover', reason: 'drops_left' };
   // Avant le départ seulement (`arrived` a déjà tranché plus haut : sur place, on ne re-diffère pas).
-  if (o.night === true && (o.worn || 0) < DEBT_MIN_WORN) return { act: 'defer', reason: 'night_naked' };
+  // keepInventory OFF (25/10) : `worn` est mesuré APRÈS la mort — toujours 0, l'armure est au sol avec le
+  // reste. Le report nocturne attendait donc l'aube à CHAQUE mort de nuit, et le despawn (5 min) emportait
+  // l'armure : NethBot3 a perdu son set de fer complet ainsi. Si ce qui est au sol vaut la peine (armure,
+  // diamants — `valuable`, relevé AU MOMENT de la mort), on y va tout de suite, de nuit comme de jour.
+  if (o.night === true && (o.worn || 0) < DEBT_MIN_WORN && !o.valuable) return { act: 'defer', reason: 'night_naked' };
   return { act: 'recover' };
 }
 
