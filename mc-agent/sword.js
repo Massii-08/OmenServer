@@ -73,6 +73,15 @@ function swordPlan({ inv, swordsGood, pickCount, tableOk, reserve } = {}) {
   if (STONES.reduce((s, n) => s + _n(i, n), 0) >= STONE_SWORD_COST) {
     return { name: 'stone_sword', tier: 'stone', cost: STONE_SWORD_COST, upgrade: false };
   }
+  // ÉPÉE DE BOIS de dépannage (25/10, keepInventory OFF) : un bot réapparu nu n'avait que la pioche — ses
+  // combats contre un zombie (20 PV) finissaient en fuite puis en mort (4 sur 4). 4 de dégâts suffisent au
+  // « dernier carré » (fightBreaker). Une seule : sa présence suffit, la pierre la remplacera.
+  if (cur === 0 && !good.includes('wooden_sword')) {
+    const planks = _sum(i, (k) => /_planks$/.test(k));
+    if (planks >= 2 && (_n(i, 'stick') >= 1 || planks >= 4)) {
+      return { name: 'wooden_sword', tier: 'wood', cost: 0, upgrade: false };
+    }
+  }
   return null;
 }
 

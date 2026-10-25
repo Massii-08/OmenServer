@@ -68,3 +68,10 @@ test('sans bâton ni bois, ou sans table : null (jamais bloquant)', () => {
 test('épée en bois en poche = pas d arme : on fait mieux', () => {
   assert.strictEqual(swordPlan(base({ wooden_sword: 1, cobblestone: 4 })).name, 'stone_sword');
 });
+
+test('swordPlan : épée de bois de dépannage quand ni pierre ni fer, une seule', () => {
+  const { swordPlan } = require('./sword');
+  assert.strictEqual(swordPlan({ inv: { oak_planks: 3, stick: 1 }, tableOk: true }).name, 'wooden_sword');
+  assert.strictEqual(swordPlan({ inv: { oak_planks: 3, stick: 1, wooden_sword: 1 }, tableOk: true }), null);
+  assert.strictEqual(swordPlan({ inv: { oak_planks: 3, stick: 1, cobblestone: 2 }, tableOk: true }).name, 'stone_sword');
+});
