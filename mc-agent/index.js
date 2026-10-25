@@ -945,6 +945,10 @@ setInterval(() => {
     if (!(world.objective && world.objective.status === 'in_progress')) return;
     const p = bot.entity && bot.entity.position;
     if (!p) return;
+    // DIAMANT (25/10) : un mineur dans la bande des diamants (y ≤ -16) ou en armure diamant complète n'est
+    // plus rappelé — NethBot3 minait un filon à 330 blocs, /home safe l'a remonté en surface, puis
+    // night_go_deep l'a renvoyé au fond : aller-retour perdu à chaque passage.
+    if (p.y <= -16 || diamondFreeNow()) return;
     if (!_campEstablished) tryEstablishCamp().catch(() => {});    // retry léger du camp
     // `_migrating` DOIT compter comme occupé : sinon l'enforcement yank le marcheur vers l'ancre
     // qu'on est précisément en train de quitter (même classe que les autres gardes busy).
