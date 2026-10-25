@@ -26,9 +26,14 @@ test('≤ 3 piles : rien', () => {
   assert.deepStrictEqual(fillOverflow(S([['stick', 64], ['oak_log', 64], ['coal', 64], ['torch', 64], ['bread', 64]])), []);
 });
 
-test('terre et gravier partent avant le cobble', () => {
+test('le gravier part avant le cobble ; la DERNIÈRE pile de terre reste (réserve d abri, 25/10)', () => {
   const out = fillOverflow(S([['cobblestone', 64], ['cobblestone', 64], ['cobblestone', 64], ['dirt', 30], ['gravel', 5]]));
-  assert.deepStrictEqual(names(out), ['dirt:30', 'gravel:5']);
+  assert.deepStrictEqual(names(out), ['gravel:5', 'cobblestone:64']);
+});
+
+test('réserve de terre : une pile en trop part si le reste garde ≥ DIRT_KEEP', () => {
+  const out = fillOverflow(S([['dirt', 64], ['dirt', 20], ['cobblestone', 64], ['cobblestone', 64]]));
+  assert.deepStrictEqual(names(out), ['dirt:20']);
 });
 
 test('jamais sous 64 blocs de remblai au total, même au-delà de 3 piles', () => {
@@ -97,3 +102,4 @@ test('tossTarget : entrées invalides → null, sans lever', () => {
   assert.strictEqual(tossTarget({ x: 0, y: 64, z: 0 }, null), null);
   assert.strictEqual(tossTarget({ x: 0, y: 64, z: 0 }, () => { throw new Error('x'); }), null);
 });
+

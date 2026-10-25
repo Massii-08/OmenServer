@@ -47,6 +47,21 @@ function isNight(bot) {
   return !!(bot && bot.time && isNightTime(bot.time.timeOfDay));
 }
 
+// ─── LE CRÉPUSCULE, POUR UN BOT NU (run keepInventory OFF, 25/10) ──────────────────────────────────
+// Mesuré : 9 morts nus en surface, la nuit ou à la sortie d'abri. L'abri partait à `isNight` (12800), au
+// moment où les monstres apparaissent — un puits à mains nues prend 3-15 s, souvent sous les coups. Un
+// joueur sans armure se terre AU COUCHER du soleil : [12000, 12800). Réservé au bot nu (le seul qui y gagne).
+const DUSK_START = 12000;
+/** PUR : crépuscule (le soleil se couche, les monstres pas encore là) ? timeOfDay ∈ [0,24000). */
+function isDuskTime(timeOfDay) {
+  if (timeOfDay == null || !Number.isFinite(Number(timeOfDay))) return false;
+  const t = ((Number(timeOfDay) % 24000) + 24000) % 24000;
+  return t >= DUSK_START && t < 12800;
+}
+function isDusk(bot) {
+  return !!(bot && bot.time && isDuskTime(bot.time.timeOfDay));
+}
+
 // ─── L'AUBE N'EST PAS LA FIN DES MONSTRES (live 19/10, spawn sous la canopée d'une vieille forêt) ──
 // Mesuré en live : 14 des 17 morts des 10 dernières minutes étaient « shot by Skeleton », avec TOUJOURS
 // la même séquence : shelter dig_in → shelter dawn → shelter out → goal logs → reflex fight_ranged →
@@ -95,10 +110,18 @@ function dawnExitDecision(opts) {
 // sinon attendre par tranches de 10 s, borné à 180 s, puis sortir quand même. Armé ou nu : même règle.
 const DAWN_SAFE_EXIT_MAX_MS = 180 * 1000;
 const DAWN_SAFE_CHECK_MS = 10 * 1000;
+// BORNE EXPIRÉE, MONSTRE AU CONTACT (run keepInventory OFF, 25/10 : `dawn_wait timeout hostiles_left:1`
+// → sortie → mort 7 s plus tard, zombie villageois). Passé la borne, on ne sort QUE si personne n'est à
+// ≤ DAWN_CLOSE_BLOCKS (`close`, relevé par l'appelant) ; sinon on prolonge, borné à + DAWN_CLOSE_EXTRA_MS.
+// Dans le trou, attendre ne coûte que du temps ; sortir nu à 5 blocs d'un zombie coûte tout l'inventaire.
+const DAWN_CLOSE_BLOCKS = 12;
+const DAWN_CLOSE_EXTRA_MS = 240 * 1000;
 const DAY_SAFE_END = 11500;            // timeOfDay ∈ [0, 11500] = jour franc
 
 /**
- * PUR — sortir de l'abri ? opts = { hostiles, creepers, timeOfDay, waitedMs, maxMs }.
+ * PUR — sortir de l'abri ? opts = { hostiles, creepers, timeOfDay, waitedMs, maxMs, close?, hardMaxMs? }.
+ * `close` = menaces à ≤ DAWN_CLOSE_BLOCKS : passé `maxMs`, elles prolongent l'attente jusqu'à `hardMaxMs`
+ * (déf. maxMs + 240 s), raison 'close'. Absent → contrat d'origine (timeout = go).
  * → { act: 'go'|'wait', reason: 'timeout'|'dark'|'creeper'|'hostiles'|'clear' }.
  * Entrées absentes/absurdes : comptées 0 / heure ignorée (jamais coincé dans le trou sur une erreur).
  */
@@ -106,7 +129,11 @@ function dawnExitPlan(opts) {
   const o = (opts && typeof opts === 'object') ? opts : {};
   const maxMs = (Number.isFinite(o.maxMs) && o.maxMs >= 0) ? o.maxMs : DAWN_SAFE_EXIT_MAX_MS;
   const waited = (Number.isFinite(o.waitedMs) && o.waitedMs > 0) ? o.waitedMs : 0;
-  if (waited >= maxMs) return { act: 'go', reason: 'timeout' };
+  if (waited >= maxMs) {
+    const hard = (Number.isFinite(o.hardMaxMs) && o.hardMaxMs >= maxMs) ? o.hardMaxMs : maxMs + DAWN_CLOSE_EXTRA_MS;
+    if (Number.isFinite(o.close) && o.close > 0 && waited < hard) return { act: 'wait', reason: 'close' };
+    return { act: 'go', reason: 'timeout' };
+  }
   const t = o.timeOfDay;
   if (Number.isFinite(t) && t >= 0 && (t % 24000) > DAY_SAFE_END) return { act: 'wait', reason: 'dark' };
   if (Number.isFinite(o.creepers) && o.creepers > 0) return { act: 'wait', reason: 'creeper' };
@@ -214,13 +241,14 @@ async function _waitSafeExit(bot, token, deps, emit, sleep, isDisplaced) {
     try { r = deps.exitThreats(); } catch (e) { r = null; }
     const tod = bot && bot.time && Number.isFinite(bot.time.timeOfDay) ? bot.time.timeOfDay : null;
     return { hostiles: r && Number.isFinite(r.hostiles) ? r.hostiles : 0,
-      creepers: r && Number.isFinite(r.creepers) ? r.creepers : 0, timeOfDay: tod };
+      creepers: r && Number.isFinite(r.creepers) ? r.creepers : 0,
+      close: r && Number.isFinite(r.close) ? r.close : 0, timeOfDay: tod };
   };
   const t0 = Date.now();
   let waitedMs = 0;
   let first = null;
   let lastReason = null;
-  let cur = { hostiles: 0, creepers: 0 };
+  let cur = { hostiles: 0, creepers: 0, close: 0 };
   const done = (reason) => {
     if (first === null) return;
     emit({ type: 'shelter', action: 'dawn_wait', hostiles: first, hostiles_left: cur.hostiles + cur.creepers,
@@ -230,7 +258,7 @@ async function _waitSafeExit(bot, token, deps, emit, sleep, isDisplaced) {
     if (token && token.cancelled) { done('cancelled'); return { cancelled: true }; }
     if (isDisplaced && isDisplaced()) { done('displaced'); return { cancelled: false, displaced: true }; }
     cur = read();
-    const plan = dawnExitPlan({ hostiles: cur.hostiles, creepers: cur.creepers, timeOfDay: cur.timeOfDay, waitedMs, maxMs });
+    const plan = dawnExitPlan({ hostiles: cur.hostiles, creepers: cur.creepers, close: cur.close, timeOfDay: cur.timeOfDay, waitedMs, maxMs });
     if (plan.act !== 'wait') { done(plan.reason); return { cancelled: false }; }
     if (first === null) first = cur.hostiles + cur.creepers;
     if (plan.reason !== lastReason) {
@@ -295,6 +323,25 @@ function _hasPick(bot) {
  *  7,5 s par bloc et RIEN qui tombe — donc pas de toit). */
 function _diggable(b, pick) { return _solid(b) && !_NO_DIG.test(b.name) && (pick || toolCategoryFor(b.name) !== 'pickaxe'); }
 
+// ─── SANS PIOCHE : LA TERRE D'ABORD (run keepInventory OFF, 25/10) ─────────────────────────────────
+// Une mort = poche vide : le bot réapparaît sans pioche ni blocs, et 37 des 39 abris ratés du run l'ont
+// été dans les 15 min suivant une réapparition. À mains nues, seul le sol meuble se creuse vite — et
+// seule la TERRE rend un bloc qui fait un toit (l'herbe rend de la terre ; le sable et le gravier, eux,
+// retomberaient sur la tête : CELL_BLOCKS les exclut). D'où un rang : 0 = terre (le puits ET le toit),
+// 1 = meuble (puits rapide, toit à trouver ailleurs), 2 = le reste cassable à la main (bois…).
+// Sans pioche la recherche d'un sol s'étend à NOPICK_STEP_MAX blocs (≈ 2 s de marche).
+const SOIL_DIRT = /^(dirt|grass_block|coarse_dirt|rooted_dirt|podzol|mycelium|dirt_path|farmland)$/;
+const SOIL_LOOSE = /^(sand|red_sand|gravel|clay|mud|soul_sand|soul_soil|snow_block|suspicious_sand|suspicious_gravel)$/;
+const NOPICK_STEP_MAX = 6;
+const SOIL_RANK_WEIGHT = 3;        // un rang de sol vaut 3 blocs de marche
+/** PUR : rang d'un sol pour un puits à mains nues → 0 terre, 1 meuble, 2 autre. */
+function soilRank(name) {
+  const n = String(name || '');
+  if (SOIL_DIRT.test(n)) return 0;
+  if (SOIL_LOOSE.test(n)) return 1;
+  return 2;
+}
+
 /** Le bloc de toit/paroi à poser (ordre CELL_BLOCKS, puis planches), ou null. */
 function cellBlockItem(bot) {
   const items = (bot.inventory && bot.inventory.items()) || [];
@@ -346,17 +393,19 @@ function _footingAt(bot, f, pick) {
 
 /** Le voisin (≤ STEP_MAX) où creuser : colonne pleine d'abord, puis la cellule la plus fermée, puis le plus
  *  proche. `avoid` = cases ratées. */
-function _pickFooting(bot, feet, pick, avoid) {
+function _pickFooting(bot, feet, pick, avoid, radius = STEP_MAX) {
   let best = null;
-  for (let dx = -STEP_MAX; dx <= STEP_MAX; dx++) {
-    for (let dz = -STEP_MAX; dz <= STEP_MAX; dz++) {
+  for (let dx = -radius; dx <= radius; dx++) {
+    for (let dz = -radius; dz <= radius; dz++) {
       const dist = Math.hypot(dx, dz);
-      if ((!dx && !dz) || dist > STEP_MAX) continue;
+      if ((!dx && !dz) || dist > radius) continue;
       if (avoid && avoid.some((a) => a.x === feet.x + dx && a.z === feet.z + dz)) continue;
       for (const dy of [0, -1, 1]) {
         const c = _footingAt(bot, feet.offset(dx, dy, dz), pick);
         if (!c) continue;
-        const score = (c.deep ? 0 : 10) + c.open + dist + Math.abs(dy) * 0.5;
+        // Sans pioche : la terre d'abord (cf. soilRank) — elle fait le puits ET le toit.
+        const soil = pick ? 0 : soilRank((bot.blockAt(c.pos.offset(0, -1, 0)) || {}).name) * SOIL_RANK_WEIGHT;
+        const score = (c.deep ? 0 : 10) + c.open + dist + Math.abs(dy) * 0.5 + soil;
         if (!best || score < best.score) best = { pos: c.pos, score };
         break;
       }
@@ -568,16 +617,22 @@ async function _buildCell(bot, token, deps, sleep, emit) {
     if (spots.fails(f0.x, f0.z, now()) >= SPOT_MAX_FAILS) {
       down = { ok: false, reason: 'spot_failed' };
     } else {
-      if (!_diggable(bot.blockAt(f0.offset(0, -1, 0)), pick)) {
-        const to = _pickFooting(bot, f0, pick, null);
-        if (to && await _stepTo(bot, to, deps)) moved = true;
+      const below0 = bot.blockAt(f0.offset(0, -1, 0));
+      const here0 = _diggable(below0, pick);
+      // Sans pioche, un sol qui n'est pas de la terre vaut un pas (≤ 6) vers de la terre : elle seule rend
+      // de quoi poser le toit. Avec pioche : comportement d'origine (on ne bouge que si ici est impossible).
+      const rank0 = (!pick && here0) ? soilRank(below0.name) : 0;
+      if (!here0 || rank0 > 0) {
+        const to = _pickFooting(bot, f0, pick, null, pick ? STEP_MAX : NOPICK_STEP_MAX);
+        const better = to && (!here0 || soilRank((bot.blockAt(to.offset(0, -1, 0)) || {}).name) < rank0);
+        if (better && await _stepTo(bot, to, deps)) moved = true;
       }
       let a = await attempt();
       if (a.depth < SHELTER_MIN_DEPTH && !(token && token.cancelled)) {
         // Raté ici (grotte, bloc incassable, sol qui ne cède pas) : noté, puis UN essai à côté.
         const fx = here();
         spots.fail(fx.x, fx.z, now());
-        const to = _pickFooting(bot, fx, pick, [fx]);
+        const to = _pickFooting(bot, fx, pick, [fx], pick ? STEP_MAX : NOPICK_STEP_MAX);
         if (to && await _stepTo(bot, to, deps)) {
           moved = true;
           const b = await attempt();
@@ -603,8 +658,11 @@ async function _buildCell(bot, token, deps, sleep, emit) {
     if (!wr.ok) _stopAll(bot);
     const walled = wr.ok ? wr.value : null;
     if (!walled || !walled.ok) {
-      emit({ type: 'shelter', action: 'abort', reason });
-      line({ sealed: false, why: 'abort:' + reason, mode: 'none', depth });
+      // `dig_why` (25/10) : la cause brute d'un `dig_failed` (timeout, error, cancelled…) — 8 abandons
+      // `dig_failed` mesurés sans pouvoir dire pourquoi. Champ AJOUTÉ, rien de retiré.
+      const digWhy = (down && down.why) || null;
+      emit(Object.assign({ type: 'shelter', action: 'abort', reason }, digWhy ? { dig_why: digWhy } : {}));
+      line(Object.assign({ sealed: false, why: 'abort:' + reason, mode: 'none', depth }, digWhy ? { dig_why: digWhy } : {}));
       return { ok: false, reason };
     }
     placed += walled.placed || 0;
@@ -718,7 +776,10 @@ async function _shelterUntilDawn(bot, token, deps) {
   // 3) attendre l'aube (borné, annulable) — les réflexes survie tournent en parallèle. Un bot DÉLOGÉ
   // (cf. shelterDisplaced) n'attend plus rien : l'abri se termine, l'appelant décide (se ré-abriter).
   const t0 = Date.now();
-  while (isNight(bot) && Date.now() - t0 < maxWaitMs) {
+  // `deps.holdDusk` (bot nu abrité au crépuscule, 25/10) : le crépuscule compte comme la nuit, sinon un
+  // abri ouvert à 12000 ressortirait aussitôt (« aube » immédiate) juste avant l'arrivée des monstres.
+  const dark = () => isNight(bot) || (!!deps.holdDusk && isDusk(bot));
+  while (dark() && Date.now() - t0 < maxWaitMs) {
     if (token && token.cancelled) return { ok: false, reason: 'cancelled' };
     await sleep(5000);
     if (left()) { _clearShelterPending(bot); return { ok: false, reason: 'displaced' }; }
@@ -962,7 +1023,7 @@ function roofPlan(inv, ctx = {}) {
 /**
  * Décision PURE : faut-il se mettre à l'abri MAINTENANT ? Robuste au niveau de lumière inconnu
  * (mineflayer ne le livre pas toujours) : retombe sur la présence d'hostiles.
- * sig = { night, lightLevel (0-15|null), naked, lowHp, hostilesNear, proactive, underground }.
+ * sig = { night, dusk, lightLevel (0-15|null), naked, lowHp, hostilesNear, proactive, underground }.
  * → { shelter: bool, reason }.
  */
 function shouldShelter(sig = {}) {
@@ -973,13 +1034,17 @@ function shouldShelter(sig = {}) {
   if (sig.underground) return { shelter: false, reason: 'underground' };
   const dark = (sig.lightLevel != null && sig.lightLevel <= 7);
   if (sig.night && (sig.proactive || sig.naked || sig.lowHp)) return { shelter: true, reason: 'night' };
+  // CRÉPUSCULE (25/10) : nu → se terrer avant la nuit, pas en plein dedans. Armé : rien ne change.
+  if (sig.dusk && sig.naked) return { shelter: true, reason: 'dusk' };
   if (dark && (sig.naked || sig.lowHp || sig.hostilesNear)) return { shelter: true, reason: 'dark' };
   if (sig.hostilesNear && (sig.naked || sig.lowHp)) return { shelter: true, reason: 'hostiles' };
   return { shelter: false, reason: 'safe' };
 }
 
 module.exports = {
-  isNightTime, isNight, shelterUntilDawn, exitPendingShelter, roofPlan, shouldShelter,
+  isNightTime, isNight, isDuskTime, isDusk, DUSK_START, soilRank, NOPICK_STEP_MAX,
+  DAWN_CLOSE_BLOCKS, DAWN_CLOSE_EXTRA_MS,
+  shelterUntilDawn, exitPendingShelter, roofPlan, shouldShelter,
   dawnExitDecision, DAWN_WAIT_MAX_MS, DAWN_WAIT_CHECK_MS, DAWN_WAIT_MIN_WORN,
   dawnExitPlan, DAWN_SAFE_EXIT_MAX_MS, DAWN_SAFE_CHECK_MS, DAY_SAFE_END,
   shelterDisplaced, SHELTER_DISPLACED_BLOCKS, shelterHold,

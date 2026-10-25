@@ -54,7 +54,7 @@ function sandbox({ entities = [], walls = new Set() } = {}) {
 test('dawnExitThreatsNow : zombie en vue à 12 → 1 hostile ; à 20 → 0 ; creeper CALME à 9 → compté ; enderman/vache non', () => {
   const sb = sandbox({ entities: [mob('zombie', 12), mob('skeleton', 20), mob('creeper', 9), mob('enderman', 3),
     { name: 'cow', kind: 'Passive mobs', position: { x: 2, y: 70, z: 0 } }] });
-  assert.deepStrictEqual({ ...run(sb, 'dawnExitThreatsNow()') }, { hostiles: 1, creepers: 1 });
+  assert.deepStrictEqual({ ...run(sb, 'dawnExitThreatsNow()') }, { hostiles: 1, creepers: 1, close: 2 });   // close = à ≤ 12 blocs (25/10)
 });
 
 test('dawnExitThreatsNow : un zombie derrière un mur (pas de ligne de vue depuis la sortie) ne compte pas ; un creeper si', () => {
@@ -62,7 +62,7 @@ test('dawnExitThreatsNow : un zombie derrière un mur (pas de ligne de vue depui
   const walls = new Set();
   for (let y = 60; y <= 90; y++) for (let z = -3; z <= 3; z++) walls.add('5,' + y + ',' + z);
   const sb = sandbox({ entities: [mob('zombie', 10), mob('creeper', 8)], walls });
-  assert.deepStrictEqual({ ...run(sb, 'dawnExitThreatsNow()') }, { hostiles: 0, creepers: 1 });
+  assert.deepStrictEqual({ ...run(sb, 'dawnExitThreatsNow()') }, { hostiles: 0, creepers: 1, close: 1 });
 });
 
 test('_shelterExitEye : au fond d un puits couvert, l œil est AU-DESSUS du toit (sinon il ne verrait jamais rien)', () => {

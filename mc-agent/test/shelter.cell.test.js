@@ -214,7 +214,7 @@ describe('abri : la cellule fermée, dans un monde qui joue la physique', () => 
 
   it('impossible de creuser (bedrock) ET aucun voisin : plan B « mur sur place » avec ce qu on a en poche → cellule murée et couverte', async () => {
     const over = {};
-    for (let dx = -3; dx <= 3; dx++) for (let dz = -3; dz <= 3; dz++) over[`${dx},63,${dz}`] = 'bedrock';
+    for (let dx = -7; dx <= 7; dx++) for (let dz = -7; dz <= 7; dz++) over[`${dx},63,${dz}`] = 'bedrock';   // hors de portée même sans pioche (6)
     const w = world({ at: { x: 0.5, y: GROUND + 1, z: 0.5 }, over, items: [{ name: 'dirt', count: 12 }] });
     const { r, sealed, events } = await buildCell(w);
     assert.ok(events.some((e) => e.action === 'walled_in'), 'plan B joué');
@@ -228,7 +228,7 @@ describe('abri : la cellule fermée, dans un monde qui joue la physique', () => 
 
   it('2 échecs AU MÊME ENDROIT → au 3e abri, plan B direct : on ne re-creuse plus un endroit prouvé impossible', async () => {
     const over = {};
-    for (let dx = -3; dx <= 3; dx++) for (let dz = -3; dz <= 3; dz++) over[`${dx},63,${dz}`] = 'bedrock';
+    for (let dx = -7; dx <= 7; dx++) for (let dz = -7; dz <= 7; dz++) over[`${dx},63,${dz}`] = 'bedrock';   // hors de portée même sans pioche (6)
     const memory = createSpotMemory();
     const tries = [];
     for (let i = 0; i < 3; i++) {
@@ -245,7 +245,7 @@ describe('abri : la cellule fermée, dans un monde qui joue la physique', () => 
 
   it('sans rien pouvoir faire (bedrock partout, poche vide) → abandon TRACÉ : sealed:false + why', async () => {
     const over = {};
-    for (let dx = -3; dx <= 3; dx++) for (let dz = -3; dz <= 3; dz++) over[`${dx},63,${dz}`] = 'bedrock';
+    for (let dx = -7; dx <= 7; dx++) for (let dz = -7; dz <= 7; dz++) over[`${dx},63,${dz}`] = 'bedrock';   // hors de portée même sans pioche (6)
     const w = world({ at: { x: 0.5, y: GROUND + 1, z: 0.5 }, over });
     const { r, sealed, events } = await buildCell(w);
     assert.equal(r.ok, false);
@@ -265,9 +265,9 @@ describe('abri : la cellule fermée, dans un monde qui joue la physique', () => 
   });
 
   it('poche vide et un trou où rien ne tombe (grotte plafond ouvert) → sealed:false honnête, avec la raison', async () => {
-    // pierre sans pioche partout autour : creuser donne 0 bloc → pas de toit possible
+    // pierre sans pioche partout autour, la terre HORS de portée (> 6) : creuser donne 0 bloc → pas de toit possible
     const over = {};
-    for (let dx = -4; dx <= 4; dx++) for (let dz = -4; dz <= 4; dz++) for (let y = 59; y <= 63; y++) over[`${dx},${y},${dz}`] = 'stone';
+    for (let dx = -7; dx <= 7; dx++) for (let dz = -7; dz <= 7; dz++) for (let y = 59; y <= 63; y++) over[`${dx},${y},${dz}`] = 'stone';
     const w = world({ at: { x: 0.5, y: GROUND + 1, z: 0.5 }, over });
     const { sealed } = await buildCell(w);
     assert.equal(sealed.sealed, false);
@@ -345,5 +345,59 @@ describe('abri : la case appartient à SON abri (22/10)', () => {
     w.bot.dig = async (b) => { await dig0(b); if (++n === 3) w.bot._mcaShelterCell = foreign; };
     await buildCell(w);
     assert.strictEqual(w.bot._mcaShelterCell, foreign);
+  });
+});
+
+// BOT NU, POCHE VIDE (run keepInventory OFF, 25/10) : 37 des 39 abris ratés l'ont été < 15 min après une
+// réapparition — sans pioche ni blocs. À mains nues seule la terre fait le puits ET le toit.
+describe('abri du bot nu : la terre d abord', () => {
+  it('pierre sur 4 blocs, terre à 5, sans pioche ni bloc → va jusqu à la terre (rayon 6) et ferme la cellule', async () => {
+    const over = {};
+    for (let dx = -4; dx <= 4; dx++) for (let dz = -4; dz <= 4; dz++) for (let y = 59; y <= 63; y++) over[`${dx},${y},${dz}`] = 'stone';
+    const w = world({ at: { x: 0.5, y: GROUND + 1, z: 0.5 }, over });
+    const { sealed } = await buildCell(w);
+    assert.equal(sealed.sealed, true, JSON.stringify(sealed));
+    assert.equal(sealed.moved, true);
+    assert.ok(!w.log.dug.includes('stone'), `jamais de pierre à la main (${w.log.dug})`);
+    assert.ok(w.clock.t <= 10000, `${w.clock.t} ms`);
+  });
+
+  it('debout sur du SABLE, terre à 2 blocs, sans pioche → creuse la terre (le sable ne rend pas de toit)', async () => {
+    const over = {};
+    for (let dx = -1; dx <= 1; dx++) for (let dz = -1; dz <= 1; dz++) for (let y = 59; y <= 63; y++) over[`${dx},${y},${dz}`] = 'sand';
+    const w = world({ at: { x: 0.5, y: GROUND + 1, z: 0.5 }, over });
+    const { sealed } = await buildCell(w);
+    assert.equal(sealed.moved, true);
+    assert.equal(sealed.sealed, true, JSON.stringify(sealed));
+    assert.ok(!w.log.dug.includes('sand'), `${w.log.dug}`);
+  });
+
+  it('AVEC pioche sur la pierre → reste sur place (la pierre rend du cobble) : comportement d origine', async () => {
+    const over = {};
+    for (let dx = -4; dx <= 4; dx++) for (let dz = -4; dz <= 4; dz++) for (let y = 59; y <= 63; y++) over[`${dx},${y},${dz}`] = 'stone';
+    const w = world({ at: { x: 0.5, y: GROUND + 1, z: 0.5 }, over, items: [{ name: 'stone_pickaxe', count: 1 }] });
+    const { sealed } = await buildCell(w);
+    assert.equal(sealed.moved, false);
+    assert.equal(sealed.sealed, true, JSON.stringify(sealed));
+  });
+
+  it('abri ouvert au CRÉPUSCULE (12200) : holdDusk → tient jusqu à la fin de la nuit ; sans → « aube » immédiate', async () => {
+    const run = async (holdDusk) => {
+      const w = world({ at: { x: 0.5, y: GROUND + 1, z: 0.5 }, night: false });
+      w.bot.time.timeOfDay = 12200;
+      const sleep = async (ms) => { await w.sleep(ms); w.bot.time.timeOfDay = (w.bot.time.timeOfDay + ms / 50) % 24000; };
+      const token = { cancelled: false };
+      let dawnTod = null;
+      await shelterUntilDawn(w.bot, token, {
+        emit: (e) => { if (e.action === 'dawn') { dawnTod = w.bot.time.timeOfDay; token.cancelled = true; } },
+        sleep, spotMemory: createSpotMemory(), holdDusk,
+        stepTo: async (f) => { w.bot.entity.position = new Vec3(f.x + 0.5, f.y, f.z + 0.5); },
+      });
+      return dawnTod;
+    };
+    const held = await run(true);
+    assert.ok(held > 23200 || held < 12000, `tenu jusqu au jour (${held})`);
+    const legacy = await run(false);
+    assert.ok(legacy >= 12000 && legacy < 12800, `sans holdDusk : sortie au crépuscule (${legacy})`);
   });
 });

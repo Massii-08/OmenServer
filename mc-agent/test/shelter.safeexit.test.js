@@ -98,3 +98,53 @@ describe('abri : sortie sûre (deps.exitThreats)', () => {
     assert.equal(sleeps.length, 3);
   });
 });
+
+// BORNE EXPIRÉE, MONSTRE AU CONTACT (25/10 : `dawn_wait timeout hostiles_left:1` → mort 7 s après).
+describe('dawnExitPlan : prolonger quand un hostile est à ≤ 12 blocs (PUR)', () => {
+  it('borne passée + close>0 → wait close jusqu à la borne dure (déf. +240 s), puis timeout', () => {
+    assert.equal(SH.DAWN_CLOSE_BLOCKS, 12);
+    assert.equal(SH.DAWN_CLOSE_EXTRA_MS, 240000);
+    assert.deepEqual(SH.dawnExitPlan({ hostiles: 1, close: 1, timeOfDay: 1000, waitedMs: 180000 }), { act: 'wait', reason: 'close' });
+    assert.deepEqual(SH.dawnExitPlan({ hostiles: 1, close: 1, timeOfDay: 1000, waitedMs: 419999 }), { act: 'wait', reason: 'close' });
+    assert.deepEqual(SH.dawnExitPlan({ hostiles: 1, close: 1, timeOfDay: 1000, waitedMs: 420000 }), { act: 'go', reason: 'timeout' });
+    assert.deepEqual(SH.dawnExitPlan({ hostiles: 1, close: 1, waitedMs: 60000, maxMs: 60000, hardMaxMs: 90000 }), { act: 'wait', reason: 'close' });
+  });
+  it('borne passée, hostile LOIN (close 0) → sortie comme avant', () => {
+    assert.deepEqual(SH.dawnExitPlan({ hostiles: 2, close: 0, waitedMs: 180000 }), { act: 'go', reason: 'timeout' });
+  });
+  it('dans l abri : zombie collé à la porte → reste au-delà de la borne, sort à la borne dure', async () => {
+    const { bot, deps, events } = harness({
+      exitThreats: () => ({ hostiles: 1, creepers: 0, close: 1 }), dawnWaitMaxMs: 30000,
+    });
+    await SH.shelterUntilDawn(bot, null, deps);
+    const w = events.find((e) => e.action === 'dawn_wait');
+    assert.ok(w, JSON.stringify(events));
+    assert.equal(w.reason, 'timeout');
+    assert.ok(w.waited_s >= 270, `prolongé (${w.waited_s} s)`);
+    assert.ok(events.some((e) => e.type === 'dawn_hold' && e.reason === 'close'));
+  });
+});
+
+describe('crépuscule : abri du bot NU (PUR)', () => {
+  it('isDuskTime = [12000, 12800)', () => {
+    assert.equal(SH.isDuskTime(11999), false);
+    assert.equal(SH.isDuskTime(12000), true);
+    assert.equal(SH.isDuskTime(12799), true);
+    assert.equal(SH.isDuskTime(12800), false);
+    assert.equal(SH.isDuskTime(null), false);
+    assert.equal(SH.isDuskTime(24000 + 12100), true);
+  });
+  it('shouldShelter : crépuscule + nu → dusk ; armé → rien ; sous terre → rien', () => {
+    assert.deepEqual(SH.shouldShelter({ dusk: true, naked: true }), { shelter: true, reason: 'dusk' });
+    assert.equal(SH.shouldShelter({ dusk: true, naked: false }).shelter, false);
+    assert.equal(SH.shouldShelter({ dusk: true, naked: true, underground: true }).shelter, false);
+  });
+  it('soilRank : terre 0, meuble 1, reste 2', () => {
+    assert.equal(SH.soilRank('grass_block'), 0);
+    assert.equal(SH.soilRank('dirt'), 0);
+    assert.equal(SH.soilRank('sand'), 1);
+    assert.equal(SH.soilRank('gravel'), 1);
+    assert.equal(SH.soilRank('oak_log'), 2);
+    assert.equal(SH.soilRank(undefined), 2);
+  });
+});

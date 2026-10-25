@@ -205,7 +205,7 @@ const {
 } = require('./lumberjack');
 const { tierRank } = require('./tools');
 const { createTeleportWatcher, wireTeleportDetection } = require('./teleport');
-const { isNight, shelterUntilDawn, exitPendingShelter, shouldShelter, shelterHold, DAWN_WAIT_MAX_MS, DAWN_SAFE_EXIT_MAX_MS, escapePit, inPit: shelterInPit } = require('./skills/shelter');
+const { isNight, isDuskTime, shelterUntilDawn, exitPendingShelter, shouldShelter, shelterHold, DAWN_WAIT_MAX_MS, DAWN_SAFE_EXIT_MAX_MS, escapePit, inPit: shelterInPit } = require('./skills/shelter');
 const { plannerWatchdogVerdict, deriveToken } = require('./plannerWatchdog');
 const { rushResumesPlanner, plannerOrphanVerdict } = require('./plannerRevive');
 const { shelterToken, shelterCancelLoopNote } = require('./shelterToken');
@@ -5161,7 +5161,12 @@ async function maybeNightShelter(proactive = false, opts = {}) {
   // Sous terre (y<45, seuil historique) : pas d'abri du tout — un mineur s'enterrait en boucle
   // dans sa propre mine (dark permanent + nu en chaîne armure), 10-13 min perdues par cycle.
   // `nightUndergroundNow` : y < 45 OU descendu et scellé par la nuit au travail (21/10).
-  const sig = { night: isNight(bot), lightLevel, naked, lowHp: (bot.health != null && bot.health <= 10), hostilesNear, proactive, underground: nightUndergroundNow() };
+  // CRÉPUSCULE (25/10, run keepInventory OFF : 9 morts nus en surface la nuit / à l'aube) : un bot NU se
+  // terre dès le coucher du soleil (shelter.isDuskTime), pas au cœur de la nuit ; l'abri tient alors le
+  // crépuscule comme la nuit (`holdDusk` ci-dessous). Armé : rien ne change.
+  let dusk = false;
+  try { dusk = !!(bot.time && bot.time.timeOfDay != null && isDuskTime(bot.time.timeOfDay)); } catch (e) { dusk = false; }
+  const sig = { night: isNight(bot), dusk, lightLevel, naked, lowHp: (bot.health != null && bot.health <= 10), hostilesNear, proactive, underground: nightUndergroundNow() };
   let inWater = false;
   try { inWater = isInWater(bot); } catch (e) { inWater = false; }
   const lockdown = !inWater && nightLockdownNow();
@@ -5235,6 +5240,7 @@ async function maybeNightShelter(proactive = false, opts = {}) {
           exitThreats: dawnExitThreatsNow, onExit: exitAwayFromThreats,   // sortie sûre (fix 20/10)
           endWhenDisplaced: () => nightLockdownNow(),
           whileSealed: shelterWhileSealed,                                  // crafter dans le trou (22/10)
+          holdDusk: naked,                                                  // nu : le crépuscule compte comme la nuit (25/10)
         }), SHELTER_HARD_MAX_MS,
         () => { shTok.cancelled = true; emit({ type: 'shelter', action: 'hard_timeout' }); try { stopMotion({ arm: true }); } catch (e) {} });
         // GARDE (22/10) : 3 abris `cancelled` d'affilée en < 2 min = un jeton qui naît/meurt aussitôt,
@@ -10668,8 +10674,10 @@ function dawnExitThreatsNow() {
     if (!p) return { hostiles: 0, creepers: 0 };
     const self = { x: p.x, y: p.y, z: p.z };   // COPIE (Vec3 muté en place)
     const list = _exitThreatList(self, _shelterExitEye(self));
-    return { hostiles: list.filter((t) => !t.creeper).length, creepers: list.filter((t) => t.creeper).length };
-  } catch (e) { return { hostiles: 0, creepers: 0 }; }
+    // `close` (25/10) : menaces à ≤ 12 blocs — passé la borne, elles PROLONGENT l'attente (shelter.dawnExitPlan).
+    const close = list.filter((t) => Number.isFinite(t.d) && t.d <= 12).length;
+    return { hostiles: list.filter((t) => !t.creeper).length, creepers: list.filter((t) => t.creeper).length, close };
+  } catch (e) { return { hostiles: 0, creepers: 0, close: 0 }; }
 }
 
 /** À la sortie (`onExit`) : menaces en vue → s'en éloigner d'abord, but verrouillé 5 s. Jamais de throw. */

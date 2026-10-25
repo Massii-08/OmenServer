@@ -200,6 +200,13 @@ const JUNK_TIERS = [
 // Le palier BUTIN (dripstone, plumes…) ne se pose pas : il ne compte pas comme remblai.
 const FILL_NAMES = new Set(JUNK_TIERS.filter((t) => !t.names.includes('dripstone_block')).reduce((a, t) => a.concat(t.names), []));
 const FILL_KEEP = 64;     // stock de remblai qu'on préfère garder AU TOTAL (toutes roches confondues)
+// RÉSERVE DE TERRE (25/10, run keepInventory OFF : abris ratés `no_block` / `open_sides` / `roof_failed`).
+// La terre est le seul remblai qui fait un toit d'abri ET se reprend à la main à l'aube (la pierre exige
+// une pioche). Appliquée par le PLAFOND de remblai (fillCap.fillOverflow, le jet régulier) : jamais une
+// pile qui ferait tomber la terre en poche sous DIRT_KEEP. Le jet « faire de la place pour un craft »
+// (pickJunkToToss, ci-dessous) garde sa priorité terre d'abord : une case libre pour le produit prime.
+const DIRT_KEEP = 16;
+const DIRT_NAMES = new Set(['dirt', 'coarse_dirt', 'rooted_dirt']);
 
 // Quelle pile jeter pour libérer UNE case ? Fonction PURE : `items` = [{ name, count, … }] (l'inventaire
 // utile, 36 cases) → l'élément choisi (la référence, jamais une copie) ou `null` si rien n'est jetable.
@@ -508,5 +515,5 @@ function tablePlan({ tableInReach = false, tableSeen = false, hasTableItem = fal
 
 module.exports = {
   craftItem, _nearestTable, tableKey, tablePlan, TABLE_REACH, TABLE_SEEK, EFFECT_POLL_MS, EFFECT_TIMEOUT_MS,
-  pickJunkToToss, needsRoomFor, slotsNeededFor, COBBLE_KEEP, FILL_KEEP, FILL_NAMES, JUNK_TIERS, craftGridLeftovers, GRID_RESET_SETTLE_MS,
+  pickJunkToToss, needsRoomFor, slotsNeededFor, COBBLE_KEEP, FILL_KEEP, FILL_NAMES, JUNK_TIERS, DIRT_KEEP, DIRT_NAMES, craftGridLeftovers, GRID_RESET_SETTLE_MS,
 };

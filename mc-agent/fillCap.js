@@ -8,7 +8,7 @@
 // petite pile d'abord — sans jamais descendre sous FILL_KEEP blocs au total ni sous la réserve de
 // cobble par nom (COBBLE_KEEP). Au plus une passe toutes les FILL_CAP_INTERVAL_MS.
 // PUR : aucune dépendance au bot. Le câblage (ramassage, jet derrière soi) vit dans index.js.
-const { JUNK_TIERS, FILL_NAMES, FILL_KEEP } = require('./skills/craft');
+const { JUNK_TIERS, FILL_NAMES, FILL_KEEP, DIRT_KEEP, DIRT_NAMES } = require('./skills/craft');
 
 const FILL_MAX_STACKS = 3;
 const FILL_CAP_INTERVAL_MS = 20000;
@@ -19,8 +19,12 @@ function fillOverflow(items, { maxStacks = FILL_MAX_STACKS, keep = FILL_KEEP } =
   let stacks = list.length;
   if (stacks <= maxStacks) return [];
   let fillTotal = 0;
+  let dirtTotal = 0;
   const total = {};
-  for (const it of list) { fillTotal += Number(it.count); total[it.name] = (total[it.name] || 0) + Number(it.count); }
+  for (const it of list) {
+    fillTotal += Number(it.count); total[it.name] = (total[it.name] || 0) + Number(it.count);
+    if (DIRT_NAMES.has(it.name)) dirtTotal += Number(it.count);
+  }
   const out = [];
   const left = list.slice();
   while (stacks > maxStacks) {
@@ -30,6 +34,8 @@ function fillOverflow(items, { maxStacks = FILL_MAX_STACKS, keep = FILL_KEEP } =
         if (!tier.names.includes(it.name)) continue;
         if (fillTotal - Number(it.count) < keep) continue;
         if (total[it.name] - Number(it.count) < tier.keep) continue;
+        // réserve de terre (craft.DIRT_KEEP, 25/10) : le toit d'abri d'un bot qui perd sa pioche
+        if (DIRT_NAMES.has(it.name) && dirtTotal - Number(it.count) < DIRT_KEEP) continue;
         if (!pick || Number(it.count) < Number(pick.count)) pick = it;
       }
       if (pick) break;
@@ -39,6 +45,7 @@ function fillOverflow(items, { maxStacks = FILL_MAX_STACKS, keep = FILL_KEEP } =
     left.splice(left.indexOf(pick), 1);
     fillTotal -= Number(pick.count);
     total[pick.name] -= Number(pick.count);
+    if (DIRT_NAMES.has(pick.name)) dirtTotal -= Number(pick.count);
     stacks--;
   }
   return out;
