@@ -482,6 +482,16 @@ async function craftItem(bot, { name, count = 1, _fixPlanks = true, _sleep, _fre
       : { ok: false, reason: 'craft_no_effect' };
   };
   let r = await attempt();
+  // INGRÉDIENT « MANQUANT » ALORS QU'IL EST EN POCHE (26/10, bouclier ×4 : 36 planches de chêne + 1 lingot,
+  // `Error: missing ingredient`) : juste après un craft intermédiaire (les planches), l'inventaire vu par
+  // mineflayer n'est pas encore à jour. On laisse le serveur resynchroniser, on relit les recettes, et on
+  // retente UNE fois.
+  if (!r.ok && r.reason === 'craft_failed' && /missing ingredient/i.test(String(r.err || ''))) {
+    await sleep(800);
+    const recipesR = bot.recipesFor(id, null, 1, table) || [];
+    if (!recipesR.length && !table) recipesR.push(...(bot.recipesFor(id, null, 1, null) || []));
+    if (recipesR.length) { recipes[0] = recipesR[0]; r = await attempt(); }
+  }
   // Aucun effet : remise à zéro de la grille côté serveur puis UNE seconde tentative (jamais plus —
   // une désync qui survit à l'Échap n'est pas de ce ressort, le planner a ses propres bornes).
   if (!r.ok && r.reason === 'craft_no_effect' && await _resetPlayerGrid(bot, sleep)) {

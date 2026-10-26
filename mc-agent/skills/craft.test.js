@@ -416,10 +416,21 @@ test('effet : la raison est DISTINCTE de no_recipe / craft_failed (craftSmart n\
 
 test('effet : bot.craft qui LÈVE → craft_failed comme avant, sans attendre 600 ms', async () => {
   const bot = craftBot({ oak_log: 4 }, { table: null });
-  bot.craft = async () => { throw new Error('missing ingredient'); };
+  bot.craft = async () => { throw new Error('window closed'); };
   const sleep = fakeSleep();
   { const r = await craftItem(bot, { name: 'oak_planks', _sleep: sleep }); assert.strictEqual(r.ok, false); assert.strictEqual(r.reason, 'craft_failed'); }
   assert.deepStrictEqual(sleep.log, []);
+});
+
+test('effet : « missing ingredient » → une seule reprise après 800 ms (inventaire pas encore à jour)', async () => {
+  const bot = craftBot({ oak_log: 4 }, { table: null });
+  let n = 0;
+  bot.craft = async () => { n++; throw new Error('missing ingredient'); };
+  const sleep = fakeSleep();
+  const r = await craftItem(bot, { name: 'oak_planks', _sleep: sleep });
+  assert.strictEqual(r.reason, 'craft_failed');
+  assert.strictEqual(n, 2);
+  assert.ok(sleep.log.includes(800));
 });
 
 // Le produit est lu AVANT le craft : un stock préexistant ne doit pas passer pour un effet.
