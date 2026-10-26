@@ -428,6 +428,51 @@ async function _homogenizePlanks(bot, id, table, sleep, freed) {
   return r.ok ? { ok: true, reason: 'crafted' } : { ok: false, reason: 'planks_craft_failed' };
 }
 
+// UNE RECETTE RÉPÉTÉE ≠ LA POCHE (26/10, `Error: missing ingredient` avec l'ingrédient en poche).
+// `bot.recipesFor(id, null, 1, table)` ne valide qu'UN craft (minResultCount = 1) ; `bot.craft(recipe, n)`
+// répète la MÊME recette n fois (mineflayer/lib/plugins/craft.js, boucle `craftOnce`). Quand la quantité
+// n'est couverte qu'en mélangeant les variantes (torches : charbon + charbon de bois, bâtons : chêne +
+// bouleau…), l'itération k ne trouve plus SON ingrédient (`window.findInventoryItem` → null → throw).
+// Reproduit avec le vrai code de mineflayer : skills/craft.realbench.test.js.
+// Remède PUR : répartir les n crafts sur les recettes, chacune bornée par la poche réelle (ingrédients
+// communs comme le bâton décomptés au fil des tranches). `null` = la quantité n'est pas couverte (ou
+// rien à répartir) → l'appelant garde le chemin historique (recette 0 × n), qui échouera comme avant.
+// `invById` = { id: quantité } (inventaire utile).
+function allocateCrafts(recipes, count, invById) {
+  const want = Math.max(1, Number(count) || 1);
+  if (!Array.isArray(recipes) || !recipes.length) return null;
+  const left = Object.assign({}, invById || {});
+  const plan = [];
+  let remaining = want;
+  for (const recipe of recipes) {
+    if (remaining <= 0) break;
+    const need = {};
+    for (const d of ((recipe && recipe.delta) || [])) if (d.count < 0) need[d.id] = (need[d.id] || 0) - d.count;
+    const ids = Object.keys(need);
+    if (!ids.length) continue;
+    let n = remaining;
+    for (const k of ids) n = Math.min(n, Math.floor((left[k] || 0) / need[k]));
+    if (n <= 0) continue;
+    for (const k of ids) left[k] = (left[k] || 0) - n * need[k];
+    plan.push({ recipe, count: n });
+    remaining -= n;
+  }
+  return remaining > 0 ? null : plan;
+}
+
+function _invById(bot) {
+  try {
+    const list = bot.inventory && typeof bot.inventory.items === 'function' ? bot.inventory.items() : null;
+    if (!Array.isArray(list)) return null;
+    const out = {};
+    for (const it of list) {
+      if (!it || typeof it.type !== 'number') return null;   // stub sans `type` : on ne devine pas
+      out[it.type] = (out[it.type] || 0) + (it.count || 0);
+    }
+    return out;
+  } catch (e) { return null; }
+}
+
 // `_fixPlanks: false` = garde-fou anti-récursion pour le craft des planches lui-même. Il est
 // redondant (la recette des planches n'en CONSOMME pas → `plankNeed` rend 0), mais deux crans
 // valent mieux qu'un sur un chemin qui tourne en boucle 3 h dans le noir.
@@ -473,7 +518,9 @@ async function craftItem(bot, { name, count = 1, _fixPlanks = true, _sleep, _fre
   const attempt = async () => {
     // Lu AVANT le craft — un stock préexistant ne doit pas passer pour un effet.
     const before = _countOf(bot, produced);
-    try { await bot.craft(recipes[0], count, table || undefined); }
+    const inv = _invById(bot);
+    const plan = (inv && allocateCrafts(recipes, count, inv)) || [{ recipe: recipes[0], count }];
+    try { for (const step of plan) await bot.craft(step.recipe, step.count, table || undefined); }
     catch (e) { return { ok: false, reason: 'craft_failed', err: String((e && e.message) || e).slice(0, 120) }; }
     // Inventaire illisible (vieux stub partiel) : rien à constater, contrat historique `{ok:true}`.
     if (before === null) return { ok: true };
@@ -490,7 +537,7 @@ async function craftItem(bot, { name, count = 1, _fixPlanks = true, _sleep, _fre
     await sleep(800);
     const recipesR = bot.recipesFor(id, null, 1, table) || [];
     if (!recipesR.length && !table) recipesR.push(...(bot.recipesFor(id, null, 1, null) || []));
-    if (recipesR.length) { recipes[0] = recipesR[0]; r = await attempt(); }
+    if (recipesR.length) { recipes = recipesR; r = await attempt(); }
   }
   // Aucun effet : remise à zéro de la grille côté serveur puis UNE seconde tentative (jamais plus —
   // une désync qui survit à l'Échap n'est pas de ce ressort, le planner a ses propres bornes).
@@ -498,7 +545,7 @@ async function craftItem(bot, { name, count = 1, _fixPlanks = true, _sleep, _fre
     reset = true;
     const recipes2 = bot.recipesFor(id, null, 1, table) || [];
     if (!recipes2.length && !table) recipes2.push(...(bot.recipesFor(id, null, 1, null) || []));
-    if (recipes2.length) { recipes[0] = recipes2[0]; r = await attempt(); }
+    if (recipes2.length) { recipes = recipes2; r = await attempt(); }
   }
   return done(withReset(r));
 }
@@ -524,6 +571,6 @@ function tablePlan({ tableInReach = false, tableSeen = false, hasTableItem = fal
 }
 
 module.exports = {
-  craftItem, _nearestTable, tableKey, tablePlan, TABLE_REACH, TABLE_SEEK, EFFECT_POLL_MS, EFFECT_TIMEOUT_MS,
+  craftItem, allocateCrafts, _nearestTable, tableKey, tablePlan, TABLE_REACH, TABLE_SEEK, EFFECT_POLL_MS, EFFECT_TIMEOUT_MS,
   pickJunkToToss, needsRoomFor, slotsNeededFor, COBBLE_KEEP, FILL_KEEP, FILL_NAMES, JUNK_TIERS, DIRT_KEEP, DIRT_NAMES, craftGridLeftovers, GRID_RESET_SETTLE_MS,
 };

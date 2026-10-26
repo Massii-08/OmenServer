@@ -3576,7 +3576,9 @@ async function craftSmart(args) {
     // Échec : dire POURQUOI avec la matière en poche (les logs du 20/10 n'avaient que `no_recipe` /
     // `craft_no_effect`, sans l'inventaire — impossible de trancher entre essences mélangées, pierres
     // mélangées, poche pleine ou désync). Throttlé (≤ 1 / 10 s).
-    if (r && !r.ok) _auraEmit('craft_fail_ctx', Object.assign({ name: args && args.name, reason: r.reason, err: r.err }, craftMatterSummary()));
+    if (r && !r.ok) _auraEmit('craft_fail_ctx', Object.assign({ name: args && args.name, reason: r.reason, err: r.err,
+      win: (() => { try { const w = bot.currentWindow; return w ? String(w.type || w.id) : null; } catch (e) { return null; } })(),
+      held: (() => { try { return bot.heldItem ? bot.heldItem.name : null; } catch (e) { return null; } })() }, craftMatterSummary()));
     return r;
   } finally {
     _craftDepth = Math.max(0, _craftDepth - 1);
