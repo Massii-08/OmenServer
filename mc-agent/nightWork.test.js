@@ -112,7 +112,8 @@ test('nightWorkPlan fromShelter : surface relevée au-dessus du puits, hostiles 
     { action: 'descend', targetY: 58, surfaceY: 70 });
   assert.strictEqual(N.nightWorkPlan({ y: 67, hasPick: true, fromShelter: true, cellMode: 'walled', surfaceY: 70 }).why, 'walled');
   assert.strictEqual(N.nightWorkPlan({ y: 67, hasPick: false, fromShelter: true, cellMode: 'pit', surfaceY: 70 }).action, 'shelter');
-  assert.strictEqual(N.nightWorkPlan({ y: 67, hasPick: true, fromShelter: true, cellMode: 'pit', surfaceY: 70, triedThisNight: true }).action, 'shelter');
+  // 26/10 : depuis le puits, seule une descente DEPUIS LE PUITS déjà tentée cette nuit l'interdit
+  assert.strictEqual(N.nightWorkPlan({ y: 67, hasPick: true, fromShelter: true, cellMode: 'pit', surfaceY: 70, triedFromShelter: true }).action, 'shelter');
   // sans fromShelter, le comportement historique (fuite) est intact
   assert.strictEqual(N.nightWorkPlan({ y: 70, hasPick: true, hostileDist: 2 }).action, 'flee');
 });
@@ -138,4 +139,33 @@ test('mineur à y -54 la NUIT, nu : aucun abri, le minage continue (abri, planne
   }
   // Les trajets de SURFACE restent prudents la nuit (bois, chasse).
   assert.strictEqual(nightPlannerStep({ lockdown: true, y: -54, skill: 'gatherLog', underground }), 'wait');
+});
+
+// ─── CHRONO ZÉRO → ARMURE, itération 4 (26/10) ─────────────────────────────────────────────────────
+// Mesure : 3 nuits sur 9 passées entières au fond d'un puits (8,7 / 8,4 / 3,4 min) après UNE descente de
+// surface ratée (no_progress, water_ahead, dig_failed — échecs POSITIONNELS) : `triedThisNight` interdisait
+// aussi la descente depuis le fond du puits, 3 blocs plus bas, point de départ neuf. Une tentative de
+// chaque sorte par nuit : jamais de boucle.
+test('nightWorkPlan : une descente de surface ratée n interdit pas la descente depuis le puits (une chacune)', () => {
+  const pit = { y: 67, hasPick: true, fromShelter: true, cellMode: 'pit', surfaceY: 70 };
+  assert.strictEqual(N.nightWorkPlan(Object.assign({}, pit, { triedThisNight: true })).action, 'descend');
+  assert.strictEqual(N.nightWorkPlan(Object.assign({}, pit, { triedFromShelter: true })).why, 'tried');
+  assert.strictEqual(N.nightWorkPlan(Object.assign({}, pit, { triedThisNight: true, triedFromShelter: true })).why, 'tried');
+  // en surface, seule la tentative de surface compte
+  assert.strictEqual(N.nightWorkPlan({ y: 70, hasPick: true, triedThisNight: true }).why, 'tried');
+  assert.strictEqual(N.nightWorkPlan({ y: 70, hasPick: true, triedFromShelter: true }).action, 'descend');
+});
+
+// Mesure : NethBot3 descend à 85 (surface 97) à la tombée de la nuit, puis `iron_cave` le renvoie vers une
+// grappe à y 100 → il sort de sa poche, se retrouve en surface, et attend l'aube 8,4 min. Une grappe
+// au-dessus de la poche est un but de SURFACE la nuit.
+test('nightDeferGoal : caveIron différé la nuit sous terre quand la grappe est au-dessus de la poche', () => {
+  const base = { lockdown: true, underground: true, skill: 'caveIron', y: 85 };
+  assert.strictEqual(N.nightDeferGoal(Object.assign({}, base, { targetY: 100 })), true);
+  assert.strictEqual(N.nightDeferGoal(Object.assign({}, base, { targetY: 85 + N.NIGHT_POCKET_CLIMB })), false, 'à hauteur : on y va en creusant');
+  assert.strictEqual(N.nightDeferGoal(Object.assign({}, base, { targetY: 60 })), false, 'plus bas : sous terre');
+  assert.strictEqual(N.nightDeferGoal(Object.assign({}, base, { targetY: null })), false, 'cible inconnue : rien de changé');
+  assert.strictEqual(N.nightDeferGoal(Object.assign({}, base, { targetY: 100, underground: false })), false);
+  assert.strictEqual(N.nightDeferGoal(Object.assign({}, base, { targetY: 100, lockdown: false })), false);
+  assert.strictEqual(N.nightDeferGoal(Object.assign({}, base, { targetY: 100, y: null })), false);
 });

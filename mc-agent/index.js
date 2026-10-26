@@ -6573,6 +6573,8 @@ function migrationOwnsBot() { return taskCtl.active === 'migration'; }
 // ⚠️ NIVEAU MODULE (piège #56) : lu par le planner, maybeNightShelter et les timers.
 let _nightWork = null;            // { surfaceY, night, at } — relevé de la descente de cette nuit
 let _nightWorkTriedNight = null;  // nuit (bot.time.day) de la dernière tentative : une seule par nuit
+// …et une DEPUIS LE FOND DU PUITS (26/10) : l'échec de surface est positionnel, le puits est un départ neuf.
+let _nightWorkShelterTriedNight = null;
 const _nightDeferAt = {};         // throttle des events `night_defer` : 1×/min par but
 const _nightDeferReturnAt = {};   // holdForNight : dernière main rendue au planner pour un but différé
 const NIGHT_DEFER_RETURN_MS = 30000;
@@ -6620,11 +6622,18 @@ function noteOptionalGoalResult(g, r) {
   } else if (r && r.ok) _optionalFailAt.delete(g.name);
 }
 
-function nightSkipGoal(g) {
+function nightSkipGoal(g, ctx) {
   let lockdown = false;
   try { lockdown = nightLockdownNow(); } catch (e) { lockdown = false; }
   if (!lockdown) return false;
-  const d = nightDeferGoal({ lockdown, underground: nightUndergroundNow(), skill: g && g.skill });
+  // caveIron (26/10) : la grappe visée au-dessus de la poche de nuit = sortir dehors → différé à l'aube.
+  let targetY = null, y = null;
+  try {
+    if (g && g.skill === 'caveIron' && ctx && ctx.ironCave && Number.isFinite(ctx.ironCave.y)) targetY = ctx.ironCave.y;
+    const p = bot && bot.entity && bot.entity.position;
+    if (p) y = p.y;
+  } catch (e) { targetY = null; }
+  const d = nightDeferGoal({ lockdown, underground: nightUndergroundNow(), skill: g && g.skill, targetY, y });
   if (d) {
     const now = Date.now();
     const k = (g && g.name) || '?';
@@ -6716,6 +6725,7 @@ async function tryNightWork(opts = {}) {
       y: q.y, hasPick: items.some((i) => i && /_pickaxe$/.test(i.name)), inWater,
       hostileDist: _nearestThreatDist(), isMapper: IS_MAPPER, isLumberjack: isLumberjackObjective(),
       triedThisNight: night != null && _nightWorkTriedNight === night,
+      triedFromShelter: night != null && typeof _nightWorkShelterTriedNight !== 'undefined' && _nightWorkShelterTriedNight === night,
       fromShelter: !!fromShelter, cellMode: fromShelter ? (fromShelter.cellMode || 'pit') : undefined,
       surfaceY: fromShelter ? fromShelter.surfaceY : undefined,
     };
@@ -6728,7 +6738,8 @@ async function tryNightWork(opts = {}) {
     if (plan.action === 'flee') return false;           // toujours serré : l'abri (et sa propre fuite)
   }
   if (plan.action !== 'descend') return false;
-  _nightWorkTriedNight = night;
+  if (!fromShelter) _nightWorkTriedNight = night;
+  else if (typeof _nightWorkShelterTriedNight !== 'undefined') _nightWorkShelterTriedNight = night;
   emit({ type: 'night_work', phase: fromShelter ? 'from_shelter' : 'descend', y: Math.round(p0.y), target: plan.targetY });
   const r = await withTimeout(descendDiagonal(bot, { targetY: plan.targetY, maxDepth: 60, onSurvivalTick: descentSurvivalTick }, taskToken),
     NIGHT_WORK_DESCENT_MS, () => { try { stopMotion(); } catch (e) {} });
@@ -6807,6 +6818,7 @@ async function shelterWhileSealed(info) {
     y: p.y, hasPick: items.some((i) => i && /_pickaxe$/.test(i.name)), inWater: false,
     isMapper: IS_MAPPER, isLumberjack: isLumberjackObjective(),
     triedThisNight: night != null && _nightWorkTriedNight === night,
+    triedFromShelter: night != null && typeof _nightWorkShelterTriedNight !== 'undefined' && _nightWorkShelterTriedNight === night,
     fromShelter: true, cellMode: info.mode,
     surfaceY: a && Number.isFinite(a.y) ? a.y + (Number(info.depth) || 0) : null,
   });
@@ -8393,19 +8405,27 @@ function mountainIronForPlanner() {
     let worn = 0;
     try { worn = _wornArmor().size; } catch (e) { worn = 0; }
     const known = !!(bot && bot.time && bot.time.timeOfDay != null);
+    const night = known ? isNight(bot) : false;
+    // NUIT SOUS TERRE (26/10, Massii : « sous terre, pas d'abri, on continue à miner ») : dans la roche de
+    // la montagne, le fer au-dessus de 64 reste visible — on le creuse, à portée courte, sans remonter.
+    let underground = false;
+    try { underground = night && typeof nightUndergroundNow === 'function' && nightUndergroundNow(); } catch (e) { underground = false; }
     const gate = mountainIronPick.mountainGate({
       objectiveOk: caveIronPick.ironCaveObjectiveOk(objT, {}), pickTier: _caveInvTier(),
-      hp: bot && bot.health, y: p ? p.y : null, night: known ? isNight(bot) : false, worn, inWater,
+      hp: bot && bot.health, y: p ? p.y : null, night, worn, inWater, underground,
     });
     if (gate.ok && p) {
       const ores = _mountainScan();
       visible = ores.length;
       const st = loadBaseState() || {};
+      const nightPocket = gate.why === 'night_underground';
       target = mountainIronPick.pickMountainIron(ores, { x: p.x, y: p.y, z: p.z }, {
+        maxDist: nightPocket ? mountainIronPick.MOUNTAIN_NIGHT_MAX_DIST : undefined,
+        maxClimb: nightPocket ? mountainIronPick.MOUNTAIN_NIGHT_MAX_CLIMB : undefined,
         now, fails: st.mountainFails,
         isClaimed: (k) => { const c = _teamClaims && _teamClaims.peek(k); return !!(c && c.by !== bot.username); },
       });
-      if (target) target.visible = visible;
+      if (target) { target.visible = visible; if (nightPocket) target.night = true; }
     } else if (gate.why === 'night' && (now - _mountainGateEmitAt >= 60000 || now < _mountainGateEmitAt)) {
       _mountainGateEmitAt = now;
       emit({ type: 'mountain_iron', phase: 'skipped', why: 'night', worn });
@@ -8445,7 +8465,7 @@ async function runMountainIron() {
   const iron0 = rawIron();
   const p0 = bot.entity && bot.entity.position;
   emit({ type: 'mountain_iron', phase: 'start', visible: target.visible, x: target.x, y: target.y, z: target.z,
-    ores: target.count, dist: target.dist, from_y: p0 ? Math.round(p0.y) : null });
+    ores: target.count, dist: target.dist, from_y: p0 ? Math.round(p0.y) : null, night: !!target.night });
   let mined = 0, reached = 0, gone = 0;
   let outcome = 'done';
   _caveTripBusy = true;                         // trySquad / tryRegroup ne nous arrachent pas au filon
@@ -8466,7 +8486,8 @@ async function runMountainIron() {
       if (!near) continue;
       reached++;
       if (isInWater(bot)) { try { await escapeWater(bot, { emit }); } catch (e) {} if (isInWater(bot)) { outcome = 'water'; break; } }
-      try { mined += await withTimeout(floodFillVein(bot, ore, tok), 90000, () => { try { stopMotion(); } catch (e) {} }) || 0; }
+      // withTimeout rend un objet à l'expiration : le compteur devenait « 0[object Object]1 » (26/10).
+      try { const n = await withTimeout(floodFillVein(bot, ore, tok), 90000, () => { try { stopMotion(); } catch (e) {} }); if (Number.isFinite(n)) mined += n; }
       catch (e) { /* bloc suivant */ }
     }
   } finally {

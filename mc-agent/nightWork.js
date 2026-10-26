@@ -35,7 +35,7 @@ function nightWorkTargetY(surfaceY) {
 
 /**
  * PUR — que faire, à la tombée de la nuit, d'un bot nu en surface ?
- * sig = { y, hasPick, inWater, hostileDist (null = aucun), isMapper, isLumberjack, triedThisNight }
+ * sig = { y, hasPick, inWater, hostileDist (null = aucun), isMapper, isLumberjack, triedThisNight, triedFromShelter }
  * → { action: 'descend', targetY, surfaceY } : descendre en escalier, sceller, reprendre la chaîne ;
  *   { action: 'flee' }                       : un hostile tout près — fuir d'abord, puis re-décider ;
  *   { action: 'shelter', why }               : le comportement historique (trou couvert + attente).
@@ -45,7 +45,9 @@ function nightWorkPlan(sig = {}) {
   if (s.isMapper) return { action: 'shelter', why: 'mapper' };            // il ne mine pas
   if (s.isLumberjack) return { action: 'shelter', why: 'lumberjack' };    // tout son travail est en surface
   if (!s.hasPick) return { action: 'shelter', why: 'no_pick' };           // tout début : trou + attente
-  if (s.triedThisNight) return { action: 'shelter', why: 'tried' };       // une descente ratée par nuit, pas plus
+  // Une descente ratée par nuit ET PAR POINT DE DÉPART (26/10) : l'échec de surface (no_progress, water_ahead,
+  // dig_failed) est positionnel — le fond du puits, 3 blocs plus bas, est un départ neuf (`triedFromShelter`).
+  if (s.fromShelter ? s.triedFromShelter : s.triedThisNight) return { action: 'shelter', why: 'tried' };
   if (s.inWater) return { action: 'shelter', why: 'water' };
   // DEPUIS L'ABRI (22/10, `fromShelter`) : le bot est au fond de son puits, toit posé. Seul un PUITS
   // creusé ('pit') se quitte par le bas sans rien ouvrir ; une cellule MURÉE au sol (l'escalier
@@ -179,9 +181,20 @@ function nightUnderground(state, sig = {}) {
   return y <= Number(state.surfaceY) - NIGHT_WORK_SLACK;
 }
 
-/** PUR — ce but est-il différé à l'aube (nuit au travail, sous terre, but de surface) ? */
-function nightDeferGoal({ lockdown, underground, skill } = {}) {
-  return !!(lockdown && underground && NIGHT_DEFER_SKILLS.has(skill));
+// Une grappe de grotte plus haut que ça au-dessus du bot = sortir de la poche de nuit (26/10).
+const NIGHT_POCKET_CLIMB = 3;
+
+/**
+ * PUR — ce but est-il différé à l'aube (nuit au travail, sous terre, but de surface) ?
+ * `caveIron` aussi (26/10, NethBot3 : sorti de sa poche à 85 pour une grappe à 100, puis 8,4 min d'abri)
+ * quand la grappe visée (`targetY`) est à plus de NIGHT_POCKET_CLIMB au-dessus du bot (`y`).
+ */
+function nightDeferGoal({ lockdown, underground, skill, targetY, y } = {}) {
+  if (!(lockdown && underground)) return false;
+  if (NIGHT_DEFER_SKILLS.has(skill)) return true;
+  if (skill === 'caveIron' && typeof targetY === 'number' && Number.isFinite(targetY)
+      && typeof y === 'number' && Number.isFinite(y)) return targetY > y + NIGHT_POCKET_CLIMB;
+  return false;
 }
 
 /**
@@ -203,7 +216,7 @@ function nightSealCells(feet, isOpen) {
 }
 
 module.exports = {
-  NIGHT_COVERED_Y, NIGHT_WORK_DEPTH, NIGHT_WORK_SLACK, NIGHT_WORK_TTL_MS, NIGHT_WORK_FLEE_DIST, NIGHT_DEFER_SKILLS,
+  NIGHT_COVERED_Y, NIGHT_POCKET_CLIMB, NIGHT_WORK_DEPTH, NIGHT_WORK_SLACK, NIGHT_WORK_TTL_MS, NIGHT_WORK_FLEE_DIST, NIGHT_DEFER_SKILLS,
   nightWorkTargetY, nightWorkPlan, nightUnderground, nightDeferGoal, nightSealCells,
   shelterCraftNext, SHELTER_CRAFT_3X3, SHELTER_TORCH_TARGET,
 };

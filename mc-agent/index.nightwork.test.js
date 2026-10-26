@@ -92,7 +92,7 @@ function sandbox(o = {}) {
     },
   };
   vm.createContext(sb);
-  run(sb, [letSrc('_nightWork'), letSrc('_nightWorkTriedNight'), constSrc('_nightDeferAt'), constSrc('NIGHT_WORK_DESCENT_MS'),
+  run(sb, [letSrc('_nightWork'), letSrc('_nightWorkTriedNight'), letSrc('_nightWorkShelterTriedNight'), constSrc('_nightDeferAt'), constSrc('NIGHT_WORK_DESCENT_MS'),
     "const { cellBlockItem: _nightCellItem } = require('./skills/shelter');",
     fnSrc('_nightId'), fnSrc('nightUndergroundNow'), fnSrc('nightSkipGoal'), fnSrc('_nearestThreatDist'),
     fnSrc('_nightFill'), fnSrc('nightSeal'), fnSrc('nightTorch'), fnSrc('tryNightWork'), letSrc('_lastPickRebuildWhy'), fnSrc('rebuildPickHere'),
@@ -385,4 +385,41 @@ test('four de mine loin sans raccourci : ni oublié, ni ouvert à distance ; ne 
   assert.ok(sb.job(), 'gardé');
   assert.strictEqual(sb.furnace, undefined, 'aucune ouverture tentée');
   assert.strictEqual(sb.furnaceJobNear(), false);
+});
+
+
+// ─── CHRONO ZÉRO → ARMURE, itération 4 (26/10) ─────────────────────────────────────────────────────
+test('nuit : descente de surface ratée → depuis le fond du puits, UNE nouvelle descente (puis plus rien)', async () => {
+  const sb = sandbox({ descentFails: true, items: [{ name: 'stone_pickaxe', count: 1 }], pos: { y: 70 } });
+  assert.strictEqual(await sb.tryNightWork(), false, 'surface : water_ahead');
+  // l'abri historique : puits de 3, bot au fond à 67, plus rien à crafter
+  sb.bot.entity.position.y = 67;
+  assert.strictEqual(await sb.shelterWhileSealed(PIT(67)), 'leave_down', 'le puits est un départ neuf');
+  const ho = sb.shelterCraft().handoff;
+  sb.descended = undefined;
+  assert.strictEqual(await sb.tryNightWork({ fromShelter: ho }), false, 'ratée aussi (même banc)');
+  assert.ok(sb.descended, 'la descente depuis le puits a bien été tentée');
+  assert.strictEqual(await sb.shelterWhileSealed(PIT(67)), null, 'une seule depuis le puits par nuit');
+  sb.descended = undefined;
+  assert.strictEqual(await sb.tryNightWork(), false);
+  assert.strictEqual(sb.descended, undefined, 'ni de nouvelle descente de surface');
+});
+
+test('nuit : descendu dans la poche, iron_cave vers une grappe au-dessus = différé ; une grappe à hauteur, non', async () => {
+  const sb = sandbox({ world: { '-1,59,0': 'air', '0,60,0': 'air' } });
+  assert.strictEqual(await sb.tryNightWork(), true);           // poche à 58
+  const g = { name: 'iron_cave', skill: 'caveIron' };
+  assert.strictEqual(sb.nightSkipGoal(g, { ironCave: { x: 10, y: 72, z: 0 } }), true);
+  assert.ok(sb.events.some((e) => e.type === 'night_defer' && e.goal === 'iron_cave'));
+  assert.strictEqual(sb.nightSkipGoal(g, { ironCave: { x: 10, y: 59, z: 0 } }), false);
+  assert.strictEqual(sb.nightSkipGoal(g, {}), false, 'sans grappe : rien de changé');
+  assert.strictEqual(sb.nightSkipGoal(g), false);
+});
+
+test('câblage : mountainIronForPlanner passe underground à mountainGate et borne la nuit (portée, montée)', () => {
+  const f = fnSrc('mountainIronForPlanner');
+  assert.match(f, /underground = night && typeof nightUndergroundNow === 'function' && nightUndergroundNow\(\)/);
+  assert.match(f, /night, worn, inWater, underground,/);
+  assert.match(f, /maxClimb: nightPocket \? mountainIronPick\.MOUNTAIN_NIGHT_MAX_CLIMB : undefined/);
+  assert.match(SRC, /^let _nightWorkShelterTriedNight = null;/m);
 });

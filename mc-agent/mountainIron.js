@@ -20,6 +20,13 @@ const MOUNTAIN_FAIL_TTL_MS = 30 * 60 * 1000;   // grappe ratée : mise de côté
 const MOUNTAIN_FAILS_MAX = 40;
 const MOUNTAIN_CLUSTER_GAP = 2;       // deux minerais à ≤ 2 blocs (Chebyshev) = même grappe
 const MOUNTAIN_MAX_MS = 4 * 60 * 1000;   // un chantier = 4 min au plus, trajet compris
+// Coût FIXE d'une sortie, en blocs de trajet équivalents (26/10, 37 sorties de l'itération 4 : ~25-45 s
+// d'approche, d'outil et de ramassage quelle que soit la grappe, ≈ 40 blocs de marche).
+const MOUNTAIN_SORTIE_OVERHEAD = 40;
+// La NUIT, sous terre (dans la roche) : grappes proches et pas plus haut que la poche + 3 — on creuse
+// à travers la roche, on ne remonte pas vers la surface.
+const MOUNTAIN_NIGHT_MAX_DIST = 24;
+const MOUNTAIN_NIGHT_MAX_CLIMB = 3;
 
 const IRON_NAMES = new Set(['iron_ore', 'deepslate_iron_ore']);
 
@@ -95,9 +102,12 @@ function mountainFailAdd(fails, key, why, now) {
 
 /**
  * PUR — la grappe de fer de montagne à viser, ou null.
- * opts = { now, fails, isClaimed(key), maxDist }.
- * Coût = distance 3D + la moitié de la montée (grimper coûte plus que marcher) − 3 par minerai en plus
- * (une grappe de 4 vaut un détour de ~9 blocs). Cible = minerai de la grappe le plus proche du bot.
+ * opts = { now, fails, isClaimed(key), maxDist, maxClimb }.
+ * RENDEMENT (26/10) = minerais / (sortie fixe + distance 3D + la moitié de la montée). Avant : distance −
+ * 3 par minerai, qui préférait un minerai isolé à 10 blocs à une grappe de 4 à 30 — or une sortie coûte
+ * ~40 blocs de trajet en fixe (mesuré) : 1,3 fer/min sur les petites grappes, 3,2 sur les grosses.
+ * `maxClimb` : grappe écartée si son minerai le plus proche est plus de maxClimb au-dessus du bot.
+ * Cible = minerai de la grappe le plus proche du bot.
  */
 function pickMountainIron(ores, from, opts = {}) {
   if (!_valid(from)) return null;
@@ -113,7 +123,8 @@ function pickMountainIron(ores, from, opts = {}) {
       .sort((a, b) => a.dist - b.dist);
     const near = sorted[0];
     if (near.dist > maxDist) continue;
-    const cost = near.dist + 0.5 * Math.max(0, near.y - from.y) - 3 * (comp.length - 1);
+    if (_fin(opts.maxClimb) && near.y - from.y > opts.maxClimb) continue;
+    const cost = (MOUNTAIN_SORTIE_OVERHEAD + near.dist + 0.5 * Math.max(0, near.y - from.y)) / comp.length;
     if (!best || cost < best.cost) {
       best = { key, x: near.x, y: near.y, z: near.z, count: comp.length, dist: Math.round(near.dist * 10) / 10,
         cost, ores: sorted.map(({ dist, ...o }) => o) };
@@ -126,8 +137,10 @@ function pickMountainIron(ores, from, opts = {}) {
 
 /**
  * PUR — le fer de montagne est-il envisageable maintenant ?
- * sig = { objectiveOk, pickTier, hp, y, night, worn, inWater }
- * → { ok, why }. La NUIT, un bot à moins de 2 pièces ne fait pas de chantier de surface (règle de nuit).
+ * sig = { objectiveOk, pickTier, hp, y, night, worn, inWater, underground }
+ * → { ok, why }. La NUIT, un bot à moins de 2 pièces ne fait pas de chantier de surface (règle de nuit) —
+ * SAUF sous terre (26/10, `underground` : descendu dans la roche par la nuit au travail) : il y mine le fer
+ * qu'il voit, à portée courte (MOUNTAIN_NIGHT_*), why 'night_underground'.
  */
 function mountainGate(sig = {}) {
   const s = sig || {};
@@ -136,12 +149,14 @@ function mountainGate(sig = {}) {
   if (_fin(s.hp) && s.hp < MOUNTAIN_MIN_HP) return { ok: false, why: 'low_hp' };
   if (!_fin(s.y) || s.y < MOUNTAIN_BOT_MIN_Y) return { ok: false, why: 'underground' };
   if (s.inWater) return { ok: false, why: 'water' };
-  if (s.night && !(_fin(s.worn) && s.worn >= 2)) return { ok: false, why: 'night' };
+  if (s.night && !(_fin(s.worn) && s.worn >= 2)) {
+    return s.underground === true ? { ok: true, why: 'night_underground' } : { ok: false, why: 'night' };
+  }
   return { ok: true, why: 'ok' };
 }
 
 module.exports = {
   mountainOres, mountainClusters, mountainKey, mountainFailsPrune, mountainFailAdd, pickMountainIron, mountainGate,
   MOUNTAIN_MIN_Y, MOUNTAIN_SCAN_DIST, MOUNTAIN_SCAN_COUNT, MOUNTAIN_MAX_DIST, MOUNTAIN_BOT_MIN_Y, MOUNTAIN_MIN_HP,
-  MOUNTAIN_FAIL_TTL_MS, MOUNTAIN_MAX_MS, IRON_NAMES,
+  MOUNTAIN_FAIL_TTL_MS, MOUNTAIN_MAX_MS, IRON_NAMES, MOUNTAIN_SORTIE_OVERHEAD, MOUNTAIN_NIGHT_MAX_DIST, MOUNTAIN_NIGHT_MAX_CLIMB,
 };
