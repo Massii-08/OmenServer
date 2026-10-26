@@ -2,6 +2,7 @@
 // `craft <objet> [n]` : fabrique via une recette dispo (table proche si nécessaire).
 
 const { planksPlan, plankNeed } = require('../planks');
+const { craftShapedManual, hasAlternatingRow } = require('./craftManual');
 
 function _itemId(bot, name) {
   const def = bot.registry && bot.registry.itemsByName && bot.registry.itemsByName[String(name || '').toLowerCase()];
@@ -515,12 +516,25 @@ async function craftItem(bot, { name, count = 1, _fixPlanks = true, _sleep, _fre
   const left = craftGridLeftovers(bot.inventory);
   if (left.slots.length || left.cursor) reset = await _resetPlayerGrid(bot, sleep);
   const withReset = (r) => (reset ? Object.assign({}, r, { gridReset: true }) : r);
+  // CRAFT MANUEL (skills/craftManual.js) : d'office pour une recette en forme où deux ingrédients
+  // alternent sur une ligne (le bouclier), et en relais quand `bot.craft` a levé `missing ingredient`
+  // sur une recette en forme. Exige une table (fenêtre 3×3) ; sans table, chemin normal.
+  let forceManual = false;
+  // (Un bot sans API de fenêtre — stub de test — reste sur le chemin normal.)
+  const canManual = typeof bot.openBlock === 'function' && typeof bot.clickWindow === 'function';
+  const useManual = (recipe) => !!(canManual && table && recipe && recipe.inShape &&
+    (forceManual || produced === 'shield' || hasAlternatingRow(recipe)));
   const attempt = async () => {
     // Lu AVANT le craft — un stock préexistant ne doit pas passer pour un effet.
     const before = _countOf(bot, produced);
     const inv = _invById(bot);
     const plan = (inv && allocateCrafts(recipes, count, inv)) || [{ recipe: recipes[0], count }];
-    try { for (const step of plan) await bot.craft(step.recipe, step.count, table || undefined); }
+    try {
+      for (const step of plan) {
+        if (useManual(step.recipe)) await craftShapedManual(bot, step.recipe, table, step.count, { sleep });
+        else await bot.craft(step.recipe, step.count, table || undefined);
+      }
+    }
     catch (e) { return { ok: false, reason: 'craft_failed', err: String((e && e.message) || e).slice(0, 120) }; }
     // Inventaire illisible (vieux stub partiel) : rien à constater, contrat historique `{ok:true}`.
     if (before === null) return { ok: true };
@@ -534,6 +548,7 @@ async function craftItem(bot, { name, count = 1, _fixPlanks = true, _sleep, _fre
   // mineflayer n'est pas encore à jour. On laisse le serveur resynchroniser, on relit les recettes, et on
   // retente UNE fois.
   if (!r.ok && r.reason === 'craft_failed' && /missing ingredient/i.test(String(r.err || ''))) {
+    if (canManual && table && recipes.some((rc) => rc && rc.inShape)) forceManual = true;
     await sleep(800);
     const recipesR = bot.recipesFor(id, null, 1, table) || [];
     if (!recipesR.length && !table) recipesR.push(...(bot.recipesFor(id, null, 1, null) || []));

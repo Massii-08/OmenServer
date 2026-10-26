@@ -65,7 +65,14 @@ function makeBot(inv, opts = {}) {
       const click = { slot: data.slot, mouseButton: data.mouseButton, mode: data.mode, windowId: data.windowId, item: data.slot === -999 ? null : win.slots[data.slot] };
       if (data.slot === 0) {
         const res = gridResult(win, w);
-        if (res && !win.selectedItem) {
+        if (res && data.mode === 1) {
+          // shift-clic vanilla : le résultat file dans l'inventaire (pas sur le curseur)
+          const e = win.firstEmptySlotRange(win.inventoryStart, win.inventoryEnd);
+          if (e != null) {
+            win.updateSlot(e, res); win.updateSlot(0, null);
+            for (let i = 1; i <= w * w; i++) { const g = win.slots[i]; if (g) { g.count--; win.updateSlot(i, g.count > 0 ? g : null); } }
+          }
+        } else if (res && !win.selectedItem) {
           win.selectedItem = res; win.updateSlot(0, null);
           for (let i = 1; i <= w * w; i++) { const g = win.slots[i]; if (g) { g.count--; win.updateSlot(i, g.count > 0 ? g : null); } }
         }

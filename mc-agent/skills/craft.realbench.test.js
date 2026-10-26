@@ -117,3 +117,48 @@ test('allocateCrafts (PUR) : répartit sur les variantes, partage les ingrédien
   assert.strictEqual(allocateCrafts([coalR], 5, { 1: 2, 3: 9 }), null);
   assert.strictEqual(allocateCrafts([], 1, {}), null);
 });
+
+// ─── CRAFT MANUEL (26/10) : bouclier « missing ingredient » sur le vrai serveur (sonde CraftProbe) ───
+const { shapedPlacement, hasAlternatingRow } = require('./craftManual');
+
+test('shapedPlacement / hasAlternatingRow (PURS) : bouclier = planches ×6 + lingot ×1, ligne alternée', () => {
+  const P = { id: 36 }; const L = { id: 842 }; const _ = { id: -1 };
+  const shield = { inShape: [[P, L, P], [P, P, P], [_, P, _]] };
+  assert.deepStrictEqual(shapedPlacement(shield), [{ id: 36, metadata: null, slots: [1, 3, 4, 5, 6, 8] }, { id: 842, metadata: null, slots: [2] }]);
+  assert.strictEqual(hasAlternatingRow(shield), true);
+  const pick = { inShape: [[L, L, L], [_, { id: 1 }, _], [_, { id: 1 }, _]] };
+  assert.strictEqual(hasAlternatingRow(pick), false);
+  assert.deepStrictEqual(shapedPlacement({ inShape: [[L, L], [L, _]] }).map((g) => g.slots), [[1, 2, 4]]);
+  assert.strictEqual(shapedPlacement({ ingredients: [L] }), null);
+  assert.strictEqual(shapedPlacement({ inShape: [[L, L, L, L]] }), null);
+});
+
+test('bouclier (vrai mineflayer) : chemin manuel — clics droits, aucun échange, curseur vide, restes rendus', async () => {
+  const bot = bench([['oak_planks', 16, 38 - 1], ['iron_ingot', 2, 37 - 1]], ['shield']);
+  let crafts = 0; const real = bot.craft; bot.craft = (...a) => { crafts++; return real(...a); };
+  const r = await craftItem(bot, { name: 'shield', count: 1, _sleep: fast });
+  assert.strictEqual(r.ok, true, JSON.stringify(r));
+  assert.strictEqual(crafts, 0, 'bot.craft n\'est pas appelé pour le bouclier');
+  assert.deepStrictEqual(inv(bot), { oak_planks: 10, iron_ingot: 1, shield: 1 });
+  const clicks = bot._srv.log.filter((l) => l[0] === 'window_click');
+  assert.deepStrictEqual(clicks.filter((c) => c[2] === 1).map((c) => c[1]).sort(), [1, 2, 3, 4, 5, 6, 8]);
+  assert.ok(clicks.some((c) => c[1] === 0 && c[3] === 1), 'shift-clic sur la case résultat');
+  assert.strictEqual(bot.inventory.selectedItem || null, null);
+});
+
+test('relais manuel : bot.craft lève « missing ingredient » sur une recette en forme → le manuel sort la pioche', async () => {
+  const bot = bench([['iron_ingot', 3, 9], ['stick', 2, 10]], ['iron_pickaxe']);
+  bot.craft = async () => { throw new Error('missing ingredient'); };
+  const r = await craftItem(bot, { name: 'iron_pickaxe', count: 1, _sleep: fast });
+  assert.strictEqual(r.ok, true, JSON.stringify(r));
+  assert.deepStrictEqual(inv(bot), { iron_pickaxe: 1 });
+});
+
+test('manuel sans assez d\'ingrédients : échec propre, rien de perdu, fenêtre fermée', async () => {
+  const bot = bench([['oak_planks', 5, 9], ['iron_ingot', 1, 10]], ['shield']);
+  const r = await craftItem(bot, { name: 'shield', count: 1, _sleep: fast });
+  assert.strictEqual(r.ok, false);
+  await new Promise((res) => setTimeout(res, 30));
+  assert.deepStrictEqual(inv(bot), { oak_planks: 5, iron_ingot: 1 });
+  assert.strictEqual(bot.currentWindow || null, null);
+});
