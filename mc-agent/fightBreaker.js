@@ -12,6 +12,9 @@
 // une petite machine à état sans horloge propre (le temps est toujours passé en argument).
 
 const FIGHT_GROUP_MIN_HP = 18;     // ≥ 2 hostiles : on n'engage qu'à 18 PV ou plus
+// ARMURÉ (26/10) : en armure de fer complète, un groupe de zombies se combat jusqu'à 10 PV — fuir à 17,8 PV
+// une horde de 4 qui court aussi vite a tué NethBot2 4 fois en 4 min (`fight_refused low_hp` puis rattrapé).
+const FIGHT_GROUP_MIN_HP_ARMORED = 10;
 const FIGHT_SOLO_MIN_HP = 12;      // 1 hostile : on n'engage pas sous 12 PV
 const ABORT_DROP_HP = 6;           // chute de PV qui déclenche le disjoncteur…
 const ABORT_WINDOW_MS = 4000;      // …sur cette fenêtre glissante
@@ -72,10 +75,10 @@ function isZombieDuel({ names, attackDamage } = {}) {
  * PUR — règle d'ENGAGEMENT selon les PV et le nombre d'hostiles. PV ou nombre inconnus → autorisé
  * (rétro-compat : on ne refuse que sur une donnée lue).
  */
-function engageAllowedByHp({ health, hostiles, duel } = {}) {
+function engageAllowedByHp({ health, hostiles, duel, armored } = {}) {
   if (!_num(health) || !_num(hostiles) || hostiles < 1) return true;
   if (duel) return health >= DUEL_MIN_HP;
-  if (hostiles >= 2) return health >= FIGHT_GROUP_MIN_HP;
+  if (hostiles >= 2) return health >= (armored === true ? FIGHT_GROUP_MIN_HP_ARMORED : FIGHT_GROUP_MIN_HP);
   return health >= FIGHT_SOLO_MIN_HP;
 }
 
@@ -186,7 +189,7 @@ function createFightBreaker() {
     noteFlee({ t, pos, fleeOk, reset: true, health });
   }
 
-  function canEngage({ t, pos, health, hostiles, nearestDist, duel, lastStand } = {}) {
+  function canEngage({ t, pos, health, hostiles, nearestDist, duel, lastStand, armored } = {}) {
     if (lastStand) return { ok: true, cornered: true, reason: 'last_stand' };
     const sinceFleeMs = flee && _num(flee.t) && _num(t) ? t - flee.t : null;
     const fleeRecent = sinceFleeMs != null && sinceFleeMs >= 0 && sinceFleeMs <= REENGAGE_COOLDOWN_MS;
@@ -198,7 +201,7 @@ function createFightBreaker() {
     }
     if (_num(t) && t < corneredUntil) return { ok: true, cornered: true, reason: 'cornered' };
     if (!reengageAllowed({ now: t, abortedAt, cornered: false })) return { ok: false, cornered: false, reason: 'cooldown' };
-    if (!engageAllowedByHp({ health, hostiles, duel })) return { ok: false, cornered: false, reason: 'low_hp' };
+    if (!engageAllowedByHp({ health, hostiles, duel, armored })) return { ok: false, cornered: false, reason: 'low_hp' };
     return { ok: true, cornered: false, reason: null };
   }
 
@@ -216,6 +219,6 @@ function createFightBreaker() {
 module.exports = {
   engageAllowedByHp, isZombieDuel, isLoneZombieContact, LAST_STAND_REACH, LAST_STAND_MIN_DAMAGE, ZOMBIE_FAMILY, DUEL_MIN_HP, DUEL_MIN_DAMAGE, hpDrop, shouldAbortFight, isCornered, fleeLosing, reengageAllowed, createFightBreaker,
   OUTRUN_LOSS_HP, OUTRUN_AFTER_MS,
-  FIGHT_GROUP_MIN_HP, FIGHT_SOLO_MIN_HP, ABORT_DROP_HP, ABORT_WINDOW_MS, ABORT_FLOOR_HP,
+  FIGHT_GROUP_MIN_HP, FIGHT_GROUP_MIN_HP_ARMORED, FIGHT_SOLO_MIN_HP, ABORT_DROP_HP, ABORT_WINDOW_MS, ABORT_FLOOR_HP,
   REENGAGE_COOLDOWN_MS, CORNERED_AFTER_MS, CORNERED_MOVE, CORNERED_REACH, ABORT_MIN_GAP_MS,
 };

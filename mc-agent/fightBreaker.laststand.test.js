@@ -104,3 +104,10 @@ test('survivalTick : zombie à 6 blocs, épée, 4 PV → fuite (pas collé, règ
   const r = await survivalTick(bot, { fleeFrom: () => true, lavaNear: () => false, now: () => 6e9 });
   assert.strictEqual(r, 'flee');
 });
+
+test('engageAllowedByHp : en armure complète, groupe engagé dès 10 PV', () => {
+  const { engageAllowedByHp } = require('./fightBreaker');
+  assert.strictEqual(engageAllowedByHp({ health: 15, hostiles: 3 }), false);
+  assert.strictEqual(engageAllowedByHp({ health: 15, hostiles: 3, armored: true }), true);
+  assert.strictEqual(engageAllowedByHp({ health: 8, hostiles: 3, armored: true }), false);
+});

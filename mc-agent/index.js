@@ -13951,7 +13951,8 @@ function _fightSituation() {
 function _fightCanEngage() {
   const sit = _fightSituation();
   const p = bot.entity && bot.entity.position;
-  return _fightBreaker.canEngage({ t: Date.now(), pos: p ? { x: p.x, y: p.y, z: p.z } : null, health: bot.health, hostiles: sit.hostiles, nearestDist: sit.nearestDist, duel: sit.duel, lastStand: sit.lastStand });
+  return _fightBreaker.canEngage({ t: Date.now(), pos: p ? { x: p.x, y: p.y, z: p.z } : null, health: bot.health, hostiles: sit.hostiles, nearestDist: sit.nearestDist, duel: sit.duel, lastStand: sit.lastStand,
+    armored: (() => { try { return _wornArmor().size >= 4; } catch (e) { return false; } })() });
 }
 
 function _fightNoteFlee(ok) {
