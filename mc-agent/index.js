@@ -3248,7 +3248,9 @@ async function withCraftingTable(fn, opts = {}) {
   // de tables sur tout le parcours des bots (photo Massii 26/07).
   if (plan === 'use_existing') {
     const inner = lastFail && lastFail.reason ? ':' + lastFail.reason : '';
-    return { ok: false, reason: 'craft_failed:table_present' + inner };
+    // `err` (26/10) : le message de bot.craft remonte jusqu'à craft_fail_ctx — le bouclier échouait ×4
+    // avec 36 planches et 1 lingot en poche, sans que rien ne dise pourquoi.
+    return Object.assign({ ok: false, reason: 'craft_failed:table_present' + inner }, (lastFail && lastFail.err) ? { err: lastFail.err } : {});
   }
   // Table ABANDONNÉE en vue (une mort ou un timeout a coupé le cycle avant la reprise) : aller
   // la REPRENDRE plutôt que d'en fabriquer une neuve → le terrain se nettoie au lieu de se joncher.
