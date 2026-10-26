@@ -285,6 +285,8 @@ function installReflexes(bot, opts = {}) {
   const isDuel = typeof opts.isDuel === 'function' ? opts.isDuel : null;
   // DERNIER CARRÉ (25/10) : `isLastStand()` vrai = un seul hostile, zombie, à portée de coup. Absent → inchangé.
   const isLastStand = typeof opts.isLastStand === 'function' ? opts.isLastStand : null;
+  // PAS DE BOUCHÉE AU CONTACT (26/10) : `eatBlocked()` vrai = on se bat au contact (index.js). Absent → inchangé.
+  const eatBlocked = typeof opts.eatBlocked === 'function' ? opts.eatBlocked : null;
   const panicCooldownMs = opts.panicCooldownMs != null ? opts.panicCooldownMs : 8000;
   const defensiveCooldownMs = opts.defensiveCooldownMs != null ? opts.defensiveCooldownMs : 6000;
   let lastPanic = -Infinity;    // -∞ : le 1er panic n'est jamais bloqué par le cooldown
@@ -292,7 +294,14 @@ function installReflexes(bot, opts = {}) {
   let lastDefensive = -Infinity; // idem : 1er palier défensif jamais bloqué
   const react = () => {
     // manger : décision synchrone, ACTION après le délai de réaction humain.
-    act(() => { tryEat(bot).then((ate) => { if (ate) emit({ type: 'reflex', action: 'eat' }); }).catch(() => {}); });
+    // PAS DE BOUCHÉE AU CONTACT (26/10, eatSafe.combatEatBlocked via `eatBlocked()`) : 1,6 s sans frapper face
+    // à un zombie collé l'achevait (NethBot3, fer complet). Évalué APRÈS le délai de réaction (situation fraîche).
+    act(() => {
+      let blocked = false;
+      try { blocked = !!(eatBlocked && eatBlocked()); } catch (e) { blocked = false; }
+      if (blocked) return;
+      tryEat(bot).then((ate) => { if (ate) emit({ type: 'reflex', action: 'eat' }); }).catch(() => {});
+    });
     // PANIC WALL (Massii survie mobs) : PV critiques → en plus de fuir, se MURER (poser des
     // blocs autour) pour casser le contact mêlée et manger à l'abri. Cooldown panicCooldownMs (8 s
     // par défaut). Sous ATTAQUE SOUTENUE (les PV ont rebaissé depuis le dernier mur) on re-mure

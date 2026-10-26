@@ -23,7 +23,7 @@ const { fleeFrom, isFleeHostile } = require('./skills/fleeFrom');
 const { installOxygenGuard } = require('./oxygen');
 const { installReflexes, RANGED, DEFENSIVE_HEALTH, isFleeOnlyMob, FOODS, EMERGENCY_FOODS, tryEat, pickFood, eatWanted } = require('./reflexes');
 const { lowHpStep, craftBlockedAtLowHp, isLowHpSkip, lowHpTargetFor, LOWHP_RECOVERY_BUDGET_MS, LOWHP_FOOD_RUN_TTL_MS } = require('./lowhp');
-const { healEatWanted, eatEffective, itemCount, noEffectBackoffMs, eatLockWaitMs, cookFirstWhenHurt, EAT_LOCK_MS, MAX_HEAL_BITES } = require('./eatSafe');
+const { healEatWanted, eatEffective, itemCount, noEffectBackoffMs, eatLockWaitMs, cookFirstWhenHurt, EAT_LOCK_MS, MAX_HEAL_BITES, combatEatBlocked, COMBAT_EAT_REACH } = require('./eatSafe');
 const { decideReaction } = require('./triggers');
 const { loadCommands, isAllowed, buildCommandDocs } = require('./commands');
 const { loadPolicy, isTrusted, parseTpRequest, parseTradeRequest, gateDecision, buildTrustDocs } = require('./trust');
@@ -155,11 +155,11 @@ const { recordWorkStuck } = require('./workStuck'); // chantier menant à une im
 const { lookIsUnsafe, wrapLook, creepyIndex, angerReason, hurtCulprit, endermanResponse } = require('./enderman');
 const { descentFoodGate, undergroundFoodTripDue, foodGateLoad } = require('./foodGate');
 const { noteDropAhead, turnYaw, shiftTarget } = require('./dropAhead');
-const { canDealWith, attackDamage, boldFightAdvised } = require('./survival');
+const { canDealWith, attackDamage, armorPieces, boldFightAdvised } = require('./survival');
 const { fleeTarget } = require('./skills/fleeFrom');
 const { shieldItem, shieldStance, shieldAction } = require('./shieldGuard');
 const { decideSkeletonResponse, findCoverCell, zigzagSide, shooterSees, rushStopReason, eatDuringRush, callerFromStack, rushRearmWanted, rushEquipBlocked } = require('./skeletonResponse');
-const { createFightBreaker, isZombieDuel, isLoneZombieContact } = require('./fightBreaker');
+const { createFightBreaker, isZombieDuel, isLoneZombieContact, isArmoredLoneZombie, ARMORED_LONE_CREEPER_DIST } = require('./fightBreaker');
 // SYSTÈME À 3 HOMES (Massii 27/07) : safe = LA BASE, work = le chantier courant, death = la dette
 // de mort. Le serveur n'autorise que 3 homes et le code en posait 4 → un /sethome échouait EN
 // SILENCE sur chaque bot (bug prouvé world_mn5). Voir homes.js.
@@ -13274,6 +13274,8 @@ async function onSpawn() {
       // DUEL CONTRE UN ZOMBIE (23/10) : mineurs seulement (le cartographe garde sa fuite par défaut).
       isDuel: () => !IS_MAPPER && _fightBreakerWired && _fightSituation().duel,
       isLastStand: () => !IS_MAPPER && _fightBreakerWired && _fightSituation().lastStand,
+      // PAS DE BOUCHÉE AU CONTACT (26/10, eatSafe.combatEatBlocked) : muré dans l'abri → on mange quand même.
+      eatBlocked: () => _combatEatHeld('reflex', { sealed: shelterHoldNow() }),
       // DÉLAI DE RÉACTION humain sur les réflexes (anti aimbot 0 ms / anti-ban) — TOUJOURS actif
       // (sécurité, pas seulement en humanize) : ~300 ms par défaut (les captures ne mesurent pas
       // encore reaction.*). Coût nul sur le minage (ce n'est pas un réflexe). Cf. paquet 1.
@@ -13926,6 +13928,7 @@ async function sweepFoodDrop() {
 function _fightSituation() {
   let hostiles = 0;
   let nearestDist = null;
+  let creeperNear = false;
   const names = [];
   try {
     const list = nearbyHostiles(bot, 10);
@@ -13937,7 +13940,8 @@ function _fightSituation() {
       if (me) {
         const d = Math.hypot(h.position.x - me.x, h.position.y - me.y, h.position.z - me.z);
         if (Number.isFinite(d) && (nearestDist == null || d < nearestDist)) nearestDist = d;
-      }
+        if (h.name === 'creeper' && !(d > (typeof ARMORED_LONE_CREEPER_DIST === 'number' ? ARMORED_LONE_CREEPER_DIST : 7))) creeperNear = true;
+      } else if (h.name === 'creeper') creeperNear = true;
     }
   } catch (e) { /* lecture best-effort */ }
   // DUEL CONTRE UN ZOMBIE (23/10, fightBreaker.isZombieDuel) : un seul hostile (creeper compris), de la
@@ -13947,7 +13951,17 @@ function _fightSituation() {
   // DERNIER CARRÉ (25/10, fightBreaker.isLoneZombieContact) : zombie seul et collé → on finit le combat.
   let lastStand = false;
   try { lastStand = isLoneZombieContact({ names, nearestDist, attackDamage: attackDamage(bot) }); } catch (e) { lastStand = false; }
-  return { hostiles, nearestDist, duel, lastStand };
+  // ARMURÉ (26/10, fightBreaker.isArmoredLoneZombie) : ≥ 3 pièces + arme contre UN zombie → pas d'abandon
+  // (NethBot3 en fer complet : `fight_aborted reason:drop` à 11,7 PV, fuite, mort 3 s plus tard). Jamais
+  // pour un cartographe ; un creeper à ≤ 7 blocs garde la priorité.
+  let armoredLone = false;
+  if (typeof IS_MAPPER === 'undefined' || !IS_MAPPER) {
+    try { armoredLone = isArmoredLoneZombie({ names, armorPieces: armorPieces(bot), attackDamage: attackDamage(bot), creeperNear }); }
+    catch (e) { armoredLone = false; }
+  }
+  let atk = null;
+  try { atk = attackDamage(bot); } catch (e) { atk = null; }
+  return { hostiles, nearestDist, duel, lastStand: lastStand || armoredLone, armoredLone, names, atk };
 }
 
 function _fightCanEngage() {
@@ -14000,7 +14014,8 @@ function _fightBreakerCheck() {
   const p = bot.entity && bot.entity.position;
   _fightBreaker.noteAbort({ t, pos: p ? { x: p.x, y: p.y, z: p.z } : null, fleeOk, health: bot.health });
   emit({ type: 'fight_aborted', hp: Math.round((bot.health || 0) * 10) / 10, drop: Math.round(r.drop * 10) / 10,
-    hostiles: sit.hostiles, reason: r.reason, flee: fleeOk, y: p ? Math.round(p.y) : null, duel: sit.duel });
+    hostiles: sit.hostiles, reason: r.reason, flee: fleeOk, y: p ? Math.round(p.y) : null, duel: sit.duel,
+    names: sit.names, atk: sit.atk, armored_lone: sit.armoredLone });
 }
 
 function wireFightBreaker() {
@@ -14762,7 +14777,39 @@ let _eatBackoffUntil = 0;
  * UNE bouchée, sous verrou (bot._eatLockUntil : equip/dig étrangers attendent, cf. wireEatLock), VÉRIFIÉE.
  * Rend true seulement si elle a eu lieu. Émet ate (+ heal_eat si blessé) ou eat_failed.
  */
-async function eatBite(food, tag) {
+// PAS DE BOUCHÉE AU CONTACT (26/10, eatSafe.combatEatBlocked) — NIVEAU MODULE (piège #56). Vrai = on retient la
+// bouchée : un hostile à ≤ 3,5 blocs et un coup possible (ou PV > 4). Trace `eat_held_combat` au plus / 5 s.
+let _combatEatHeldEmitAt = -Infinity;
+function _combatEatHeld(tag, { sealed = false } = {}) {
+  let nearestDist = null;
+  try {
+    const me = bot.entity && bot.entity.position;
+    if (me) {
+      for (const h of nearbyHostiles(bot, COMBAT_EAT_REACH + 1)) {
+        if (!h || !h.position) continue;
+        const d = Math.hypot(h.position.x - me.x, h.position.y - me.y, h.position.z - me.z);
+        if (Number.isFinite(d) && (nearestDist == null || d < nearestDist)) nearestDist = d;
+      }
+    }
+  } catch (e) { nearestDist = null; }
+  let atk = 0;
+  try { atk = attackDamage(bot); } catch (e) { atk = 0; }
+  const held = combatEatBlocked({ nearestDist, health: bot.health, attackDamage: atk, sealed });
+  if (held) {
+    const t = Date.now();
+    if (t - _combatEatHeldEmitAt >= 5000) {
+      _combatEatHeldEmitAt = t;
+      emit({ type: 'eat_held_combat', via: tag, hp: Math.round((bot.health || 0) * 10) / 10, food: bot.food,
+        dist: nearestDist != null ? Math.round(nearestDist * 10) / 10 : null });
+    }
+  }
+  return held;
+}
+
+async function eatBite(food, tag, { sealed = false } = {}) {
+  // Combat au contact : pas un échec (ni streak ni backoff), on retente au tick suivant.
+  // typeof : les bacs à sable vm des tests extraient eatBite seul.
+  if (typeof _combatEatHeld === 'function' && _combatEatHeld(tag, { sealed })) return false;
   const foodBefore = bot.food;
   const hpBefore = bot.health;
   const hurt = healEatWanted({ health: bot.health, food: bot.food });
@@ -14848,7 +14895,7 @@ async function hungerNetTick(tag = 'net', { sealed = false } = {}) {
       }
       _rawDeferSince = 0;
       _hungerBusy = true;
-      if (!(await eatBite(food, tag))) break;
+      if (!(await eatBite(food, tag, { sealed }))) break;
       ate = true;
     }
   } catch (e) { /* watchdog : ne crash jamais */ }

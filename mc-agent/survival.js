@@ -10,7 +10,7 @@ const { FOODS, FLEE_ONLY_ALWAYS, FLEE_ONLY_LOWHP, FLEE_ONLY_LOWHP_THRESHOLD, isF
 const { bestWeapon } = require('./tools');
 const { creeperPlan } = require('./creeper');
 const { HUNT_MAX_DY } = require('./huntReach');
-const { engageAllowedByHp, isZombieDuel, isLoneZombieContact, DUEL_MIN_HP } = require('./fightBreaker');
+const { engageAllowedByHp, isZombieDuel, isLoneZombieContact, isArmoredLoneZombie, DUEL_MIN_HP } = require('./fightBreaker');
 
 const SWARM_COUNT = 3;   // ≥3 hostiles = submergé → fuite (AVEC armure)
 const LOW_HEALTH = 8;    // PV ≤ 8 (4 cœurs) → fuite (AVEC armure)
@@ -180,11 +180,25 @@ const BOLD_MIN_HEALTH = 8;     // PV ≤ 8 → la règle « on gère le nombre �
 const FIGHT_COUNT_RADIUS = 8;  // hostiles comptés pour canDealWith : non-creeper, ≤ 8 blocs, visibles
 
 /** Dégât plein de la meilleure arme en poche (0 sans arme). (pur, testable) */
+// DIVERGENCE `duel` (26/10) : bot.equip(nourriture) déplace l'épée par clics de fenêtre — un instant elle
+// est sur le CURSEUR (inventory.selectedItem), hors de items() ; un event `health` à cet instant lisait 0
+// (duel:false, dernier carré:false → disjoncteur « drop »). On compte aussi le curseur et la main.
 function attackDamage(bot) {
-  const items = (bot && bot.inventory && typeof bot.inventory.items === 'function') ? bot.inventory.items() : [];
+  const inv = bot && bot.inventory;
+  const items = (inv && typeof inv.items === 'function') ? (inv.items() || []).slice() : [];
+  try { if (inv && inv.selectedItem) items.push(inv.selectedItem); } catch (e) {}
+  try { if (bot && bot.heldItem) items.push(bot.heldItem); } catch (e) {}
   let best = 0;
-  for (const it of items || []) { const d = ATTACK_DAMAGE[it && it.name]; if (d && d > best) best = d; }
+  for (const it of items) { const d = ATTACK_DAMAGE[it && it.name]; if (d && d > best) best = d; }
   return best;
+}
+/** Nombre de pièces d'armure portées (slots 5-8). (pur, testable) */
+function armorPieces(bot) {
+  try {
+    const slots = bot.inventory && bot.inventory.slots;
+    if (!slots) return 0;
+    return slots.slice(5, 9).filter((it) => it && it.name).length;
+  } catch (e) { return 0; }
 }
 /** canDealWith = ceil(armure*3.6/20 + (1+dégât)*0.8) + 1 — nb de mobs qu'on « gère ». (pur) */
 function canDealWith(armorPts, attackDmg) {
@@ -323,7 +337,11 @@ async function survivalTick(bot, deps = {}) {
   // Duel : TOUS les hostiles proches (creeper calme compris — un creeper dans les parages n'est pas un duel).
   const duel = isZombieDuel({ names: all.filter(Boolean).map((h) => h.name), attackDamage: attackDamage(bot) });
   // Dernier carré (25/10) : zombie seul, creeper calme compris dans le décompte, déjà à portée de coup.
-  const lastStand = isLoneZombieContact({ names: all.filter(Boolean).map((h) => h.name), nearestDist, attackDamage: attackDamage(bot) });
+  // ARMURÉ (26/10, fightBreaker.isArmoredLoneZombie) : ≥ 3 pièces + arme contre UN zombie → même régime, sans
+  // exiger le contact. Un creeper calme et loin (hors `hasCreeper`) ne l'exclut pas ; un creeper qui menace oui.
+  const _names = all.filter(Boolean).map((h) => h.name);
+  const lastStand = isLoneZombieContact({ names: _names, nearestDist, attackDamage: attackDamage(bot) }) ||
+    isArmoredLoneZombie({ names: _names, armorPieces: armorPieces(bot), attackDamage: attackDamage(bot), creeperNear: hasCreeper });
   const decision = combatDecision({ health: bot.health, hostileCount: hostiles.length, armored: isArmored(bot), hasCreeper, lavaNear, preferFlee: !!deps.preferFlee, nearestDist, fleeOnly, capability, food: bot.food, canDealWith: cdw, fightCount: fighters.length, night, duel, lastStand });
   // ABRI TENU (live 22/10, NethBot1 session 206) : enterré dans sa case, ni fuite ni poursuite pvp — elles
   // le sortaient du trou en pleine nuit. On frappe SUR PLACE ce qui est à portée de coup (deps.strikeInPlace).
@@ -402,7 +420,7 @@ async function survivalTick(bot, deps = {}) {
 module.exports = {
   combatDecision, isArmored, nearbyHostiles, hasFood, needHunt, nearestPassive, eatAny, survivalTick, lavaNearby,
   hasFleeOnly, armorPoints, weaponDamage, combatCapability,
-  canDealWith, attackDamage, boldFightAdvised, BOLD_MIN_HEALTH, BOLD_NIGHT_MIN_HEALTH, FIGHT_COUNT_RADIUS, ATTACK_DAMAGE,
+  canDealWith, attackDamage, armorPieces, boldFightAdvised, BOLD_MIN_HEALTH, BOLD_NIGHT_MIN_HEALTH, FIGHT_COUNT_RADIUS, ATTACK_DAMAGE,
   SWARM_COUNT, LOW_HEALTH, SWARM_UNARMORED, LOW_HEALTH_UNARMORED, HUNT_HUNGER, EAT_HUNGER, CRITICAL_HUNGER,
   RAW_FOODS, PASSIVE_FOOD_MOBS, NEUTRAL_NO_PROVOKE,
   FLEE_ONLY_ALWAYS, FLEE_ONLY_LOWHP, FLEE_ONLY_LOWHP_THRESHOLD, REGEN_FOOD, NO_REGEN_HP_MARGIN,

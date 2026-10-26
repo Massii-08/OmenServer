@@ -46,8 +46,12 @@ function sandbox(o = {}) {
     Date: o.now ? { now: () => o.now } : Date,
     withTimeout: (p) => p,
     _nearestThreatDist: () => (o.threat == null ? null : o.threat),
+    // PAS DE BOUCHÉE AU CONTACT (26/10) : `combat` = [{name, d}] hostiles autour, `atk` = dégât de l'arme.
+    nearbyHostiles: () => (o.combat || []).map((h) => ({ name: h.name, position: { x: h.d, y: 0, z: 0 } })),
+    attackDamage: () => (o.atk == null ? 6 : o.atk),
+    combatEatBlocked: E.combatEatBlocked, COMBAT_EAT_REACH: E.COMBAT_EAT_REACH,
     bot: {
-      food: o.food, health: o.health,
+      food: o.food, health: o.health, entity: { position: { x: 0, y: 0, z: 0 } },
       pvp: { target: o.fighting ? { name: 'zombie' } : null },
       inventory: { items: () => sb.inv.map((i) => ({ name: i.name, count: i.count })) },
       stopDigging() {},
@@ -66,7 +70,7 @@ function sandbox(o = {}) {
   };
   vm.createContext(sb);
   vm.runInContext("'use strict';\n" + [letSrc('_hungerBusy'), letSrc('_rawDeferSince'), letSrc('_eatNoEffectStreak'),
-    letSrc('_eatBackoffUntil'), fnSrc('eatBite'), fnSrc('hungerNetTick'),
+    letSrc('_eatBackoffUntil'), ...(o.combat ? [letSrc('_combatEatHeldEmitAt'), fnSrc('_combatEatHeld')] : []), fnSrc('eatBite'), fnSrc('hungerNetTick'),
     'this.hungerNetTick = hungerNetTick;'].join('\n'), sb);
   return sb;
 }
@@ -245,4 +249,30 @@ test('index.js : verrou de bouchée câblé (equip/dig étrangers attendent, aur
   assert.match(SRC, /try \{ wireEatLock\(\); \}/, 'branché au spawn, tous rôles');
   assert.match(SRC, /eating: !!bot\.usingHeldItem \|\| eatLockActive\(\)/, 'l aura ne rengaine pas pendant la bouchée');
   assert.match(SRC, /isLowHpSkip\(r\.reason\)/, 'raison préfixée → récupération');
+});
+
+// ─── PAS DE BOUCHÉE AU CONTACT (26/10) : NethBot3 en fer complet mangeait collé à un zombie et mourait ───
+test('filet : zombie à 2,3 blocs, armé → pas de bouchée, ni échec ni backoff, trace eat_held_combat', async () => {
+  const sb = sandbox({ food: 6, health: 11, items: ['beef'], combat: [{ name: 'zombie', d: 2.3 }] });
+  assert.strictEqual(await sb.hungerNetTick(), false);
+  assert.deepStrictEqual(sb.eaten, []);
+  assert.ok(!sb.events.some((e) => e.type === 'eat_failed'));
+  const h = sb.events.find((e) => e.type === 'eat_held_combat');
+  assert.ok(h);
+  assert.strictEqual(h.dist, 2.3);
+});
+
+test('filet : PV 3, aucune arme, zombie collé → il mange (dernière chance)', async () => {
+  const sb = sandbox({ food: 6, health: 3, items: ['beef'], combat: [{ name: 'zombie', d: 1.5 }], atk: 0 });
+  assert.strictEqual(await sb.hungerNetTick(), true);
+});
+
+test('filet : muré dans l abri, zombie collé → il mange', async () => {
+  const sb = sandbox({ food: 6, health: 11, items: ['beef'], combat: [{ name: 'zombie', d: 1.5 }] });
+  assert.strictEqual(await sb.hungerNetTick('shelter', { sealed: true }), true);
+});
+
+test('filet : zombie à 5 blocs → bouchée normale', async () => {
+  const sb = sandbox({ food: 6, health: 11, items: ['beef'], combat: [{ name: 'zombie', d: 5 }] });
+  assert.strictEqual(await sb.hungerNetTick(), true);
 });

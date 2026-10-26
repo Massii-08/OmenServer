@@ -52,7 +52,30 @@ const LAST_STAND_REACH = 3.5;      // = CORNERED_REACH : l'assaillant frappe enc
 // la seule chance — ce cas garde la règle d'origine (test survival_duel « zombie à 9 PV SANS arme → fuite »).
 const LAST_STAND_MIN_DAMAGE = 4;
 
+// ARMURÉ CONTRE UN ZOMBIE SEUL (26/10, itération 3 zéro→fer) : NethBot3 en fer COMPLET, épée en main,
+// `survival fight zombie duel:true` → `fight_aborted hp:11.7 drop:6.1 hostiles:1 reason:drop duel:false`
+// → fuite → mort 3 s plus tard. Un zombie court aussi vite qu'un bot qui fuit et frappe dans le dos ; en
+// armure (≥ 3 pièces) ses coups ne valent plus que ~1,5 PV : finir le combat domine la fuite. Même régime
+// que le dernier carré (aucun abandon, engagement permis), sans exiger le contact ni une arme de pierre.
+// Creeper proche, lave et mode cartographe gardent la priorité (traités par les appelants AVANT).
+const ARMORED_LONE_MIN_PIECES = 3;
+const ARMORED_LONE_CREEPER_DIST = 7;   // creeper à ≤ 7 blocs (gonfle / calme collé) : il décide, pas le zombie
+
 function _num(x) { return typeof x === 'number' && Number.isFinite(x); }
+
+/**
+ * PUR — armuré (≥ 3 pièces) et armé (≥ épée de bois) contre UN seul zombie ? `names` = TOUS les hostiles
+ * proches, creeper compris ; un creeper dans la liste exclut le cas sauf si `creeperNear === false`
+ * (l'appelant a vérifié qu'il est loin et calme).
+ */
+function isArmoredLoneZombie({ names, armorPieces, attackDamage, creeperNear } = {}) {
+  if (!Array.isArray(names)) return false;
+  if (names.includes('creeper') && creeperNear !== false) return false;
+  const others = names.filter((n) => n !== 'creeper');
+  if (others.length !== 1 || !ZOMBIE_FAMILY.has(others[0])) return false;
+  if (!_num(armorPieces) || armorPieces < ARMORED_LONE_MIN_PIECES) return false;
+  return _num(attackDamage) && attackDamage >= LAST_STAND_MIN_DAMAGE;
+}
 
 /** PUR — un seul hostile proche (creeper compris), de la famille zombie, à portée de coup, et une arme ? */
 function isLoneZombieContact({ names, nearestDist, attackDamage } = {}) {
@@ -217,7 +240,7 @@ function createFightBreaker() {
 }
 
 module.exports = {
-  engageAllowedByHp, isZombieDuel, isLoneZombieContact, LAST_STAND_REACH, LAST_STAND_MIN_DAMAGE, ZOMBIE_FAMILY, DUEL_MIN_HP, DUEL_MIN_DAMAGE, hpDrop, shouldAbortFight, isCornered, fleeLosing, reengageAllowed, createFightBreaker,
+  engageAllowedByHp, isZombieDuel, isLoneZombieContact, isArmoredLoneZombie, ARMORED_LONE_MIN_PIECES, ARMORED_LONE_CREEPER_DIST, LAST_STAND_REACH, LAST_STAND_MIN_DAMAGE, ZOMBIE_FAMILY, DUEL_MIN_HP, DUEL_MIN_DAMAGE, hpDrop, shouldAbortFight, isCornered, fleeLosing, reengageAllowed, createFightBreaker,
   OUTRUN_LOSS_HP, OUTRUN_AFTER_MS,
   FIGHT_GROUP_MIN_HP, FIGHT_GROUP_MIN_HP_ARMORED, FIGHT_SOLO_MIN_HP, ABORT_DROP_HP, ABORT_WINDOW_MS, ABORT_FLOOR_HP,
   REENGAGE_COOLDOWN_MS, CORNERED_AFTER_MS, CORNERED_MOVE, CORNERED_REACH, ABORT_MIN_GAP_MS,

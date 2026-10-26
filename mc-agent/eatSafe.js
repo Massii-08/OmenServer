@@ -24,6 +24,15 @@ const EAT_LOCK_MS = 2600;        // une bouchée = 1,6 s (+ equip + latence) : p
 const COOK_FIRST_MIN_HP = 10;    // blessé mais pas en danger : cuire d'abord SI le bot est libre
 const NO_EFFECT_BACKOFF_MS = [0, 15000, 30000, 60000];   // après 1, 2, 3+ bouchées sans effet
 
+// PAS DE BOUCHÉE AU CONTACT (26/10, itération 3 zéro→fer) : NethBot3 en fer complet — `reflex eat` ×6 en
+// 20 s, `reflex fight zombie duel:true`, `reflex eat`, puis `fight_last_stand hp:3.2 dist:2.3` et mort.
+// Une bouchée = 1,6 s sans frapper, le zombie collé frappe toutes les secondes. Un joueur finit le combat
+// (ou recule), PUIS mange. Exceptions : muré dans l'abri (la paroi arrête les coups), ou PV ≤ 4 sans
+// aucun coup possible (pas d'arme, ou cible hors de portée de coup) — la bouchée reste la seule chance.
+const COMBAT_EAT_REACH = 3.5;      // hostile à ≤ 3,5 blocs : on est au corps-à-corps
+const COMBAT_EAT_STRIKE = 3;       // portée de coup d'un joueur
+const COMBAT_EAT_DESPERATE_HP = 4; // PV ≤ 4 et aucun coup possible : manger quand même
+
 const n = (v) => (typeof v === 'number' && Number.isFinite(v) ? v : null);
 
 /** PUR — blessé ET la faim coupe la régénération : il faut manger pour se soigner. */
@@ -71,7 +80,19 @@ function cookFirstWhenHurt({ health, canCook, free } = {}) {
   return !!canCook && !!free && h != null && h >= COOK_FIRST_MIN_HP;
 }
 
+/** PUR — faut-il retenir la bouchée parce qu'on se bat au contact ? Distance inconnue → non. */
+function combatEatBlocked({ nearestDist, health, attackDamage, sealed } = {}) {
+  if (sealed) return false;
+  const d = n(nearestDist);
+  if (d == null || d > COMBAT_EAT_REACH) return false;
+  const h = n(health);
+  const canStrike = (n(attackDamage) || 0) > 0 && d <= COMBAT_EAT_STRIKE;
+  if (h != null && h <= COMBAT_EAT_DESPERATE_HP && !canStrike) return false;
+  return true;
+}
+
 module.exports = {
+  COMBAT_EAT_REACH, COMBAT_EAT_STRIKE, COMBAT_EAT_DESPERATE_HP, combatEatBlocked,
   HEAL_HP, REGEN_TARGET, MAX_HEAL_BITES, EAT_LOCK_MS, COOK_FIRST_MIN_HP, NO_EFFECT_BACKOFF_MS,
   healEatWanted, eatEffective, itemCount, noEffectBackoffMs, eatLockWaitMs, cookFirstWhenHurt,
 };

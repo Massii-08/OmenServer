@@ -42,3 +42,33 @@ test('cookFirstWhenHurt : cuire d abord seulement si possible, libre, et PV ≥ 
   assert.strictEqual(E.cookFirstWhenHurt({ health: 12, canCook: true, free: false }), false, 'occupé : pas d attente');
   assert.strictEqual(E.cookFirstWhenHurt({ health: 12, canCook: false, free: true }), false);
 });
+
+// ─── PAS DE BOUCHÉE AU CONTACT (26/10) ─────────────────────────────────────────────────────────────
+// NethBot3 en fer complet : `reflex eat` ×6 en 20 s, `reflex fight zombie`, `reflex eat`, puis
+// `fight_last_stand hp:3.2` et mort — pendant la bouchée il ne frappe pas, le zombie collé l'achève.
+const { combatEatBlocked, COMBAT_EAT_REACH } = require('./eatSafe');
+
+test('combatEatBlocked : hostile à ≤ 3,5 blocs, armé → pas de bouchée', () => {
+  assert.equal(COMBAT_EAT_REACH, 3.5);
+  assert.equal(combatEatBlocked({ nearestDist: 2.3, health: 11, attackDamage: 6 }), true);
+  assert.equal(combatEatBlocked({ nearestDist: 3.5, health: 18, attackDamage: 6 }), true);
+});
+
+test('combatEatBlocked : hostile plus loin ou absent → on mange', () => {
+  assert.equal(combatEatBlocked({ nearestDist: 3.6, health: 11, attackDamage: 6 }), false);
+  assert.equal(combatEatBlocked({ nearestDist: null, health: 11, attackDamage: 6 }), false);
+  assert.equal(combatEatBlocked({ health: 11, attackDamage: 6 }), false);
+});
+
+test('combatEatBlocked : muré dans l\'abri → on mange même au contact', () => {
+  assert.equal(combatEatBlocked({ nearestDist: 1.5, health: 11, attackDamage: 6, sealed: true }), false);
+});
+
+test('combatEatBlocked : PV ≤ 4 et aucun coup possible → on mange', () => {
+  assert.equal(combatEatBlocked({ nearestDist: 2, health: 4, attackDamage: 0 }), false);      // pas d'arme
+  assert.equal(combatEatBlocked({ nearestDist: 3.3, health: 3, attackDamage: 6 }), false);    // hors portée de coup
+  // PV ≤ 4 mais armé ET à portée de coup : on finit le combat
+  assert.equal(combatEatBlocked({ nearestDist: 2, health: 3.2, attackDamage: 6 }), true);
+  // pas d'arme mais PV > 4 : on recule / on frappe, on ne mange pas
+  assert.equal(combatEatBlocked({ nearestDist: 2, health: 9, attackDamage: 0 }), true);
+});

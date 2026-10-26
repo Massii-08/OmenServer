@@ -19,7 +19,7 @@ function grab(re, label) {
 const fnSrc = (name) => grab(new RegExp(`^(?:async )?function ${name}\\([^)]*\\) \\{[\\s\\S]*?^\\}$`, 'm'), `function ${name}`);
 const NAMES = ['_fightSituation', '_fightCanEngage', '_fightNoteFlee', 'fightGateDeps', '_fightInProgress', '_fightBreakerCheck', 'wireFightBreaker'];
 
-function setup({ health = 20, hostiles = [] } = {}) {
+function setup({ health = 20, hostiles = [], extra = {} } = {}) {
   const bot = new EventEmitter();
   bot.health = health;
   bot.entity = { position: { x: 0, y: -6, z: 0 } };
@@ -38,6 +38,7 @@ function setup({ health = 20, hostiles = [] } = {}) {
     nearbyHostiles: () => hostiles, fleeFrom: () => { fled++; return true; },
     // porte squelette (22/10) : les fuites du disjoncteur passent par skeletonFirstFlee
     skeletonFirstFlee: () => { fled++; return true; },
+    ...extra,
   };
   vm.createContext(sb);
   vm.runInContext(`'use strict';
@@ -108,4 +109,67 @@ test('wireFightBreaker : garde le pvp.attack d\'origine pour la charge sur squel
   assert.strictEqual(typeof h.sb.api.raw, 'function');
   h.sb.api.raw(zombie(3));                  // 9 PV : la porte refuserait, l'original attaque
   assert.deepStrictEqual(h.attacked, ['zombie']);
+});
+
+// ARMURÉ CONTRE UN ZOMBIE SEUL (26/10) : NethBot3 en fer complet, épée de fer, `fight_aborted hp:11.7
+// drop:6.1 hostiles:1 reason:drop duel:false` → fuite → mort 3 s plus tard. En armure, plus d'abandon.
+const FB = require('./fightBreaker');
+const SV = require('./survival');
+function armoredExtra(pieces = 4, items = [{ name: 'iron_sword' }]) {
+  const slots = [];
+  ['iron_helmet', 'iron_chestplate', 'iron_leggings', 'iron_boots'].slice(0, pieces).forEach((n, i) => { slots[5 + i] = { name: n }; });
+  return { slots, items };
+}
+function armoredSetup(health, hostiles, pieces, items) {
+  const h = setup({ health, hostiles, extra: {
+    isZombieDuel: FB.isZombieDuel, isLoneZombieContact: FB.isLoneZombieContact, isArmoredLoneZombie: FB.isArmoredLoneZombie,
+    ARMORED_LONE_CREEPER_DIST: FB.ARMORED_LONE_CREEPER_DIST, attackDamage: SV.attackDamage, armorPieces: SV.armorPieces,
+  } });
+  const a = armoredExtra(pieces, items);
+  h.bot.inventory = { slots: a.slots, items: () => a.items };
+  return h;
+}
+
+test('armuré (fer complet) + épée, zombie seul à 5 blocs : chute 17,8 → 11,7 → PAS d\'abandon', () => {
+  const z = zombie(5);
+  const h = armoredSetup(17.8, [z], 4);
+  h.sb.api.wireFightBreaker();
+  h.bot.pvp.attack(z);
+  h.bot.health = 11.7; h.bot.emit('health');
+  assert.ok(!h.events.some((e) => e.type === 'fight_aborted'), 'aucun abandon');
+  assert.strictEqual(h.stops, 0);
+  assert.strictEqual(h.fled, 0);
+  // même sous le plancher de 10 : le combat continue
+  h.bot.health = 5; h.bot.emit('health');
+  assert.ok(!h.events.some((e) => e.type === 'fight_aborted'));
+});
+
+test('sans armure, même scène → abandon « drop » (inchangé) ; l\'event porte names/atk', () => {
+  const z = zombie(5);
+  const h = armoredSetup(17.8, [z], 0, []);
+  h.sb.api.wireFightBreaker();
+  h.bot.pvp.attack(z);
+  h.bot.health = 11.7; h.bot.emit('health');
+  const ab = h.events.find((e) => e.type === 'fight_aborted');
+  assert.ok(ab);
+  assert.strictEqual(ab.reason, 'drop');
+  assert.strictEqual(JSON.stringify(ab.names), '["zombie"]');
+  assert.strictEqual(ab.atk, 0);
+  assert.strictEqual(ab.armored_lone, false);
+});
+
+test('armuré mais creeper à 4 blocs : le creeper prime (abandon possible)', () => {
+  const z = zombie(5);
+  const c = { name: 'creeper', kind: 'Hostile mobs', position: { x: -4, y: -6, z: 0 } };
+  const h = armoredSetup(17.8, [z, c], 4);
+  h.sb.api.wireFightBreaker();
+  h.bot.pvp.attack(z);
+  h.bot.health = 9; h.bot.emit('health');
+  assert.ok(h.events.some((e) => e.type === 'fight_aborted'));
+});
+
+test('cartographe armuré : pas de dernier carré armuré', () => {
+  const h = armoredSetup(17.8, [zombie(5)], 4);
+  h.sb.IS_MAPPER = true;
+  assert.strictEqual(vm.runInContext('_fightSituation().armoredLone', h.sb), false);
 });
