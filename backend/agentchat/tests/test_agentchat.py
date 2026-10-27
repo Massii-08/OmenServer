@@ -199,7 +199,8 @@ def test_mcp_ping_and_tools_list(ac_dir):
     assert mcp(c, key, {"jsonrpc": "2.0", "id": 1, "method": "ping"}).json()["result"] == {}
     tools = mcp(c, key, {"jsonrpc": "2.0", "id": 2, "method": "tools/list"}).json()["result"]["tools"]
     names = sorted(t["name"] for t in tools)
-    assert names == ["envoyer_message", "lire_messages", "lire_tableau", "modifier_tableau"]
+    assert names == ["envoyer_document", "envoyer_message", "lire_document", "lire_messages",
+                     "lire_tableau", "lister_documents", "mes_pings", "modifier_tableau"]
     for t in tools:
         assert t["inputSchema"]["type"] == "object"
 
@@ -322,3 +323,389 @@ def test_other_roles_forbidden_everywhere(ac_dir, role):
     assert other.post("/api/agentchat/rooms", json={"room_id": "y", "name": "y"}).status_code == 403
     assert other.post("/api/agentchat/rooms/roblox/members", json={"name": "Z"}).status_code == 403
     assert other.post("/api/agentchat/rooms/roblox/members/%s/revoke" % mid).status_code == 403
+
+
+# ------------------------------------------------------------- documents
+
+import base64  # noqa: E402
+
+
+def upload(c, files, data=None, room_id="roblox"):
+    return c.post("/api/agentchat/rooms/%s/files" % room_id, files=files, data=data or {})
+
+
+def agent_upload(c, key, files, data=None):
+    headers = {"Authorization": "Bearer " + key} if key else {}
+    return c.post("/mcp/agentchat/fichiers", files=files, data=data or {}, headers=headers)
+
+
+def test_human_upload_and_download(ac_dir):
+    c = make_client()
+    setup_room(c)
+    content = b"<html><script>alert(1)</script></html>"
+    r = upload(c, {"file": ("rapport été.html", content, "text/html")}, {"text": "voilà"})
+    assert r.status_code == 200, r.text
+    msg = r.json()["message"]
+    assert msg["author"] == "massii (humain)" and msg["kind"] == "humain"
+    assert msg["text"] == "voilà"
+    att = msg["attachment"]
+    assert set(att) == {"id", "name", "size", "mime"}
+    assert att["name"] == "rapport été.html" and att["size"] == len(content)
+    assert att["mime"] == "text/html"
+    r = c.get("/api/agentchat/rooms/roblox/files/%s" % att["id"])
+    assert r.status_code == 200
+    assert r.content == content
+    assert r.headers["content-disposition"] == "attachment; filename*=UTF-8''rapport%20%C3%A9t%C3%A9.html"
+    assert r.headers["x-content-type-options"] == "nosniff"
+    # le message relu contient la pièce jointe
+    msgs = c.get("/api/agentchat/rooms/roblox/messages").json()["messages"]
+    assert msgs[-1]["attachment"]["id"] == att["id"]
+    # permissions
+    fdir = ac_dir / "files" / "roblox"
+    assert _mode(fdir) == 0o700 and _mode(ac_dir / "files") == 0o700
+    assert _mode(fdir / att["id"]) == 0o600
+    assert _mode(fdir / (att["id"] + ".json")) == 0o600
+    meta = json.loads((fdir / (att["id"] + ".json")).read_text(encoding="utf-8"))
+    assert meta["uploaded_by"] == "massii (humain)"
+    assert len(meta["sha256"]) == 64
+
+
+def test_upload_empty_text_and_reply(ac_dir):
+    c = make_client()
+    setup_room(c)
+    c.post("/api/agentchat/rooms/roblox/messages", json={"text": "envoie le fichier"})
+    r = upload(c, {"file": ("a.txt", b"abc", "text/plain")}, {"reply_to": "1"})
+    assert r.status_code == 200, r.text
+    assert r.json()["message"]["text"] == ""
+    assert r.json()["message"]["reply_to"] == 1
+    r = upload(c, {"file": ("a.txt", b"abc", "text/plain")}, {"reply_to": "pas un nombre"})
+    assert r.status_code == 400
+    r = upload(c, {"file": ("a.txt", b"abc", "text/plain")}, {"reply_to": "99"})
+    assert r.status_code == 400
+    # aucun document orphelin après un message refusé
+    assert len(list((ac_dir / "files" / "roblox").glob("*.json"))) == 1
+
+
+def test_upload_name_cleaned(ac_dir):
+    c = make_client()
+    setup_room(c)
+    r = upload(c, {"file": ("../../etc/passwd", b"x", "text/plain")})
+    assert r.status_code == 200
+    name = r.json()["message"]["attachment"]["name"]
+    assert "/" not in name and ".." not in name
+    assert store.clean_file_name("a\x00b\nc.txt") == "abc.txt"
+    assert store.clean_file_name("..") == "document"
+    assert store.clean_file_name("") == "document"
+    assert store.clean_file_name("x" * 300 + ".txt") == "x" * 120
+    assert store.clean_file_name("C:\\Users\\m\\pet.fbx") == "pet.fbx"
+
+
+def test_upload_empty_file_refused(ac_dir):
+    c = make_client()
+    setup_room(c)
+    r = upload(c, {"file": ("a.txt", b"", "text/plain")})
+    assert r.status_code == 400
+    r = c.post("/api/agentchat/rooms/roblox/files", data={"text": "x"})
+    assert r.status_code == 400
+
+
+def test_upload_too_big_413(ac_dir, monkeypatch):
+    monkeypatch.setattr(store, "MAX_FILE", 10)
+    c = make_client()
+    setup_room(c)
+    r = upload(c, {"file": ("a.bin", b"x" * 11, "application/octet-stream")})
+    assert r.status_code == 413
+    assert upload(c, {"file": ("a.bin", b"x" * 10, "application/octet-stream")}).status_code == 200
+
+
+def test_room_quota(ac_dir, monkeypatch):
+    monkeypatch.setattr(store, "MAX_ROOM_FILES", 25)
+    c = make_client()
+    setup_room(c)
+    assert upload(c, {"file": ("a.bin", b"x" * 20, "application/octet-stream")}).status_code == 200
+    r = upload(c, {"file": ("b.bin", b"x" * 6, "application/octet-stream")})
+    assert r.status_code == 400
+    assert "Quota" in r.json()["detail"]
+    assert upload(c, {"file": ("c.bin", b"x" * 5, "application/octet-stream")}).status_code == 200
+
+
+def test_download_invalid_or_missing(ac_dir):
+    c = make_client()
+    setup_room(c)
+    assert c.get("/api/agentchat/rooms/roblox/files/0123456789abcdef").status_code == 404
+    assert c.get("/api/agentchat/rooms/roblox/files/abc").status_code == 400
+    assert c.get("/api/agentchat/rooms/roblox/files/..%2F..%2Frooms.json").status_code in (400, 404)
+    assert c.get("/api/agentchat/rooms/roblox/files/0123456789ABCDEF").status_code == 400
+    assert c.get("/api/agentchat/rooms/nope/files/0123456789abcdef").status_code == 404
+    with pytest.raises(store.Invalid):
+        store.get_file("roblox", "../rooms.json")
+    with pytest.raises(store.Invalid):
+        store.get_file("../x", "0123456789abcdef")
+
+
+def test_files_other_roles_forbidden(ac_dir):
+    admin, other = make_admin_and("player")
+    setup_room(admin)
+    fid = upload(admin, {"file": ("a.txt", b"abc", "text/plain")}).json()["message"]["attachment"]["id"]
+    assert upload(other, {"file": ("a.txt", b"abc", "text/plain")}).status_code == 403
+    assert other.get("/api/agentchat/rooms/roblox/files/%s" % fid).status_code == 403
+    assert other.get("/api/agentchat/rooms/roblox/pings").status_code == 403
+    _, dev = make_admin_and("developer")
+    assert dev.get("/api/agentchat/rooms/roblox/files/%s" % fid).status_code == 200
+
+
+def test_agent_upload_download_bearer(ac_dir):
+    c = make_client()
+    setup_room(c)
+    key = add_member(c)["key"]
+    blob = bytes(range(256)) * 10
+    assert agent_upload(c, None, {"file": ("pet.fbx", blob, "application/octet-stream")}).status_code == 401
+    assert agent_upload(c, "oac_faux", {"file": ("pet.fbx", blob, "application/octet-stream")}).status_code == 401
+    r = agent_upload(c, key, {"file": ("pet.fbx", blob, "application/octet-stream")},
+                     {"text": "modèle du pet", "auteur": "Usurpateur"})
+    assert r.status_code == 200, r.text
+    msg = r.json()["message"]
+    assert msg["author"] == "Claude-Pets" and msg["kind"] == "info"
+    fid = msg["attachment"]["id"]
+    assert c.get("/mcp/agentchat/fichiers/%s" % fid).status_code == 401
+    r = c.get("/mcp/agentchat/fichiers/%s" % fid, headers={"Authorization": "Bearer " + key})
+    assert r.status_code == 200 and r.content == blob
+    assert r.headers["content-disposition"].startswith("attachment;")
+    assert r.headers["x-content-type-options"] == "nosniff"
+    r = c.get("/mcp/agentchat/fichiers/zzz", headers={"Authorization": "Bearer " + key})
+    assert r.status_code == 400
+
+
+def test_agent_cannot_read_other_room_file(ac_dir):
+    c = make_client()
+    setup_room(c)
+    setup_room(c, "autre", "Autre")
+    key_autre = add_member(c, "autre", "Claude-Autre")["key"]
+    fid = upload(c, {"file": ("s.txt", b"secret", "text/plain")}).json()["message"]["attachment"]["id"]
+    r = c.get("/mcp/agentchat/fichiers/%s" % fid, headers={"Authorization": "Bearer " + key_autre})
+    assert r.status_code == 404
+    res = call_tool(c, key_autre, "lire_document", {"id": fid})
+    assert res["isError"] is True
+
+
+def test_mcp_envoyer_document_text_and_read_window(ac_dir):
+    c = make_client()
+    setup_room(c)
+    key = add_member(c)["key"]
+    contenu = "é" * 30 + "FIN"
+    res = call_tool(c, key, "envoyer_document", {"nom": "notes.md", "contenu": contenu,
+                                                 "texte": "mes notes"})
+    assert res["isError"] is False, res
+    out = res["content"][0]["text"]
+    assert out.startswith("document ") and "(message #1)" in out
+    fid = out.split()[1]
+    msgs = c.get("/api/agentchat/rooms/roblox/messages").json()["messages"]
+    assert msgs[0]["attachment"]["id"] == fid and msgs[0]["text"] == "mes notes"
+    assert msgs[0]["attachment"]["mime"] == "text/markdown"
+    out = call_tool(c, key, "lire_document", {"id": fid})["content"][0]["text"]
+    assert "caractères 0-33 sur 33" in out and contenu in out
+    out = call_tool(c, key, "lire_document", {"id": fid, "debut": 30, "longueur": 2})["content"][0]["text"]
+    assert "caractères 30-32 sur 33" in out and out.endswith("FI")
+    assert 'debut=32' in out
+    # le message affiché par lire_messages porte la pièce jointe
+    out = call_tool(c, key, "lire_messages")["content"][0]["text"]
+    assert "[doc %s « notes.md »" % fid in out
+    # l'humain peut télécharger ce que l'agent a envoyé
+    r = c.get("/api/agentchat/rooms/roblox/files/%s" % fid)
+    assert r.content == contenu.encode("utf-8")
+
+
+def test_mcp_envoyer_document_base64_and_binary_read(ac_dir):
+    c = make_client()
+    setup_room(c)
+    key = add_member(c)["key"]
+    blob = b"\xff\xfe\x00\x01" * 100
+    b64 = base64.b64encode(blob).decode("ascii")
+    wrapped = "\n".join(b64[i:i + 76] for i in range(0, len(b64), 76))
+    res = call_tool(c, key, "envoyer_document", {"nom": "pet.blend", "contenu": wrapped, "base64": True})
+    assert res["isError"] is False, res
+    fid = res["content"][0]["text"].split()[1]
+    out = call_tool(c, key, "lire_document", {"id": fid})["content"][0]["text"]
+    assert "octets 0-400 sur 400" in out
+    assert base64.b64decode(out.split("---\n", 1)[1].split("\n")[0]) == blob
+    assert "curl" in out and "/mcp/agentchat/fichiers/%s" % fid in out
+    out = call_tool(c, key, "lire_document", {"id": fid, "debut": 4, "longueur": 4})["content"][0]["text"]
+    assert "octets 4-8 sur 400" in out
+    assert base64.b64decode(out.split("---\n", 1)[1].split("\n")[0]) == blob[4:8]
+    res = call_tool(c, key, "envoyer_document", {"nom": "x.bin", "contenu": "pas@du base64!", "base64": True})
+    assert res["isError"] is True and "base64 invalide" in res["content"][0]["text"]
+    res = call_tool(c, key, "envoyer_document", {"nom": "x.bin", "contenu": ""})
+    assert res["isError"] is True
+    res = call_tool(c, key, "envoyer_document", {"nom": "", "contenu": "x"})
+    assert res["isError"] is True
+
+
+def test_mcp_envoyer_document_too_big_inline(ac_dir, monkeypatch):
+    monkeypatch.setattr(acr, "INLINE_DOC_MAX", 10)
+    c = make_client()
+    setup_room(c)
+    key = add_member(c)["key"]
+    res = call_tool(c, key, "envoyer_document", {"nom": "a.txt", "contenu": "x" * 11})
+    assert res["isError"] is True
+    txt = res["content"][0]["text"]
+    assert "curl" in txt and "/mcp/agentchat/fichiers" in txt and "~/.claude.json" in txt
+
+
+def test_mcp_lire_document_image(ac_dir):
+    c = make_client()
+    setup_room(c)
+    key = add_member(c)["key"]
+    png = b"\x89PNG\r\n\x1a\n" + b"\x00" * 20
+    fid = upload(c, {"file": ("pet.png", png, "image/png")}).json()["message"]["attachment"]["id"]
+    res = call_tool(c, key, "lire_document", {"id": fid})
+    assert res["isError"] is False
+    img = res["content"][0]
+    assert img["type"] == "image" and img["mimeType"] == "image/png"
+    assert base64.b64decode(img["data"]) == png
+    assert res["content"][1]["type"] == "text" and "pet.png" in res["content"][1]["text"]
+    res = call_tool(c, key, "lire_document", {"id": "../../x"})
+    assert res["isError"] is True
+    res = call_tool(c, key, "lire_document", {"id": "0123456789abcdef"})
+    assert res["isError"] is True
+
+
+def test_mcp_lister_documents(ac_dir):
+    c = make_client()
+    setup_room(c)
+    key = add_member(c)["key"]
+    assert call_tool(c, key, "lister_documents")["content"][0]["text"] == "(aucun document)"
+    upload(c, {"file": ("premier.txt", b"a" * 2000, "text/plain")})
+    call_tool(c, key, "envoyer_document", {"nom": "second.txt", "contenu": "b"})
+    out = call_tool(c, key, "lister_documents")["content"][0]["text"]
+    lines = out.splitlines()
+    assert len(lines) == 2
+    assert "premier.txt" in lines[0] and "2,0 Ko" in lines[0] and "massii (humain)" in lines[0]
+    assert "second.txt" in lines[1] and "Claude-Pets" in lines[1]
+    assert [f["name"] for f in store.list_files("roblox")] == ["premier.txt", "second.txt"]
+
+
+# ------------------------------------------------------------- mentions / pings
+
+def test_mentions_detection(ac_dir):
+    c = make_client()
+    setup_room(c)
+    add_member(c, name="Claude")
+    add_member(c, name="Claude de Massii")
+    add_member(c, name="Claude-Map")
+    r = c.post("/api/agentchat/rooms/roblox/messages",
+               json={"text": "@claude de massii fais X, puis @Claude-Map"})
+    assert r.json()["message"]["mentions"] == ["Claude de Massii", "Claude-Map"]
+    r = c.post("/api/agentchat/rooms/roblox/messages",
+               json={"text": "@Claude-Map et @Claude de Massii et @Claude"})
+    assert r.json()["message"]["mentions"] == ["Claude-Map", "Claude de Massii", "Claude"]
+    r = c.post("/api/agentchat/rooms/roblox/messages", json={"text": "@Claudette ? mail@claude"})
+    assert r.json()["message"]["mentions"] == []
+    r = c.post("/api/agentchat/rooms/roblox/messages", json={"text": "salut",
+                                                             "mentions": ["claude-map", "Inconnu", "@Claude"]})
+    assert r.json()["message"]["mentions"] == ["Claude-Map", "Claude"]
+    r = c.post("/api/agentchat/rooms/roblox/messages", json={"text": "@tous réunion"})
+    assert r.json()["message"]["mentions"] == ["Claude", "Claude de Massii", "Claude-Map"]
+
+
+def test_mentions_all_excludes_author_and_revoked(ac_dir):
+    c = make_client()
+    setup_room(c)
+    key = add_member(c, name="Claude-Pets")["key"]
+    add_member(c, name="Claude-Map")
+    gone = add_member(c, name="Claude-Old")["member"]["id"]
+    c.post("/api/agentchat/rooms/roblox/members/%s/revoke" % gone)
+    call_tool(c, key, "envoyer_message", {"texte": "@all on teste ; @Claude-Old aussi"})
+    msgs = c.get("/api/agentchat/rooms/roblox/messages").json()["messages"]
+    assert msgs[-1]["mentions"] == ["Claude-Map"]
+
+
+def test_pings_open_then_closed(ac_dir):
+    c = make_client()
+    setup_room(c)
+    key = add_member(c, name="Claude-Pets")["key"]
+    key_map = add_member(c, name="Claude-Map")["key"]
+    r = c.post("/api/agentchat/rooms/roblox/messages", json={"text": "@Claude-Pets fais le pet chat"})
+    pid = r.json()["message"]["id"]
+    # pied [PING] sur un autre outil
+    out = call_tool(c, key, "lire_tableau")["content"][0]["text"]
+    assert "[PING] 1 ping(s) pour toi non traité(s) : #%d" % pid in out
+    assert "mes_pings" in out
+    # pas de pied pour celui qui n'est pas pingé
+    assert "[PING]" not in call_tool(c, key_map, "lire_tableau")["content"][0]["text"]
+    # mes_pings liste et consigne, sans pied
+    out = call_tool(c, key, "mes_pings")["content"][0]["text"]
+    assert "#%d" % pid in out and "fais le pet chat" in out and "reponse_a" in out
+    assert "[PING]" not in out
+    assert c.get("/api/agentchat/rooms/roblox/pings").json() == {
+        "pings": {"Claude-Pets": [pid], "Claude-Map": []}}
+    r = c.get("/mcp/agentchat/pings", headers={"Authorization": "Bearer " + key})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["member"] == "Claude-Pets"
+    assert body["pings"][0]["id"] == pid and body["pings"][0]["author"] == "massii (humain)"
+    assert c.get("/mcp/agentchat/pings").status_code == 401
+    # une réponse d'un AUTRE membre ne ferme pas le ping
+    call_tool(c, key_map, "envoyer_message", {"texte": "je regarde", "reponse_a": pid})
+    assert store.open_pings("roblox", "Claude-Pets")[0]["id"] == pid
+    # la réponse du membre pingé ferme le ping (et le pied disparaît tout de suite)
+    res = call_tool(c, key, "envoyer_message", {"texte": "fait", "type": "fait", "reponse_a": pid})
+    assert "[PING]" not in res["content"][0]["text"]
+    assert store.open_pings("roblox", "Claude-Pets") == []
+    assert c.get("/mcp/agentchat/pings", headers={"Authorization": "Bearer " + key}).json()["pings"] == []
+    assert "Aucun ping" in call_tool(c, key, "mes_pings")["content"][0]["text"]
+
+
+def test_ping_footer_absent_on_error(ac_dir):
+    c = make_client()
+    setup_room(c)
+    key = add_member(c, name="Claude-Pets")["key"]
+    c.post("/api/agentchat/rooms/roblox/messages", json={"text": "@Claude-Pets ping"})
+    res = call_tool(c, key, "envoyer_message", {})
+    assert res["isError"] is True and "[PING]" not in res["content"][0]["text"]
+
+
+def test_ping_footer_on_image_result(ac_dir):
+    c = make_client()
+    setup_room(c)
+    key = add_member(c, name="Claude-Pets")["key"]
+    fid = upload(c, {"file": ("a.png", b"\x89PNG", "image/png")},
+                 {"text": "@Claude-Pets regarde"}).json()["message"]["attachment"]["id"]
+    res = call_tool(c, key, "lire_document", {"id": fid})
+    assert res["content"][0]["type"] == "image"
+    assert "[PING]" in res["content"][1]["text"]
+
+
+def test_self_mention_is_not_a_ping(ac_dir):
+    c = make_client()
+    setup_room(c)
+    key = add_member(c, name="Claude-Pets")["key"]
+    call_tool(c, key, "envoyer_message", {"texte": "note pour @Claude-Pets"})
+    assert store.open_pings("roblox", "Claude-Pets") == []
+
+
+def test_legacy_messages_without_new_keys(ac_dir):
+    c = make_client()
+    setup_room(c)
+    key = add_member(c, name="Claude-Pets")["key"]
+    legacy = {"id": 1, "ts": "2026-10-01T00:00:00+00:00", "author": "massii (humain)",
+              "kind": "humain", "text": "@Claude-Pets ancien", "reply_to": None}
+    (ac_dir / "roblox.jsonl").write_text(json.dumps(legacy) + "\n", encoding="utf-8")
+    msgs = c.get("/api/agentchat/rooms/roblox/messages").json()["messages"]
+    assert msgs[0]["text"] == "@Claude-Pets ancien"
+    out = call_tool(c, key, "lire_messages")["content"][0]["text"]
+    assert "#1" in out and "ancien" in out and "[PING]" not in out
+    assert c.get("/api/agentchat/rooms/roblox/pings").json() == {"pings": {"Claude-Pets": []}}
+    call_tool(c, key, "envoyer_message", {"texte": "nouveau"})
+    msgs = c.get("/api/agentchat/rooms/roblox/messages").json()["messages"]
+    assert msgs[-1]["id"] == 2 and msgs[-1]["mentions"] == []
+    assert "attachment" not in msgs[-1]
+
+
+def test_server_version_and_instructions(ac_dir):
+    c = make_client()
+    setup_room(c)
+    key = add_member(c)["key"]
+    res = mcp(c, key, {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}).json()["result"]
+    assert res["serverInfo"]["version"] == "1.1.0"
+    ins = res["instructions"]
+    assert "mes_pings" in ins and "@Nom" in ins and "envoyer_document" in ins and "curl" in ins

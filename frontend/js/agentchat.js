@@ -6,6 +6,11 @@
  * le tableau ; l'admin crée aussi les salons et gère les clés des membres
  * (clé montrée une seule fois).
  *
+ * Fonctionnalités : fil temps réel (polling), répondre à un message (citation
+ * cliquable), pinger un agent (@Nom / @tous, pastilles « en attente / traité »),
+ * joindre un document (bouton ou glisser-déposer, 25 Mo max, aperçu image,
+ * téléchargement via Auth.apiCall car le JWT est dans un header).
+ *
  * Accès : admin ou rôle developer (lecture/écriture) ; gestion salons/clés =
  * admin seulement (masquée dans l'UI ET refusée par le backend).
  *
@@ -24,6 +29,16 @@ const AgentChatModule = {
     shownKey: null,      // { roomId, member, key } — survit à un re-render (changement de langue)
     _feedRoom: null,
     _visBound: false,
+    MAX_FILE: 25 * 1024 * 1024,
+    msgById: {},         // index id -> message du fil chargé (vidé dans reloadFeed)
+    pings: {},           // { nomMembre: [ids de pings ouverts] }
+    _pingsKey: '',
+    pingTimer: null,
+    replyTo: null,       // id du message auquel on répond
+    pendingFile: null,   // File en attente d'envoi
+    sending: false,
+    _objectUrls: [],     // URLs blob à révoquer au unload()
+    _io: null,
 
     KIND_CLASS: {
         info: 'muted', en_cours: 'info', fait: 'online',
@@ -72,9 +87,18 @@ const AgentChatModule = {
                 <section class="ac-main card">
                     <h2 class="ac-h2">${t('messages')}</h2>
                     <div class="events-feed ac-feed" id="ac-feed" aria-live="polite"></div>
+                    <div class="ac-replying hidden" id="ac-replying"></div>
+                    <div class="ac-file-chip hidden" id="ac-file-chip"></div>
                     <form class="ac-compose" id="ac-compose">
                         <textarea class="form-input" id="ac-text" rows="2" maxlength="4000" placeholder="${t('compose_ph')}"></textarea>
-                        <button class="btn btn-primary btn-sm" type="submit">${t('send')}</button>
+                        <div class="ac-compose-actions">
+                            <label class="ac-ping-wrap" for="ac-ping">${t('ping_label')}
+                                <select class="form-input" id="ac-ping"></select>
+                            </label>
+                            <input type="file" id="ac-file" class="hidden" tabindex="-1">
+                            <button class="btn btn-secondary btn-sm" type="button" id="ac-attach">${t('attach_btn')}</button>
+                            <button class="btn btn-primary btn-sm" type="submit" id="ac-send">${t('send')}</button>
+                        </div>
                     </form>
                 </section>
 
@@ -107,9 +131,20 @@ const AgentChatModule = {
     unload() {
         if (this.pollTimer) clearInterval(this.pollTimer);
         this.pollTimer = null;
+        if (this.pingTimer) clearInterval(this.pingTimer);
+        this.pingTimer = null;
         this.polling = false;
         this._feedRoom = null;
         this.gen++;
+        if (this._io) { this._io.disconnect(); this._io = null; }
+        this._objectUrls.forEach(u => { try { URL.revokeObjectURL(u); } catch (_) {} });
+        this._objectUrls = [];
+        this.msgById = {};
+        this.pings = {};
+        this._pingsKey = '';
+        this.replyTo = null;
+        this.pendingFile = null;
+        this.sending = false;
     },
 
     alive(gen) { return gen === this.gen && !!this.$('ac-feed'); },
@@ -122,10 +157,51 @@ const AgentChatModule = {
         this.$('ac-text').addEventListener('keydown', e => {
             if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); this.send(); }
         });
+        this.$('ac-compose').addEventListener('keydown', e => {
+            if (e.key === 'Escape' && this.replyTo) { e.preventDefault(); this.cancelReply(); }
+        });
+        this.$('ac-attach').addEventListener('click', () => this.$('ac-file').click());
+        this.$('ac-file').addEventListener('change', e => {
+            const f = e.target.files && e.target.files[0];
+            e.target.value = '';
+            if (f) this.setFile(f);
+        });
+        this.$('ac-file-chip').addEventListener('click', e => {
+            if (e.target.closest('[data-remove-file]')) this.setFile(null);
+        });
+        this.$('ac-replying').addEventListener('click', e => {
+            if (e.target.closest('[data-cancel-reply]')) this.cancelReply();
+        });
+        this.$('ac-feed').addEventListener('click', e => {
+            const rb = e.target.closest('[data-reply]');
+            if (rb) { this.setReply(rb.dataset.reply); return; }
+            const qb = e.target.closest('[data-quote]');
+            if (qb) { this.jumpTo(qb.dataset.quote); return; }
+            const db = e.target.closest('[data-file-id]');
+            if (db && db.tagName === 'BUTTON') this.download(db.dataset.fileId, db.dataset.fileName, db);
+        });
+        const main = this.$('ac-feed').closest('.ac-main');
+        const hasFiles = e => e.dataTransfer && Array.prototype.indexOf.call(e.dataTransfer.types || [], 'Files') >= 0;
+        main.addEventListener('dragenter', e => { if (hasFiles(e)) { e.preventDefault(); main.classList.add('ac-dropping'); } });
+        main.addEventListener('dragover', e => {
+            if (hasFiles(e)) { e.preventDefault(); main.classList.add('ac-dropping'); }
+        });
+        main.addEventListener('dragleave', e => {
+            if (!e.relatedTarget || !main.contains(e.relatedTarget)) main.classList.remove('ac-dropping');
+        });
+        main.addEventListener('drop', e => {
+            if (!hasFiles(e)) return;
+            e.preventDefault();
+            main.classList.remove('ac-dropping');
+            const f = e.dataTransfer.files && e.dataTransfer.files[0];
+            if (f) this.setFile(f);
+        });
         this.$('ac-board-save').addEventListener('click', () => this.saveBoard());
         this.$('ac-members').addEventListener('click', e => {
             const btn = e.target.closest('[data-revoke]');
-            if (btn) this.revoke(btn.dataset.revoke, btn.dataset.name);
+            if (btn) { this.revoke(btn.dataset.revoke, btn.dataset.name); return; }
+            const mb = e.target.closest('[data-mention]');
+            if (mb) this.insertMention(mb.dataset.mention);
         });
         if (manage) {
             this.$('ac-new-room-toggle').addEventListener('click', () => {
@@ -181,6 +257,19 @@ const AgentChatModule = {
         if (isNaN(d.getTime())) return '';
         const p = n => String(n).padStart(2, '0');
         return p(d.getDate()) + '/' + p(d.getMonth() + 1) + ' ' + p(d.getHours()) + ':' + p(d.getMinutes());
+    },
+
+    fmtSize(n) {
+        n = Number(n) || 0;
+        const f = v => v.toLocaleString(undefined, { maximumFractionDigits: 1 });
+        if (n < 1024) return n + ' ' + this.t('size_b');
+        if (n < 1024 * 1024) return f(n / 1024) + ' ' + this.t('size_kb');
+        return f(n / (1024 * 1024)) + ' ' + this.t('size_mb');
+    },
+
+    excerpt(text, max) {
+        const s = String(text || '').replace(/\s+/g, ' ').trim();
+        return s.length > max ? s.slice(0, max - 1) + '…' : s;
     },
 
     currentRoom() {
@@ -248,11 +337,17 @@ const AgentChatModule = {
 
     reloadFeed() {
         this.lastId = 0;
+        this.msgById = {};
+        this.pings = {};
+        this._pingsKey = '';
+        this.cancelReply();
         this.$('ac-feed').innerHTML = '';
         if (this.pollTimer) clearInterval(this.pollTimer);
+        if (this.pingTimer) clearInterval(this.pingTimer);
         this.polling = false;
         this.poll();
         this.pollTimer = setInterval(() => { if (!document.hidden) this.poll(); }, this.POLL_MS);
+        this.pingTimer = setInterval(() => { if (!document.hidden) this.refreshPings(); }, 20000);
     },
 
     async poll() {
@@ -264,60 +359,297 @@ const AgentChatModule = {
             const q = this.lastId > 0 ? `?after=${this.lastId}&limit=200` : '?limit=200';
             const data = await this.api(`/rooms/${encodeURIComponent(roomAtStart)}/messages${q}`);
             if (!data || roomAtStart !== this.roomId || !this.alive(gen)) return;
-            this.appendMessages(data.messages || []);
+            const added = this.appendMessages(data.messages || []);
+            if (added) this.refreshPings();
         } finally {
             if (gen === this.gen) this.polling = false;
         }
     },
 
+    /** Ajoute les nouveaux messages ; retourne le nombre de messages ajoutés. */
     appendMessages(msgs) {
         const feed = this.$('ac-feed');
-        if (!feed) return;
+        if (!feed) return 0;
         if (!msgs.length) {
             if (this.lastId === 0 && !feed.children.length) {
                 feed.innerHTML = `<div class="ac-feed-empty">${esc(this.t('no_messages'))}</div>`;
             }
-            return;
+            return 0;
         }
+        const fresh = msgs.filter(m => m.id > this.lastId);
         const empty = feed.querySelector('.ac-feed-empty');
         if (empty) empty.remove();
         const atBottom = feed.scrollHeight - feed.scrollTop - feed.clientHeight < 40 || this.lastId === 0;
-        const html = msgs.filter(m => m.id > this.lastId).map(m => this.renderMessage(m)).join('');
-        feed.insertAdjacentHTML('beforeend', html);
+        fresh.forEach(m => { this.msgById[m.id] = m; });  // index d'abord : les citations peuvent viser le même lot
+        feed.insertAdjacentHTML('beforeend', fresh.map(m => this.renderMessage(m)).join(''));
         this.lastId = Math.max(this.lastId, ...msgs.map(m => m.id));
+        this.observeThumbs();
         if (atBottom) feed.scrollTop = feed.scrollHeight;
+        return fresh.length;
+    },
+
+    pingState(id, member) {
+        const open = (this.pings[member] || []).map(String);
+        return open.indexOf(String(id)) >= 0;
     },
 
     renderMessage(m) {
         const kind = String(m.kind || 'info');
         const cls = this.KIND_CLASS[kind] !== undefined ? this.KIND_CLASS[kind] : 'muted';
         const label = Lang.t('agentchat.kind.' + kind);
-        const reply = m.reply_to
-            ? `<span class="ac-reply mono">${esc(this.t('reply_to'))} #${esc(m.reply_to)}</span>` : '';
-        return `<div class="ev ac-msg ac-msg-${esc(kind)}">
+        let quote = '';
+        if (m.reply_to) {
+            const cited = this.msgById[m.reply_to];
+            const body = cited
+                ? `<span class="ac-quote-author">${esc(cited.author)}</span> <span class="ac-quote-text">${esc(this.excerpt(cited.text || (cited.attachment && cited.attachment.name) || '', 80))}</span>`
+                : `<span class="ac-quote-text">${esc(this.t('reply_to'))} #${esc(m.reply_to)}</span>`;
+            quote = `<button type="button" class="ac-quote" data-quote="${esc(m.reply_to)}">${body}</button>`;
+        }
+        const pings = (Array.isArray(m.mentions) ? m.mentions : []).map(name => {
+            const pending = this.pingState(m.id, name);
+            return `<span class="badge ac-ping-badge ${pending ? 'warn' : 'online'}" data-ping-id="${esc(m.id)}" data-ping-member="${esc(name)}">${esc(this.t('ping_arrow'))} ${esc(name)} · ${esc(this.t(pending ? 'ping_pending' : 'ping_done'))}</span>`;
+        }).join('');
+        const att = m.attachment ? this.renderAttachment(m.attachment) : '';
+        const text = m.text ? `<div class="msg ac-msg-text">${esc(m.text)}</div>` : '';
+        return `<div class="ev ac-msg ac-msg-${esc(kind)}" id="ac-m-${esc(m.id)}">
             <div class="ac-msg-head">
                 <span class="ac-msg-id mono">#${esc(m.id)}</span>
                 <span class="ac-msg-author">${esc(m.author)}</span>
                 <span class="badge ${esc(cls)}">${esc(label)}</span>
-                ${reply}
+                ${pings}
                 <span class="ts ac-msg-ts mono">${esc(this.fmtTime(m.ts))}</span>
+                <button type="button" class="btn btn-secondary btn-sm ac-reply-btn" data-reply="${esc(m.id)}">${esc(this.t('reply_btn'))}</button>
             </div>
-            <div class="msg ac-msg-text">${esc(m.text)}</div>
+            ${quote}
+            ${text}
+            ${att}
         </div>`;
     },
 
-    async send() {
-        const ta = this.$('ac-text');
-        const text = ta.value.trim();
-        if (!text || !this.roomId) return;
-        const data = await this.api(`/rooms/${encodeURIComponent(this.roomId)}/messages`, {
-            method: 'POST', body: JSON.stringify({ text }),
-        });
-        if (!data) return;
-        ta.value = '';
+    renderAttachment(a) {
+        const isImg = String(a.mime || '').indexOf('image/') === 0;
+        const thumb = isImg
+            ? `<img class="ac-attach-img" alt="${esc(a.name)}" data-thumb="${esc(a.id)}" loading="lazy">` : '';
+        return `<div class="ac-attach">
+            ${thumb}
+            <div class="ac-attach-meta">
+                <span class="ac-attach-name">${esc(a.name)}</span>
+                <span class="ac-attach-info mono">${esc(this.fmtSize(a.size))} · ${esc(a.mime || '')}</span>
+            </div>
+            <button type="button" class="btn btn-secondary btn-sm" data-file-id="${esc(a.id)}" data-file-name="${esc(a.name)}">${esc(this.t('download'))}</button>
+        </div>`;
+    },
+
+    // ---------------------------------------------------------------- réponses
+
+    setReply(id) {
+        const m = this.msgById[id];
+        if (!m) return;
+        this.replyTo = m.id;
+        const box = this.$('ac-replying');
+        box.innerHTML = `<span class="ac-replying-text">${esc(this.t('replying_to'))} #${esc(m.id)} — ${esc(m.author)} : ${esc(this.excerpt(m.text || (m.attachment && m.attachment.name) || '', 80))}</span>
+            <button type="button" class="btn btn-secondary btn-sm" data-cancel-reply>${esc(this.t('cancel'))}</button>`;
+        box.classList.remove('hidden');
+        this.$('ac-text').focus();
+    },
+
+    cancelReply() {
+        this.replyTo = null;
+        const box = this.$('ac-replying');
+        if (box) { box.classList.add('hidden'); box.innerHTML = ''; }
+    },
+
+    jumpTo(id) {
+        const el = this.$('ac-m-' + id);
+        if (!el) return;
+        el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+        el.classList.add('ac-flash');
+        setTimeout(() => el.classList.remove('ac-flash'), 1500);
+    },
+
+    // ---------------------------------------------------------------- pings
+
+    /** Récupère les pings ouverts (silencieux) et met à jour pastilles + membres. */
+    async refreshPings() {
+        if (!this.roomId) return;
+        const roomAtStart = this.roomId;
+        const gen = this.gen;
+        let data = null;
+        try {
+            const res = await Auth.apiCall(`${this.API}/rooms/${encodeURIComponent(roomAtStart)}/pings`);
+            if (!res || !res.ok) return;
+            data = await res.json();
+        } catch (_) { return; }
+        if (!data || roomAtStart !== this.roomId || !this.alive(gen)) return;
+        const pings = data.pings && typeof data.pings === 'object' ? data.pings : {};
+        const key = JSON.stringify(pings);
+        if (key === this._pingsKey) return;
+        this._pingsKey = key;
+        this.pings = pings;
+        this.updatePingBadges();
+        this.renderMembers();
+    },
+
+    updatePingBadges() {
         const feed = this.$('ac-feed');
-        feed.scrollTop = feed.scrollHeight;
-        this.poll();
+        if (!feed) return;
+        feed.querySelectorAll('.ac-ping-badge').forEach(b => {
+            const pending = this.pingState(b.dataset.pingId, b.dataset.pingMember);
+            b.classList.toggle('warn', pending);
+            b.classList.toggle('online', !pending);
+            b.textContent = this.t('ping_arrow') + ' ' + b.dataset.pingMember + ' · ' + this.t(pending ? 'ping_pending' : 'ping_done');
+        });
+    },
+
+    fillPingSelect() {
+        const sel = this.$('ac-ping');
+        if (!sel) return;
+        const prev = sel.value;
+        const room = this.currentRoom();
+        const active = (room ? room.members : []).filter(m => !m.revoked);
+        sel.innerHTML = `<option value="">${esc(this.t('ping_none'))}</option>`
+            + active.map(m => `<option value="${esc(m.name)}">${esc(m.name)}</option>`).join('')
+            + (active.length ? `<option value="__all__">${esc(this.t('ping_all'))}</option>` : '');
+        if (Array.prototype.some.call(sel.options, o => o.value === prev)) sel.value = prev;
+    },
+
+    insertMention(name) {
+        const ta = this.$('ac-text');
+        if (!ta) return;
+        const a = ta.selectionStart == null ? ta.value.length : ta.selectionStart;
+        const b = ta.selectionEnd == null ? a : ta.selectionEnd;
+        const before = ta.value.slice(0, a);
+        const lead = before && !/\s$/.test(before) ? ' ' : '';
+        const ins = lead + '@' + name + ' ';
+        ta.value = before + ins + ta.value.slice(b);
+        const pos = before.length + ins.length;
+        ta.focus();
+        ta.setSelectionRange(pos, pos);
+    },
+
+    // ---------------------------------------------------------------- fichiers
+
+    setFile(file) {
+        if (file && file.size > this.MAX_FILE) {
+            this.showError(this.t('file_too_big'));
+            return;
+        }
+        if (file) this.showError('');
+        this.pendingFile = file || null;
+        const chip = this.$('ac-file-chip');
+        if (!chip) return;
+        if (!file) { chip.classList.add('hidden'); chip.innerHTML = ''; return; }
+        chip.innerHTML = `<span class="ac-file-chip-name mono">${esc(file.name)} (${esc(this.fmtSize(file.size))})</span>
+            <button type="button" class="btn btn-secondary btn-sm" data-remove-file>${esc(this.t('attach_remove'))}</button>`;
+        chip.classList.remove('hidden');
+    },
+
+    async fetchBlob(fileId) {
+        const res = await Auth.apiCall(`${this.API}/rooms/${encodeURIComponent(this.roomId)}/files/${encodeURIComponent(fileId)}`);
+        if (!res || !res.ok) return null;
+        return res.blob();
+    },
+
+    async download(fileId, name, btn) {
+        const gen = this.gen;
+        btn.disabled = true;
+        try {
+            const blob = await this.fetchBlob(fileId);
+            if (!this.alive(gen)) return;
+            if (!blob) { this.showError(this.t('download_failed')); return; }
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = name || 'fichier';
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+            setTimeout(() => URL.revokeObjectURL(url), 1000);
+        } catch (_) {
+            if (this.alive(gen)) this.showError(this.t('download_failed'));
+        } finally {
+            if (btn.isConnected) btn.disabled = false;
+        }
+    },
+
+    /** Charge les miniatures d'images à l'approche de l'écran (ou tout de suite sans IntersectionObserver). */
+    observeThumbs() {
+        const feed = this.$('ac-feed');
+        if (!feed) return;
+        const imgs = feed.querySelectorAll('img[data-thumb]:not([data-seen])');
+        if (!imgs.length) return;
+        if (!this._io && 'IntersectionObserver' in window) {
+            this._io = new IntersectionObserver(entries => {
+                entries.forEach(en => {
+                    if (en.isIntersecting) { this._io.unobserve(en.target); this.loadThumb(en.target); }
+                });
+            }, { root: feed, rootMargin: '200px' });
+        }
+        imgs.forEach(img => {
+            img.dataset.seen = '1';
+            if (this._io) this._io.observe(img); else this.loadThumb(img);
+        });
+    },
+
+    async loadThumb(img) {
+        const gen = this.gen;
+        try {
+            const blob = await this.fetchBlob(img.dataset.thumb);
+            if (!blob || !this.alive(gen)) return;
+            const url = URL.createObjectURL(blob);
+            this._objectUrls.push(url);
+            img.src = url;
+        } catch (_) {}
+    },
+
+    setSending(on) {
+        this.sending = on;
+        const btn = this.$('ac-send');
+        if (!btn) return;
+        btn.disabled = on;
+        btn.textContent = this.t(on ? 'sending' : 'send');
+    },
+
+    async send() {
+        if (this.sending || !this.roomId) return;
+        const ta = this.$('ac-text');
+        let text = ta.value.trim();
+        const file = this.pendingFile;
+        if (!text && !file) return;
+        if (file && file.size > this.MAX_FILE) { this.showError(this.t('file_too_big')); return; }
+        const sel = this.$('ac-ping').value;
+        const mentions = [];
+        if (sel === '__all__') text = ('@tous ' + text).trim();
+        else if (sel && file) text = ('@' + sel + ' ' + text).trim();   // l'upload n'a pas de champ mentions : le serveur lit @Nom
+        else if (sel) mentions.push(sel);
+        const room = encodeURIComponent(this.roomId);
+        const gen = this.gen;
+        this.setSending(true);
+        try {
+            let data;
+            if (file) {
+                const fd = new FormData();
+                fd.append('file', file);
+                fd.append('text', text);
+                if (this.replyTo) fd.append('reply_to', String(this.replyTo));
+                data = await this.api(`/rooms/${room}/files`, { method: 'POST', body: fd });
+            } else {
+                const body = { text };
+                if (this.replyTo) body.reply_to = this.replyTo;
+                if (mentions.length) body.mentions = mentions;
+                data = await this.api(`/rooms/${room}/messages`, { method: 'POST', body: JSON.stringify(body) });
+            }
+            if (!data || !this.alive(gen)) return;
+            ta.value = '';
+            this.$('ac-ping').value = '';
+            this.setFile(null);
+            this.cancelReply();
+            const feed = this.$('ac-feed');
+            feed.scrollTop = feed.scrollHeight;
+            this.poll();
+        } finally {
+            if (gen === this.gen) this.setSending(false); else this.sending = false;
+        }
     },
 
     // ---------------------------------------------------------------- tableau
@@ -345,6 +677,7 @@ const AgentChatModule = {
     renderMembers() {
         const box = this.$('ac-members');
         if (!box) return;
+        this.fillPingSelect();
         const room = this.currentRoom();
         const members = room ? room.members : [];
         const manage = this.canManage();
@@ -354,7 +687,11 @@ const AgentChatModule = {
         }
         box.innerHTML = members.map(m => `
             <div class="ac-member${m.revoked ? ' revoked' : ''}">
-                <span class="ac-member-name">${esc(m.name)}</span>
+                ${m.revoked
+                    ? `<span class="ac-member-name">${esc(m.name)}</span>`
+                    : `<button type="button" class="ac-member-name ac-mention-btn" data-mention="${esc(m.name)}" title="${esc(this.t('mention_title'))}">${esc(m.name)}</button>`}
+                ${(this.pings[m.name] || []).length
+                    ? `<span class="badge warn">${esc(this.t('pings_open').replace('{n}', (this.pings[m.name] || []).length))}</span>` : ''}
                 ${m.revoked
                     ? `<span class="badge muted">${esc(this.t('revoked'))}</span>`
                     : `<span class="badge online">${esc(this.t('active'))}</span>${manage
