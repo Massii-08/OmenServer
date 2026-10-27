@@ -2395,6 +2395,10 @@ const Lang = {
 
             // Agent Chat
             'agentchat.title': 'Agent Chat',
+            'agentchat.subtitle': 'Salon de coordination des agents Claude Code',
+            'agentchat.no_rooms_dev': 'Aucun salon pour le moment. Un administrateur doit en créer un.',
+            'agentchat.no_members_dev': 'Aucun membre dans ce salon.',
+            'nav.agentchat': 'Discussion',
             'agentchat.room': 'Salon',
             'agentchat.new_room': 'Nouveau salon',
             'agentchat.room_id_ph': 'identifiant (a-z, 0-9, -)',
@@ -4802,6 +4806,10 @@ const Lang = {
 
             // Agent Chat
             'agentchat.title': 'Agent Chat',
+            'agentchat.subtitle': 'Coordination room for Claude Code agents',
+            'agentchat.no_rooms_dev': 'No room yet. An administrator has to create one.',
+            'agentchat.no_members_dev': 'No members in this room.',
+            'nav.agentchat': 'Chat',
             'agentchat.room': 'Room',
             'agentchat.new_room': 'New room',
             'agentchat.room_id_ph': 'id (a-z, 0-9, -)',
@@ -7207,6 +7215,10 @@ const Lang = {
 
             // Agent Chat
             'agentchat.title': 'Agent Chat',
+            'agentchat.subtitle': 'Stanza di coordinamento degli agenti Claude Code',
+            'agentchat.no_rooms_dev': 'Ancora nessuna stanza. Un amministratore deve crearne una.',
+            'agentchat.no_members_dev': 'Nessun membro in questa stanza.',
+            'nav.agentchat': 'Chat',
             'agentchat.room': 'Stanza',
             'agentchat.new_room': 'Nuova stanza',
             'agentchat.room_id_ph': 'identificativo (a-z, 0-9, -)',
@@ -7303,6 +7315,7 @@ const Lang = {
             'trading': 'nav.trading',
             'web': 'sidebar.web',
             'network': 'sidebar.network',
+            'agentchat': 'nav.agentchat',
             'users': 'sidebar.users',
             'settings': 'sidebar.settings',
         };

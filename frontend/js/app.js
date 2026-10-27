@@ -145,7 +145,7 @@ const App = {
  if (!hash) return null;
  // server_view/ID → retourne 'game_server' (on ne peut pas restaurer un server_view sans contexte complet)
  if (hash.startsWith('server_view')) return 'game_server';
- const validViews = ['hub', 'game_server', 'bots', 'trading', 'web', 'network', 'sysdoc', 'settings', 'users'];
+ const validViews = ['hub', 'game_server', 'bots', 'trading', 'web', 'network', 'agentchat', 'sysdoc', 'settings', 'users'];
  return validViews.includes(hash) ? hash : null;
  },
 
@@ -311,6 +311,10 @@ const App = {
  const navNetwork = document.getElementById('nav-network');
  if (navNetwork) navNetwork.style.display = user.is_admin ? '' : 'none';
 
+ // Onglet Discussion (Agent Chat) : admin + developer (l'API refuse les autres rôles)
+ const navAgentChat = document.getElementById('nav-agentchat');
+ if (navAgentChat) navAgentChat.style.display = this._canAgentChat(user) ? '' : 'none';
+
  // Masquer les modules non autorisés dans la sidebar
  const moduleIds = ['game_server', 'bots', 'web'];
  moduleIds.forEach(modId => {
@@ -399,6 +403,14 @@ const App = {
  },
 
  /**
+ * Onglet Discussion (Agent Chat) : admin et developer.
+ * Même porte que le backend (_require_chat dans backend/agentchat/router.py).
+ */
+ _canAgentChat(user) {
+ return !!(user && (user.is_admin || user.role === 'developer'));
+ },
+
+ /**
  * Un « trader » ne voit QUE Trading : pas de dashboard, pas de serveurs,
  * pas de bots. Le menu profil (Paramètres / Déconnexion) lui reste.
  */
@@ -430,6 +442,9 @@ const App = {
  }
  if (this.currentView === 'network' && typeof NetworkModule !== 'undefined') {
  NetworkModule.unload();
+ }
+ if (this.currentView === 'agentchat' && typeof AgentChatModule !== 'undefined') {
+ AgentChatModule.unload();
  }
  if (this.currentView === 'sysdoc' && typeof SysDocModule !== 'undefined') {
  SysDocModule.unload();
@@ -472,6 +487,13 @@ const App = {
  if (view === 'network' && user && !user.is_admin) {
  content.innerHTML = `
  <div class="text-center" style="padding: 60px; color: var(--text-muted);"><div style="font-size: 48px; margin-bottom: 16px;"></div><p style="font-size:16px;font-weight:600;color:var(--text);">${Lang.t('access.denied')}</p><p style="margin-top:8px;">${Lang.t('access.denied_msg')}</p><button class="btn btn-secondary mt-4" onclick="App.navigateTo('hub')">${Lang.t('access.back')}</button></div>
+ `;
+ return;
+ }
+
+ if (view === 'agentchat' && !this._canAgentChat(user)) {
+ content.innerHTML = `
+ <div class="text-center" style="padding: 60px; color: var(--text-muted);"><p style="font-size:16px;font-weight:600;color:var(--text);">${Lang.t('access.denied')}</p><p style="margin-top:8px;">${Lang.t('access.denied_msg')}</p><button class="btn btn-secondary mt-4" onclick="App.navigateTo('hub')">${Lang.t('access.back')}</button></div>
  `;
  return;
  }
@@ -531,6 +553,10 @@ const App = {
 
  case 'network':
  await NetworkModule.render(content);
+ break;
+
+ case 'agentchat':
+ AgentChatModule.render(content);
  break;
 
  case 'sysdoc':

@@ -29,8 +29,21 @@ mcp_router = APIRouter(tags=["Agent Chat MCP"])
 # ================================================================ REST humaine
 
 def _require_admin(user: User) -> None:
+    """Gestion des salons et des clés : administrateur uniquement."""
     if not getattr(user, "is_admin", False):
         raise HTTPException(status_code=403, detail="Accès réservé aux administrateurs")
+
+
+CHAT_ROLES = ("developer",)
+
+
+def _require_chat(user: User) -> None:
+    """Lecture/écriture des messages et du tableau : admin ou rôle developer."""
+    if getattr(user, "is_admin", False):
+        return
+    if getattr(user, "role", None) in CHAT_ROLES:
+        return
+    raise HTTPException(status_code=403, detail="Accès réservé aux administrateurs et développeurs")
 
 
 def _http(e: store.StoreError) -> HTTPException:
@@ -61,7 +74,7 @@ class BoardIn(BaseModel):
 
 @router.get("/rooms")
 def list_rooms(current_user: User = Depends(get_current_user)):
-    _require_admin(current_user)
+    _require_chat(current_user)
     return {"rooms": store.list_rooms()}
 
 
@@ -101,7 +114,7 @@ def revoke_member(room_id: str, member_id: str, current_user: User = Depends(get
 @router.get("/rooms/{room_id}/messages")
 def get_messages(room_id: str, after: int = 0, limit: int = 100,
                  current_user: User = Depends(get_current_user)):
-    _require_admin(current_user)
+    _require_chat(current_user)
     limit = max(1, min(int(limit), 200))
     try:
         if after <= 0:
@@ -115,7 +128,7 @@ def get_messages(room_id: str, after: int = 0, limit: int = 100,
 
 @router.post("/rooms/{room_id}/messages")
 def post_message(room_id: str, body: MessageIn, current_user: User = Depends(get_current_user)):
-    _require_admin(current_user)
+    _require_chat(current_user)
     try:
         msg = store.append_message(room_id, "%s (humain)" % current_user.username,
                                    "humain", body.text, body.reply_to)
@@ -126,7 +139,7 @@ def post_message(room_id: str, body: MessageIn, current_user: User = Depends(get
 
 @router.get("/rooms/{room_id}/board")
 def get_board(room_id: str, current_user: User = Depends(get_current_user)):
-    _require_admin(current_user)
+    _require_chat(current_user)
     try:
         return {"board": store.get_board(room_id)}
     except store.StoreError as e:
@@ -135,7 +148,7 @@ def get_board(room_id: str, current_user: User = Depends(get_current_user)):
 
 @router.put("/rooms/{room_id}/board")
 def put_board(room_id: str, body: BoardIn, current_user: User = Depends(get_current_user)):
-    _require_admin(current_user)
+    _require_chat(current_user)
     try:
         board = store.set_board(room_id, body.board)
     except store.StoreError as e:

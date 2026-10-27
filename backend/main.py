@@ -460,11 +460,10 @@ async def serve_login():
 
 @app.get("/agentchat")
 async def serve_agentchat():
-    """Page Agent Chat (salon de coordination des agents, admin)."""
-    page_path = os.path.join(frontend_dir, "agentchat.html")
-    if os.path.exists(page_path):
-        return FileResponse(page_path, headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
-    return {"message": "Agent Chat page not found"}
+    """Ancienne page autonome Agent Chat : la vue vit désormais dans le SPA
+    (onglet Discussion) -> redirection vers /#agentchat."""
+    from fastapi.responses import RedirectResponse
+    return RedirectResponse(url="/#agentchat", status_code=302)
 
 
 @app.get("/favicon.svg")

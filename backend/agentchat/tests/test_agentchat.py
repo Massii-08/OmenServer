@@ -12,9 +12,9 @@ from backend.auth.utils import get_current_user
 
 
 class FakeUser(object):
-    def __init__(self, is_admin):
+    def __init__(self, is_admin, role=None):
         self.is_admin = is_admin
-        self.role = "admin" if is_admin else "player"
+        self.role = role or ("admin" if is_admin else "player")
         self.username = "massii"
 
 
@@ -25,12 +25,17 @@ def ac_dir(tmp_path, monkeypatch):
     return d
 
 
-def make_client(is_admin=True):
+def make_client(is_admin=True, role=None):
     app = FastAPI()
     app.include_router(acr.router)
     app.include_router(acr.mcp_router)
-    app.dependency_overrides[get_current_user] = lambda: FakeUser(is_admin)
+    app.dependency_overrides[get_current_user] = lambda: FakeUser(is_admin, role)
     return TestClient(app)
+
+
+def make_admin_and(role):
+    """Client admin (pour préparer le salon) + client du rôle testé, même dossier."""
+    return make_client(), make_client(is_admin=False, role=role)
 
 
 def _mode(p):
@@ -273,3 +278,47 @@ def test_mcp_batch(ac_dir):
 def test_mcp_get_405(ac_dir):
     c = make_client()
     assert c.get("/mcp/agentchat").status_code == 405
+
+
+# ------------------------------------------------------------- rôles
+
+def test_developer_can_chat_and_edit_board(ac_dir):
+    admin, dev = make_admin_and("developer")
+    setup_room(admin)
+    add_member(admin)
+    r = dev.get("/api/agentchat/rooms")
+    assert r.status_code == 200
+    assert "key_hash" not in json.dumps(r.json())
+    r = dev.post("/api/agentchat/rooms/roblox/messages", json={"text": "salut"})
+    assert r.status_code == 200
+    assert r.json()["message"]["author"] == "massii (humain)"
+    assert dev.get("/api/agentchat/rooms/roblox/messages").status_code == 200
+    assert dev.put("/api/agentchat/rooms/roblox/board", json={"board": "B"}).status_code == 200
+    assert dev.get("/api/agentchat/rooms/roblox/board").json()["board"] == "B"
+
+
+def test_developer_cannot_manage_rooms_or_keys(ac_dir):
+    admin, dev = make_admin_and("developer")
+    setup_room(admin)
+    mid = add_member(admin)["member"]["id"]
+    assert dev.post("/api/agentchat/rooms", json={"room_id": "x", "name": "x"}).status_code == 403
+    assert dev.post("/api/agentchat/rooms/roblox/members", json={"name": "Z"}).status_code == 403
+    assert dev.post("/api/agentchat/rooms/roblox/members/%s/revoke" % mid).status_code == 403
+    rooms = admin.get("/api/agentchat/rooms").json()["rooms"]
+    assert len(rooms) == 1 and len(rooms[0]["members"]) == 1
+    assert rooms[0]["members"][0]["revoked"] is False
+
+
+@pytest.mark.parametrize("role", ["player", "moderator", "money", "spectator"])
+def test_other_roles_forbidden_everywhere(ac_dir, role):
+    admin, other = make_admin_and(role)
+    setup_room(admin)
+    mid = add_member(admin)["member"]["id"]
+    assert other.get("/api/agentchat/rooms").status_code == 403
+    assert other.get("/api/agentchat/rooms/roblox/messages").status_code == 403
+    assert other.post("/api/agentchat/rooms/roblox/messages", json={"text": "x"}).status_code == 403
+    assert other.get("/api/agentchat/rooms/roblox/board").status_code == 403
+    assert other.put("/api/agentchat/rooms/roblox/board", json={"board": "x"}).status_code == 403
+    assert other.post("/api/agentchat/rooms", json={"room_id": "y", "name": "y"}).status_code == 403
+    assert other.post("/api/agentchat/rooms/roblox/members", json={"name": "Z"}).status_code == 403
+    assert other.post("/api/agentchat/rooms/roblox/members/%s/revoke" % mid).status_code == 403

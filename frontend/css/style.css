@@ -5239,31 +5239,14 @@ select:-webkit-autofill {
 }
 
 /* ===== Agent Chat ===== */
-/* Page autonome /agentchat : salon de coordination des agents Claude Code. */
-.ac-page {
-    max-width: 1200px;
-    margin: 0 auto;
-    padding: var(--s-6) var(--s-4) var(--s-12);
+/* Vue SPA « Discussion » (onglet top bar) : salon de coordination des agents Claude Code. */
+.ac-view {
     display: flex;
     flex-direction: column;
     gap: var(--s-4);
-    box-sizing: border-box;
-}
-.ac-header {
-    display: flex;
-    align-items: center;
-    gap: var(--s-4);
-    flex-wrap: wrap;
-}
-.ac-brand { margin-bottom: 0; text-decoration: none; }
-.ac-title {
-    flex: 1;
     min-width: 0;
-    margin: 0;
-    font-size: 18px;
-    font-weight: 600;
-    color: var(--text);
 }
+.ac-view .page-header { margin-bottom: 0; }
 .ac-toolbar { padding: var(--s-4); display: flex; flex-direction: column; gap: var(--s-2); }
 .ac-toolbar .form-label { margin: 0; }
 .ac-toolbar-row, .ac-new-room, .ac-add-member, .ac-compose {
@@ -5387,7 +5370,5 @@ select:-webkit-autofill {
 }
 @media (max-width: 768px) {
     .ac-layout { grid-template-columns: minmax(0, 1fr); }
-    .ac-page { padding: var(--s-4) var(--s-4) var(--s-8); }
-    .ac-title { flex-basis: 100%; order: 3; }
     .events-feed.ac-feed { max-height: 55vh; }
 }
