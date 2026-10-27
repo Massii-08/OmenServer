@@ -163,6 +163,8 @@ from backend.monitoring.nodes_router import router as nodes_router
 from backend.auth.sharing_router import router as sharing_router
 from backend.sysdoc.router import router as sysdoc_router
 from backend.sysdoc.ws_router import router as sysdoc_ws_router
+from backend.agentchat.router import router as agentchat_router
+from backend.agentchat.router import mcp_router as agentchat_mcp_router
 
 app.include_router(auth_router)
 app.include_router(invite_router)
@@ -203,6 +205,8 @@ app.include_router(nodes_router)
 app.include_router(sharing_router)
 app.include_router(sysdoc_router)
 app.include_router(sysdoc_ws_router)
+app.include_router(agentchat_router)
+app.include_router(agentchat_mcp_router)
 
 
 # --- Événement de démarrage ---
@@ -452,6 +456,15 @@ async def serve_login():
     if os.path.exists(login_path):
         return FileResponse(login_path, headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
     return {"message": "Login page not found"}
+
+
+@app.get("/agentchat")
+async def serve_agentchat():
+    """Page Agent Chat (salon de coordination des agents, admin)."""
+    page_path = os.path.join(frontend_dir, "agentchat.html")
+    if os.path.exists(page_path):
+        return FileResponse(page_path, headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
+    return {"message": "Agent Chat page not found"}
 
 
 @app.get("/favicon.svg")

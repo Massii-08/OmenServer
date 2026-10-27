@@ -5237,3 +5237,157 @@ select:-webkit-autofill {
 @media (max-width: 560px) {
     .paper-fab-panel { max-height: 70vh; }
 }
+
+/* ===== Agent Chat ===== */
+/* Page autonome /agentchat : salon de coordination des agents Claude Code. */
+.ac-page {
+    max-width: 1200px;
+    margin: 0 auto;
+    padding: var(--s-6) var(--s-4) var(--s-12);
+    display: flex;
+    flex-direction: column;
+    gap: var(--s-4);
+    box-sizing: border-box;
+}
+.ac-header {
+    display: flex;
+    align-items: center;
+    gap: var(--s-4);
+    flex-wrap: wrap;
+}
+.ac-brand { margin-bottom: 0; text-decoration: none; }
+.ac-title {
+    flex: 1;
+    min-width: 0;
+    margin: 0;
+    font-size: 18px;
+    font-weight: 600;
+    color: var(--text);
+}
+.ac-toolbar { padding: var(--s-4); display: flex; flex-direction: column; gap: var(--s-2); }
+.ac-toolbar .form-label { margin: 0; }
+.ac-toolbar-row, .ac-new-room, .ac-add-member, .ac-compose {
+    display: flex;
+    gap: var(--s-2);
+    align-items: stretch;
+    flex-wrap: wrap;
+}
+.ac-toolbar-row select { flex: 1; min-width: 0; }
+.ac-new-room input { flex: 1 1 160px; min-width: 0; }
+.ac-error {
+    padding: var(--s-2) var(--s-3);
+    border-radius: var(--r-sm);
+    background: var(--bg-elev-3);
+    color: var(--danger);
+    border: 1px solid var(--border);
+    font-size: 13px;
+}
+.ac-empty {
+    text-align: center;
+    color: var(--text-muted);
+    padding: var(--s-8) var(--s-4);
+}
+.ac-layout {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 360px);
+    gap: var(--s-4);
+    align-items: start;
+}
+.ac-main, .ac-panel {
+    padding: var(--s-4);
+    display: flex;
+    flex-direction: column;
+    gap: var(--s-3);
+    min-width: 0;
+}
+.ac-side { display: flex; flex-direction: column; gap: var(--s-4); min-width: 0; }
+.ac-h2 {
+    margin: 0;
+    font-size: 13px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--text-muted);
+}
+.ac-hint { margin: 0; font-size: 12px; color: var(--text-dim); }
+.events-feed.ac-feed {
+    max-height: 60vh;
+    min-height: 240px;
+    display: flex;
+    flex-direction: column;
+    gap: var(--s-3);
+}
+.events-feed .ev.ac-msg {
+    display: block;
+    padding-bottom: var(--s-2);
+    border-bottom: 1px solid var(--console-border);
+}
+.events-feed .ev.ac-msg:last-child { border-bottom: none; }
+.ac-msg-head {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: var(--s-2);
+    font-size: 12px;
+}
+.ac-msg-id { color: var(--console-dim); font-feature-settings: "tnum"; }
+.ac-msg-author { color: var(--console-text); font-weight: 600; font-family: var(--font-ui); }
+.ac-msg-ts { margin-left: auto; color: var(--console-dim); font-feature-settings: "tnum"; }
+.ac-reply { color: var(--console-dim); font-size: 11px; }
+.ac-msg-text {
+    margin-top: 4px;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    font-family: var(--font-ui);
+    font-size: 13.5px;
+}
+.badge.ac-kind-humain { background: var(--bg-elev-3); color: var(--violet); border-color: transparent; }
+.ac-feed-empty { color: var(--console-dim); text-align: center; padding: var(--s-6) 0; }
+.ac-compose textarea { flex: 1 1 220px; min-width: 0; resize: vertical; }
+.ac-panel textarea { width: 100%; box-sizing: border-box; resize: vertical; }
+.ac-panel #ac-board-save { align-self: flex-start; }
+.ac-add-member input { flex: 1 1 140px; min-width: 0; }
+.ac-members { display: flex; flex-direction: column; gap: var(--s-2); }
+.ac-member {
+    display: flex;
+    align-items: center;
+    gap: var(--s-2);
+    padding: var(--s-2) var(--s-3);
+    background: var(--bg-elev-2);
+    border: 1px solid var(--border);
+    border-radius: var(--r-md);
+}
+.ac-member-name { flex: 1; min-width: 0; overflow-wrap: anywhere; color: var(--text); }
+.ac-member.revoked .ac-member-name { color: var(--text-dim); text-decoration: line-through; }
+.ac-keybox {
+    display: flex;
+    flex-direction: column;
+    gap: var(--s-2);
+    padding: var(--s-3);
+    background: var(--bg-elev-3);
+    border: 1px solid var(--accent);
+    border-radius: var(--r-md);
+}
+.ac-keybox .form-label { margin: 0; }
+.ac-keybox-title { font-weight: 600; color: var(--text); }
+.ac-keybox-warn { margin: 0; font-size: 12px; color: var(--warning); }
+.ac-copy-row { display: flex; gap: var(--s-2); align-items: flex-start; }
+.ac-code {
+    flex: 1;
+    min-width: 0;
+    padding: var(--s-2);
+    background: var(--bg-elev-1);
+    border: 1px solid var(--border);
+    border-radius: var(--r-sm);
+    font-size: 11.5px;
+    color: var(--text);
+    overflow-wrap: anywhere;
+    word-break: break-all;
+    user-select: all;
+}
+@media (max-width: 768px) {
+    .ac-layout { grid-template-columns: minmax(0, 1fr); }
+    .ac-page { padding: var(--s-4) var(--s-4) var(--s-8); }
+    .ac-title { flex-basis: 100%; order: 3; }
+    .events-feed.ac-feed { max-height: 55vh; }
+}

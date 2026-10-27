@@ -7,7 +7,7 @@
  * Pour désactiver : supprimer ce fichier + la ligne d'enregistrement dans index.html.
  */
 
-const CACHE_NAME = 'omenserver-v199';
+const CACHE_NAME = 'omenserver-v200';
 const STATIC_ASSETS = [
     '/',
     '/css/style.css',
@@ -60,7 +60,7 @@ self.addEventListener('fetch', (event) => {
     const url = new URL(event.request.url);
 
     // Ne pas cacher les appels API (toujours réseau)
-    if (url.pathname.startsWith('/api/') || url.pathname.startsWith('/ws/')) {
+    if (url.pathname.startsWith('/api/') || url.pathname.startsWith('/ws/') || url.pathname.startsWith('/mcp/')) {
         return;
     }
 
