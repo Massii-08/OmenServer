@@ -42,6 +42,8 @@ import urllib.request
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 TIMEOUT = 5.0
+# Cloudflare (omenserver.org) refuse l'user-agent par défaut « Python-urllib » (403).
+USER_AGENT = "omenserver-agentchat/1.0"
 TEXT_MAX = 300
 
 
@@ -148,7 +150,8 @@ def pings_url(url: str) -> str:
 
 
 def fetch_pings(url: str, auth: str, timeout: float = TIMEOUT) -> Any:
-    req = urllib.request.Request(url, headers={"Authorization": auth, "Accept": "application/json"})
+    req = urllib.request.Request(url, headers={"Authorization": auth, "Accept": "application/json",
+                                               "User-Agent": USER_AGENT})
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         return json.loads(resp.read().decode("utf-8"))
 

@@ -63,7 +63,8 @@ def session_hash(session_id: Any) -> Optional[str]:
 def post_status(url: str, auth: str, body: Dict[str, Any], timeout: float = TIMEOUT) -> None:
     req = urllib.request.Request(
         url, data=json.dumps(body).encode("utf-8"), method="POST",
-        headers={"Authorization": auth, "Content-Type": "application/json"})
+        headers={"Authorization": auth, "Content-Type": "application/json",
+                 "User-Agent": "omenserver-agentchat/1.0"})
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         resp.read()
 
