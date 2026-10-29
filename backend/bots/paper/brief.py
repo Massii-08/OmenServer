@@ -649,6 +649,14 @@ def _session_ta(candles_1m: Any, candles_1d: Any) -> Dict[str, Any]:
     return out
 
 
+# Le ticket de RÉFÉRENCE de la fiche quand aucune ligne n'est détenue, en % de
+# l'équité. Valait ``coach_trader.MIN_POSITION_PCT`` (10 %) jusqu'au LOT 17,
+# qui a abaissé le plancher DU COACH à 5 % : la fiche sert aussi les comptes
+# HUMAINS, qui gardent leurs règles — la constante est donc découplée, à la
+# valeur d'avant.
+REFERENCE_TICKET_PCT = 10.0
+
+
 def _fees_view(profile: Any, symbol: str, equity: float,
                position_value: float,
                custom_pct: Optional[float] = None) -> Dict[str, Any]:
@@ -657,20 +665,18 @@ def _fees_view(profile: Any, symbol: str, equity: float,
     Le pourcentage dépend du montant chez les courtiers à paliers ou à
     minimum : on le chiffre sur la ligne DÉJÀ DÉTENUE quand il y en a une (le
     montant que l'écran est en train de montrer), sinon sur un ticket de
-    référence de ``coach_trader.MIN_POSITION_PCT`` % de l'équité — le plancher
-    en dessous duquel une ligne « n'est pas des actions en centimes ». Le
-    montant retenu est SERVI (``notional_chf``) : rien de caché.
+    référence de :data:`REFERENCE_TICKET_PCT` % de l'équité. Le montant
+    retenu est SERVI (``notional_chf``) : rien de caché.
 
     ``custom_pct`` : le taux saisi à la main, que ``fees`` ne laisse réécrire
     que sur le profil ``custom`` — passé ailleurs, il est ignoré par le barème.
     """
-    from backend.bots.paper import coach_trader
     key = str(profile or "").strip().lower()
     if key not in fees.FEE_PROFILES:
         key = models.DEFAULT_FEE_PROFILE
     notional = position_value
     if not notional or notional <= 0:
-        notional = max(equity, 0.0) * coach_trader.MIN_POSITION_PCT / 100.0
+        notional = max(equity, 0.0) * REFERENCE_TICKET_PCT / 100.0
     try:
         round_trip = fees.round_trip_pct(key, notional, symbol, custom_pct)
     except (ValueError, TypeError):

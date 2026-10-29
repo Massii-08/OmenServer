@@ -2194,7 +2194,7 @@ def test_la_section_coach_cite_les_six_regles_du_garde_fou():
         coach_book=COACH_BOOK)
     tail = prompt.split("150 à 400 mots.")[-1]
     assert "sans stop" in tail.lower()
-    assert "10 %" in tail and "30 %" in tail and "2 %" in tail
+    assert "5 %" in tail and "30 %" in tail and "3 %" in tail     # LOT 17
     assert "5 %" in tail and "crypto" in tail and "ligne" in tail
 
 

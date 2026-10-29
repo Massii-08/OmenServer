@@ -4041,6 +4041,9 @@ const PaperModule = {
             // comprise. Le stop de PROTECTION d'une ligne, lui, ne vit jamais
             // ici (il est sur la position) : le sens suffit à les distinguer.
             const isAmbush = this._ctIsAmbush(o);
+            // LOT 17 — un ordre EN FILE pour l'ouverture : décidé marché
+            // fermé, il sera re-jugé sur le vrai cours de la réouverture.
+            const isQueued = this._ctIsQueued(o);
             return '<tr>' +
                 '<td style="' + td + '">' + this._ctSymChip(o && o.symbol) + '</td>' +
                 '<td style="' + td + '">' + esc(this._sideLabel(o && o.side)) + '</td>' +
@@ -4051,11 +4054,14 @@ const PaperModule = {
                   (isAmbush
                     ? ' <span class="badge warn">' + esc(Lang.t('paper.ct_order_ambush')) +
                       '</span>' : '') +
+                  (isQueued
+                    ? ' <span class="badge">' + esc(Lang.t('paper.ct_order_queued')) +
+                      '</span>' : '') +
                 '</td>' +
                 '<td style="' + td + this._mono + '">' +
                   esc(this._num(this._n(o && o.qty), 0)) + '</td>' +
                 '<td style="' + td + this._mono + '">' +
-                  esc(this._num(this._n(this._pickField(o, ['limit_price', 'stop_price'])), 2)) +
+                  esc(this._num(this._n(this._pickField(o, ['limit_price', 'stop_price', 'ref_price'])), 2)) +
                 '</td>' +
                 '<td style="' + td + 'font-size:12px;color:var(--text-muted);">' +
                   this._ctAmbushPlan(o) + '</td>' +
@@ -4081,7 +4087,14 @@ const PaperModule = {
     // déclenche, le stop et l'objectif qui l'attendent de l'autre côté, et sa
     // date de péremption. Sans ça, la table ne montrerait qu'un prix nu — et
     // c'est justement le plan qui distingue un piège armé d'un pari en l'air.
+    // LOT 17 — la FILE « à l'ouverture » : ``kind`` = 'at_open', entrée ou
+    // sortie, re-jugée par le garde-fou à la réouverture.
+    _ctIsQueued(o) {
+        return String((o && o.kind) || '').toLowerCase() === 'at_open';
+    },
+
     _ctAmbushPlan(o) {
+        if (this._ctIsQueued(o)) return this._ctQueuedPlan(o);
         if (!this._ctIsAmbush(o)) return '';
         const bits = [];
         const trig = this._n(o && o.stop_price);
@@ -4097,6 +4110,30 @@ const PaperModule = {
             bits.push(Lang.t('paper.ct_ambush_target') + ' ' + this._num(target, 2));
         }
         const expires = String((o && o.expires_at) || '').slice(0, 10);
+        if (expires) {
+            bits.push(Lang.t('paper.ct_ambush_expires') + ' ' + expires);
+        }
+        return esc(bits.join(' · '));
+    },
+
+    // Le plan d'un ordre EN FILE : le cours de la décision (celui contre lequel
+    // se mesure l'écart d'ouverture), le stop et l'objectif d'une entrée, et
+    // l'échéance (fin de la première séance).
+    _ctQueuedPlan(o) {
+        const bits = [];
+        const ref = this._n(o && o.ref_price);
+        const stop = this._n(o && o.stop_loss);
+        const target = this._n(o && o.target);
+        if (ref !== null) {
+            bits.push(Lang.t('paper.ct_queue_ref') + ' ' + this._num(ref, 2));
+        }
+        if (stop !== null) {
+            bits.push(Lang.t('paper.ct_ambush_stop') + ' ' + this._num(stop, 2));
+        }
+        if (target !== null) {
+            bits.push(Lang.t('paper.ct_ambush_target') + ' ' + this._num(target, 2));
+        }
+        const expires = String((o && o.expires_at) || '').slice(0, 16).replace('T', ' ');
         if (expires) {
             bits.push(Lang.t('paper.ct_ambush_expires') + ' ' + expires);
         }

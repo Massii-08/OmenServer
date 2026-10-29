@@ -93,8 +93,16 @@ MAX_EQUITY_POINTS = 730        # deux ans de points quotidiens
 # Elles ne se négocient pas et elles ne se rognent pas : franchir l'une d'elles
 # n'ajuste pas l'ordre, elle le REFUSE (cf. tête de fichier).
 # --------------------------------------------------------------------------- #
-MAX_RISK_PCT = 2.0        # risque planifié (|entrée-stop| x qty) max, % de l'équité
-MIN_POSITION_PCT = 10.0   # « pas des actions en centimes » : sous ce seuil, ce
+# LOT 17 (29/10) — 2 -> 3 %. Mesuré sur le compte du coach depuis le 23/09 :
+# 5 trades sur 5 gagnants, +3,1 % — la discipline tient, c'est la VITESSE qui
+# manque. Les comptes HUMAINS gardent leurs règles (``precheck``/``risk``).
+MAX_RISK_PCT = 3.0        # risque planifié (|entrée-stop| x qty) max, % de l'équité
+# LOT 17 — 10 -> 5 %. Les deux refus ``too_small`` réels étaient à 9-10 %.
+# 5 % de 10 000 = 500 CHF : au profil IBKR (minimum 1,50 CHF par côté, soit
+# ~0,6 % d'aller-retour sur 500 CHF) les frais restent mesurés, et c'est la
+# porte économique (``fee_ratio``/``edge_thin``, qui lisent le barème au
+# notionnel RÉEL) qui refuse une petite ligne mal payée — pas ce plancher.
+MIN_POSITION_PCT = 5.0    # « pas des actions en centimes » : sous ce seuil, ce
                           # n'est pas une position, c'est un ticket de loterie
 MAX_POSITION_PCT = 30.0   # concentration max d'une ligne (valeur PROJETÉE)
 MAX_POSITIONS = 6         # nombre de fronts ouverts simultanément
@@ -118,14 +126,37 @@ WHIPSAW_DAYS = 5
 
 # --- Embuscades (LOT 9) --------------------------------------------------- #
 MAX_PENDING = 4           # pièges armés simultanément, au plus
-# Le risque CUMULÉ des pièges armés, en % de l'équité. Deux trades pleins.
+# Le risque CUMULÉ des ordres EN ATTENTE (pièges armés ET file « à
+# l'ouverture », LOT 17), en % de l'équité. Deux trades pleins (2 x
+# :data:`MAX_RISK_PCT` — 4 % au risque de 2 %, 6 % depuis le LOT 17).
 # Pourquoi un plafond distinct, plus serré que le cumul toléré sur les lignes
 # ouvertes : une embuscade part SANS que personne regarde. Quatre pièges à
-# 2 % chacun qui se déclenchent sur le MÊME choc de marché coûteraient 8 % du
+# 3 % chacun qui se déclenchent sur le MÊME choc de marché coûteraient 12 % du
 # livre en une nuit, et le coach n'aurait rien vu venir. Il doit choisir.
-MAX_PENDING_RISK_PCT = 4.0
+MAX_PENDING_RISK_PCT = 6.0
 # Un piège qui dort trois semaines s'est armé sur un marché qui n'existe plus.
 AMBUSH_MARKET_DAYS = 5
+
+# --- LOT 17 — la FILE « à l'ouverture » ----------------------------------- #
+# Mesuré sur le compte réel (23/09 -> 29/10) : 17 décisions refusées
+# ``market_closed`` — le coach décide le soir, la nuit, le week-end. L'achat
+# STNG refusé 3 fois puis jamais fait, la fermeture FCX refusée 4 fois, le
+# short CON.DE retardé de plusieurs jours. Une décision au marché prise marché
+# FERMÉ n'est plus refusée : elle attend la réouverture dans le carnet
+# (``open_orders``, ``kind`` = :data:`AT_OPEN_KIND`), puis elle est RE-JUGÉE
+# par la porte sur la cotation fraîche (cf. :func:`gate_queued`).
+AT_OPEN_KIND = "at_open"
+# Au plus tard : quatre jours CIVILS (un week-end prolongé), et en pratique la
+# fin de la PREMIÈRE séance où le titre redevient échangeable
+# (:func:`at_open_expiry`) — une idée qui n'a pas pu partir pendant toute une
+# séance s'est formée sur un marché qui n'existe plus.
+AT_OPEN_MAX_DAYS = 4
+# La garde d'ÉCART à l'ouverture d'une ENTRÉE : max(1 ATR, 3 %). Au-delà,
+# l'ouverture a déjà joué une partie du trade (ou l'a cassé) : le plan écrit
+# la veille ne décrit plus le trade qu'on prendrait. Une SORTIE n'y est JAMAIS
+# soumise (doctrine : une sortie défensive n'est jamais retardée).
+OPEN_GAP_PCT = 3.0
+OPEN_GAP_ATR_MULT = 1.0
 
 RUN_AFTER_HOUR = 17       # ancienne passe unique : jamais avant 17 h LOCALES
 
@@ -164,14 +195,18 @@ RUN_AFTER_HOUR = 17       # ancienne passe unique : jamais avant 17 h LOCALES
 #   20:00 — après-midi américaine.
 #   21:40 — dernière heure américaine : c'est là que les séances se décident.
 # --------------------------------------------------------------------------- #
-WEEKDAY_SLOTS = ("09:10", "15:40", "21:40")
-# REGIME SEPTEMBRE (03/09) : le x20 d'aout est fini — le compte Max est
-# PARTAGE entre le coach et les sessions de developpement, et la soiree du
-# 02/09 (6 passes affamees de 16h a minuit) a montre le plafond. 3 creneaux :
-# matin EU, ouverture US, derniere heure US. Les convergences, le gardien
-# (declenche sur mouvement reel) et les embuscades mecaniques couvrent le
-# reste. Remonter = restaurer le tuple du regime x20 ci-dessous :
-#   ("09:10", "11:30", "14:00", "15:40", "17:00", "18:30", "20:00", "21:40")
+WEEKDAY_SLOTS = ("09:10", "11:30", "14:00", "15:40", "17:00", "18:30",
+                 "20:00", "21:40")
+# RÉGIME OCTOBRE (LOT 17, 29/10) : retour aux 8 créneaux. Le régime de
+# septembre (3 créneaux, 03/09) protégeait un compte Max PARTAGÉ avec les
+# sessions de développement ; depuis le 12/10, les appels du coach passent
+# d'abord par la PASSERELLE LLM (``backend/llm_gateway.py``) : l'API
+# Anthropic, sous un budget GLOBAL de 90 $/mois à la machine (rétrogradation
+# opus -> sonnet dès 60 %, alertes à 80/100 %), avec repli automatique sur le
+# CLI de l'abonnement si le budget est atteint ou la clé refusée. Le coût
+# n'est donc plus pris sur le quota des sessions. Redescendre = remettre
+# ``("09:10", "15:40", "21:40")`` (ou ``LLM_TIER_OVERRIDES`` côté passerelle
+# pour baisser le palier sans toucher la cadence).
 WEEKEND_SLOTS = ("11:00", "18:00")   # crypto UNIQUEMENT (cf. :func:`tradable_now`)
 PASSES_PER_DAY = len(WEEKDAY_SLOTS)
 MAX_FOCUS = 4                       # dossiers instruits par créneau, au plus
@@ -252,6 +287,11 @@ REJECT_CODES = (
     #                         :data:`MIN_THESIS_HORIZON_D` jours : il ne reste
     #                         que du bruit de marché à jouer.
     "no_horizon", "thesis_expiring",
+    # LOT 17 — la file « à l'ouverture » : ``open_gap`` — à la réouverture, le
+    # cours s'est écarté du prix de la décision de plus de max(1 ATR, 3 %), ou
+    # il a déjà franchi le stop ou atteint l'objectif. L'ENTRÉE en file est
+    # annulée (jamais une sortie).
+    "open_gap",
 )
 
 # LOT 15 — les raisons d'une SORTIE décidée par le coach, liste FERMÉE. Mesuré
@@ -791,6 +831,106 @@ def _pending_risk_chf(ambushes: List[Dict[str, Any]]) -> float:
     for order in ambushes:
         total += abs(_val(order.get("risk_chf")) or 0.0)
     return total
+
+
+def queued_orders(portfolio: Any) -> List[Dict[str, Any]]:
+    """La FILE « à l'ouverture » d'un livre (PUR — LOT 17) : les ordres
+    ``open`` de forme :data:`AT_OPEN_KIND`, entrées ET sorties.
+
+    Ils vivent dans ``open_orders`` (même persistance que les embuscades),
+    mais le tick ne les exécute JAMAIS tels quels (``run_tick`` les saute) :
+    seul le chemin du coach les re-juge à la réouverture (:func:`gate_queued`).
+    """
+    book = portfolio if isinstance(portfolio, dict) else {}
+    out = []
+    for order in _dicts(book.get("open_orders")):
+        if _text(order.get("status") or "open").lower() != "open":
+            continue
+        if _text(order.get("kind")).lower() != AT_OPEN_KIND:
+            continue
+        out.append(order)
+    return out
+
+
+def _pending_entries(portfolio: Any) -> List[Dict[str, Any]]:
+    """Tout ce qui OUVRIRA une ligne sans que personne ne regarde (LOT 17) :
+    les embuscades armées ET les entrées de la file « à l'ouverture ».
+
+    C'est cette liste qui compte les fronts PROJETÉS (``too_many_positions``)
+    et le risque CUMULÉ des ordres en attente (``pending_risk_high``) : sans
+    elle, la file contournerait les deux plafonds — six entrées décidées un
+    dimanche partiraient toutes lundi matin.
+    """
+    entries = [q for q in queued_orders(portfolio)
+               if _text(q.get("side")).lower() in ENTRY_ACTIONS]
+    return pending_ambushes(portfolio) + entries
+
+
+# Le sens de position et le SIGNE (+1 ouvre, -1 réduit) de chaque côté d'ordre
+# du MOTEUR — c'est ce que lit :func:`queue_conflicts`.
+_DIRECTION_OF_SIDE = {"buy": ("long", 1), "sell": ("long", -1),
+                      "short": ("short", 1), "cover": ("short", -1)}
+
+
+def queue_conflicts(decision: Any, portfolio: Any) -> Dict[str, List[str]]:
+    """Ce qu'une NOUVELLE décision fait aux ordres EN FILE du même titre (PUR —
+    LOT 17) : ``{"replace": [ids], "cancel": [ids]}``.
+
+    - **même titre, même sens** (un ``buy`` après un ``buy`` en file, un
+      ``sell`` après un ``sell``) : la nouvelle décision REMPLACE l'ancienne
+      au lieu de s'empiler — le routeur ne retire l'ancienne que si la
+      nouvelle est acceptée (un remplaçant refusé laisse l'ordre en place) ;
+    - **décision opposée à une ENTRÉE en file** — une sortie du même sens
+      (``cover`` alors qu'un ``short`` attend d'être ouvert) ou une entrée du
+      sens inverse : l'entrée en file est ANNULÉE, que la nouvelle décision
+      passe ou non (le coach a changé d'avis : son ancienne idée ne doit pas
+      partir lundi sans lui) ;
+    - une SORTIE en file n'est JAMAIS annulée par une entrée (doctrine : une
+      sortie défensive n'est jamais retardée) — seulement remplacée par une
+      autre sortie, ou retirée explicitement par ``cancel_pending``.
+
+    ``reduce`` prend le sens de la ligne tenue ; sans ligne, celui de
+    l'entrée en file sur le titre (alléger ce qui n'est pas encore ouvert,
+    c'est l'annuler) ; à défaut, ``long``.
+    """
+    decision = decision if isinstance(decision, dict) else {}
+    empty = {"replace": [], "cancel": []}
+    action = _text(decision.get("action")).lower()
+    symbol = _symbol(decision.get("symbol"))
+    if not symbol or action not in ENTRY_ACTIONS + EXIT_ACTIONS:
+        return empty
+    if _text(decision.get("kind")).lower() == "stop":
+        return empty            # armer un piège ne touche pas à la file
+    queued = [q for q in queued_orders(portfolio)
+              if _symbol(q.get("symbol")) == symbol]
+    if not queued:
+        return empty
+    sign = 1 if action in ENTRY_ACTIONS else -1
+    if action == "reduce":
+        book = portfolio if isinstance(portfolio, dict) else {}
+        line = _line_of(_dicts(book.get("positions")), symbol)
+        if line is not None:
+            side = _pos_side(line)
+        else:
+            entry = next((q for q in queued
+                          if _text(q.get("side")).lower() in ENTRY_ACTIONS),
+                         None)
+            side = (_DIRECTION_OF_SIDE[_text(entry.get("side")).lower()][0]
+                    if entry is not None else "long")
+    else:
+        side = _SIDE_OF_ACTION[action]
+    out = {"replace": [], "cancel": []}
+    for q in queued:
+        direction = _DIRECTION_OF_SIDE.get(_text(q.get("side")).lower())
+        if direction is None:
+            continue
+        q_side, q_sign = direction
+        oid = _text(q.get("id"))
+        if (q_side, q_sign) == (side, sign):
+            out["replace"].append(oid)
+        elif q_sign > 0 and (q_side == side or sign > 0):
+            out["cancel"].append(oid)
+    return out
 
 
 def market_days_after(moment: Any, days: int = AMBUSH_MARKET_DAYS) -> str:
@@ -1378,12 +1518,16 @@ def gate_decision(decision: Any, portfolio: Any, quote: Any,
 
     ``now`` (LOT 8, remplace le ``crypto_only`` de LOT 5) : l'instant de la
     décision. Sert à :func:`tradable_now` à juger, SYMBOLE PAR SYMBOLE, si le
-    marché de ``symbol`` est ouvert MAINTENANT ; sinon l'ordre est refusé
-    (``market_closed``) au lieu de dormir jusqu'à la réouverture sous un prix
-    que personne n'a vu. Déplacer un stop reste permis — ce n'est pas une
-    exécution. ``now`` est OPTIONNEL : ``None`` (par défaut) désactive ce
-    contrôle — un appelant qui ne s'occupe pas des horaires de marché continue
-    de voir un marché ouvert.
+    marché de ``symbol`` est ouvert MAINTENANT. LOT 17 : marché fermé, une
+    exécution au marché n'est plus refusée — toutes les règles sont jouées sur
+    le cours de la décision et l'ordre accepté porte ``kind`` =
+    :data:`AT_OPEN_KIND` (la FILE « à l'ouverture ») : le routeur le pose au
+    carnet, et il sera RE-JUGÉ par :func:`gate_queued` sur la cotation fraîche
+    de la réouverture — jamais exécuté sous un prix que personne n'a vu. Seule
+    une place inconnue garde ``market_closed``. Déplacer un stop reste permis
+    — ce n'est pas une exécution. ``now`` est OPTIONNEL : ``None`` (par
+    défaut) désactive ce contrôle — un appelant qui ne s'occupe pas des
+    horaires de marché continue de voir un marché ouvert.
 
     ``technical`` (LOT 12) : le résumé technique du titre (``ta.
     technical_summary``, ou tout dict qui porte au moins ``atr14_pct``), ou
@@ -1400,10 +1544,13 @@ def gate_decision(decision: Any, portfolio: Any, quote: Any,
 
       1. ``unknown_action`` — action absente ou hors :data:`ACTION_KINDS`.
       2. ``no_symbol``
-      3. ``market_closed`` — le marché de ``symbol`` est fermé à cet instant
-         (:func:`tradable_now`). Placé AVANT la quantité et le cours : l'heure
-         ferme le marché pour tout le monde, il n'y a pas à examiner un ordre
-         qui ne partira pas.
+      3. ``market_closed`` — la place de ``symbol`` est INCONNUE et fermée
+         (:func:`tradable_now`). Placé AVANT la quantité et le cours. LOT 17 :
+         une place connue mais fermée ne refuse plus — elle ARME la mise en
+         file (``kind`` = :data:`AT_OPEN_KIND` sur l'ordre accepté) et tous
+         les contrôles suivants s'appliquent INCHANGÉS, dans le même ordre ;
+         la mise en file ajoute seulement ``pending_risk_high`` (cumul des
+         ordres en attente) à sa place habituelle, comme pour une embuscade.
       4. ``adjust_stop`` prend sa propre porte (:func:`_gate_adjust_stop`) —
          il n'échange rien, ni quantité ni taille ne le concernent, mais LOT 12
          y ajoute son propre ``stop_in_noise`` (cf. la porte elle-même).
@@ -1447,6 +1594,8 @@ def gate_decision(decision: Any, portfolio: Any, quote: Any,
 
     positions = _dicts(portfolio.get("positions"))
     ambushes = pending_ambushes(portfolio)
+    # LOT 17 — les entrées qui partiront sans témoin : embuscades ET file.
+    pending = _pending_entries(portfolio)
 
     # LOT 9 — la FORME de l'ordre, lue avant tout le reste : c'est elle qui
     # décide si la décision est une exécution (soumise à l'heure de marché) ou
@@ -1462,18 +1611,26 @@ def gate_decision(decision: Any, portfolio: Any, quote: Any,
         # ligne vit sur la position elle-même, pas dans le carnet.
         return _reject("bad_kind")
 
-    # Marché fermé : seules les consignes au CARNET gardent un sens, puisqu'elles
-    # n'agiront qu'à la réouverture — déplacer un stop, retirer une embuscade,
-    # et ARMER une embuscade (c'est tout son intérêt : le piège ne s'exécute
-    # pas maintenant ; l'interdire reviendrait à ne pouvoir l'armer qu'aux
-    # heures où l'on pourrait déjà agir directement). ``now`` absent -> aucun
-    # contrôle (cf. docstring) : sans horloge, rien à juger.
+    # Marché fermé : déplacer un stop, retirer un ordre en attente et ARMER une
+    # embuscade restent des consignes au CARNET (elles n'agiront qu'à la
+    # réouverture). LOT 17 — une exécution au MARCHÉ (entrée OU sortie) n'est
+    # plus refusée : toutes les règles qui suivent sont jouées sur le cours de
+    # la décision, et l'ordre accepté part EN FILE « à l'ouverture »
+    # (``kind`` = :data:`AT_OPEN_KIND`), re-jugé à la réouverture sur la
+    # cotation fraîche (:func:`gate_queued`). Seule une place INCONNUE garde
+    # ``market_closed`` : elle ne rouvrira jamais (on ne sait pas la situer),
+    # une file y dormirait pour rien. ``now`` absent -> aucun contrôle (cf.
+    # docstring) : sans horloge, rien à juger.
+    at_open = False
     if now is not None and action not in ("adjust_stop", "cancel_pending") \
             and plan_kind != "stop" and not tradable_now(symbol, now):
-        return _reject("market_closed")
+        if market_of(symbol) not in _MARKET_WINDOWS:
+            return _reject("market_closed")
+        at_open = True
 
     if action == "cancel_pending":
-        return _gate_cancel_pending(symbol, ambushes)
+        return _gate_cancel_pending(symbol,
+                                    ambushes + queued_orders(portfolio))
 
     if action == "adjust_stop":
         return _gate_adjust_stop(symbol, decision, positions, quote,
@@ -1527,7 +1684,8 @@ def gate_decision(decision: Any, portfolio: Any, quote: Any,
         exit_reason = exit_reason_of(decision.get("exit_reason")) \
             or UNKNOWN_EXIT_REASON
         return _accept(symbol, "sell" if wanted == "long" else "cover",
-                       qty, decision, exit_reason=exit_reason)
+                       qty, decision, exit_reason=exit_reason,
+                       kind=AT_OPEN_KIND if at_open else "market")
 
     # ----------------------------------------------------------------- #
     # ENTRÉE
@@ -1602,7 +1760,9 @@ def gate_decision(decision: Any, portfolio: Any, quote: Any,
     # pièges partaient tous, le livre doit rester dans les règles. Sans ça, le
     # sur-armement serait invisible — on tiendrait 6 lignes après avoir armé
     # 4 pièges sur un livre qui n'en tolère que 6 au total.
-    if len(_fronts(positions, ambushes, symbol)) > MAX_POSITIONS:
+    #
+    # LOT 17 — les entrées de la FILE « à l'ouverture » aussi (``pending``).
+    if len(_fronts(positions, pending, symbol)) > MAX_POSITIONS:
         return _reject("too_many_positions")
 
     crypto = _crypto_symbols(positions)
@@ -1644,8 +1804,20 @@ def gate_decision(decision: Any, portfolio: Any, quote: Any,
     # le dernier mot au moment du fill (trésorerie réellement insuffisante ->
     # ``OrderError`` -> le piège est annulé proprement par le tick), exactement
     # la doctrine déjà retenue pour les frais plus haut.
-    if plan_kind == "stop":
-        cumul = _pending_risk_chf(ambushes) + abs(level_chf - stop_chf) * qty
+    #
+    # LOT 17 — une entrée MISE EN FILE est elle aussi un ordre qui partira sans
+    # témoin : elle est soumise au même cumul, et la file y compte pour un
+    # piège qu'on arme. Une entrée en file du MÊME titre et du MÊME sens est
+    # exclue du cumul : la nouvelle décision la REMPLACE (cf.
+    # :func:`queue_conflicts`), elle ne s'y ajoute pas.
+    if plan_kind == "stop" or at_open:
+        counted = pending
+        if at_open:
+            counted = [p for p in pending
+                       if not (_text(p.get("kind")).lower() == AT_OPEN_KIND
+                               and _symbol(p.get("symbol")) == symbol
+                               and _text(p.get("side")).lower() == action)]
+        cumul = _pending_risk_chf(counted) + abs(level_chf - stop_chf) * qty
         if cumul > equity * MAX_PENDING_RISK_PCT / 100.0:
             return _reject("pending_risk_high")
 
@@ -1697,8 +1869,137 @@ def gate_decision(decision: Any, portfolio: Any, quote: Any,
     if _is_whipsaw(portfolio.get("trades"), symbol, wanted, entry, now):
         return _reject("whipsaw")
 
-    return _accept(symbol, action, qty, decision, kind=plan_kind,
+    return _accept(symbol, action, qty, decision,
+                   kind=AT_OPEN_KIND if at_open else plan_kind,
                    trigger=trigger, contract=contract)
+
+
+def _open_gap(order: Dict[str, Any], prices: List[float],
+              technical: Any) -> bool:
+    """L'ouverture a-t-elle déjà joué (ou cassé) le trade d'une ENTRÉE en
+    file ? (PUR — LOT 17)
+
+    Vrai si l'un des ``prices`` (le prix d'OUVERTURE de la séance et le cours
+    d'exécution) s'écarte du prix de référence de la décision de plus de
+    max(:data:`OPEN_GAP_ATR_MULT` x ATR, :data:`OPEN_GAP_PCT`) — sans ATR,
+    :data:`OPEN_GAP_PCT` seul — ou s'il a DÉJÀ franchi le stop ou atteint
+    l'objectif (un long sous son stop, un short au-dessus du sien).
+
+    Sans prix de référence lisible : pas de garde (on n'invente pas un écart),
+    les règles de la porte jugent seules sur le cours frais.
+    """
+    ref = _val(order.get("ref_price"))
+    side = _text(order.get("side")).lower()
+    stop = _val(order.get("stop_loss"))
+    target = _val(order.get("target"))
+    atr = _atr_pct(technical)
+    limit_pct = OPEN_GAP_PCT
+    if atr is not None and atr > 0:
+        limit_pct = max(OPEN_GAP_PCT, OPEN_GAP_ATR_MULT * atr)
+    for price in prices:
+        if price is None or price <= 0:
+            continue
+        if ref is not None and ref > 0 \
+                and abs(price - ref) / ref * 100.0 > limit_pct:
+            return True
+        if side == "buy":
+            if (stop is not None and price <= stop) \
+                    or (target is not None and price >= target):
+                return True
+        elif side == "short":
+            if (stop is not None and price >= stop) \
+                    or (target is not None and price <= target):
+                return True
+    return False
+
+
+def open_gap_detail(order: Any, prices: Any, technical: Any = None) -> str:
+    """La phrase CHIFFRÉE d'un ``open_gap`` (PUR — LOT 17) : où a ouvert le
+    titre, contre quel prix de décision, et quelle tolérance s'appliquait —
+    mêmes seuils que :func:`_open_gap`, jamais un second calcul."""
+    row = order if isinstance(order, dict) else {}
+    ref = _val(row.get("ref_price"))
+    stop = _val(row.get("stop_loss"))
+    target = _val(row.get("target"))
+    atr = _atr_pct(technical)
+    limit_pct = OPEN_GAP_PCT
+    if atr is not None and atr > 0:
+        limit_pct = max(OPEN_GAP_PCT, OPEN_GAP_ATR_MULT * atr)
+    seen = [p for p in (_val(x) for x in (prices or [])) if p is not None
+            and p > 0]
+    worst = max(seen, key=lambda p: abs(p - ref)) if (seen and ref) else (
+        seen[0] if seen else None)
+    if worst is None:
+        return "écart d'ouverture : cours indisponible"
+    head = "%s a ouvert à %s" % (_symbol(row.get("symbol")) or "?",
+                                 _fr(worst))
+    if ref:
+        head += (" contre %s à la décision (écart %s %%, tolérance %s %%)"
+                 % (_fr(ref), _fr(abs(worst - ref) / ref * 100.0, 1),
+                    _fr(limit_pct, 1)))
+    if stop is not None or target is not None:
+        head += " — stop %s, objectif %s" % (
+            _fr(stop) if stop is not None else "?",
+            _fr(target) if target is not None else "?")
+    return head + " : l'ouverture a déjà joué le trade, l'entrée est annulée"
+
+
+def gate_queued(order: Any, portfolio: Any, quote: Any, now: Any,
+                technical: Any = None,
+                open_price: Any = None,
+                thesis: Any = None) -> Dict[str, Any]:
+    """RE-JUGE un ordre de la FILE « à l'ouverture » sur la cotation FRAÎCHE
+    (PUR — LOT 17). Même contrat de retour que :func:`gate_decision`.
+
+    L'appelant (le tick du coach) ne l'appelle que lorsque le titre est
+    échangeable (:func:`tradable_now`) ET qu'une bougie postérieure à la mise
+    en file prouve que la séance a commencé. ``quote`` = la cotation fraîche
+    (déjà convertie, cf. :func:`gate_decision`) ; ``open_price`` = le prix
+    d'OUVERTURE de la séance (1ʳᵉ bougie postérieure), facultatif.
+
+    1. ENTRÉE : la garde d'écart (:func:`_open_gap`) d'abord — ``open_gap``
+       si l'ouverture a déjà joué ou cassé le trade ;
+    2. puis :func:`gate_decision` TOUT ENTIÈRE, rejouée sur le vrai prix,
+       l'ordre lui-même retiré du livre (il ne doit compter ni comme front ni
+       dans le cumul en attente qu'il va justement quitter).
+
+    ``thesis`` : le contrat HÉRITÉ, exactement comme pour :func:`
+    gate_decision` (le routeur le recherche de la même façon : hypothèse du
+    radar, ligne renforcée) — son échéance ne bouge pas, une idée du radar
+    qui échoit pendant le week-end est donc refusée ``thesis_expiring`` à
+    l'ouverture. Sans contrat hérité, l'horizon DÉCLARÉ par le coach court à
+    partir de l'EXÉCUTION : un horizon de 3 jours décidé un vendredi soir ne
+    doit pas être mangé par le week-end.
+
+    Une SORTIE n'est jamais soumise à l'écart : une sortie défensive n'est
+    jamais retardée. « Solder la ligne » (``sell_all``) vise la quantité
+    VRAIMENT tenue à l'ouverture, pas celle du soir de la décision.
+    """
+    row = order if isinstance(order, dict) else {}
+    book = dict(portfolio) if isinstance(portfolio, dict) else {}
+    oid = _text(row.get("id"))
+    book["open_orders"] = [o for o in _dicts(book.get("open_orders"))
+                           if not (oid and _text(o.get("id")) == oid)]
+    side = _text(row.get("side")).lower()
+    price = _val((quote or {}).get("price")) if isinstance(quote, dict) else None
+    if side in ENTRY_ACTIONS and _open_gap(row, [_val(open_price), price],
+                                           technical):
+        return _reject("open_gap")
+    decision = {
+        "action": side,
+        "symbol": row.get("symbol"),
+        "qty": (None if side in ("sell", "cover") and row.get("sell_all")
+                else row.get("qty")),
+        "stop": row.get("stop_loss"),
+        "target": row.get("target"),
+        "thesis": row.get("thesis"),
+        "setup": row.get("setup"),
+        "horizon_days": row.get("horizon_days"),
+        "invalidation": row.get("invalidation"),
+        "exit_reason": row.get("exit_reason"),
+    }
+    return gate_decision(decision, book, quote, now=now, technical=technical,
+                         thesis=thesis if side in ENTRY_ACTIONS else None)
 
 
 def _stop_protects(side: str, stop: float, price: float) -> bool:
@@ -1790,7 +2091,8 @@ def _gate_adjust_stop(symbol: str, decision: Dict[str, Any],
 
 def _gate_cancel_pending(symbol: str,
                         ambushes: List[Dict[str, Any]]) -> Dict[str, Any]:
-    """Retirer une EMBUSCADE armée (PUR — LOT 9).
+    """Retirer une EMBUSCADE armée ou un ordre EN FILE « à l'ouverture » (PUR
+    — LOT 9, file depuis LOT 17 : ``ambushes`` reçoit les deux).
 
     Rien ne s'échange : c'est une consigne au carnet, permise marché fermé.
     Le seul contrôle est l'EXISTENCE du piège — annuler dans le vide donnerait
@@ -1849,9 +2151,19 @@ def _too_many_positions_detail(portfolio: Dict[str, Any],
     — compte EXACTEMENT ce que compte la porte (:func:`_fronts`)."""
     positions = _dicts(portfolio.get("positions"))
     ambushes = pending_ambushes(portfolio)
+    queued = [q for q in _pending_entries(portfolio)
+              if _text(q.get("kind")).lower() == AT_OPEN_KIND]
     n_lines = len({_symbol(p.get("symbol")) for p in positions} - {""})
     n_armed = len({_symbol(a.get("symbol")) for a in ambushes} - {""})
-    total = len(_fronts(positions, ambushes, symbol))
+    n_queued = len({_symbol(q.get("symbol")) for q in queued} - {""})
+    total = len(_fronts(positions, ambushes + queued, symbol))
+    if n_queued:
+        return ("%d lignes ouvertes + %d embuscades armées + %d entrées en "
+                "file pour l'ouverture : %s porterait le livre à %d fronts "
+                "(plafond %d) — les ordres en attente comptent, car s'ils "
+                "partaient tous il faudrait les tenir"
+                % (n_lines, n_armed, n_queued, symbol or "?", total,
+                   MAX_POSITIONS))
     return ("%d lignes ouvertes + %d embuscades armées : %s porterait le "
             "livre à %d fronts (plafond %d) — les embuscades comptent, car "
             "si elles partaient toutes il faudrait les tenir"
@@ -2489,6 +2801,32 @@ def tradable_now(symbol: Any, now: Any) -> bool:
     (start_h, start_m), (end_h, end_m) = window
     minutes_now = local.hour * 60 + local.minute
     return start_h * 60 + start_m <= minutes_now <= end_h * 60 + end_m
+
+
+def at_open_expiry(symbol: Any, now: Any) -> str:
+    """L'échéance d'un ordre mis EN FILE à ``now`` (PUR — LOT 17), en ISO NAÏF
+    local (la convention de ``created_at``/``now_iso`` du simulateur).
+
+    La fin de la PREMIÈRE séance où ``symbol`` redevient échangeable (la
+    fermeture de sa fenêtre :data:`_MARKET_WINDOWS`, le premier jour ouvré
+    dont la séance n'est pas déjà finie), bornée à :data:`AT_OPEN_MAX_DAYS`
+    jours civils. Une place inconnue (jamais mise en file, cf.
+    :func:`gate_decision`) prend la borne seule.
+    """
+    local = _local(now).replace(tzinfo=None, microsecond=0)
+    cap = local + timedelta(days=AT_OPEN_MAX_DAYS)
+    window = _MARKET_WINDOWS.get(market_of(symbol))
+    if window is None:
+        return cap.isoformat()
+    end_h, end_m = window[1]
+    day = local
+    for _ in range(AT_OPEN_MAX_DAYS + 1):
+        if day.weekday() < 5:
+            close = day.replace(hour=end_h, minute=end_m, second=0)
+            if close > local:
+                return min(close, cap).isoformat()
+        day = (day + timedelta(days=1)).replace(hour=0, minute=0, second=0)
+    return cap.isoformat()
 
 
 def _slot_minutes(slot: Any) -> Optional[int]:

@@ -260,6 +260,17 @@ class Order:
     horizon_days: Optional[int] = None
     invalidation: str = ""
     thesis_deadline: Optional[str] = None
+    # LOT 17 — la FILE « à l'ouverture » du coach (``kind="at_open"``) : une
+    # décision au marché prise marché FERMÉ attend la réouverture, puis elle
+    # est re-jugée sur la cotation fraîche (``coach_trader.gate_queued``).
+    # ``ref_price`` = le cours au moment de la décision (devise du titre),
+    # celui contre lequel se mesure l'écart d'ouverture ; ``exit_reason`` =
+    # la raison d'une SORTIE en file ; ``sell_all`` = « solder la ligne » (la
+    # quantité réellement tenue à l'ouverture, pas celle du soir). Vides pour
+    # tout autre ordre.
+    ref_price: Optional[float] = None
+    exit_reason: str = ""
+    sell_all: bool = False
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -293,6 +304,9 @@ class Order:
             horizon_days=_as_opt_int(data.get("horizon_days")),
             invalidation=_as_str(data.get("invalidation")),
             thesis_deadline=_as_opt_text(data.get("thesis_deadline")),
+            ref_price=_as_opt_float(data.get("ref_price")),
+            exit_reason=_as_str(data.get("exit_reason")),
+            sell_all=data.get("sell_all") is True,
         )
 
 

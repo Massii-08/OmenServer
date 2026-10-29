@@ -834,9 +834,9 @@ def test_coach_actions_block_enonce_les_regles_dures_du_garde_fou():
 
     block = llm.coach_actions_block(BOOK)
     assert "sans stop" in block.lower()
-    assert "10 %" in block and "centimes" in block      # MIN_POSITION_PCT
+    assert "5 %" in block and "centimes" in block       # MIN_POSITION_PCT (LOT 17)
     assert "30 %" in block                              # MAX_POSITION_PCT
-    assert "2 %" in block                               # MAX_RISK_PCT
+    assert "3 %" in block                               # MAX_RISK_PCT (LOT 17)
     assert "6 " in block and "ligne" in block           # MAX_POSITIONS
     assert "crypto" in block                            # MAX_CRYPTO
     assert "5 %" in block and "trésorerie" in block     # MIN_CASH_PCT
@@ -1055,7 +1055,7 @@ def test_coach_actions_block_dit_d_utiliser_PLEINEMENT_le_budget_de_risque():
     low = block.lower()
     assert "plafond" in low or "proche de" in low
     assert "prudence" in low and "mauvais réflexe" in low
-    assert "10 %" in block and "30 %" in block and "2 %" in block
+    assert "5 %" in block and "30 %" in block and "3 %" in block  # LOT 17
 
 
 def test_coach_actions_block_dit_courir_couper_et_jamais_moyenner_en_baisse():
@@ -1220,6 +1220,18 @@ def test_le_prompt_de_tri_explique_le_champ_tradable():
     fois pour toutes."""
     prompt = llm.build_coach_screen_prompt(SCREEN_CTX).lower()
     assert "tradable" in prompt and "market_closed" in prompt
+    # LOT 17 — un titre fermé n'est plus refusé : la décision part en file.
+    assert "at_open" in prompt and "open_gap" in prompt
+
+
+def test_le_bloc_d_actions_explique_la_file_d_ouverture():
+    """LOT 17 — sans ce paragraphe, le coach redemanderait à chaque passe un
+    ordre qui attend déjà au carnet."""
+    block = llm.coach_actions_block(BOOK)
+    assert "at_open" in block and "ref_price" in block
+    assert "open_gap" in block and "cancel_pending" in block
+    assert "REDEMANDE PAS" in block
+    assert "6 %" in block and "3 %" in block
 
 
 def test_le_prompt_de_tri_explique_le_champ_source():
@@ -1244,7 +1256,8 @@ def test_le_prompt_de_tri_met_en_garde_sur_un_titre_de_tendance(monkeypatch):
     doit se jouer petit (entrée de fourchette), jamais pleine taille -- la
     tendance du jour n'est pas une thèse à elle seule."""
     prompt = llm.build_coach_screen_prompt(SCREEN_CTX).lower()
-    assert "10-15" in prompt or "10 à 15" in prompt
+    # LOT 17 — le plancher de taille est à 5 % : l'entrée de fourchette aussi.
+    assert "5 à 10 %" in prompt
     assert "projecteur" in prompt and "pas une thèse" in prompt
     assert "entrée" in prompt
 
@@ -1514,7 +1527,7 @@ def test_coach_actions_block_donne_les_bornes_des_embuscades():
     block = llm.coach_actions_block(BOOK)
     assert str(coach_trader.MAX_PENDING) in block
     assert str(coach_trader.AMBUSH_MARKET_DAYS) in block
-    assert "4 %" in block                     # le risque cumulé des pièges
+    assert "6 %" in block                     # le risque cumulé (LOT 17)
 
 
 def test_coach_actions_block_dit_que_le_stop_se_juge_contre_le_TRIGGER():

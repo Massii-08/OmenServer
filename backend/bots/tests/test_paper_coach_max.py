@@ -355,9 +355,12 @@ def test_adjust_stop_does_not_need_a_quantity():
 # lui-même, via ``tradable_now``, si CE symbole s'échange à CET instant.
 # --------------------------------------------------------------------------- #
 
-def test_a_stock_order_is_refused_outside_its_market_hours():
+def test_a_stock_order_is_queued_outside_its_market_hours():
+    """LOT 17 — plus refusé : jugé sur le cours du moment, mis EN FILE pour
+    l'ouverture (re-jugé alors sur la cotation fraîche)."""
     out = coach_trader.gate_decision(_short(), _pf(), _quote(), now=SUN_1805)
-    assert out["reason"] == "market_closed"
+    assert out["accepted"] is True
+    assert out["order"]["kind"] == coach_trader.AT_OPEN_KIND
 
 
 def test_a_crypto_order_passes_whatever_the_hour():
@@ -372,14 +375,15 @@ def test_a_crypto_order_passes_whatever_the_hour():
     assert out["accepted"] is True
 
 
-def test_selling_a_stock_is_refused_too_when_the_market_is_shut():
-    """Le refus ne vise pas le SENS de l'ordre mais l'HEURE : on ne solde pas
-    une action un dimanche non plus."""
+def test_selling_a_stock_is_queued_too_when_the_market_is_shut():
+    """La file ne vise pas le SENS de l'ordre mais l'HEURE : une vente du
+    dimanche part à l'ouverture de lundi (LOT 17 — refusée avant)."""
     held = [_pos("NESN.SW", qty=20, avg_price=100.0)]
     out = coach_trader.gate_decision(
         {"action": "sell", "exit_reason": "risk", "symbol": "NESN.SW", "qty": 5},
         _pf(positions=held), _quote(), now=SUN_1805)
-    assert out["reason"] == "market_closed"
+    assert out["accepted"] is True
+    assert out["order"]["kind"] == coach_trader.AT_OPEN_KIND
 
 
 def test_moving_a_stop_stays_allowed_when_the_market_is_shut():
@@ -406,11 +410,12 @@ def test_a_european_stock_passes_on_a_tuesday_morning():
     assert out["accepted"] is True
 
 
-def test_a_us_stock_is_refused_on_a_tuesday_morning():
-    """10h à Rome, Wall Street n'a pas encore ouvert (15h35 locales)."""
+def test_a_us_stock_is_queued_on_a_tuesday_morning():
+    """10h à Rome, Wall Street n'a pas encore ouvert (15h35 locales) : mis en
+    file pour l'ouverture (LOT 17)."""
     out = coach_trader.gate_decision(_short(symbol="DAL"), _pf(), _quote(),
                                      now=TUE_1000)
-    assert out["reason"] == "market_closed"
+    assert out["order"]["kind"] == coach_trader.AT_OPEN_KIND
 
 
 def test_a_us_stock_passes_on_a_tuesday_afternoon():
@@ -424,11 +429,12 @@ def test_a_us_stock_passes_on_a_tuesday_afternoon():
 # --------------------------------------------------------------------------- #
 
 def test_the_budget_block_is_the_documented_contract():
-    # REGIME SEPTEMBRE (03/09) : 3 creneaux — le x20 d'aout est fini et la
-    # soiree du 02/09 (6 passes affamees) a montre le plafond du compte partage.
-    assert coach_trader.WEEKDAY_SLOTS == ("09:10", "15:40", "21:40")
+    # RÉGIME OCTOBRE (LOT 17) : retour aux 8 créneaux x20 — les appels
+    # passent par la passerelle LLM (API d'abord, budget global, repli CLI).
+    assert coach_trader.WEEKDAY_SLOTS == ("09:10", "11:30", "14:00", "15:40",
+                                          "17:00", "18:30", "20:00", "21:40")
     assert coach_trader.WEEKEND_SLOTS == ("11:00", "18:00")
-    assert coach_trader.PASSES_PER_DAY == 3
+    assert coach_trader.PASSES_PER_DAY == 8
     assert coach_trader.MAX_FOCUS == 4
     assert coach_trader.LLM_CALLS_PER_PASS == 2
 
@@ -439,9 +445,8 @@ def test_slots_of_the_day_depend_on_the_weekday():
 
 
 def test_due_slot_is_the_latest_one_reached():
-    """Les 3 créneaux du régime septembre : chacun est reconnu à son heure
-    (WED_1135/WED_1405 tombent DANS le créneau 09:10 non consommé — la
-    fenêtre d'un créneau court jusqu'au suivant)."""
+    """Chaque créneau est reconnu à son heure (la fenêtre d'un créneau court
+    jusqu'au suivant)."""
     assert coach_trader.due_slot(WED_0915, {}) == "09:10"
     assert coach_trader.due_slot(WED_1545, {}) == "15:40"
     assert coach_trader.due_slot(WED_2145, {}) == "21:40"

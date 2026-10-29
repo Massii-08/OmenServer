@@ -7220,7 +7220,9 @@ def test_coach_trader_run_forced_on_sunday_refuses_stocks_and_keeps_crypto(
     assert body.status_code == 200
 
     rows = {row["symbol"]: row for row in coach_ledger() if row["symbol"]}
-    assert rows["NESN.SW"]["reason"] == "market_closed"
+    # LOT 17 — plus de refus : l'action part EN FILE pour l'ouverture.
+    assert rows["NESN.SW"]["action"] == "queue_open"
+    assert rows["NESN.SW"]["accepted"] is True
     assert rows["BTC-USD"]["accepted"] is True
 
 
@@ -7954,7 +7956,9 @@ def test_the_weekend_pass_refuses_stocks_and_keeps_crypto(tmp_path, monkeypatch)
 
     pr.run_coach_daily_pass(SUNDAY_NOW, claude=speaker)
     rows = {row["symbol"]: row for row in coach_ledger() if row["symbol"]}
-    assert rows["NESN.SW"]["reason"] == "market_closed"
+    # LOT 17 — plus de refus : l'action part EN FILE pour l'ouverture.
+    assert rows["NESN.SW"]["action"] == "queue_open"
+    assert rows["NESN.SW"]["accepted"] is True
     assert rows["BTC-USD"]["accepted"] is True
 
 

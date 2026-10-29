@@ -1329,6 +1329,26 @@ def coach_actions_block(book: Any) -> str:
         '``{"action": "cancel_pending", "symbol": "..."}``.'
         % (coach_trader.MAX_PENDING, _pct(coach_trader.MAX_PENDING_RISK_PCT),
            coach_trader.AMBUSH_MARKET_DAYS),
+        # LOT 17 — la FILE « à l'ouverture ». Mesuré : 17 décisions refusées
+        # ``market_closed`` en cinq semaines (achat STNG demandé 3 fois puis
+        # jamais fait, fermeture FCX refusée 4 fois). Le coach doit savoir
+        # qu'elles attendent, sinon il les redemande à chaque passe.
+        "TES DÉCISIONS MARCHÉ FERMÉ ATTENDENT L'OUVERTURE. Un ordre au marché "
+        "(entrée ou sortie) sur un titre dont la bourse est fermée n'est plus "
+        "refusé : jugé sur le cours de l'instant, il part EN FILE et apparaît "
+        "dans tes ordres en attente avec ``kind`` ``at_open`` (et "
+        "``ref_price``, le cours de ta décision). Il compte comme un front et "
+        "son risque entre dans le cumul des ordres en attente (%s). À la "
+        "réouverture il est RE-JUGÉ sur le vrai cours : une ENTRÉE est "
+        "annulée si l'ouverture s'écarte de plus de max(1 ATR, %s) de ton "
+        "cours de décision, ou a déjà touché ton stop ou ton objectif "
+        "(``open_gap``) — une SORTIE part TOUJOURS. Il expire à la fin de la "
+        "première séance. NE LE REDEMANDE PAS : il est déjà au carnet. Une "
+        "nouvelle décision du même sens sur le même titre le REMPLACE, une "
+        "décision opposée l'ANNULE, et "
+        '``{"action": "cancel_pending", "symbol": "..."}`` le retire.'
+        % (_pct(coach_trader.MAX_PENDING_RISK_PCT),
+           _pct(coach_trader.OPEN_GAP_PCT)),
         "TU ES NOTÉ, ET LA NOTE EST PUBLIQUE. Chaque décision est archivée puis "
         "comparée : le REGISTRE garde tes ordres acceptés ET tes REFUS avec "
         "leur motif ; un score de DISCIPLINE mesure le respect de ta propre "
@@ -1417,11 +1437,19 @@ def build_coach_screen_prompt(context: Optional[Dict[str, Any]],
         "⚠️ Chaque candidat porte un champ ``tradable`` : ``true`` si son "
         "marché est OUVERT à cet instant, ``false`` sinon (bourse fermée hors "
         "de ses horaires locaux, week-end compris — les cryptos, elles, sont "
-        "TOUJOURS ``tradable``). Tu ne peux agir — ouvrir, alléger ou sortir — "
-        "QUE sur un titre ``tradable`` : un ordre sur un marché fermé sera "
-        "automatiquement refusé (``market_closed``). Tu peux en revanche "
+        "TOUJOURS ``tradable``). Sur un titre ``tradable``, ta décision "
+        "s'exécute tout de suite. Sur un titre FERMÉ, elle n'est plus "
+        "refusée : si elle passe les règles au cours d'aujourd'hui, elle part "
+        "EN FILE pour l'ouverture (``kind`` ``at_open`` dans tes ordres en "
+        "attente) et elle est RE-JUGÉE sur le vrai cours de la réouverture — "
+        "une ENTRÉE est annulée si l'ouverture s'écarte de plus de 1 ATR (%s "
+        "au moins) du cours de ta décision, ou a déjà franchi ton stop ou "
+        "ton objectif (``open_gap``) ; une SORTIE part toujours. Elle expire "
+        "à la fin de la première séance. Seule une place que le système ne "
+        "sait pas situer reste refusée (``market_closed``). Tu peux aussi "
         "TOUJOURS resserrer le stop d'une ligne, marché ouvert ou fermé : "
-        "c'est une consigne au carnet, elle n'agira qu'à la réouverture.",
+        "c'est une consigne au carnet, elle n'agira qu'à la réouverture."
+        % _pct(coach_trader.OPEN_GAP_PCT),
         # LOT 8b — chaque candidat sait maintenant dire POURQUOI il est là :
         # sans ça, un candidat du pool européen (jamais mentionné par une
         # actualité) et une opportunité repérée par le radar se ressemblent
@@ -1444,10 +1472,11 @@ def build_coach_screen_prompt(context: Optional[Dict[str, Any]],
         "être daté — la source dit seulement d'où vient le titre, c'est TOI "
         "qui juges s'il mérite un dossier, et tu peux citer cette raison "
         "dans ta note. ⚠️ Un titre de tendance sans historique dans ta "
-        "mémoire se joue à l'ENTRÉE de la fourchette de taille (10-15 %), "
+        "mémoire se joue à l'ENTRÉE de la fourchette de taille (%s à %s), "
         "jamais pleine taille — la tendance du jour est un projecteur, pas "
         "une thèse : il te faut quand même un niveau technique et une "
-        "raison.",
+        "raison." % (("%g" % coach_trader.MIN_POSITION_PCT).replace(".", ","),
+                     _pct(2 * coach_trader.MIN_POSITION_PCT)),
         "Retiens AU PLUS %d titres, et seulement ceux sur lesquels tu es "
         "prêt à agir aujourd'hui — pas ceux qui « pourraient être "
         "intéressants ». Une liste VIDE est une réponse légitime quand rien "

@@ -146,13 +146,15 @@ def test_every_reject_code_is_declared():
         "no_target", "edge_thin", "whipsaw",
         # LOT 15 — le contrat de thèse : absent, ou échéance trop proche.
         "no_horizon", "thesis_expiring",
+        # LOT 17 — la file « à l'ouverture » : l'ouverture a déjà joué le trade.
+        "open_gap",
         # LOT 15 avait ajouté ``no_exit_reason`` (une sortie qui ne dit pas
         # pourquoi) ; LOT 16 l'a RETIRÉ — inversion DÉLIBÉRÉE, doctrine
         # Massii « Menace = tire seul » : une sortie ne se refuse plus pour
         # un défaut de forme, elle se MESURE (cf. coach_trader.py).
     }
     assert set(coach_trader.REJECT_CODES) == expected
-    assert len(coach_trader.REJECT_CODES) == 30
+    assert len(coach_trader.REJECT_CODES) == 31            # LOT 17 : open_gap
 
 
 def test_coach_username_survives_the_store_allowlist():
@@ -2127,9 +2129,8 @@ def test_maybe_run_never_raises_even_when_everything_burns():
     assert out["reason"] == "error"
     # LOT 5 : le creneau retenu voyage avec le resultat -- savoir LEQUEL a
     # tourne est la premiere chose qu'on regarde quand la cadence surprend.
-    # REGIME SEPTEMBRE : 17h00 Rome tombe dans la fenetre du creneau 15:40
-    # (non consomme dans ce test) — c'est LUI qui est retenu.
-    assert out["slot"] == "15:40"
+    # RÉGIME OCTOBRE (LOT 17, 8 créneaux) : 17h00 Rome EST un créneau.
+    assert out["slot"] == "17:00"
 
 
 @pytest.mark.real_coach_trader
@@ -2202,9 +2203,7 @@ SUNDAY_1805 = datetime(2026, 8, 30, 16, 5, 0, tzinfo=timezone.utc)  # 18:05 Rome
 
 @pytest.mark.real_coach_trader
 def test_the_hook_runs_eight_passes_on_a_weekday():
-    """Régime septembre : TROIS créneaux, chacun tourne UNE fois — les
-    moments intermédiaires (11:35, 14:05…) ne re-déclenchent pas un créneau
-    déjà consommé."""
+    """Régime octobre (LOT 17) : HUIT créneaux, chacun tourne UNE fois."""
     pass_ = _Spy()
     slots = []
     for moment in (WED_0915, WED_1135, WED_1405, WED_1545,
@@ -2212,7 +2211,7 @@ def test_the_hook_runs_eight_passes_on_a_weekday():
         out = _run_hook(now=moment, pass_=pass_)
         slots.append(out.get("slot"))
     assert len(pass_.calls) == coach_trader.PASSES_PER_DAY
-    assert [s for s in slots if s] == ["09:10", "15:40", "21:40"]
+    assert [s for s in slots if s] == list(coach_trader.WEEKDAY_SLOTS)
 
 
 @pytest.mark.real_coach_trader
@@ -2415,7 +2414,7 @@ def _armee(symbol="AAPL", side="buy", trigger=110.0, qty=10,
 
 def test_les_nouvelles_constantes_des_embuscades():
     assert coach_trader.MAX_PENDING == 4
-    assert coach_trader.MAX_PENDING_RISK_PCT == 4.0
+    assert coach_trader.MAX_PENDING_RISK_PCT == 6.0      # LOT 17 (4 avant)
     assert coach_trader.AMBUSH_MARKET_DAYS == 5
     assert "cancel_pending" in coach_trader.ACTION_KINDS
 
@@ -2516,14 +2515,15 @@ def test_le_risque_d_une_embuscade_se_calcule_sur_trigger_moins_stop():
     COURS (100) il n'aurait valu que 0,8 % : la mesure serait FAUSSE, et le
     piège partirait à 110 avec un risque non contrôlé."""
     assert coach_trader.gate_decision(_piege(), _pf(), _quote(100.0))["accepted"]
-    # 20 x (110 - 99) = 220 CHF = 2,2 % > 2 % -> refusé.
-    verdict = coach_trader.gate_decision(_piege(stop=99.0), _pf(), _quote(100.0))
+    # 20 x (110 - 94) = 320 CHF = 3,2 % > 3 % -> refusé (LOT 17 : 3 %).
+    verdict = coach_trader.gate_decision(_piege(stop=94.0), _pf(), _quote(100.0))
     assert verdict["reason"] == "risk_high"
 
 
 def test_la_taille_d_une_embuscade_se_mesure_au_TRIGGER():
-    """8 x 110 = 880 CHF = 8,8 % < plancher de 10 % -> trop petit."""
-    verdict = coach_trader.gate_decision(_piege(qty=8, stop=107.0), _pf(),
+    """4 x 110 = 440 CHF = 4,4 % < plancher de 5 % -> trop petit (mesuré au
+    cours, 400 CHF, le verdict serait le même : c'est le TRIGGER qui compte)."""
+    verdict = coach_trader.gate_decision(_piege(qty=4, stop=107.0), _pf(),
                                          _quote(100.0))
     assert verdict["reason"] == "too_small"
 
@@ -2561,10 +2561,10 @@ def test_un_ordre_LIMITE_en_attente_n_est_pas_une_embuscade():
 
 def test_le_risque_des_pieges_armes_est_CUMULE():
     """Si les pièges partaient tous, le livre doit rester dans les règles :
-    3 x 150 CHF déjà armés + 120 CHF de plus = 570 CHF > 4 % de 10 000."""
+    3 x 200 CHF déjà armés + 120 CHF de plus = 720 CHF > 6 % de 10 000."""
     pf = _pf()
-    pf["open_orders"] = [_armee("A", risk_chf=150.0), _armee("B", risk_chf=150.0),
-                         _armee("C", risk_chf=150.0)]
+    pf["open_orders"] = [_armee("A", risk_chf=200.0), _armee("B", risk_chf=200.0),
+                         _armee("C", risk_chf=200.0)]
     verdict = coach_trader.gate_decision(_piege(), pf, _quote(100.0))
     assert verdict["reason"] == "pending_risk_high"
 
@@ -2600,10 +2600,12 @@ def test_une_embuscade_s_arme_MARCHE_FERME():
     assert verdict["accepted"] is True
 
 
-def test_un_ordre_direct_reste_refuse_marche_ferme():
+def test_un_ordre_direct_part_en_file_marche_ferme():
+    """LOT 17 — plus refusé : mis EN FILE pour l'ouverture."""
     verdict = coach_trader.gate_decision(_buy(), _pf(), _quote(100.0),
                                          now=SUNDAY)
-    assert verdict["reason"] == "market_closed"
+    assert verdict["accepted"] is True
+    assert verdict["order"]["kind"] == coach_trader.AT_OPEN_KIND
 
 
 # --- retirer une embuscade ------------------------------------------------ #
@@ -2698,11 +2700,11 @@ def test_risk_high_is_measured_against_NET_equity_when_short():
     """VÉCU (22/09, compte réel) : un short HSY faisait passer l'équité du
     garde-fou de ~8 760 à ~14 020 CHF — le plafond de risque de 2 % en
     autorisait ~3,2 %. Ici : cash 12 000 dont 2 000 de produit de short,
-    équité nette 10 000 -> risque max 200. 25 x (100-90) = 250 : refusé.
-    (L'ancienne équité brute, 14 000, laissait passer jusqu'à 280.)"""
+    équité nette 10 000 -> risque max 300 (3 %, LOT 17). 35 x (100-90) = 350 :
+    refusé. (L'ancienne équité brute, 14 000, laissait passer jusqu'à 420.)"""
     pf = _pf(cash=12000.0,
              positions=[_pos("DAL", qty=25, avg_price=80.0, side="short")])
-    out = coach_trader.gate_decision(_buy(qty=25, stop=90.0), pf, _quote(100.0))
+    out = coach_trader.gate_decision(_buy(qty=35, stop=90.0), pf, _quote(100.0))
     assert out["reason"] == "risk_high"
 
 

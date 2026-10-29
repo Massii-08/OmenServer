@@ -283,12 +283,13 @@ def test_a_declared_horizon_sizes_the_stop_too():
 
 
 def test_the_risk_rule_still_caps_the_loss_at_the_stop():
-    """Le stop s'élargit, le RISQUE ne change pas : 2 % de l'équité. Un stop
-    à 6,5 % n'autorise que 30 titres à 100 (195 CHF) ; 40 sont refusés."""
+    """Le stop s'élargit, le RISQUE ne change pas : 3 % de l'équité (LOT 17,
+    2 % avant). Un stop à 6,5 % n'autorise que 46 titres à 100 (299 CHF) ;
+    50 sont refusés."""
     tech = {"atr14_pct": 2.0}
     thesis = _inherited(deadline="2026-10-09T10:00:00", horizon=20)
     out = coach_trader.gate_decision(
-        _buy(qty=40, stop=93.5, target=140.0), _pf(), _quote(), now=NOW,
+        _buy(qty=50, stop=93.5, target=140.0), _pf(), _quote(), now=NOW,
         technical=tech, thesis=thesis)
     assert out["reason"] == "risk_high"
 
@@ -323,7 +324,7 @@ def test_the_stop_in_noise_detail_TEACHES_the_stop_for_this_horizon():
     assert "93,60" in text                  # le stop qui passerait
     assert "16" in text                     # les jours restants
     assert "√" in text or "racine" in text  # le pourquoi
-    assert "31" in text                     # la taille qui garde 2 % de risque
+    assert "46" in text                     # la taille qui garde 3 % de risque
 
 
 # =========================================================================== #

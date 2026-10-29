@@ -1134,6 +1134,13 @@ def run_tick(portfolio: models.Portfolio, now_iso: str,
     for order in list(portfolio.open_orders):
         if order.status != "open":
             continue
+        # LOT 17 — la FILE « à l'ouverture » du coach n'est JAMAIS exécutée
+        # ici : elle est RE-JUGÉE par la porte sur la cotation fraîche
+        # (:func:`_coach_process_queue`, appelé par ``tick_coach_account``
+        # AVANT ce tick). L'exécuter comme un ordre au marché la ferait partir
+        # sans garde d'écart ni contrôle de taille sur le vrai prix.
+        if order.kind == coach_trader.AT_OPEN_KIND:
+            continue
         # LOT 9 — la PÉREMPTION d'une embuscade, avant même de chercher un
         # cours : un piège armé il y a trois semaines s'est armé sur un marché
         # qui n'existe plus. Seuls les ordres qui PORTENT une date sont
@@ -2046,14 +2053,16 @@ def _coach_reject_detail(code: str, decision: Dict[str, Any],
                     % (len(coach_trader.pending_ambushes(portfolio.to_dict())),
                        coach_trader.MAX_PENDING))
         if code == "pending_risk_high":
-            armed = coach_trader.pending_ambushes(portfolio.to_dict())
+            # LOT 17 — les entrées EN FILE « à l'ouverture » comptent aussi.
+            armed = coach_trader._pending_entries(portfolio.to_dict())
             deja = sum(abs(float(o.get("risk_chf") or 0.0)) for o in armed)
-            return ("%.2f CHF de risque déjà armé sur %d embuscade(s) — si "
-                    "elles partaient toutes, le cumul dépasserait le plafond "
-                    "de %.0f%% de l'équité"
+            return ("%.2f CHF de risque déjà en attente sur %d ordre(s) "
+                    "(embuscades et file d'ouverture) — s'ils partaient tous, "
+                    "le cumul dépasserait le plafond de %.0f%% de l'équité"
                     % (deja, len(armed), coach_trader.MAX_PENDING_RISK_PCT))
         if code == "no_pending":
-            return "aucune embuscade armée sur %s" % symbol
+            return ("aucune embuscade armée ni ordre en file sur %s"
+                    % symbol)
         if code == "no_position":
             return "aucune position sur %s" % symbol
         if code == "qty_over_position":
@@ -2366,17 +2375,43 @@ def _coach_execute_one(portfolio: models.Portfolio, action: Dict[str, Any],
     if symbol and kind in coach_trader.ENTRY_ACTIONS:
         origin = _coach_origin(symbol, kind, portfolio, origins)
         inherited = _coach_inherited_contract(symbol, kind, portfolio, origin[1])
-    verdict = coach_trader.gate_decision(decision, portfolio.to_dict(),
+    # LOT 17 — la FILE « à l'ouverture » : une décision sur un titre qui a
+    # déjà un ordre en file le REMPLACE (même sens) ou l'ANNULE (décision
+    # opposée à une entrée en file) — cf. ``coach_trader.queue_conflicts``.
+    # L'annulation est appliquée QUOI QUE dise la porte (le coach a changé
+    # d'avis) ; le remplacement, seulement si la nouvelle décision passe. La
+    # porte juge sur le livre SANS ces ordres : ils ne doivent compter ni
+    # comme fronts ni dans le risque en attente qu'ils vont quitter.
+    conflicts = (coach_trader.queue_conflicts(decision, portfolio.to_dict())
+                 if symbol else {"replace": [], "cancel": []})
+    extra_rows = _coach_drop_queued(
+        portfolio, set(conflicts["cancel"]), source, now_iso,
+        "annulé par une décision opposée")
+    gate_book = portfolio.to_dict()
+    replace_ids = set(conflicts["replace"])
+    if replace_ids:
+        gate_book["open_orders"] = [
+            o for o in gate_book.get("open_orders") or []
+            if str(o.get("id") or "") not in replace_ids]
+    verdict = coach_trader.gate_decision(decision, gate_book,
                                          quote or {}, now=now_iso,
                                          technical=technical,
                                          thesis=inherited)
     if not verdict.get("accepted"):
         code = str(verdict.get("reason") or "")
-        return (coach_trader.ledger_entry(
+        if code == "no_position" and extra_rows:
+            # « cover » alors que le short n'était encore qu'EN FILE : il n'y
+            # a rien à racheter, mais le geste a eu lieu — l'entrée en file
+            # vient d'être annulée. Un refus « aucune position » au registre
+            # mentirait sur ce qui s'est passé.
+            return (extra_rows, None)
+        return (extra_rows + [coach_trader.ledger_entry(
             now_iso, source, kind, symbol, False, reason=code,
             detail=_coach_reject_detail(code, decision, portfolio, quote,
                                         now=now_iso, technical=technical,
-                                        thesis=inherited)), None)
+                                        thesis=inherited))], None)
+    extra_rows += _coach_drop_queued(portfolio, replace_ids, source, now_iso,
+                                     "remplacé par une nouvelle décision")
 
     plan = verdict.get("order") or {}
     price = float(quote["price"])
@@ -2395,18 +2430,55 @@ def _coach_execute_one(portfolio: models.Portfolio, action: Dict[str, Any],
     if plan.get("side") == "adjust_stop":
         return (_coach_move_stop(portfolio, symbol, plan, source, now_iso), None)
 
+    # LOT 17 — marché FERMÉ : la décision a passé toutes les règles sur le
+    # cours du moment ; elle attend la réouverture AU CARNET, où elle sera
+    # re-jugée sur la cotation fraîche (:func:`_coach_process_queue`).
+    if plan.get("kind") == coach_trader.AT_OPEN_KIND:
+        sell_all = (plan.get("side") in ("sell", "cover")
+                    and coach_trader._is_blank_qty(decision.get("qty")))
+        return (extra_rows + [_coach_queue_at_open(
+            portfolio, plan, quote, source, now_iso,
+            origin=(origin_source, origin_hyp), sell_all=sell_all)], None)
+
     # LOT 9 — retirer une EMBUSCADE armée. Comme ``adjust_stop`` : rien ne
     # s'échange, aucune trésorerie ne bouge, c'est une consigne au carnet.
     if plan.get("side") == "cancel_pending":
-        return (_coach_cancel_ambush(portfolio, symbol, source, now_iso), None)
+        return (extra_rows + [_coach_cancel_ambush(portfolio, symbol, source,
+                                                   now_iso)], None)
 
     # LOT 9 — ARMER une embuscade : on n'exécute RIEN maintenant, on POSE un
     # ordre que le tick déclenchera au franchissement du niveau. C'est la
     # réponse à « on ne peut pas rester à attendre » : le coach cesse de
     # re-juger passivement le même niveau à chaque passe.
     if plan.get("kind") == "stop":
-        return (_coach_arm_ambush(portfolio, plan, quote, source, now_iso,
-                                  origin=(origin_source, origin_hyp)), None)
+        return (extra_rows + [_coach_arm_ambush(
+            portfolio, plan, quote, source, now_iso,
+            origin=(origin_source, origin_hyp))], None)
+
+    entry, journal = _coach_fill_market(portfolio, plan, quote, source,
+                                        now_iso, (origin_source, origin_hyp),
+                                        kind)
+    return (extra_rows + [entry] if extra_rows else entry), journal
+
+
+def _coach_fill_market(portfolio: models.Portfolio, plan: Dict[str, Any],
+                       quote: Dict[str, Any], source: str, now_iso: str,
+                       origin: Tuple[Optional[str], Optional[str]],
+                       ledger_action: str) -> Any:
+    """EXÉCUTE au marché un ordre que la porte vient d'accepter. MUTE
+    ``portfolio``. Rend ``(entrée_de_registre, (titre, corps)|None)``.
+
+    Extrait du corps de :func:`_coach_execute_one` (LOT 17) : la FILE « à
+    l'ouverture » (:func:`_coach_process_queue`) exécute par EXACTEMENT ce
+    chemin — avertissements consignés, objectif rendu exécutable, provenance
+    et contrat portés jusqu'au trade —, jamais par une copie qui divergerait.
+    """
+    symbol = plan.get("symbol") or ""
+    kind = ledger_action
+    price = float(quote["price"])
+    fx_rate = float(quote["fx_rate"])
+    qty = int(plan.get("qty") or 0)
+    origin_source, origin_hyp = origin
 
     order = models.Order(
         id=uuid.uuid4().hex,
@@ -2484,6 +2556,89 @@ def _coach_execute_one(portfolio: models.Portfolio, action: Dict[str, Any],
         detail="%d x %.2f %s" % (qty, price, order.currency),
         exit_reason=plan.get("exit_reason"))
     return entry, _coach_journal_entry(order, fill, source)
+
+
+def _coach_queue_at_open(portfolio: models.Portfolio, plan: Dict[str, Any],
+                         quote: Dict[str, Any], source: str, now_iso: str,
+                         origin: Tuple[Optional[str], Optional[str]] = (None, None),
+                         sell_all: bool = False) -> Dict[str, Any]:
+    """MET EN FILE « à l'ouverture » une décision au marché prise marché fermé
+    (LOT 17). MUTE ``portfolio``.
+
+    L'ordre vit dans ``open_orders`` (``kind`` = ``coach_trader.AT_OPEN_KIND``)
+    avec TOUT ce qu'il faut pour être re-jugé : le cours de la décision
+    (``ref_price``), le plan complet (stop, objectif, thèse, setup), le
+    contrat de thèse, la provenance, la raison d'une sortie et la passe qui
+    l'a décidé (``source``, créditée de l'exécution). ``risk_chf`` est figé
+    ICI (taux du moment, même doctrine que l'embuscade) : c'est lui que la
+    porte relit pour le risque CUMULÉ des ordres en attente. Échéance :
+    ``coach_trader.at_open_expiry``.
+    """
+    price = float(quote["price"])
+    fx_rate = float(quote["fx_rate"])
+    qty = int(plan.get("qty") or 0)
+    side = plan.get("side") or "buy"
+    symbol = plan.get("symbol") or ""
+    stop_loss = _num(plan.get("stop_loss"))
+    is_entry = side in coach_trader.ENTRY_ACTIONS
+    order = models.Order(
+        id=uuid.uuid4().hex,
+        symbol=symbol,
+        side=side,
+        kind=coach_trader.AT_OPEN_KIND,
+        qty=qty,
+        created_at=now_iso,
+        status="open",
+        thesis=str(plan.get("thesis") or ""),
+        stop_loss=stop_loss if is_entry else None,
+        target=plan.get("target") if is_entry else None,
+        risk_chf=(planned_risk_chf(price, stop_loss, qty, fx_rate)
+                  if is_entry else None),
+        currency=quote["currency"],
+        fee_profile=portfolio.fee_profile,
+        setup=str(plan.get("setup") or ""),
+        emotion=str(plan.get("emotion") or ""),
+        expires_at=coach_trader.at_open_expiry(symbol, now_iso),
+        source=source,
+        candidate_source=origin[0],
+        hypothesis_id=origin[1],
+        horizon_days=plan.get("horizon_days"),
+        invalidation=str(plan.get("invalidation") or ""),
+        thesis_deadline=plan.get("thesis_deadline"),
+        ref_price=price,
+        exit_reason=str(plan.get("exit_reason") or ""),
+        sell_all=bool(sell_all),
+    )
+    portfolio.open_orders.append(order)
+    quoi = ("toute la ligne" if sell_all else "%d x %s" % (qty, symbol))
+    return coach_trader.ledger_entry(
+        now_iso, source, "queue_open", symbol, True,
+        detail=("en file pour l'ouverture : %s %s au cours de la réouverture "
+                "(décidé à %.2f %s, re-jugé à l'ouverture, échéance %s)"
+                % (side, quoi, price, order.currency,
+                   (order.expires_at or "?")[:16].replace("T", " "))),
+        exit_reason=plan.get("exit_reason") if not is_entry else None)
+
+
+def _coach_drop_queued(portfolio: models.Portfolio, ids: Any, source: str,
+                       now_iso: str, why: str) -> List[Dict[str, Any]]:
+    """Retire de la FILE les ordres ``ids`` (LOT 17) et rend une ligne de
+    registre par ordre retiré. MUTE ``portfolio``. Un geste DÉLIBÉRÉ du coach
+    (remplacement, décision opposée) : ligne ``accepted``, sans code de refus."""
+    wanted = {str(i) for i in (ids or []) if i}
+    if not wanted:
+        return []
+    doomed = [o for o in portfolio.open_orders
+              if o.kind == coach_trader.AT_OPEN_KIND and o.id in wanted
+              and o.status == "open"]
+    for order in doomed:
+        order.status = "cancelled"
+    portfolio.open_orders = [o for o in portfolio.open_orders
+                             if not any(o is d for d in doomed)]
+    return [coach_trader.ledger_entry(
+        now_iso, source, "queue_cancelled", o.symbol, True,
+        detail="ordre en file (%s %d x %s) %s" % (o.side, o.qty, o.symbol, why))
+        for o in doomed]
 
 
 def _coach_arm_ambush(portfolio: models.Portfolio, plan: Dict[str, Any],
@@ -2570,13 +2725,19 @@ def _coach_cancel_ambush(portfolio: models.Portfolio, symbol: str,
     doomed = [o for o in portfolio.open_orders
               if o.kind == "stop" and o.side in coach_trader.ENTRY_ACTIONS
               and o.symbol == symbol and o.status == "open"]
-    for order in doomed:
+    # LOT 17 — la FILE « à l'ouverture » se retire par le même geste.
+    queued = [o for o in portfolio.open_orders
+              if o.kind == coach_trader.AT_OPEN_KIND and o.symbol == symbol
+              and o.status == "open"]
+    for order in doomed + queued:
         order.status = "cancelled"
     portfolio.open_orders = [o for o in portfolio.open_orders
-                             if o not in doomed]
+                             if not any(o is d for d in doomed + queued)]
+    detail = "%d embuscade(s) retirée(s) sur %s" % (len(doomed), symbol)
+    if queued:
+        detail += ", %d ordre(s) en file pour l'ouverture" % len(queued)
     return coach_trader.ledger_entry(
-        now_iso, source, "cancel_pending", symbol, True,
-        detail="%d embuscade(s) retirée(s) sur %s" % (len(doomed), symbol))
+        now_iso, source, "cancel_pending", symbol, True, detail=detail)
 
 
 def _coach_move_stop(portfolio: models.Portfolio, symbol: str,
@@ -2739,7 +2900,12 @@ def _execute_coach_actions_locked(actions: Any, source: str,
             entry, journal_entry = _coach_execute_one(portfolio, action, source,
                                                       now, focus_symbol,
                                                       origins)
-            rows.append(entry)
+            # LOT 17 — une décision peut produire PLUSIEURS lignes (le
+            # retrait d'un ordre en file, puis la décision elle-même).
+            if isinstance(entry, list):
+                rows.extend(entry)
+            else:
+                rows.append(entry)
             if journal_entry is not None:
                 journal.append(journal_entry)
         if note:
@@ -2789,12 +2955,157 @@ def tick_coach_account(now_iso: Optional[str] = None) -> Dict[str, Any]:
     armed = {o.id: o for o in portfolio.open_orders
              if o.kind == "stop" and o.side in coach_trader.ENTRY_ACTIONS}
 
+    # LOT 17 — la FILE « à l'ouverture » AVANT le tick : un ordre décidé
+    # marché fermé est re-jugé sur la cotation fraîche dès que son titre
+    # s'échange de nouveau (les SORTIES d'abord). ``run_tick`` ne la touche
+    # jamais (cf. sa boucle d'ordres).
+    queue_rows, queue_journal = _coach_process_queue(portfolio, now,
+                                                     fetch_candles)
+    queued = {o.id: o for o in portfolio.open_orders
+              if o.kind == coach_trader.AT_OPEN_KIND}
+
     result = run_tick(portfolio, now, fetch_candles, quotes.fx_to_chf, username)
     _save(username, portfolio)
-    _push_coach_ledger(_ambush_ledger_rows(armed, result, now)
+    _push_coach_ledger(queue_rows
+                       + _ambush_ledger_rows(armed, result, now)
+                       + _queue_cancel_rows(queued, result, now)
                        + _deadline_ledger_rows(result, now))
     _sync_coach(username, portfolio.to_dict())
+    for title, body in queue_journal:
+        _append_journal(username, title, body, now)
     return result
+
+
+def _coach_process_queue(portfolio: models.Portfolio, now_iso: str,
+                         fetch_candles: Callable[[str], List[Dict[str, Any]]],
+                         ) -> Tuple[List[Dict[str, Any]], List[Any]]:
+    """Exécute ou annule la FILE « à l'ouverture » du coach (LOT 17). MUTE
+    ``portfolio``. Rend ``(lignes_de_registre, entrées_de_carnet)``.
+
+    Pour chaque ordre en file — les SORTIES d'abord (une sortie défensive
+    passe avant tout), puis par ancienneté :
+
+    1. périmé (``coach_trader.is_expired`` : fin de la première séance, ou
+       4 jours) -> retiré, ligne ``queue_expired`` ;
+    2. titre encore fermé (``coach_trader.tradable_now``) -> il attend ;
+    3. aucune bougie POSTÉRIEURE à la mise en file -> il attend : c'est la
+       preuve que la séance a vraiment commencé (à 15:36 Yahoo peut encore
+       servir la clôture de la veille, différée de 15 minutes) — la première
+       de ces bougies donne le prix d'OUVERTURE ;
+    4. cotation fraîche (``_coach_quote``) introuvable -> il attend ;
+    5. sinon il quitte la file et la porte le RE-JUGE en entier
+       (``coach_trader.gate_queued`` : garde d'écart pour une entrée, puis
+       toutes les règles sur le vrai prix). Refus -> ligne
+       ``queue_cancelled`` avec son code (``open_gap`` ou n'importe quel
+       autre) ; accord -> exécution par le chemin normal
+       (:func:`_coach_fill_market`), ligne ``queue_filled`` créditée à la
+       passe qui l'avait décidé.
+
+    Best-effort par ordre : une panne de cours sur un titre ne bloque pas les
+    autres, et l'ordre en panne reste en file jusqu'à son échéance.
+    """
+    rows: List[Dict[str, Any]] = []
+    journal: List[Any] = []
+    queue = [o for o in portfolio.open_orders
+             if o.kind == coach_trader.AT_OPEN_KIND and o.status == "open"]
+    queue.sort(key=lambda o: (0 if o.side in coach_trader.EXIT_ACTIONS else 1,
+                              o.created_at or ""))
+    for order in queue:
+        if not any(o is order for o in portfolio.open_orders) \
+                or order.status != "open":
+            continue          # retiré entre-temps (clôture d'une sortie)
+        if coach_trader.is_expired(order.to_dict(), now_iso):
+            order.status = "cancelled"
+            portfolio.open_orders = [o for o in portfolio.open_orders
+                                     if o is not order]
+            rows.append(coach_trader.ledger_entry(
+                now_iso, order.source, "queue_expired", order.symbol, False,
+                reason="queue_expired",
+                detail=("ordre en file (%s %d x %s) jamais exécuté avant son "
+                        "échéance (%s)"
+                        % (order.side, order.qty, order.symbol,
+                           (order.expires_at or "?")[:16].replace("T", " ")))))
+            continue
+        if not coach_trader.tradable_now(order.symbol, now_iso):
+            continue
+        try:
+            candles = list(fetch_candles(order.symbol) or [])
+        except Exception as e:                  # noqa: BLE001 — jamais fatal
+            logger.warning("paper coach: bougies indisponibles pour la file "
+                           "%s (%s)", order.symbol, type(e).__name__)
+            continue
+        fresh = _window(candles, _epoch(order.created_at))
+        if not fresh:
+            continue
+        quote = _coach_quote(order.symbol)
+        if quote is None:
+            continue
+        open_price = _num(fresh[0].get("open"))
+        technical = (_coach_technical(order.symbol, price=quote.get("price"))
+                     if order.side in coach_trader.ENTRY_ACTIONS else None)
+        # Le contrat HÉRITÉ se recherche comme à la décision (hypothèse du
+        # radar, ligne renforcée) : son échéance ne bouge pas pendant l'attente.
+        inherited = (_coach_inherited_contract(order.symbol, order.side,
+                                               portfolio, order.hypothesis_id)
+                     if order.side in coach_trader.ENTRY_ACTIONS else None)
+        verdict = coach_trader.gate_queued(order.to_dict(), portfolio.to_dict(),
+                                           quote, now_iso, technical=technical,
+                                           open_price=open_price,
+                                           thesis=inherited)
+        portfolio.open_orders = [o for o in portfolio.open_orders
+                                 if o is not order]
+        if not verdict.get("accepted"):
+            order.status = "cancelled"
+            code = str(verdict.get("reason") or "")
+            if code == "open_gap":
+                detail = coach_trader.open_gap_detail(
+                    order.to_dict(), [open_price, quote.get("price")],
+                    technical)
+            else:
+                detail = _coach_reject_detail(
+                    code, _queued_decision(order), portfolio, quote,
+                    now=now_iso, technical=technical, thesis=inherited)
+            rows.append(coach_trader.ledger_entry(
+                now_iso, order.source, "queue_cancelled", order.symbol, False,
+                reason=code, detail=detail))
+            continue
+        order.status = "filled"
+        plan = dict(verdict.get("order") or {})
+        entry, journal_entry = _coach_fill_market(
+            portfolio, plan, quote, order.source, now_iso,
+            (order.candidate_source, order.hypothesis_id), "queue_filled")
+        rows.append(entry)
+        if journal_entry is not None:
+            journal.append(journal_entry)
+    return rows, journal
+
+
+def _queued_decision(order: models.Order) -> Dict[str, Any]:
+    """La décision d'un ordre en file, sous la forme que lisent les détails de
+    refus (``_coach_reject_detail``)."""
+    return {"action": order.side, "symbol": order.symbol, "qty": order.qty,
+            "stop": order.stop_loss, "target": order.target,
+            "thesis": order.thesis, "horizon_days": order.horizon_days,
+            "invalidation": order.invalidation}
+
+
+def _queue_cancel_rows(queued: Dict[str, models.Order],
+                       result: Dict[str, List[Dict[str, Any]]],
+                       now_iso: str) -> List[Dict[str, Any]]:
+    """Les ordres en file que le TICK a annulés (une SORTIE en file devenue
+    orpheline : la ligne a été stoppée ou a touché son objectif avant la
+    réouverture) — au registre, sinon elle disparaîtrait sans trace."""
+    rows: List[Dict[str, Any]] = []
+    for row in result.get("cancelled") or []:
+        order = queued.get(row.get("order_id"))
+        if order is None:
+            continue
+        rows.append(coach_trader.ledger_entry(
+            now_iso, order.source, "queue_cancelled", order.symbol, False,
+            reason=str(row.get("reason") or "") or None,
+            detail=("ordre en file (%s %d x %s) devenu sans objet : la ligne "
+                    "n'existe plus" % (order.side, order.qty, order.symbol))))
+    return rows
 
 
 def _deadline_ledger_rows(result: Dict[str, List[Dict[str, Any]]],
@@ -3481,8 +3792,9 @@ def run_coach_daily_pass(now_iso: Optional[str] = None,
     transmis jusqu'à ``coach_trader.gate_decision`` via ``execute_coach_
     actions``, qui fait juger CHAQUE décision, SYMBOLE PAR SYMBOLE
     (``coach_trader.tradable_now``) : un ordre sur un marché fermé à cet
-    instant est refusé (``market_closed``) plutôt que de dormir jusqu'à la
-    réouverture pour s'exécuter à un prix que personne n'a vu.
+    instant part EN FILE « à l'ouverture » (LOT 17) — jamais exécuté à un prix
+    que personne n'a vu : il est RE-JUGÉ sur la cotation fraîche de la
+    réouverture (:func:`_coach_process_queue`).
 
     ``claude`` est injectable (les tests n'ont jamais besoin du CLI).
 

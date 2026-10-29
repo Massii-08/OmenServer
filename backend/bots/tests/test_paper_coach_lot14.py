@@ -96,11 +96,14 @@ TUESDAY_0426 = "2026-09-22T04:26:00"      # mardi, heure de Rome (naïf = local)
 SATURDAY_1100 = "2026-09-26T11:00:00"     # samedi, heure de Rome
 
 
-def test_a2_le_refus_est_bien_market_closed_un_mardi_a_4h():
+def test_a2_un_mardi_a_4h_la_decision_part_en_file_pour_l_ouverture():
+    """LOT 17 — plus de refus ``market_closed`` pour une place CONNUE : la
+    décision est jugée sur le cours du moment et mise en file."""
     out = coach_trader.gate_decision(_short_nly(), _pf(),
                                      {"price": 20.0, "fx_rate": 0.8},
                                      now=TUESDAY_0426)
-    assert out["reason"] == "market_closed"
+    assert out["accepted"] is True
+    assert out["order"]["kind"] == coach_trader.AT_OPEN_KIND
 
 
 def test_a2_un_mardi_a_4h_on_ne_parle_pas_du_week_end():
