@@ -66,6 +66,15 @@ ARENA_PATHS = {"fr": ARENA_PATH, "it": _PAPER_DIR / "arena_it.json"}
 # Seuils d'AVERTISSEMENT (jamais de blocage — cf. invariant 1).
 CONCENTRATION_PCT = 25.0     # une ligne qui pèse plus d'un quart du portefeuille
 OVERSIZED_PCT = 2.0          # risque planifié au-delà de 2 % du capital initial
+def _risk_limit_for(username: Optional[str]) -> Optional[float]:
+    """Plafond de risque par trade dont le compte est JUGÉ (mesures de discipline
+    et biais « oversized »). Le coach répond à son mandat (``MAX_RISK_PCT``, 3 %),
+    les comptes humains restent à la règle par défaut (``None`` -> 2 %)."""
+    if username == coach_trader.COACH_USERNAME:
+        return coach_trader.MAX_RISK_PCT
+    return None
+
+
 MIN_THESIS_LEN = 15          # même seuil que coach._NO_THESIS_MIN_LEN
 
 MAX_QUOTE_SYMBOLS = 20
@@ -1366,7 +1375,8 @@ def _sync_coach_locked(username: str, portfolio: Dict[str, Any],
     orders = portfolio.get("open_orders") or []
     capital = portfolio.get("initial_capital") or models.DEFAULT_CAPITAL
 
-    biases = coach.detect_biases(trades, orders, capital)
+    biases = coach.detect_biases(trades, orders, capital,
+                                 risk_limit_pct=_risk_limit_for(username))
     stats = risk.portfolio_stats(trades, initial_capital=capital)
 
     try:
@@ -3460,7 +3470,8 @@ def _coach_pass_context(portfolio: models.Portfolio,
         "stats": risk.portfolio_stats(trades,
                                       initial_capital=portfolio.initial_capital),
         "discipline": tradestats.discipline_score(trades,
-                                                  portfolio.initial_capital),
+                                                  portfolio.initial_capital,
+                                                  coach_trader.MAX_RISK_PCT),
         "radar": _open_radar_hypotheses(),
         "market_mood": {},
         "agenda": [],
@@ -4413,7 +4424,8 @@ def paper_portfolio(lang: str = "fr",
     stats = risk.portfolio_stats(trades, initial_capital=portfolio.initial_capital)
     afc = risk.afc_counters(trades, positions, portfolio.initial_capital, _now_iso())
     biases = _with_concentration(
-        coach.detect_biases(trades, orders, portfolio.initial_capital, lang=lang),
+        coach.detect_biases(trades, orders, portfolio.initial_capital, lang=lang,
+                            risk_limit_pct=_risk_limit_for(username)),
         exposure, lang)
 
     return {
@@ -4812,7 +4824,9 @@ def paper_discipline(
     """Score de discipline 0-100 (B4). Moins de 5 trades clos -> ``score: null``."""
     portfolio = _load(current_user.username)
     trades = [t.to_dict() for t in portfolio.trades]
-    return tradestats.discipline_score(trades, portfolio.initial_capital)
+    return tradestats.discipline_score(
+        trades, portfolio.initial_capital,
+        _risk_limit_for(current_user.username))
 
 
 # --------------------------------------------------------------------------- #
@@ -4900,7 +4914,8 @@ def paper_coach_trader(
         "stats": risk.portfolio_stats(trades,
                                       initial_capital=portfolio.initial_capital),
         "discipline": tradestats.discipline_score(trades,
-                                                  portfolio.initial_capital),
+                                                  portfolio.initial_capital,
+                                                  coach_trader.MAX_RISK_PCT),
         # LOT 14 — frais / brut / net sur TOUS les trades clos, et le coût
         # d'un aller-retour au profil RÉEL du compte : ce que l'écran n'a
         # jamais montré, alors que la moitié de la perte était des frais.
@@ -4974,7 +4989,8 @@ def paper_coach(lang: str = "fr",
 
     trades = [t.to_dict() for t in portfolio.trades]
     orders = [o.to_dict() for o in portfolio.open_orders]
-    biases = coach.detect_biases(trades, orders, portfolio.initial_capital, lang=lang)
+    biases = coach.detect_biases(trades, orders, portfolio.initial_capital, lang=lang,
+                                 risk_limit_pct=_risk_limit_for(username))
     stats = risk.portfolio_stats(trades, initial_capital=portfolio.initial_capital)
 
     return {
@@ -5058,7 +5074,8 @@ def _postmortem_core(username: str, portfolio: models.Portfolio, index: int,
     profile = store.load_coach(username) or coach.empty_profile()
     trades = [t.to_dict() for t in portfolio.trades]
     orders = [o.to_dict() for o in portfolio.open_orders]
-    biases = coach.detect_biases(trades, orders, portfolio.initial_capital)
+    biases = coach.detect_biases(trades, orders, portfolio.initial_capital,
+                                 risk_limit_pct=_risk_limit_for(username))
     stats = risk.portfolio_stats(trades, initial_capital=portfolio.initial_capital)
 
     try:
@@ -7253,7 +7270,8 @@ def _board_payload(username: str) -> Dict[str, Any]:
             profile, portfolio_dict.get("trades") or [],
             lessons_total=len(lessons_catalog()),
             initial_capital=portfolio.initial_capital,
-            arena_rows=_arena_rows(profile, portfolio)),
+            arena_rows=_arena_rows(profile, portfolio),
+            risk_limit_pct=_risk_limit_for(username)),
         "scenarios": board.scenarios_view(data),
     }
 

@@ -333,10 +333,13 @@ def _rule_no_stop(trades: List[Dict[str, Any]],
 
 def _rule_oversized(trades: List[Dict[str, Any]], orders: List[Dict[str, Any]],
                      initial_capital: Optional[float],
-                     texts: Dict[str, str]) -> Optional[Dict[str, Any]]:
+                     texts: Dict[str, str],
+                     risk_limit_pct: Optional[float] = None) -> Optional[Dict[str, Any]]:
     if not initial_capital or initial_capital <= 0:
         return None
-    threshold = _OVERSIZED_RATIO * initial_capital
+    ratio_limit = (risk_limit_pct / 100.0 if risk_limit_pct and risk_limit_pct > 0
+                   else _OVERSIZED_RATIO)
+    threshold = ratio_limit * initial_capital
     evidence: List[str] = []
     max_ratio = 0.0
 
@@ -524,7 +527,8 @@ def _rule_no_thesis(trades: List[Dict[str, Any]], orders: List[Dict[str, Any]],
 
 def detect_biases(trades: List[Dict[str, Any]], orders: List[Dict[str, Any]],
                    initial_capital: float,
-                   lang: str = "fr") -> List[Dict[str, Any]]:
+                   lang: str = "fr",
+                   risk_limit_pct: Optional[float] = None) -> List[Dict[str, Any]]:
     """Détecte les biais comportementaux du trader, 100% déterministe (zéro LLM).
 
     ``trades`` = positions CLÔTURÉES (contrat Trade §4). ``orders`` = ordres
@@ -538,6 +542,9 @@ def detect_biases(trades: List[Dict[str, Any]], orders: List[Dict[str, Any]],
     langues (le frontend traduit les codes, le backend traduit les preuves).
     Défaut ``fr`` -> un appel à trois arguments rend exactement ce qu'il rendait
     avant l'ajout du paramètre.
+
+    ``risk_limit_pct`` : seuil de la règle « oversized » (défaut 2 %). Le compte
+    du coach est jugé contre son mandat (3 %) ; l'appelant passe la valeur.
     """
     trades = trades or []
     orders = orders or []
@@ -546,7 +553,8 @@ def detect_biases(trades: List[Dict[str, Any]], orders: List[Dict[str, Any]],
         _rule_cut_winners_early(trades, texts),
         _rule_let_losers_run(trades, texts),
         _rule_no_stop(trades, texts),
-        _rule_oversized(trades, orders, initial_capital, texts),
+        _rule_oversized(trades, orders, initial_capital, texts,
+                        risk_limit_pct),
         _rule_revenge_trade(trades, texts),
         _rule_overtrading(trades, initial_capital, texts),
         # règle 7 (concentration) volontairement absente, cf. commentaire ci-dessus

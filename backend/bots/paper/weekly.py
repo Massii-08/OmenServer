@@ -40,7 +40,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 from zoneinfo import ZoneInfo
 
-from backend.bots.paper import coach, risk, tradestats
+from backend.bots.paper import coach, coach_trader, risk, tradestats
 
 logger = logging.getLogger("omenserver")
 
@@ -176,7 +176,8 @@ def closed_this_week(trades: Any, now: Any, days: int = LOOKBACK_DAYS) -> List[D
 
 
 def build_context(portfolio: Optional[Dict[str, Any]], now: Any,
-                  radar_stats: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+                  radar_stats: Optional[Dict[str, Any]] = None,
+                  username: Optional[str] = None) -> Dict[str, Any]:
     """Le contexte de la semaine passé au LLM — des faits déjà calculés, rien
     de plus (même doctrine que ``paper_router._coach_context``).
 
@@ -187,6 +188,9 @@ def build_context(portfolio: Optional[Dict[str, Any]], now: Any,
     trades = _dicts(portfolio.get("trades"))
     orders = _dicts(portfolio.get("open_orders"))
     capital = portfolio.get("initial_capital")
+    # Le compte du coach est jugé contre SON mandat de risque, pas celui d'un humain.
+    limit = (coach_trader.MAX_RISK_PCT
+             if username == coach_trader.COACH_USERNAME else None)
 
     week = closed_this_week(trades, now)
     fees_summary = _fees_summary(week)
@@ -194,9 +198,10 @@ def build_context(portfolio: Optional[Dict[str, Any]], now: Any,
     return {
         "closed_this_week": week,
         "stats": risk.portfolio_stats(trades, initial_capital=capital),
-        "discipline": tradestats.discipline_score(trades, capital),
+        "discipline": tradestats.discipline_score(trades, capital, limit),
         "open_positions": _dicts(portfolio.get("positions")),
-        "top_biases": coach.detect_biases(trades, orders, capital)[:TOP_BIASES],
+        "top_biases": coach.detect_biases(trades, orders, capital,
+                                       risk_limit_pct=limit)[:TOP_BIASES],
         "radar": radar_stats or {},
         "cash_chf": portfolio.get("cash_chf"),
         "initial_capital_chf": capital,
@@ -444,7 +449,8 @@ def maybe_run(now: Any = None,
         sent = 0
         for username, portfolio in accounts:
             try:
-                context = build_context(portfolio, now_dt, radar_stats=radar)
+                context = build_context(portfolio, now_dt, radar_stats=radar,
+                                         username=username)
                 used_llm = True
                 try:
                     text = (llm or _default_llm)(context)

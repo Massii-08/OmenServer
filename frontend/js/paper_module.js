@@ -2764,7 +2764,8 @@ const PaperModule = {
             : (comp.value === null || comp.value === undefined ? '—' : this._num(this._n(comp.value), 2));
         return '<div style="display:flex;gap:10px;align-items:baseline;padding:4px 0;">' +
               '<span style="flex:1 1 200px;min-width:0;font-size:13px;color:var(--text-muted);">' +
-                esc(Lang.t('paper.discipline_' + key)) + '</span>' +
+                esc(Lang.t('paper.discipline_' + key).replace('{limit}',
+                    String(this._n(comp.limit_pct) === null ? 2 : this._n(comp.limit_pct)))) + '</span>' +
               '<span style="font-size:12px;' + this._mono + 'color:var(--text-dim);margin-right:8px;">' +
                 esc(detail) + '</span>' +
               '<span style="font-size:13px;' + this._mono + 'font-weight:600;">' +

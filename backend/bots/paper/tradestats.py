@@ -246,7 +246,8 @@ def _trade_risk_chf(trade: Dict[str, Any]) -> Optional[float]:
     return abs(entry - stop) * abs(qty) * fx
 
 
-def discipline_score(trades: Any, initial_capital: Any) -> Dict[str, Any]:
+def discipline_score(trades: Any, initial_capital: Any,
+                     risk_limit_pct: Optional[float] = None) -> Dict[str, Any]:
     """Score de discipline 0-100 (B4), 4 composantes équipondérées (25 pts
     chacune) sur les trades CLÔTURÉS :
 
@@ -264,6 +265,10 @@ def discipline_score(trades: Any, initial_capital: Any) -> Dict[str, Any]:
        25 points PLEINS sur cet axe, puisqu'aucune perte n'est restée sans
        filet.
 
+    ``risk_limit_pct`` : plafond de la composante 3 (défaut ``RISK_LIMIT_PCT``,
+    2 %). Le compte du coach est jugé contre SON mandat (3 %) : l'appelant
+    passe la valeur (ce module reste pur, pas d'import de ``coach_trader``).
+
     ``<5`` trades clos -> ``{"score": None}`` : pas de note sur du vide, c'est
     plus honnête qu'un chiffre qui donnerait une fausse impression de
     précision sur 1, 2 ou 3 trades.
@@ -274,6 +279,9 @@ def discipline_score(trades: Any, initial_capital: Any) -> Dict[str, Any]:
         return {"score": None}
 
     capital = _val(initial_capital) or 0.0
+    limit_pct = _val(risk_limit_pct)
+    if limit_pct is None or limit_pct <= 0:
+        limit_pct = RISK_LIMIT_PCT
 
     n_stop = sum(1 for t in rows if t.get("planned_stop") is not None)
     n_thesis = sum(1 for t in rows if str(t.get("thesis") or "").strip())
@@ -283,7 +291,7 @@ def discipline_score(trades: Any, initial_capital: Any) -> Dict[str, Any]:
             continue
         trade_risk = _trade_risk_chf(t)
         if trade_risk is not None and capital > 0 \
-                and trade_risk <= capital * RISK_LIMIT_PCT / 100.0:
+                and trade_risk <= capital * limit_pct / 100.0:
             n_risk_ok += 1
 
     stats = risk.portfolio_stats(rows)
@@ -306,7 +314,8 @@ def discipline_score(trades: Any, initial_capital: Any) -> Dict[str, Any]:
             "thesis_written": {"pct": round(n_thesis / n * 100.0, 1),
                                "points": thesis_points},
             "risk_respected": {"pct": round(n_risk_ok / n * 100.0, 1),
-                               "points": risk_points},
+                               "points": risk_points,
+                               "limit_pct": limit_pct},
             "profit_factor": {"value": pf, "points": pf_points},
         },
     }

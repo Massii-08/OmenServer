@@ -250,7 +250,8 @@ def test_discipline_score_of_a_disciplined_run_is_perfect():
     assert out["score"] == 100
     assert out["components"]["stop_set"] == {"pct": 100.0, "points": 25.0}
     assert out["components"]["thesis_written"] == {"pct": 100.0, "points": 25.0}
-    assert out["components"]["risk_respected"] == {"pct": 100.0, "points": 25.0}
+    assert out["components"]["risk_respected"] == {"pct": 100.0, "points": 25.0,
+                                                   "limit_pct": 2.0}
     assert out["components"]["profit_factor"] == {"value": None, "points": 25.0}
 
 

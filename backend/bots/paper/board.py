@@ -633,7 +633,8 @@ def learning_summary(profile: Optional[Dict[str, Any]],
                      trades: Optional[List[Dict[str, Any]]],
                      lessons_total: int = 8,
                      initial_capital: Any = 0.0,
-                     arena_rows: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
+                     arena_rows: Optional[List[Dict[str, Any]]] = None,
+                     risk_limit_pct: Optional[float] = None) -> Dict[str, Any]:
     """Où en est Massii dans son apprentissage (PUR).
 
     Tout est LU depuis le profil coach (``lessons_passed``, ``arena_history``,
@@ -686,5 +687,6 @@ def learning_summary(profile: Optional[Dict[str, Any]],
         "expectancy_r": stats.get("expectancy_r"),
         # LOT 2, B4 : même doctrine que le reste de ce tableau — RECALCULÉ à
         # chaque lecture depuis les trades, jamais stocké dans le profil.
-        "discipline": tradestats.discipline_score(rows, initial_capital),
+        "discipline": tradestats.discipline_score(rows, initial_capital,
+                                                  risk_limit_pct),
     }
