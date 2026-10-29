@@ -200,7 +200,7 @@ def test_mcp_ping_and_tools_list(ac_dir):
     tools = mcp(c, key, {"jsonrpc": "2.0", "id": 2, "method": "tools/list"}).json()["result"]["tools"]
     names = sorted(t["name"] for t in tools)
     assert names == ["envoyer_document", "envoyer_message", "lire_document", "lire_messages",
-                     "lire_tableau", "lister_documents", "mes_pings", "modifier_tableau"]
+                     "lire_tableau", "lister_documents", "mes_pings", "modifier_tableau", "presence"]
     for t in tools:
         assert t["inputSchema"]["type"] == "object"
 

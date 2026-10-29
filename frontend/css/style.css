@@ -5333,6 +5333,7 @@ select:-webkit-autofill {
 .ac-members { display: flex; flex-direction: column; gap: var(--s-2); }
 .ac-member {
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
     gap: var(--s-2);
     padding: var(--s-2) var(--s-3);
@@ -5466,3 +5467,15 @@ select:-webkit-autofill {
     cursor: pointer;
 }
 .ac-mention-btn:hover, .ac-mention-btn:focus-visible { color: var(--accent); text-decoration: underline; }
+
+/* ===== Agent Chat — présence ===== */
+.ac-presence { flex: 1 0 100%; display: flex; align-items: center; gap: var(--s-3); flex-wrap: wrap; }
+.badge.ac-off { color: var(--text-dim); }
+.ac-limit { display: flex; align-items: center; gap: var(--s-2); font-size: 12px; color: var(--text-muted); }
+.ac-limit-num { font-family: var(--font-mono); font-feature-settings: "tnum"; }
+.ac-limit-num.warn { color: var(--warning); }
+.ac-limit-num.danger { color: var(--danger); }
+.ac-bar { width: 72px; height: 6px; background: var(--bg-elev-3); border-radius: var(--r-pill); overflow: hidden; }
+.ac-bar > span { display: block; height: 100%; background: var(--accent); border-radius: var(--r-pill); }
+.ac-bar > span.warn { background: var(--warning); }
+.ac-bar > span.danger { background: var(--danger); }

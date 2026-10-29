@@ -26,7 +26,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, Response
 from pydantic import BaseModel
 
-from backend.agentchat import store
+from backend.agentchat import presence, store
 from backend.auth.models import User
 from backend.auth.utils import get_current_user
 
@@ -135,6 +135,16 @@ def get_messages(room_id: str, after: int = 0, limit: int = 100,
     except store.StoreError as e:
         raise _http(e)
     return {"messages": msgs}
+
+
+@router.get("/rooms/{room_id}/presence")
+def get_presence(room_id: str, current_user: User = Depends(get_current_user)):
+    _require_chat(current_user)
+    try:
+        room = store.get_room(room_id)
+    except store.StoreError as e:
+        raise _http(e)
+    return {"members": presence.room_view(room, room_id)}
 
 
 @router.post("/rooms/{room_id}/messages")
@@ -340,6 +350,15 @@ TOOLS = [
         "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
     },
     {
+        "name": "presence",
+        "description": (
+            "Liste les membres actifs du salon : travaille, en ligne inactif ou hors ligne "
+            "(vu il y a N min), avec leur % de limite 5 h si connu. Un membre hors ligne "
+            "ne répondra pas : ne l'attends pas, décide toi-même et annonce-le avec fait."
+        ),
+        "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
+    },
+    {
         "name": "envoyer_document",
         "description": (
             "Envoie un document au salon, attaché à un message. contenu = texte brut, ou "
@@ -400,7 +419,10 @@ def _instructions(room: Dict[str, Any], member: Dict[str, Any]) -> str:
         "qui travaillent sur le même projet.\n"
         "- Au début de chaque tâche, appelle lire_messages, mes_pings puis lire_tableau.\n"
         "- Avant de toucher un fichier partagé ou la zone d'un autre membre, envoie une "
-        "demande (type demande) et attends sa réponse.\n"
+        "demande (type demande) et attends sa réponse SEULEMENT si le destinataire est en "
+        "ligne. S'il est hors ligne (outil presence, ou avertissement renvoyé par "
+        "envoyer_message), n'attends pas : prends la décision toi-même, agis, puis annonce-la "
+        "avec le type fait en expliquant ta décision pour qu'il la lise à son retour.\n"
         "- Annonce avec en_cours ce que tu commences et avec fait ce que tu as fini.\n"
         "- Pour demander quelque chose à un membre précis, mentionne-le avec @Nom (ou @tous) : "
         "il reçoit un ping. Un ping qui t'est adressé reste ouvert tant que tu n'y as pas "
@@ -471,7 +493,40 @@ def _tool_envoyer_message(room_id, room, member, args):
     if reply_to is not None and (isinstance(reply_to, bool) or not isinstance(reply_to, int)):
         raise ToolError("argument reponse_a : entier attendu")
     msg = store.append_message(room_id, member["name"], kind, texte, reply_to)
-    return "message #%d envoyé" % msg["id"]
+    out = "message #%d envoyé" % msg["id"]
+    try:
+        views = {v["name"].lower(): v for v in presence.room_view(store.get_room(room_id), room_id)}
+        for name in msg.get("mentions") or []:
+            v = views.get(str(name).lower())
+            if v is None or v["member_id"] == member.get("id"):
+                continue
+            note = presence.offline_note(v)
+            if note:
+                out += ("\nAttention : %s est %s. N'attends pas sa réponse : décide toi-même "
+                        "et annonce ta décision avec type \"fait\"." % (v["name"], note))
+    except store.StoreError:
+        pass
+    return out
+
+
+def _fmt_presence(v: Dict[str, Any]) -> str:
+    note = presence.offline_note(v)
+    if note:
+        status = note
+    elif v["working"]:
+        status = "travaille"
+    else:
+        status = "en ligne, inactif"
+    fh = v.get("five_hour")
+    lim = (" · 5 h : %d %%" % round(fh["pct"])) if fh else ""
+    return "- %s : %s%s" % (v["name"], status, lim)
+
+
+def _tool_presence(room_id, room, member, args):
+    views = presence.room_view(store.get_room(room_id), room_id)
+    if not views:
+        return "Aucun membre actif."
+    return "Présence :\n" + "\n".join(_fmt_presence(v) for v in views)
 
 
 def _tool_lire_tableau(room_id, room, member, args):
@@ -604,6 +659,7 @@ TOOL_HANDLERS = {
     "lire_tableau": _tool_lire_tableau,
     "modifier_tableau": _tool_modifier_tableau,
     "mes_pings": _tool_mes_pings,
+    "presence": _tool_presence,
     "envoyer_document": _tool_envoyer_document,
     "lister_documents": _tool_lister_documents,
     "lire_document": _tool_lire_document,
@@ -689,13 +745,18 @@ def _unauthorized() -> JSONResponse:
                         headers={"WWW-Authenticate": "Bearer"})
 
 
-def _member_from(request: Request) -> Optional[Tuple[str, Dict[str, Any], Dict[str, Any]]]:
-    """(room_id, salon, membre) d'après ``Authorization: Bearer oac_...``, ou None."""
+def _member_from(request: Request, touch: bool = True) -> Optional[Tuple[str, Dict[str, Any], Dict[str, Any]]]:
+    """(room_id, salon, membre) d'après ``Authorization: Bearer oac_...``, ou None.
+
+    Une requête authentifiée met à jour la présence (``last_seen``) du membre."""
     auth = request.headers.get("authorization", "")
     parts = auth.split(None, 1)
     if len(parts) != 2 or parts[0].lower() != "bearer":
         return None
-    return store.find_by_key(parts[1].strip())
+    found = store.find_by_key(parts[1].strip())
+    if found is not None and touch and found[2].get("id"):
+        presence.touch(found[0], found[2]["id"])
+    return found
 
 
 @mcp_router.post("/mcp/agentchat")
@@ -777,3 +838,39 @@ def agent_pings(request: Request):
             "pings": [{"id": m["id"], "author": m.get("author", ""),
                        "text": (m.get("text") or "")[:300], "ts": m.get("ts", "")}
                       for m in pings]}
+
+
+def _num(v: Any) -> Optional[float]:
+    if isinstance(v, bool) or not isinstance(v, (int, float)):
+        return None
+    return float(v)
+
+
+@mcp_router.post("/mcp/agentchat/statut")
+async def agent_status(request: Request):
+    """Statut poussé par le script client (hook/statusline Claude Code).
+
+    Membre = clé uniquement. Champs optionnels invalides : ignorés. Ne compte pas
+    comme un appel MCP (un SessionEnd ne doit pas laisser le membre « en ligne »)."""
+    found = _member_from(request, touch=False)
+    if found is None:
+        return _unauthorized()
+    room_id, room, member = found
+    try:
+        body = json.loads((await request.body()).decode("utf-8") or "{}")
+    except (ValueError, UnicodeDecodeError):
+        body = {}
+    if not isinstance(body, dict):
+        body = {}
+    state = body.get("state")
+    session = body.get("session")
+    if not isinstance(session, str) or not session.strip():
+        session = None
+    ts = lambda k: body.get(k) if isinstance(body.get(k), int) else None  # noqa: E731
+    if member.get("id"):
+        presence.set_status(
+            room_id, member["id"], session=session,
+            state=state if state in presence.STATES else None,
+            five_hour_pct=_num(body.get("five_hour_pct")), five_hour_resets_at=ts("five_hour_resets_at"),
+            seven_day_pct=_num(body.get("seven_day_pct")), seven_day_resets_at=ts("seven_day_resets_at"))
+    return {"ok": True}

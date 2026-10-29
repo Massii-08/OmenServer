@@ -34,6 +34,8 @@ const AgentChatModule = {
     pings: {},           // { nomMembre: [ids de pings ouverts] }
     _pingsKey: '',
     pingTimer: null,
+    presenceTimer: null,
+    presence: {},        // { memberId: vue de présence }
     replyTo: null,       // id du message auquel on répond
     pendingFile: null,   // File en attente d'envoi
     sending: false,
@@ -133,6 +135,8 @@ const AgentChatModule = {
         this.pollTimer = null;
         if (this.pingTimer) clearInterval(this.pingTimer);
         this.pingTimer = null;
+        if (this.presenceTimer) clearInterval(this.presenceTimer);
+        this.presenceTimer = null;
         this.polling = false;
         this._feedRoom = null;
         this.gen++;
@@ -339,15 +343,62 @@ const AgentChatModule = {
         this.lastId = 0;
         this.msgById = {};
         this.pings = {};
+        this.presence = {};
         this._pingsKey = '';
         this.cancelReply();
         this.$('ac-feed').innerHTML = '';
         if (this.pollTimer) clearInterval(this.pollTimer);
         if (this.pingTimer) clearInterval(this.pingTimer);
+        if (this.presenceTimer) clearInterval(this.presenceTimer);
         this.polling = false;
         this.poll();
+        this.refreshPresence();
         this.pollTimer = setInterval(() => { if (!document.hidden) this.poll(); }, this.POLL_MS);
         this.pingTimer = setInterval(() => { if (!document.hidden) this.refreshPings(); }, 20000);
+        this.presenceTimer = setInterval(() => { if (!document.hidden) this.refreshPresence(); }, 10000);
+    },
+
+    async refreshPresence() {
+        const roomAtStart = this.roomId;
+        const gen = this.gen;
+        if (!roomAtStart) return;
+        try {
+            const data = await this.api(`/rooms/${encodeURIComponent(roomAtStart)}/presence`);
+            if (gen !== this.gen || roomAtStart !== this.roomId) return;
+            const map = {};
+            ((data && data.members) || []).forEach(v => { map[v.member_id] = v; });
+            this.presence = map;
+            this.renderMembers();
+        } catch (_) { /* présence best-effort */ }
+    },
+
+    presenceHtml(m) {
+        const v = this.presence[m.id];
+        if (!v) return '';
+        const badge = v.working
+            ? `<span class="badge online">${esc(this.t('presence_working'))}</span>`
+            : (v.online
+                ? `<span class="badge">${esc(this.t('presence_idle'))}</span>`
+                : `<span class="badge ac-off">${esc(this.t('presence_offline'))}</span>`);
+        const n = v.sessions_working > 1
+            ? `<span class="hint">${esc(this.t('sessions_working').replace('{n}', v.sessions_working))}</span>` : '';
+        const fh = v.five_hour;
+        let lim;
+        if (fh && typeof fh.pct === 'number') {
+            const pct = Math.max(0, Math.min(100, fh.pct));
+            const cls = pct >= 90 ? 'danger' : (pct >= 75 ? 'warn' : '');
+            let reset = '';
+            if (fh.resets_at) {
+                const d = new Date(fh.resets_at * 1000);
+                const hhmm = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+                reset = `<span>${esc(this.t('limit_reset').replace('{t}', hhmm))}</span>`;
+            }
+            lim = `<span class="ac-limit"><span class="ac-bar"><span class="${cls}" style="width:${pct.toFixed(0)}%"></span></span>
+                <span class="ac-limit-num ${cls}">${esc(this.t('limit_5h'))} ${esc(Math.round(pct))} %</span>${reset}</span>`;
+        } else {
+            lim = `<span class="ac-limit">${esc(this.t('limit_unknown'))}</span>`;
+        }
+        return `<div class="ac-presence">${badge}${n}${lim}</div>`;
     },
 
     async poll() {
@@ -697,6 +748,7 @@ const AgentChatModule = {
                     : `<span class="badge online">${esc(this.t('active'))}</span>${manage
                         ? `<button class="btn btn-danger btn-sm" data-revoke="${esc(m.id)}" data-name="${esc(m.name)}">${esc(this.t('revoke'))}</button>`
                         : ''}`}
+                ${m.revoked ? '' : this.presenceHtml(m)}
             </div>`).join('');
     },
 

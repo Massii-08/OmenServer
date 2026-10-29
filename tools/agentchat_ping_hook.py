@@ -90,6 +90,56 @@ def load_config(cwd: Optional[str], env: Dict[str, str],
     return url, auth
 
 
+def _entry_conf(entry: Any) -> Optional[Tuple[str, str]]:
+    if not isinstance(entry, dict) or not isinstance(entry.get("url"), str):
+        return None
+    headers = entry.get("headers")
+    if not isinstance(headers, dict):
+        return None
+    for k, v in headers.items():
+        if isinstance(k, str) and k.lower() == "authorization" and isinstance(v, str) and v:
+            return entry["url"], v
+    return None
+
+
+def load_all_configs(cwd: Optional[str], env: Dict[str, str],
+                     config_path: str) -> List[Tuple[str, str]]:
+    """Toutes les entrées (url, Authorization) dont le serveur MCP s'appelle
+    ``agentchat*`` : env d'abord, puis projet, puis global, dédupliquées par clé.
+    (Ne remplace pas ``load_config``, utilisé par le hook Stop.)"""
+    out = []  # type: List[Tuple[str, str]]
+    seen = set()
+
+    def add(conf: Optional[Tuple[str, str]]) -> None:
+        if conf and conf[1] not in seen:
+            seen.add(conf[1])
+            out.append(conf)
+
+    url = env.get("AGENTCHAT_URL") or ""
+    key = env.get("AGENTCHAT_KEY") or ""
+    if url and key:
+        add((url, key if key.lower().startswith("bearer ") else "Bearer " + key))
+    try:
+        with open(config_path, "r", encoding="utf-8") as f:
+            cfg = json.load(f)
+    except (OSError, ValueError):
+        cfg = {}
+    if not isinstance(cfg, dict):
+        cfg = {}
+    scopes = []  # type: List[Any]
+    projects = cfg.get("projects")
+    if cwd and isinstance(projects, dict):
+        scopes.append(projects.get(cwd) or projects.get(cwd.rstrip("/")))
+    scopes.append(cfg)
+    for scope in scopes:
+        servers = scope.get("mcpServers") if isinstance(scope, dict) else None
+        if isinstance(servers, dict):
+            for name, entry in servers.items():
+                if isinstance(name, str) and name.startswith("agentchat"):
+                    add(_entry_conf(entry))
+    return out
+
+
 def pings_url(url: str) -> str:
     url = url.rstrip("/")
     if url.endswith("/pings"):
