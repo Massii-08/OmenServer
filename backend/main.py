@@ -60,6 +60,7 @@ app = FastAPI(
     version="4.0.0",
     docs_url=None,     # Désactiver Swagger en production (sécurité)
     redoc_url=None,    # Désactiver Redoc en production (sécurité)
+    openapi_url=None,  # Sans ça, /openapi.json publie la carte complète de l'API
 )
 
 # --- Middleware CORS ---
@@ -96,7 +97,12 @@ async def rate_limit(request: Request, call_next):
 @app.middleware("http")
 async def security_headers(request: Request, call_next):
     """Ajoute des en-têtes de sécurité à toutes les réponses."""
+    # Le tunnel Cloudflare indique le schéma d'origine : http:// → https:// (308 garde méthode et corps)
+    if request.headers.get("x-forwarded-proto") == "http" and request.url.hostname == "omenserver.org":
+        from starlette.responses import RedirectResponse
+        return RedirectResponse(str(request.url.replace(scheme="https")), status_code=308)
     response = await call_next(request)
+    response.headers["Strict-Transport-Security"] = "max-age=31536000"
     response.headers["X-Frame-Options"] = "DENY"
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["X-XSS-Protection"] = "1; mode=block"
