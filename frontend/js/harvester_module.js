@@ -444,22 +444,39 @@ const HarvesterModule = {
 
     async _connectVnc(jobId) {
         // déjà connecté à ce job -> rien
-        if (this._rfb && this._rfbJob === jobId) return;
+        // (ou connexion en cours d'ouverture pour ce job -> rien non plus)
+        if ((this._rfb || this._vncWs) && this._rfbJob === jobId) return;
         this._disconnectVnc();
         const host = document.getElementById('hrv-solve-host');
         if (!host) return;
         host.innerHTML = '';
         const token = Auth.getToken();
         const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+        // Le JWT ne passe plus en query string (journaux d'accès) : on ouvre le
+        // WebSocket nous-mêmes, on envoie {"type":"auth"} en PREMIER message
+        // texte, PUIS on confie le socket ouvert à noVNC (cf. backend/auth/ws_auth.py).
         const url = proto + '://' + location.host + '/api/bots/harvester/vnc/' +
-            encodeURIComponent(jobId) + '?token=' + encodeURIComponent(token || '');
+            encodeURIComponent(jobId);
+        let ws = null;
         try {
             const mod = await import('/js/vendor/novnc/core/rfb.js');
             const RFB = mod.default;
-            this._rfb = new RFB(host, url);
+            ws = new WebSocket(url);
+            ws.binaryType = 'arraybuffer';
+            this._vncWs = ws;
+            this._rfbJob = jobId;
+            await new Promise((resolve, reject) => {
+                ws.onopen = () => resolve();
+                ws.onerror = () => reject(new Error('ws'));
+                ws.onclose = () => reject(new Error('ws closed'));
+            });
+            if (this._vncWs !== ws) { try { ws.close(); } catch (e) { /* ignore */ } return; }
+            ws.onopen = ws.onerror = ws.onclose = null;
+            ws.send(JSON.stringify({ type: 'auth', token: token || '' }));
+            this._vncWs = null;
+            this._rfb = new RFB(host, ws);
             this._rfb.viewOnly = false;          // tu cliques/résous le CAPTCHA
             this._rfb.scaleViewport = true;
-            this._rfbJob = jobId;
             // si la connexion RFB tombe (échec handshake / x11vnc fermé), on
             // nullifie _rfb pour que le prochain poll retente (sinon le garde
             // _rfbJob===jobId bloquerait toute reconnexion pour ce job).
@@ -472,11 +489,21 @@ const HarvesterModule = {
                 setTimeout(() => window.dispatchEvent(new Event('resize')), 60);
             });
         } catch (e) {
+            // ouverture ratée -> on libère pour que le prochain poll retente
+            // (seulement si c'est TOUJOURS notre tentative : une plus récente
+            // a pu démarrer entre-temps, on ne l'écrase pas)
+            if (this._rfb || (this._vncWs && this._vncWs !== ws)) return;
+            this._vncWs = null;
+            this._rfbJob = null;
             host.textContent = Lang.t('harvester.solve_connecting');
         }
     },
 
     _disconnectVnc() {
+        if (this._vncWs) {
+            try { this._vncWs.close(); } catch (e) { /* ignore */ }
+            this._vncWs = null;
+        }
         if (this._rfb) {
             try { this._rfb.disconnect(); } catch (e) { /* ignore */ }
             this._rfb = null;

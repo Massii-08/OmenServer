@@ -821,7 +821,9 @@ chmod 600 .env
             return;
         }
         const wsBase = location.origin.replace(/^http/, 'ws');
-        const url = `${wsBase}/ws/sysdoc/viewer/${encodeURIComponent(this._username)}?token=${encodeURIComponent(token)}`;
+        // Le JWT ne passe plus en query string (journaux d'accès) : il part dans
+        // le PREMIER message, dès l'ouverture (cf. backend/auth/ws_auth.py).
+        const url = `${wsBase}/ws/sysdoc/viewer/${encodeURIComponent(this._username)}`;
         this._setConn('', 'Connexion…');
         try {
             this._socket = new WebSocket(url);
@@ -831,6 +833,8 @@ chmod 600 .env
             return;
         }
         this._socket.onopen = () => {
+            // Auth AVANT toute commande (le hub lit le 1er message comme jeton).
+            this._socket.send(JSON.stringify({ type: 'auth', token: token }));
             this._setConn('online', `Hub OK · ${this._username}`);
             this._logEvent('ok', `Connecté au hub en tant que viewer ${this._username}`);
             // Demande l'état du monitoring à l'agent (pour savoir s'il faut

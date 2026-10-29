@@ -115,3 +115,40 @@ def test_manage_user_can_send_rcon_command(monkeypatch):
                 executed = True
                 break
         assert executed, "manage aurait dû pouvoir envoyer une commande"
+
+
+# --- Auth par PREMIER MESSAGE (le JWT ne passe plus en query string) ---------
+
+def test_console_auth_par_premier_message(monkeypatch):
+    from backend.game_server import websocket as ws_mod
+    client = _build_ws_app(monkeypatch, "manage")
+    seen = []
+    real = ws_mod.get_user_from_token
+
+    def _spy(t):
+        seen.append(t)
+        return real(t)
+    monkeypatch.setattr(ws_mod, "get_user_from_token", _spy)
+    with client.websocket_connect("/ws/servers/1/console") as ws:
+        ws.send_json({"type": "auth", "token": "jwt-du-1er-message"})
+        ws.send_json({"type": "command", "data": "say hi"})
+        executed = False
+        for _ in range(10):
+            msg = ws.receive_json()
+            if msg.get("type") == "info":
+                executed = True
+                break
+        assert executed
+    assert seen == ["jwt-du-1er-message"]
+
+
+def test_console_mauvais_token_premier_message_ferme_1008(monkeypatch):
+    from starlette.websockets import WebSocketDisconnect
+    from backend.game_server import websocket as ws_mod
+    client = _build_ws_app(monkeypatch, "manage")
+    monkeypatch.setattr(ws_mod, "get_user_from_token", lambda t: None)
+    with client.websocket_connect("/ws/servers/1/console") as ws:
+        ws.send_json({"type": "auth", "token": "bad"})
+        with pytest.raises(WebSocketDisconnect) as ei:
+            ws.receive_json()
+    assert ei.value.code == 1008

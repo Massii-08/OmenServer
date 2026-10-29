@@ -336,12 +336,14 @@ const ServerView = {
  if (this._ws) this._ws.close();
  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
  const token = Auth.getToken();
- // URL corrigée : /ws/servers/{id}/console
- this._ws = new WebSocket(`${proto}://${location.host}/ws/servers/${this.serverId}/console?token=${token}`);
+ // Le JWT ne passe plus en query string (journaux d'accès) : il part dans
+ // le PREMIER message, dès l'ouverture (cf. backend/auth/ws_auth.py).
+ this._ws = new WebSocket(`${proto}://${location.host}/ws/servers/${this.serverId}/console`);
 
  const statusEl = document.getElementById('sv-console-status');
 
  this._ws.onopen = () => {
+ this._ws.send(JSON.stringify({ type: 'auth', token: token || '' }));
  if (statusEl) { statusEl.textContent = 'Connecté'; statusEl.style.color = 'var(--accent)'; }
  this._appendLog('--- Console connectée ---', 'var(--accent)');
  };

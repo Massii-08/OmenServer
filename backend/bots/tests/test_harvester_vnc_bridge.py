@@ -66,17 +66,51 @@ def _ws_client(monkeypatch, tmp_path, admin_token=None):
 def test_ws_bridge_rejects_unauthorized(monkeypatch, tmp_path):
     monkeypatch.setattr(hr, "_ws_admin_from_token", lambda t: None)
     c = _ws_client(monkeypatch, tmp_path)
-    with pytest.raises(WebSocketDisconnect):
+    with pytest.raises(WebSocketDisconnect) as ei:
         with c.websocket_connect(
             "/api/bots/harvester/vnc/{0}?token=bad".format(_JOB)) as ws:
             ws.receive_bytes()
+    assert ei.value.code == 1008
+
+
+def test_ws_bridge_rejects_bad_token_in_first_message(monkeypatch, tmp_path):
+    monkeypatch.setattr(hr, "_ws_admin_from_token", lambda t: None)
+    c = _ws_client(monkeypatch, tmp_path)
+    with c.websocket_connect("/api/bots/harvester/vnc/{0}".format(_JOB)) as ws:
+        ws.send_text('{"type": "auth", "token": "bad"}')
+        with pytest.raises(WebSocketDisconnect) as ei:
+            ws.receive_bytes()
+    assert ei.value.code == 1008
+
+
+def test_ws_bridge_first_message_auth_then_closes_on_socket_unavailable(monkeypatch, tmp_path):
+    # DISCRIMINANT (auth par premier message) : l'auth passe, PUIS 1011 (x11vnc
+    # indispo) — distinct du 1008 d'un refus d'auth.
+    seen = []
+
+    def _authorize(token, job_id):
+        seen.append(token)
+        return (token == "good", "ok")
+    monkeypatch.setattr(hr, "_vnc_authorize", _authorize)
+
+    async def _boom(path):
+        raise OSError("no x11vnc socket")
+    monkeypatch.setattr(hr.asyncio, "open_unix_connection", _boom)
+
+    c = _ws_client(monkeypatch, tmp_path)
+    with c.websocket_connect("/api/bots/harvester/vnc/{0}".format(_JOB)) as ws:
+        ws.send_text('{"type": "auth", "token": "good"}')
+        with pytest.raises(WebSocketDisconnect) as ei:
+            ws.receive_bytes()
+    assert ei.value.code == 1011
+    assert seen == ["good"]
 
 
 def test_ws_bridge_accepts_authorized_then_closes_on_socket_unavailable(monkeypatch, tmp_path):
-    # DISCRIMINANT : avec un job autorisé (admin + awaiting) mais x11vnc indispo,
-    # le bridge ACCEPTE (passe l'auth) PUIS ferme 1011 — distinct du rejet
-    # pré-accept (1008) du cas non autorisé. Prouve que la route existe ET que la
-    # porte d'autorisation laisse bien passer le cas légitime.
+    # DISCRIMINANT (compat ?token= déprécié) : avec un job autorisé (admin +
+    # awaiting) mais x11vnc indispo, le bridge passe l'auth PUIS ferme 1011 —
+    # distinct du rejet d'auth (1008) du cas non autorisé. Prouve que la route
+    # existe ET que la porte d'autorisation laisse bien passer le cas légitime.
     monkeypatch.setattr(hr, "_vnc_authorize", lambda token, job_id: (True, "ok"))
 
     async def _boom(path):

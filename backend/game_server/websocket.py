@@ -4,7 +4,8 @@ WebSocket Console — Streaming de logs Docker en temps réel.
 Permet de voir la console d'un serveur de jeu en direct
 et d'envoyer des commandes (ex: /say Hello dans Minecraft).
 
-Endpoint: ws://localhost:8000/ws/servers/{server_id}/console?token={jwt_token}
+Endpoint: ws://localhost:8000/ws/servers/{server_id}/console
+          puis premier message {"type": "auth", "token": "<jwt>"}
 """
 
 import asyncio
@@ -13,12 +14,13 @@ import threading
 from typing import Optional
 from queue import Queue, Empty
 
-from fastapi import WebSocket, WebSocketDisconnect, APIRouter, Query
+from fastapi import WebSocket, WebSocketDisconnect, APIRouter
 from sqlalchemy.orm import Session
 
 from backend.database import SessionLocal
 from backend.auth.models import User
 from backend.auth.utils import decode_token
+from backend.auth.ws_auth import ws_authenticate
 from backend.game_server.models import GameServer
 
 logger = logging.getLogger(__name__)
@@ -75,46 +77,23 @@ def _stream_logs_thread(container, log_queue: Queue, stop_event: threading.Event
 async def console_websocket(
     websocket: WebSocket,
     server_id: int,
-    token: str = Query(default=""),
 ):
     """
     WebSocket pour la console live d'un serveur.
 
-    - Supporte l'authentification via query string (legacy) OU premier message (recommandé)
+    - Authentification par PREMIER MESSAGE ``{"type":"auth","token":...}``
+      (``backend/auth/ws_auth.py``) ; ``?token=`` encore toléré (déprécié :
+      le JWT finit dans les journaux d'accès)
     - Envoie les logs Docker en temps réel au client
     - Reçoit les commandes du client et les envoie au conteneur
     - Se déconnecte proprement si le conteneur s'arrête
     """
-    # 1. Authentification : d'abord essayer via query string (rétro-compatible)
-    # TODO sécurité : le JWT passé en ?token= apparaît dans les logs d'accès
-    #   (proxy/Cloudflare/uvicorn). Le frontend (frontend/js/server_view.js l.325
-    #   et frontend/js/game_server.js l.885) construit encore l'URL avec ?token=,
-    #   donc on NE retire PAS le query param ici pour ne rien casser. L'auth par
-    #   PREMIER MESSAGE (bloc ci-dessous, type:"auth") est déjà supportée et doit
-    #   devenir le chemin principal — migrer le frontend dessus, puis supprimer
-    #   ce paramètre query. (Géré côté frontend par Massii.)
-    user = None
-    if token:
-        user = get_user_from_token(token)
-
-    # Si pas de token en query, accepter la connexion et attendre un message d'auth
+    # 1. Authentification (refus → close 1008). Lookup de get_user_from_token
+    #    à l'appel : les tests le surchargent.
+    user = await ws_authenticate(websocket, lambda t: get_user_from_token(t),
+                                 label="console")
     if not user:
-        await websocket.accept()
-        try:
-            # Attendre le premier message d'authentification (timeout 10s)
-            auth_msg = await asyncio.wait_for(websocket.receive_json(), timeout=10.0)
-            if auth_msg.get("type") == "auth":
-                user = get_user_from_token(auth_msg.get("token", ""))
-            if not user:
-                await websocket.send_json({"type": "error", "message": "Token invalide"})
-                await websocket.close(code=4001, reason="Token invalide")
-                return
-        except (asyncio.TimeoutError, Exception):
-            await websocket.close(code=4001, reason="Authentification requise")
-            return
-    else:
-        # Token query valide → accepter la connexion
-        await websocket.accept()
+        return
 
     # 2. Vérifier que le serveur existe
     server = get_server(server_id)

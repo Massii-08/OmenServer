@@ -880,7 +880,9 @@ const GameServer = {
  // Connexion WebSocket
  const token = Auth.getToken();
  const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
- const wsUrl = `${protocol}//${location.host}/ws/servers/${id}/console?token=${token}`;
+ // Le JWT ne passe plus en query string (journaux d'accès) : il part dans
+ // le PREMIER message, dès l'ouverture (cf. backend/auth/ws_auth.py).
+ const wsUrl = `${protocol}//${location.host}/ws/servers/${id}/console`;
 
  if (statusEl) {
  statusEl.textContent = 'Connexion...';
@@ -892,6 +894,7 @@ const GameServer = {
  this._consoleWS = new WebSocket(wsUrl);
 
  this._consoleWS.onopen = () => {
+ this._consoleWS.send(JSON.stringify({ type: 'auth', token: token || '' }));
  if (statusEl) {
  statusEl.textContent = 'En direct';
  statusEl.style.background = 'rgba(46, 204, 113, 0.2)';

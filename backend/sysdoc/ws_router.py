@@ -8,8 +8,11 @@ Mapping (v4 — multi-machine per user) :
     /ws/sysdoc/viewer/{username}             ← dashboard reçoit TOUTES les
                                               machines de <username>, sélecteur UI
 
-Auth : JWT classique OmenServer via `?token=...` query param. Le `sub` du JWT
-doit matcher le {username} de l'URL (sauf admin qui peut cross-user).
+Auth : JWT classique OmenServer. Le viewer (frontend du site) l'envoie dans le
+PREMIER MESSAGE `{"type":"auth","token":...}` (cf. backend/auth/ws_auth.py ;
+`?token=` encore toléré, déprécié) ; l'agent (client externe) reste en
+`?token=...`. Le `sub` du JWT doit matcher le {username} de l'URL (sauf admin
+qui peut cross-user).
 
 Multi-machine : un user peut avoir plusieurs machines (Mac perso + PC Windows
 gaming + serveur dev). Chaque agent s'identifie par un `machine_id` (default
@@ -31,6 +34,7 @@ from typing import Dict, Optional, Set, List
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from backend.auth.utils import decode_token
+from backend.auth.ws_auth import ws_authenticate
 from backend.database import SessionLocal
 from backend.auth.models import User
 
@@ -225,13 +229,24 @@ async def _auth_and_accept(
     path_username: str,
     *,
     allow_admin_cross_user: bool = False,
+    first_message: bool = False,
 ) -> Optional[str]:
-    await websocket.accept()
-    token = websocket.query_params.get("token")
-    sub = _resolve_username(token)
-    if not sub:
-        await websocket.close(code=1008, reason="Missing or invalid JWT")
-        return None
+    """``first_message=False`` (agents externes) : JWT en ``?token=`` seulement,
+    comportement historique. ``first_message=True`` (viewer du site) : JWT dans
+    le premier message ``{"type":"auth","token":...}``, query toléré (déprécié)."""
+    if first_message:
+        # Lookup à l'appel : les tests surchargent ``_resolve_username``.
+        sub = await ws_authenticate(websocket, lambda t: _resolve_username(t),
+                                    label="sysdoc:viewer")
+        if not sub:
+            return None
+    else:
+        await websocket.accept()
+        token = websocket.query_params.get("token")
+        sub = _resolve_username(token)
+        if not sub:
+            await websocket.close(code=1008, reason="Missing or invalid JWT")
+            return None
     if sub != path_username:
         if not (allow_admin_cross_user and _is_admin(sub)):
             await websocket.close(code=1008, reason="Username mismatch")
@@ -314,7 +329,8 @@ async def viewer_endpoint(websocket: WebSocket, username: str):
         {"command": "START_MONITORING", "target_machine": "macbook-air"}
     Le backend route vers l'agent de cette machine.
     """
-    sub = await _auth_and_accept(websocket, username, allow_admin_cross_user=True)
+    sub = await _auth_and_accept(websocket, username, allow_admin_cross_user=True,
+                                 first_message=True)
     if sub is None:
         return
 

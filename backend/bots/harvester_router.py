@@ -22,12 +22,13 @@ from typing import Any, Dict, Optional
 from urllib.parse import urlparse
 
 import httpx
-from fastapi import APIRouter, Depends, Header, HTTPException, Query, WebSocket
+from fastapi import APIRouter, Depends, Header, HTTPException, WebSocket
 from fastapi.responses import PlainTextResponse, Response
 from pydantic import BaseModel
 
 from backend.auth.models import User
 from backend.auth.utils import get_current_user, decode_token
+from backend.auth.ws_auth import ws_authenticate
 from backend.database import SessionLocal
 from backend.bots.harvester.config import HarvestConfig
 from backend.bots.harvester.llm import _claude
@@ -149,15 +150,18 @@ async def _pump_ws_socket(websocket, reader, writer):
 
 
 @router.websocket("/vnc/{job_id}")
-async def harvester_vnc(websocket: WebSocket, job_id: str,
-                        token: str = Query(default="")):
+async def harvester_vnc(websocket: WebSocket, job_id: str):
     """Bridge admin-gated : pompe le RFB d'x11vnc (socket Unix) vers noVNC. Refuse
-    (close 1008) si non-admin / job_id invalide / job pas en `awaiting_solve`."""
-    ok, _reason = _vnc_authorize(token, job_id)
+    (close 1008) si non-admin / job_id invalide / job pas en `awaiting_solve`.
+
+    Auth par PREMIER MESSAGE texte ``{"type":"auth","token":...}`` envoyé par le
+    client AVANT que noVNC prenne la main (``backend/auth/ws_auth.py``) ;
+    ``?token=`` encore toléré (déprécié). Le pont d'octets ne démarre qu'après."""
+    # Lookup de _vnc_authorize à l'appel : les tests le surchargent.
+    ok = await ws_authenticate(
+        websocket, lambda t: _vnc_authorize(t, job_id)[0], label="harvester:vnc")
     if not ok:
-        await websocket.close(code=1008)
         return
-    await websocket.accept()
     try:
         reader, writer = await asyncio.open_unix_connection(HARVESTER_VNC_SOCK)
     except OSError:
