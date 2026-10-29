@@ -342,7 +342,7 @@ OmenServer                          Bot Calcul Yield (externe)
 - La progression est parsée via regex sur les lignes de log
 - Le fichier résultat est `*_AGGIORNATO.xlsx`
 - Rate limit : max 5 scraping/jour (ricalcolo illimité)
-- Variable d'environnement : `YIELD_BOT_DIR` (défaut: `~/omenserver/bots/yield-bot/`)
+- Variable d'environnement : `YIELD_BOT_DIR` (défaut : `yield-bot/` à la racine du dépôt — la copie suivie, refonte Fitch ISIN ; les anciennes copies `~/omenserver/bots/yield-bot` et `~/omen-dev/yield-bot` ont été archivées le 29/10 dans `~/archive-2026-10-29/` sur l'Omen)
 
 ---
 
