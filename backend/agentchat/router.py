@@ -25,10 +25,12 @@ from urllib.parse import quote
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, Response
 from pydantic import BaseModel
+from sqlalchemy.orm import Session
 
 from backend.agentchat import presence, store
 from backend.auth.models import User
 from backend.auth.utils import get_current_user
+from backend.database import get_db
 
 logger = logging.getLogger("omenserver")
 
@@ -56,6 +58,43 @@ def _require_chat(user: User) -> None:
     raise HTTPException(status_code=403, detail="Accès réservé aux administrateurs et développeurs")
 
 
+def _require_room(user: User, room_id: str) -> Dict[str, Any]:
+    """Accès humain à UN salon : admin = tous ; sinon rôle developer ET compte
+    listé dans ``room.users``. Un salon non autorisé répond 404, exactement comme
+    un salon inexistant (on ne révèle pas son existence). Renvoie le salon public."""
+    _require_chat(user)
+    try:
+        room = store.get_room(room_id)
+    except store.StoreError as e:
+        raise _http(e)
+    if getattr(user, "is_admin", False):
+        return room
+    if getattr(user, "username", None) not in room.get("users", []):
+        raise HTTPException(status_code=404, detail="Salon introuvable")
+    return room
+
+
+def _can_see(user: User, room: Dict[str, Any]) -> bool:
+    if getattr(user, "is_admin", False):
+        return True
+    return getattr(user, "username", None) in room.get("users", [])
+
+
+def _check_users(db: Session, users: Any) -> List[str]:
+    """Nettoie la liste et vérifie que chaque compte existe (400 sinon)."""
+    try:
+        users = store.clean_users(users)
+    except store.StoreError as e:
+        raise _http(e)
+    if not users:
+        return users
+    found = set(u for (u,) in db.query(User.username).filter(User.username.in_(users)).all())
+    unknown = [u for u in users if u not in found]
+    if unknown:
+        raise HTTPException(status_code=400, detail="Compte inconnu : %s" % ", ".join(unknown))
+    return users
+
+
 def _http(e: store.StoreError) -> HTTPException:
     if isinstance(e, store.NotFound):
         return HTTPException(status_code=404, detail=str(e))
@@ -67,6 +106,12 @@ def _http(e: store.StoreError) -> HTTPException:
 class RoomIn(BaseModel):
     room_id: str
     name: str
+    users: Optional[List[str]] = None
+    claudes: Optional[List[str]] = None
+
+
+class UsersIn(BaseModel):
+    users: List[str]
 
 
 class MemberIn(BaseModel):
@@ -86,17 +131,63 @@ class BoardIn(BaseModel):
 @router.get("/rooms")
 def list_rooms(current_user: User = Depends(get_current_user)):
     _require_chat(current_user)
-    return {"rooms": store.list_rooms()}
+    return {"rooms": [r for r in store.list_rooms() if _can_see(current_user, r)]}
+
+
+@router.get("/candidates")
+def list_candidates(current_user: User = Depends(get_current_user),
+                    db: Session = Depends(get_db)):
+    """Comptes qu'on peut inviter dans un salon : rôle developer (l'admin a déjà
+    accès à tout, inutile de le proposer)."""
+    _require_admin(current_user)
+    rows = (db.query(User).filter(User.role.in_(CHAT_ROLES))
+            .order_by(User.username).all())
+    return {"candidates": [{"username": u.username, "role": u.role}
+                           for u in rows if not u.is_admin]}
 
 
 @router.post("/rooms")
-def create_room(body: RoomIn, current_user: User = Depends(get_current_user)):
+def create_room(body: RoomIn, current_user: User = Depends(get_current_user),
+                db: Session = Depends(get_db)):
     _require_admin(current_user)
+    users = _check_users(db, body.users)
+    # Noms des Claude validés AVANT de créer quoi que ce soit (pas de salon à moitié fait).
+    claudes = []  # type: List[str]
     try:
-        room = store.create_room(body.room_id, body.name)
+        for n in body.claudes or []:
+            n = store.clean_member_name(n)
+            if n.lower() in [c.lower() for c in claudes]:
+                raise store.Invalid("Deux Claude portent le même nom : %s" % n)
+            claudes.append(n)
+        room = store.create_room(body.room_id, body.name, users)
+        keys = []
+        for n in claudes:
+            member, key = store.add_member(body.room_id, n)
+            keys.append({"member": member["name"], "key": key})
+        if claudes:
+            room = store.get_room(body.room_id)
     except store.StoreError as e:
         raise _http(e)
-    logger.info("Agent Chat: salon %s créé par %s", body.room_id, current_user.username)
+    logger.info("Agent Chat: salon %s créé par %s (%d personne(s), %d Claude)",
+                body.room_id, current_user.username, len(users), len(claudes))
+    return {"room": room, "keys": keys}
+
+
+@router.put("/rooms/{room_id}/users")
+def put_users(room_id: str, body: UsersIn, current_user: User = Depends(get_current_user),
+              db: Session = Depends(get_db)):
+    _require_admin(current_user)
+    try:
+        store.get_room(room_id)
+    except store.StoreError as e:
+        raise _http(e)
+    users = _check_users(db, body.users)
+    try:
+        room = store.set_users(room_id, users)
+    except store.StoreError as e:
+        raise _http(e)
+    logger.info("Agent Chat: personnes du salon %s mises à jour par %s : %s",
+                room_id, current_user.username, ", ".join(users) or "(aucune)")
     return {"room": room}
 
 
@@ -125,7 +216,7 @@ def revoke_member(room_id: str, member_id: str, current_user: User = Depends(get
 @router.get("/rooms/{room_id}/messages")
 def get_messages(room_id: str, after: int = 0, limit: int = 100,
                  current_user: User = Depends(get_current_user)):
-    _require_chat(current_user)
+    _require_room(current_user, room_id)
     limit = max(1, min(int(limit), 200))
     try:
         if after <= 0:
@@ -139,17 +230,13 @@ def get_messages(room_id: str, after: int = 0, limit: int = 100,
 
 @router.get("/rooms/{room_id}/presence")
 def get_presence(room_id: str, current_user: User = Depends(get_current_user)):
-    _require_chat(current_user)
-    try:
-        room = store.get_room(room_id)
-    except store.StoreError as e:
-        raise _http(e)
+    room = _require_room(current_user, room_id)
     return {"members": presence.room_view(room, room_id)}
 
 
 @router.post("/rooms/{room_id}/messages")
 def post_message(room_id: str, body: MessageIn, current_user: User = Depends(get_current_user)):
-    _require_chat(current_user)
+    _require_room(current_user, room_id)
     try:
         msg = store.append_message(room_id, "%s (humain)" % current_user.username,
                                    "humain", body.text, body.reply_to,
@@ -213,11 +300,7 @@ def _file_response(meta: Dict[str, Any], path: Any) -> FileResponse:
 
 @router.post("/rooms/{room_id}/files")
 async def upload_file(room_id: str, request: Request, current_user: User = Depends(get_current_user)):
-    _require_chat(current_user)
-    try:
-        store.get_room(room_id)
-    except store.StoreError as e:
-        raise _http(e)
+    _require_room(current_user, room_id)
     name, data, text, reply_to = await _read_upload(request)
     try:
         msg = store.send_document(room_id, "%s (humain)" % current_user.username, "humain",
@@ -231,7 +314,7 @@ async def upload_file(room_id: str, request: Request, current_user: User = Depen
 
 @router.get("/rooms/{room_id}/files/{file_id}")
 def download_file(room_id: str, file_id: str, current_user: User = Depends(get_current_user)):
-    _require_chat(current_user)
+    _require_room(current_user, room_id)
     try:
         meta, path = store.get_file(room_id, file_id)
     except store.StoreError as e:
@@ -241,7 +324,7 @@ def download_file(room_id: str, file_id: str, current_user: User = Depends(get_c
 
 @router.get("/rooms/{room_id}/pings")
 def room_pings(room_id: str, current_user: User = Depends(get_current_user)):
-    _require_chat(current_user)
+    _require_room(current_user, room_id)
     try:
         return {"pings": store.open_pings_by_member(room_id)}
     except store.StoreError as e:
@@ -250,7 +333,7 @@ def room_pings(room_id: str, current_user: User = Depends(get_current_user)):
 
 @router.get("/rooms/{room_id}/board")
 def get_board(room_id: str, current_user: User = Depends(get_current_user)):
-    _require_chat(current_user)
+    _require_room(current_user, room_id)
     try:
         return {"board": store.get_board(room_id)}
     except store.StoreError as e:
@@ -259,7 +342,7 @@ def get_board(room_id: str, current_user: User = Depends(get_current_user)):
 
 @router.put("/rooms/{room_id}/board")
 def put_board(room_id: str, body: BoardIn, current_user: User = Depends(get_current_user)):
-    _require_chat(current_user)
+    _require_room(current_user, room_id)
     try:
         board = store.set_board(room_id, body.board)
     except store.StoreError as e:

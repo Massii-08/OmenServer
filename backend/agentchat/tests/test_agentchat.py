@@ -5,17 +5,42 @@ import stat
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import StaticPool
 
 from backend.agentchat import router as acr
 from backend.agentchat import store
+from backend.auth.models import User
 from backend.auth.utils import get_current_user
+from backend.database import get_db
+
+# Comptes du site (base SQLite en mémoire) : massii admin, abdull et chou developer.
+_ENGINE = create_engine("sqlite://", connect_args={"check_same_thread": False},
+                        poolclass=StaticPool)
+User.__table__.create(_ENGINE, checkfirst=True)
+_Session = sessionmaker(bind=_ENGINE)
+_s = _Session()
+for _u, _adm, _role in (("massii", True, "admin"), ("abdull", False, "developer"),
+                        ("chou", False, "developer"), ("bob", False, "player")):
+    _s.add(User(username=_u, hashed_password="x", is_admin=_adm, role=_role))
+_s.commit()
+_s.close()
+
+
+def _fake_db():
+    db = _Session()
+    try:
+        yield db
+    finally:
+        db.close()
 
 
 class FakeUser(object):
-    def __init__(self, is_admin, role=None):
+    def __init__(self, is_admin, role=None, username="massii"):
         self.is_admin = is_admin
         self.role = role or ("admin" if is_admin else "player")
-        self.username = "massii"
+        self.username = username
 
 
 @pytest.fixture
@@ -25,25 +50,29 @@ def ac_dir(tmp_path, monkeypatch):
     return d
 
 
-def make_client(is_admin=True, role=None):
+def make_client(is_admin=True, role=None, username="massii"):
     app = FastAPI()
     app.include_router(acr.router)
     app.include_router(acr.mcp_router)
-    app.dependency_overrides[get_current_user] = lambda: FakeUser(is_admin, role)
+    app.dependency_overrides[get_current_user] = lambda: FakeUser(is_admin, role, username)
+    app.dependency_overrides[get_db] = _fake_db
     return TestClient(app)
 
 
-def make_admin_and(role):
+def make_admin_and(role, username="massii"):
     """Client admin (pour préparer le salon) + client du rôle testé, même dossier."""
-    return make_client(), make_client(is_admin=False, role=role)
+    return make_client(), make_client(is_admin=False, role=role, username=username)
 
 
 def _mode(p):
     return stat.S_IMODE(os.stat(str(p)).st_mode)
 
 
-def setup_room(c, room_id="roblox", name="Jeu Roblox"):
-    r = c.post("/api/agentchat/rooms", json={"room_id": room_id, "name": name})
+def setup_room(c, room_id="roblox", name="Jeu Roblox", users=None):
+    body = {"room_id": room_id, "name": name}
+    if users is not None:
+        body["users"] = users
+    r = c.post("/api/agentchat/rooms", json=body)
     assert r.status_code == 200, r.text
     return r.json()
 
@@ -285,7 +314,7 @@ def test_mcp_get_405(ac_dir):
 
 def test_developer_can_chat_and_edit_board(ac_dir):
     admin, dev = make_admin_and("developer")
-    setup_room(admin)
+    setup_room(admin, users=["massii"])
     add_member(admin)
     r = dev.get("/api/agentchat/rooms")
     assert r.status_code == 200
@@ -450,7 +479,9 @@ def test_files_other_roles_forbidden(ac_dir):
     assert upload(other, {"file": ("a.txt", b"abc", "text/plain")}).status_code == 403
     assert other.get("/api/agentchat/rooms/roblox/files/%s" % fid).status_code == 403
     assert other.get("/api/agentchat/rooms/roblox/pings").status_code == 403
-    _, dev = make_admin_and("developer")
+    _, dev = make_admin_and("developer", username="abdull")
+    assert dev.get("/api/agentchat/rooms/roblox/files/%s" % fid).status_code == 404
+    admin.put("/api/agentchat/rooms/roblox/users", json={"users": ["abdull"]})
     assert dev.get("/api/agentchat/rooms/roblox/files/%s" % fid).status_code == 200
 
 
@@ -709,3 +740,145 @@ def test_server_version_and_instructions(ac_dir):
     assert res["serverInfo"]["version"] == "1.1.0"
     ins = res["instructions"]
     assert "mes_pings" in ins and "@Nom" in ins and "envoyer_document" in ins and "curl" in ins
+
+
+# ------------------------------------------------------------- accès par salon
+
+def _room_endpoints(c, room_id, fid):
+    """(méthode, réponse) de chaque endpoint humain qui prend un room_id."""
+    base = "/api/agentchat/rooms/%s" % room_id
+    return [
+        ("GET messages", c.get(base + "/messages")),
+        ("POST messages", c.post(base + "/messages", json={"text": "x"})),
+        ("GET presence", c.get(base + "/presence")),
+        ("POST files", c.post(base + "/files", files={"file": ("a.txt", b"abc", "text/plain")})),
+        ("GET file", c.get(base + "/files/%s" % fid)),
+        ("GET pings", c.get(base + "/pings")),
+        ("GET board", c.get(base + "/board")),
+        ("PUT board", c.put(base + "/board", json={"board": "x"})),
+    ]
+
+
+def _two_rooms(admin):
+    setup_room(admin, "salon-a", "A", users=["abdull"])
+    setup_room(admin, "salon-b", "B", users=["abdull", "chou"])
+    fa = admin.post("/api/agentchat/rooms/salon-a/files",
+                    files={"file": ("a.txt", b"abc", "text/plain")}).json()["message"]["attachment"]["id"]
+    fb = admin.post("/api/agentchat/rooms/salon-b/files",
+                    files={"file": ("b.txt", b"abc", "text/plain")}).json()["message"]["attachment"]["id"]
+    return fa, fb
+
+
+def test_listed_developer_sees_and_writes(ac_dir):
+    admin, abdull = make_admin_and("developer", username="abdull")
+    fa, fb = _two_rooms(admin)
+    rooms = abdull.get("/api/agentchat/rooms").json()["rooms"]
+    assert [r["room_id"] for r in rooms] == ["salon-a", "salon-b"]
+    assert rooms[0]["users"] == ["abdull"]
+    for label, r in _room_endpoints(abdull, "salon-a", fa):
+        assert r.status_code == 200, (label, r.text)
+    msg = abdull.post("/api/agentchat/rooms/salon-a/messages", json={"text": "salut"}).json()
+    assert msg["message"]["author"] == "abdull (humain)"
+
+
+def test_unlisted_developer_refused_everywhere(ac_dir):
+    admin, chou = make_admin_and("developer", username="chou")
+    fa, fb = _two_rooms(admin)
+    rooms = chou.get("/api/agentchat/rooms").json()["rooms"]
+    assert [r["room_id"] for r in rooms] == ["salon-b"]
+    for label, r in _room_endpoints(chou, "salon-a", fa):
+        assert r.status_code == 404, (label, r.status_code)
+    # réponse identique à un salon inexistant (aucune fuite d'existence)
+    assert chou.get("/api/agentchat/rooms/nexiste-pas/messages").status_code == 404
+    for label, r in _room_endpoints(chou, "salon-b", fb):
+        assert r.status_code == 200, (label, r.text)
+    # rien n'a été écrit dans le salon A
+    assert all(m["author"] != "chou (humain)"
+               for m in admin.get("/api/agentchat/rooms/salon-a/messages").json()["messages"])
+
+
+def test_admin_sees_all_rooms(ac_dir):
+    admin = make_client()
+    fa, fb = _two_rooms(admin)
+    setup_room(admin, "salon-c", "C")
+    assert len(admin.get("/api/agentchat/rooms").json()["rooms"]) == 3
+    for label, r in _room_endpoints(admin, "salon-a", fa):
+        assert r.status_code == 200, (label, r.text)
+
+
+def test_room_without_users_invisible_to_developer(ac_dir):
+    admin, abdull = make_admin_and("developer", username="abdull")
+    setup_room(admin)
+    # salon d'avant la fonctionnalité : aucune clé "users" dans rooms.json
+    rooms = json.loads((ac_dir / "rooms.json").read_text(encoding="utf-8"))
+    del rooms["roblox"]["users"]
+    (ac_dir / "rooms.json").write_text(json.dumps(rooms), encoding="utf-8")
+    assert admin.get("/api/agentchat/rooms").json()["rooms"][0]["users"] == []
+    assert abdull.get("/api/agentchat/rooms").json()["rooms"] == []
+    assert abdull.get("/api/agentchat/rooms/roblox/messages").status_code == 404
+
+
+def test_create_room_with_users_and_claudes(ac_dir):
+    admin = make_client()
+    r = admin.post("/api/agentchat/rooms", json={
+        "room_id": "salon-b", "name": "B", "users": ["abdull", "chou", "abdull", " "],
+        "claudes": ["Claude de Massii", "Claude de Abdull", "Claude de Chou"]})
+    assert r.status_code == 200, r.text
+    data = r.json()
+    assert data["room"]["users"] == ["abdull", "chou"]
+    assert [k["member"] for k in data["keys"]] == ["Claude de Massii", "Claude de Abdull",
+                                                    "Claude de Chou"]
+    assert len(data["room"]["members"]) == 3 and "key_hash" not in json.dumps(data)
+    key = data["keys"][1]["key"]
+    assert key.startswith("oac_")
+    res = call_tool(admin, key, "envoyer_message", {"texte": "hello", "type": "info"})
+    assert not res.get("isError"), res
+    msgs = admin.get("/api/agentchat/rooms/salon-b/messages").json()["messages"]
+    assert msgs[-1]["author"] == "Claude de Abdull"
+    # la clé ne vaut que pour son salon
+    setup_room(admin, "autre", "Autre")
+    assert admin.get("/api/agentchat/rooms/autre/messages").json()["messages"] == []
+
+
+def test_create_room_unknown_user_400(ac_dir):
+    admin = make_client()
+    r = admin.post("/api/agentchat/rooms", json={"room_id": "x", "name": "x",
+                                                  "users": ["abdull", "fantome"]})
+    assert r.status_code == 400
+    assert "fantome" in r.json()["detail"]
+    assert admin.get("/api/agentchat/rooms").json()["rooms"] == []
+
+
+def test_create_room_bad_claudes_creates_nothing(ac_dir):
+    admin = make_client()
+    r = admin.post("/api/agentchat/rooms", json={"room_id": "x", "name": "x",
+                                                  "claudes": ["Claude A", "claude a"]})
+    assert r.status_code == 400
+    r = admin.post("/api/agentchat/rooms", json={"room_id": "x", "name": "x",
+                                                  "claudes": ["Claude A", ""]})
+    assert r.status_code == 400
+    assert admin.get("/api/agentchat/rooms").json()["rooms"] == []
+
+
+def test_put_users_admin_only(ac_dir):
+    admin, abdull = make_admin_and("developer", username="abdull")
+    setup_room(admin, users=["abdull"])
+    r = abdull.put("/api/agentchat/rooms/roblox/users", json={"users": ["abdull", "chou"]})
+    assert r.status_code == 403
+    r = admin.put("/api/agentchat/rooms/roblox/users", json={"users": ["chou", "chou"]})
+    assert r.status_code == 200, r.text
+    assert r.json()["room"]["users"] == ["chou"]
+    assert abdull.get("/api/agentchat/rooms").json()["rooms"] == []
+    assert admin.put("/api/agentchat/rooms/roblox/users",
+                     json={"users": ["fantome"]}).status_code == 400
+    assert admin.put("/api/agentchat/rooms/inconnu/users", json={"users": []}).status_code == 404
+    assert _mode(ac_dir / "rooms.json") == 0o600
+
+
+def test_candidates_admin_only(ac_dir):
+    admin, abdull = make_admin_and("developer", username="abdull")
+    assert abdull.get("/api/agentchat/candidates").status_code == 403
+    r = admin.get("/api/agentchat/candidates")
+    assert r.status_code == 200
+    assert r.json()["candidates"] == [{"username": "abdull", "role": "developer"},
+                                      {"username": "chou", "role": "developer"}]

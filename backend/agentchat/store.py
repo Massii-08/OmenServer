@@ -47,6 +47,8 @@ _EXTRA_MIMES = {".md": "text/markdown", ".markdown": "text/markdown",
                 ".lua": "text/x-lua", ".luau": "text/x-lua"}
 
 _LOCK = threading.Lock()
+MAX_ROOM_USERS = 50
+MAX_USERNAME = 50
 
 
 class StoreError(Exception):
@@ -92,6 +94,33 @@ def _clean_name(name: Any) -> str:
     if not name or len(name) > MAX_NAME:
         raise Invalid("Nom vide ou trop long (60 caractères max)")
     return name
+
+
+def clean_member_name(name: Any) -> str:
+    """Nom de membre Claude nettoyé (mêmes règles que ``add_member``)."""
+    return _clean_name(name)
+
+
+def clean_users(users: Any) -> List[str]:
+    """Liste de noms de comptes du site : nettoyée, dédoublonnée (ordre conservé)."""
+    if users is None:
+        return []
+    if not isinstance(users, (list, tuple)):
+        raise Invalid("Liste de personnes invalide")
+    out = []  # type: List[str]
+    for u in users:
+        if not isinstance(u, str):
+            raise Invalid("Nom de compte invalide")
+        u = u.strip()
+        if not u:
+            continue
+        if len(u) > MAX_USERNAME or _CTRL_RE.search(u):
+            raise Invalid("Nom de compte invalide")
+        if u not in out:
+            out.append(u)
+    if len(out) > MAX_ROOM_USERS:
+        raise Invalid("Trop de personnes (%d max)" % MAX_ROOM_USERS)
+    return out
 
 
 def _ensure_dir() -> Path:
@@ -171,6 +200,7 @@ def public_room(room_id: str, room: Dict[str, Any]) -> Dict[str, Any]:
         "name": room.get("name", room_id),
         "created_at": room.get("created_at"),
         "members": [public_member(m) for m in room.get("members", [])],
+        "users": [u for u in (room.get("users") or []) if isinstance(u, str)],
     }
 
 
@@ -185,16 +215,29 @@ def get_room(room_id: str) -> Dict[str, Any]:
     return public_room(room_id, _get_room(_load_rooms(), room_id))
 
 
-def create_room(room_id: str, name: str) -> Dict[str, Any]:
+def create_room(room_id: str, name: str, users: Optional[List[str]] = None) -> Dict[str, Any]:
     validate_room_id(room_id)
     name = _clean_name(name)
+    users = clean_users(users)
     with _LOCK:
         rooms = _load_rooms()
         if room_id in rooms:
             raise Conflict("Ce salon existe déjà")
-        rooms[room_id] = {"name": name, "created_at": _now(), "board": "", "members": []}
+        rooms[room_id] = {"name": name, "created_at": _now(), "board": "", "members": [],
+                          "users": users}
         _save_rooms(rooms)
         return public_room(room_id, rooms[room_id])
+
+
+def set_users(room_id: str, users: Any) -> Dict[str, Any]:
+    """Remplace la liste des personnes (comptes du site) qui ont accès au salon."""
+    users = clean_users(users)
+    with _LOCK:
+        rooms = _load_rooms()
+        room = _get_room(rooms, room_id)
+        room["users"] = users
+        _save_rooms(rooms)
+        return public_room(room_id, room)
 
 
 # ---------------------------------------------------------------- membres

@@ -5257,6 +5257,18 @@ select:-webkit-autofill {
 }
 .ac-toolbar-row select { flex: 1; min-width: 0; }
 .ac-new-room input { flex: 1 1 160px; min-width: 0; }
+.ac-new-room-block { flex: 1 1 100%; display: flex; flex-direction: column; gap: var(--s-2); }
+.ac-new-room-block .form-label { margin: 0; }
+.ac-new-room-block > .btn { align-self: flex-start; }
+.ac-checks { display: flex; flex-wrap: wrap; gap: var(--s-2) var(--s-4); }
+.ac-check { display: inline-flex; align-items: center; gap: var(--s-2); font-size: 13px; color: var(--text); cursor: pointer; }
+.ac-claude-list { display: flex; flex-direction: column; gap: var(--s-2); }
+.ac-claude-row { display: flex; gap: var(--s-2); align-items: stretch; }
+.ac-claude-row input { flex: 1 1 auto; min-width: 0; }
+.ac-people { display: flex; flex-direction: column; gap: var(--s-2); }
+#ac-people-save { align-self: flex-start; }
+.ac-keybox-item { display: flex; flex-direction: column; gap: var(--s-2); }
+.ac-keybox-item + .ac-keybox-item { border-top: 1px solid var(--border); padding-top: var(--s-3); }
 .ac-error {
     padding: var(--s-2) var(--s-3);
     border-radius: var(--r-sm);

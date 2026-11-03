@@ -7,7 +7,7 @@
  * Pour désactiver : supprimer ce fichier + la ligne d'enregistrement dans index.html.
  */
 
-const CACHE_NAME = 'omenserver-v206';
+const CACHE_NAME = 'omenserver-v207';
 const STATIC_ASSETS = [
     '/',
     '/css/style.css',

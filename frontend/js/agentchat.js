@@ -11,8 +11,9 @@
  * joindre un document (bouton ou glisser-déposer, 25 Mo max, aperçu image,
  * téléchargement via Auth.apiCall car le JWT est dans un header).
  *
- * Accès : admin ou rôle developer (lecture/écriture) ; gestion salons/clés =
- * admin seulement (masquée dans l'UI ET refusée par le backend).
+ * Accès : admin = tous les salons ; rôle developer = seulement les salons où
+ * son compte est listé (room.users, contrôlé par le backend). Gestion salons /
+ * clés / personnes = admin seulement (masquée dans l'UI ET refusée par le backend).
  *
  * Toute donnée injectée en innerHTML passe par esc() (défini dans lang.js).
  * La page /agentchat redirige vers /#agentchat (une seule UI).
@@ -26,7 +27,9 @@ const AgentChatModule = {
     pollTimer: null,
     polling: false,
     gen: 0,              // incrémenté à chaque render/unload : invalide les réponses en vol
-    shownKey: null,      // { roomId, member, key } — survit à un re-render (changement de langue)
+    shownKeys: null,     // { roomId, keys: [{ member, key }] } — survit à un re-render (changement de langue)
+    candidates: [],      // comptes invitables (admin) : [{ username, role }]
+    DEFAULT_CLAUDE: 'Claude de Massii',
     _feedRoom: null,
     _visBound: false,
     MAX_FILE: 25 * 1024 * 1024,
@@ -78,8 +81,20 @@ const AgentChatModule = {
                 <form class="ac-new-room hidden" id="ac-new-room">
                     <input class="form-input mono" id="ac-new-room-id" maxlength="40" required pattern="[a-z0-9-]{1,40}" placeholder="${t('room_id_ph')}">
                     <input class="form-input" id="ac-new-room-name" maxlength="60" required placeholder="${t('room_name_ph')}">
+                    <div class="ac-new-room-block">
+                        <span class="form-label">${t('people')}</span>
+                        <p class="hint ac-hint">${t('people_hint')}</p>
+                        <div class="ac-checks" id="ac-new-room-users"></div>
+                    </div>
+                    <div class="ac-new-room-block">
+                        <span class="form-label">${t('claudes')}</span>
+                        <p class="hint ac-hint">${t('claudes_hint')}</p>
+                        <div class="ac-claude-list" id="ac-new-claudes"></div>
+                        <button class="btn btn-secondary btn-sm" type="button" id="ac-add-claude">${t('add_claude')}</button>
+                    </div>
                     <button class="btn btn-primary btn-sm" type="submit">${t('create')}</button>
-                </form>` : ''}
+                </form>
+                <div class="ac-keybox hidden" id="ac-keybox-new"></div>` : ''}
                 <div class="ac-error hidden" id="ac-error" role="alert"></div>
             </section>
 
@@ -113,6 +128,12 @@ const AgentChatModule = {
                     </section>
 
                     <section class="card ac-panel">
+                        <h2 class="ac-h2">${t('people')}</h2>
+                        <div class="ac-people" id="ac-people"></div>
+                        ${manage ? `<button class="btn btn-secondary btn-sm" id="ac-people-save">${t('save')}</button>` : ''}
+                    </section>
+
+                    <section class="card ac-panel">
                         <h2 class="ac-h2">${t('members')}</h2>
                         ${manage ? `
                         <form class="ac-add-member" id="ac-add-member">
@@ -126,6 +147,10 @@ const AgentChatModule = {
             </div>
         </div>`;
         this.bind(manage);
+        if (manage) {
+            this.resetClaudes();
+            this.loadCandidates();
+        }
         this.loadRooms();
     },
 
@@ -213,10 +238,16 @@ const AgentChatModule = {
             });
             this.$('ac-new-room').addEventListener('submit', e => { e.preventDefault(); this.createRoom(); });
             this.$('ac-add-member').addEventListener('submit', e => { e.preventDefault(); this.addMember(); });
-            this.$('ac-keybox').addEventListener('click', e => {
+            ['ac-keybox', 'ac-keybox-new'].forEach(id => this.$(id).addEventListener('click', e => {
                 const btn = e.target.closest('[data-copy]');
                 if (btn) this.copy(btn.dataset.copy, btn);
+            }));
+            this.$('ac-add-claude').addEventListener('click', () => this.addClaudeRow(''));
+            this.$('ac-new-claudes').addEventListener('click', e => {
+                const btn = e.target.closest('[data-remove-claude]');
+                if (btn) btn.closest('.ac-claude-row').remove();
             });
+            this.$('ac-people-save').addEventListener('click', () => this.saveUsers());
         }
         if (!this._visBound) {
             this._visBound = true;
@@ -298,7 +329,11 @@ const AgentChatModule = {
         const newRoom = this.$('ac-new-room');
         if (!this.rooms.length && newRoom) newRoom.classList.remove('hidden');
         if (!target) return;
-        if (target === this._feedRoom) this.renderMembers();  // même salon : liste rafraîchie seulement
+        if (target === this._feedRoom) {  // même salon : listes rafraîchies seulement
+            this.renderMembers();
+            this.renderPeople();
+            this.renderKey();
+        }
         else this.selectRoom(target);
     },
 
@@ -315,14 +350,101 @@ const AgentChatModule = {
         const name = this.$('ac-new-room-name').value.trim();
         if (!/^[a-z0-9-]{1,40}$/.test(id)) { this.showError(this.t('room_id_invalid')); return; }
         if (!name) return;
+        const users = Array.from(document.querySelectorAll('#ac-new-room-users input[type=checkbox]:checked'))
+            .map(cb => cb.value);
+        const claudes = Array.from(document.querySelectorAll('#ac-new-claudes input'))
+            .map(inp => inp.value.trim()).filter(Boolean);
         const data = await this.api('/rooms', {
-            method: 'POST', body: JSON.stringify({ room_id: id, name }),
+            method: 'POST', body: JSON.stringify({ room_id: id, name, users, claudes }),
         });
         if (!data) return;
         this.$('ac-new-room-id').value = '';
         this.$('ac-new-room-name').value = '';
         this.$('ac-new-room').classList.add('hidden');
+        this.renderCreateUsers();
+        this.resetClaudes();
+        this.shownKeys = (data.keys && data.keys.length) ? { roomId: id, keys: data.keys } : null;
         this.roomId = id;
+        await this.loadRooms();
+    },
+
+    // ---------------------------------------------------------------- personnes
+
+    async loadCandidates() {
+        const data = await this.api('/candidates');
+        if (!data) return;
+        this.candidates = data.candidates || [];
+        this.renderCreateUsers();
+        this.renderPeople();
+    },
+
+    checkHtml(username, checked, extra) {
+        return `<label class="ac-check">
+            <input type="checkbox" value="${esc(username)}"${checked ? ' checked' : ''}>
+            <span>${esc(username)}</span>${extra || ''}
+        </label>`;
+    },
+
+    renderCreateUsers() {
+        const box = this.$('ac-new-room-users');
+        if (!box) return;
+        box.innerHTML = this.candidates.length
+            ? this.candidates.map(c => this.checkHtml(c.username, false)).join('')
+            : `<span class="hint ac-hint">${esc(this.t('no_candidates'))}</span>`;
+    },
+
+    resetClaudes() {
+        const box = this.$('ac-new-claudes');
+        if (!box) return;
+        box.innerHTML = '';
+        this.addClaudeRow(this.DEFAULT_CLAUDE);
+    },
+
+    addClaudeRow(value) {
+        const box = this.$('ac-new-claudes');
+        if (!box) return;
+        const row = document.createElement('div');
+        row.className = 'ac-claude-row';
+        row.innerHTML = `
+            <input class="form-input" maxlength="60" placeholder="${esc(this.t('member_name_ph'))}">
+            <button class="btn btn-secondary btn-sm" type="button" data-remove-claude="1">${esc(this.t('remove'))}</button>`;
+        row.querySelector('input').value = value || '';
+        box.appendChild(row);
+        if (!value) row.querySelector('input').focus();
+    },
+
+    renderPeople() {
+        const box = this.$('ac-people');
+        if (!box) return;
+        const room = this.currentRoom();
+        const users = room ? (room.users || []) : [];
+        if (!this.canManage()) {
+            box.innerHTML = users.length
+                ? users.map(u => `<div class="ac-member"><span class="ac-member-name">${esc(u)}</span></div>`).join('')
+                : `<div class="hint ac-hint">${esc(this.t('no_people'))}</div>`;
+            return;
+        }
+        // Candidats + personnes déjà listées qui ne sont plus candidates (rôle changé…)
+        const names = this.candidates.map(c => c.username);
+        users.forEach(u => { if (names.indexOf(u) < 0) names.push(u); });
+        box.innerHTML = `<p class="hint ac-hint">${esc(this.t('people_hint'))}</p>` + (names.length
+            ? `<div class="ac-checks">${names.map(u => this.checkHtml(u, users.indexOf(u) >= 0,
+                this.candidates.some(c => c.username === u)
+                    ? '' : ` <span class="badge muted">${esc(this.t('not_developer'))}</span>`)).join('')}</div>`
+            : `<div class="hint ac-hint">${esc(this.t('no_candidates'))}</div>`);
+    },
+
+    async saveUsers() {
+        if (!this.roomId || !this.canManage()) return;
+        const users = Array.from(document.querySelectorAll('#ac-people input[type=checkbox]:checked'))
+            .map(cb => cb.value);
+        const data = await this.api(`/rooms/${encodeURIComponent(this.roomId)}/users`, {
+            method: 'PUT', body: JSON.stringify({ users }),
+        });
+        if (!data) return;
+        const btn = this.$('ac-people-save');
+        btn.textContent = this.t('saved');
+        setTimeout(() => { if (btn.isConnected) btn.textContent = this.t('save'); }, 1500);
         await this.loadRooms();
     },
 
@@ -330,9 +452,10 @@ const AgentChatModule = {
         this.roomId = roomId;
         this._feedRoom = roomId;
         try { localStorage.setItem('agentchat-room', roomId); } catch (_) {}
-        if (this.shownKey && this.shownKey.roomId !== roomId) this.shownKey = null;
+        if (this.shownKeys && this.shownKeys.roomId !== roomId) this.shownKeys = null;
         this.renderKey();
         this.renderMembers();
+        this.renderPeople();
         this.loadBoard();
         this.reloadFeed();
     },
@@ -762,35 +885,39 @@ const AgentChatModule = {
         });
         if (!data) return;
         input.value = '';
-        this.shownKey = { roomId, member: data.member, key: data.key };
+        this.shownKeys = { roomId, keys: [{ member: data.member.name, key: data.key }] };
         this.renderKey();
         await this.loadRooms();
     },
 
+    /** Clés fraîchement créées (montrées une seule fois) : sous le formulaire
+     *  de création si elles viennent de la création du salon, sinon dans le
+     *  panneau Membres. Une seule des deux boîtes est remplie à la fois. */
     renderKey() {
-        const box = this.$('ac-keybox');
-        if (!box) return;
-        const sk = this.shownKey;
-        if (!sk || sk.roomId !== this.roomId) {
-            box.classList.add('hidden');
-            box.innerHTML = '';
-            return;
-        }
+        const side = this.$('ac-keybox');
+        const top = this.$('ac-keybox-new');
+        [side, top].forEach(b => { if (b) { b.classList.add('hidden'); b.innerHTML = ''; } });
+        const sk = this.shownKeys;
+        if (!side || !sk || sk.roomId !== this.roomId || !sk.keys.length) return;
+        const box = (sk.keys.length > 1 && top) ? top : side;
         const url = window.location.origin + '/mcp/agentchat';
-        const cmd = `claude mcp add --transport http --scope user agentchat ${url} --header "Authorization: Bearer ${sk.key}"`;
-        box.innerHTML = `
-            <div class="ac-keybox-title">${esc(this.t('key_for'))} ${esc(sk.member.name)}</div>
-            <p class="ac-keybox-warn">${esc(this.t('key_once'))}</p>
-            <label class="form-label">${esc(this.t('key'))}</label>
-            <div class="ac-copy-row">
-                <code class="mono ac-code">${esc(sk.key)}</code>
-                <button class="btn btn-secondary btn-sm" data-copy="${esc(sk.key)}">${esc(this.t('copy'))}</button>
-            </div>
-            <label class="form-label">${esc(this.t('command'))}</label>
-            <div class="ac-copy-row">
-                <code class="mono ac-code">${esc(cmd)}</code>
-                <button class="btn btn-secondary btn-sm" data-copy="${esc(cmd)}">${esc(this.t('copy'))}</button>
+        box.innerHTML = `<p class="ac-keybox-warn">${esc(this.t('key_once'))}</p>` + sk.keys.map(k => {
+            const cmd = `claude mcp add --transport http --scope user agentchat ${url} --header "Authorization: Bearer ${k.key}"`;
+            return `
+            <div class="ac-keybox-item">
+                <div class="ac-keybox-title">${esc(this.t('key_for'))} ${esc(k.member)}</div>
+                <label class="form-label">${esc(this.t('key'))}</label>
+                <div class="ac-copy-row">
+                    <code class="mono ac-code">${esc(k.key)}</code>
+                    <button class="btn btn-secondary btn-sm" data-copy="${esc(k.key)}">${esc(this.t('copy'))}</button>
+                </div>
+                <label class="form-label">${esc(this.t('command'))}</label>
+                <div class="ac-copy-row">
+                    <code class="mono ac-code">${esc(cmd)}</code>
+                    <button class="btn btn-secondary btn-sm" data-copy="${esc(cmd)}">${esc(this.t('copy'))}</button>
+                </div>
             </div>`;
+        }).join('');
         box.classList.remove('hidden');
     },
 
