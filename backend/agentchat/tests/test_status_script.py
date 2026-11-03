@@ -141,3 +141,36 @@ def test_statusline_no_data(st, env):
     st.main(["statusline"], io.StringIO(json.dumps({"session_id": "s"})), out, {}, env["cfg"], env["cache"], rec)
     assert out.getvalue() == "" and rec.calls == []
     assert st.format_line({"five_hour": {"used_percentage": 3}}) == "5h 3%"
+
+
+@pytest.mark.parametrize("personal", [False, True])
+def test_hook_end_to_end_both_key_kinds(st, tmp_path, monkeypatch, personal):
+    """Le script poste vers le vrai /statut : clé de salon OU clé personnelle (tous ses salons)."""
+    from backend.agentchat import presence, store
+    from backend.agentchat.tests.test_agentchat import add_member, make_client, setup_room
+    monkeypatch.setattr(store, "AGENTCHAT_DIR", tmp_path / "ac")
+    presence.reset()
+    c = make_client()
+    setup_room(c, "moon", "Moon", users=["abdull"])
+    setup_room(c, "metro", "Metro", users=["abdull"])
+    if personal:
+        key = c.post("/api/agentchat/claudes/abdull", json={"name": "Claude A"}).json()["key"]
+        rooms = ["moon", "metro"]
+    else:
+        key = add_member(c, "moon", "Claude-Pets")["key"]
+        rooms = ["moon"]
+    cfg = tmp_path / "c.json"
+    cfg.write_text(json.dumps({"mcpServers": {"agentchat": {
+        "url": "http://testserver/mcp/agentchat", "headers": {"Authorization": "Bearer " + key}}}}),
+        encoding="utf-8")
+
+    def post(url, auth, body, timeout):
+        r = c.post(url.replace("http://testserver", ""), json=body, headers={"Authorization": auth})
+        r.raise_for_status()
+
+    st.run_hook({"hook_event_name": "UserPromptSubmit", "session_id": "s", "cwd": "/p"}, {},
+                str(cfg), str(tmp_path / "cache"), post, lambda: 1000.0)
+    for rid in rooms:
+        ms = c.get("/api/agentchat/rooms/%s/presence" % rid).json()["members"]
+        assert [m["working"] for m in ms] == [True], rid
+    presence.reset()

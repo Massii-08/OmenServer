@@ -5261,7 +5261,16 @@ select:-webkit-autofill {
 .ac-new-room-block .form-label { margin: 0; }
 .ac-new-room-block > .btn { align-self: flex-start; }
 .ac-checks { display: flex; flex-wrap: wrap; gap: var(--s-2) var(--s-4); }
-.ac-check { display: inline-flex; align-items: center; gap: var(--s-2); font-size: 13px; color: var(--text); cursor: pointer; }
+/* Une case = un bloc insécable ; le retour à la ligne se fait ENTRE les cases. */
+.ac-check { display: inline-flex; flex: 0 0 auto; align-items: center; gap: var(--s-2); font-size: 13px; color: var(--text); cursor: pointer; white-space: nowrap; }
+.ac-check-name, .ac-claude-tag { white-space: nowrap; }
+.ac-guests > summary { display: list-item; cursor: pointer; list-style-position: inside; }
+.ac-guests[open] > summary { margin-bottom: var(--s-2); }
+.ac-personal { display: flex; flex-direction: column; gap: var(--s-2); margin-top: var(--s-3); }
+.ac-personal-list { display: flex; flex-direction: column; gap: var(--s-2); }
+.ac-personal-rooms { flex: 1 1 100%; }
+.ac-personal-actions { display: flex; flex: 1 1 100%; flex-wrap: wrap; gap: var(--s-2); }
+.ac-personal-actions input { flex: 1 1 180px; min-width: 0; }
 .ac-claude-list { display: flex; flex-direction: column; gap: var(--s-2); }
 .ac-claude-row { display: flex; gap: var(--s-2); align-items: stretch; }
 .ac-claude-row input { flex: 1 1 auto; min-width: 0; }

@@ -158,14 +158,20 @@ def fetch_pings(url: str, auth: str, timeout: float = TIMEOUT) -> Any:
 
 def build_reason(member: str, pings: List[Dict[str, Any]]) -> str:
     lines = ["Agent Chat : %d ping(s) non traité(s) pour %s :" % (len(pings), member or "toi")]
+    multi = False
     for p in pings:
         text = " ".join(str(p.get("text", "")).split())
         if len(text) > TEXT_MAX:
             text = text[:TEXT_MAX] + "…"
-        lines.append("- #%s de %s : %s" % (p.get("id"), p.get("author", "?"), text))
+        # Clé personnelle : chaque ping porte son salon.
+        salon = p.get("salon")
+        where = ("[%s] " % salon) if isinstance(salon, str) and salon else ""
+        multi = multi or bool(where)
+        lines.append("- %s#%s de %s : %s" % (where, p.get("id"), p.get("author", "?"), text))
     lines.append("Traite chaque demande, puis réponds dans le salon avec "
-                 "envoyer_message(type=\"reponse\" ou \"fait\", reponse_a=<id>) : "
-                 "c'est ce qui ferme le ping. Appelle mes_pings pour le détail.")
+                 "envoyer_message(%stype=\"reponse\" ou \"fait\", reponse_a=<id>) : "
+                 "c'est ce qui ferme le ping. Appelle mes_pings pour le détail."
+                 % ("salon=<salon>, " if multi else ""))
     return "\n".join(lines)
 
 

@@ -15,6 +15,11 @@
  * son compte est listé (room.users, contrôlé par le backend). Gestion salons /
  * clés / personnes = admin seulement (masquée dans l'UI ET refusée par le backend).
  *
+ * Claude personnels (panneau admin) : UNE clé par compte, valable dans toutes
+ * ses discussions ; cocher la personne dans une discussion y ajoute son Claude
+ * (membre « owner », synchronisé par le backend). Les « Claude invités » à clé de
+ * salon restent possibles pour quelqu'un sans compte.
+ *
  * Toute donnée injectée en innerHTML passe par esc() (défini dans lang.js).
  * La page /agentchat redirige vers /#agentchat (une seule UI).
  */
@@ -29,7 +34,8 @@ const AgentChatModule = {
     gen: 0,              // incrémenté à chaque render/unload : invalide les réponses en vol
     shownKeys: null,     // { roomId, keys: [{ member, key }] } — survit à un re-render (changement de langue)
     candidates: [],      // comptes invitables (admin) : [{ username, role }]
-    DEFAULT_CLAUDE: 'Claude de Massii',
+    accounts: [],        // comptes + Claude personnel (admin) : [{ username, role, is_admin, claude }]
+    shownPersonal: null, // { username, name, key, cmd } — clé personnelle montrée une fois
     _feedRoom: null,
     _visBound: false,
     MAX_FILE: 25 * 1024 * 1024,
@@ -75,7 +81,8 @@ const AgentChatModule = {
                 <label class="form-label" for="ac-room-select">${t('room')}</label>
                 <div class="ac-toolbar-row">
                     <select class="form-input" id="ac-room-select"></select>
-                    ${manage ? `<button class="btn btn-secondary btn-sm" id="ac-new-room-toggle">${t('new_room')}</button>` : ''}
+                    ${manage ? `<button class="btn btn-secondary btn-sm" id="ac-new-room-toggle">${t('new_room')}</button>
+                    <button class="btn btn-secondary btn-sm" id="ac-personal-toggle" aria-expanded="false">${t('personal_btn')}</button>` : ''}
                 </div>
                 ${manage ? `
                 <form class="ac-new-room hidden" id="ac-new-room">
@@ -85,16 +92,23 @@ const AgentChatModule = {
                         <span class="form-label">${t('people')}</span>
                         <p class="hint ac-hint">${t('people_hint')}</p>
                         <div class="ac-checks" id="ac-new-room-users"></div>
+                        <p class="hint ac-hint" id="ac-creator-claude"></p>
                     </div>
-                    <div class="ac-new-room-block">
-                        <span class="form-label">${t('claudes')}</span>
-                        <p class="hint ac-hint">${t('claudes_hint')}</p>
+                    <details class="ac-new-room-block ac-guests">
+                        <summary class="form-label">${t('guests')}</summary>
+                        <p class="hint ac-hint">${t('guests_hint')}</p>
                         <div class="ac-claude-list" id="ac-new-claudes"></div>
                         <button class="btn btn-secondary btn-sm" type="button" id="ac-add-claude">${t('add_claude')}</button>
-                    </div>
+                    </details>
                     <button class="btn btn-primary btn-sm" type="submit">${t('create')}</button>
                 </form>
-                <div class="ac-keybox hidden" id="ac-keybox-new"></div>` : ''}
+                <div class="ac-keybox hidden" id="ac-keybox-new"></div>
+                <section class="ac-personal hidden" id="ac-personal">
+                    <h2 class="ac-h2">${t('personal_title')}</h2>
+                    <p class="hint ac-hint">${t('personal_hint')}</p>
+                    <div class="ac-keybox hidden" id="ac-keybox-personal"></div>
+                    <div class="ac-personal-list" id="ac-personal-list"></div>
+                </section>` : ''}
                 <div class="ac-error hidden" id="ac-error" role="alert"></div>
             </section>
 
@@ -150,6 +164,7 @@ const AgentChatModule = {
         if (manage) {
             this.resetClaudes();
             this.loadCandidates();
+            this.loadAccounts();
         }
         this.loadRooms();
     },
@@ -229,6 +244,8 @@ const AgentChatModule = {
         this.$('ac-members').addEventListener('click', e => {
             const btn = e.target.closest('[data-revoke]');
             if (btn) { this.revoke(btn.dataset.revoke, btn.dataset.name); return; }
+            const del = e.target.closest('[data-delete-member]');
+            if (del) { this.deleteMember(del.dataset.deleteMember, del.dataset.name); return; }
             const mb = e.target.closest('[data-mention]');
             if (mb) this.insertMention(mb.dataset.mention);
         });
@@ -238,7 +255,16 @@ const AgentChatModule = {
             });
             this.$('ac-new-room').addEventListener('submit', e => { e.preventDefault(); this.createRoom(); });
             this.$('ac-add-member').addEventListener('submit', e => { e.preventDefault(); this.addMember(); });
-            ['ac-keybox', 'ac-keybox-new'].forEach(id => this.$(id).addEventListener('click', e => {
+            this.$('ac-personal-toggle').addEventListener('click', e => {
+                const open = this.$('ac-personal').classList.toggle('hidden') === false;
+                e.currentTarget.setAttribute('aria-expanded', open ? 'true' : 'false');
+                if (open) this.loadAccounts();
+            });
+            this.$('ac-personal-list').addEventListener('click', e => {
+                const b = e.target.closest('[data-personal-action]');
+                if (b) this.personalAction(b.dataset.personalAction, b.dataset.username);
+            });
+            ['ac-keybox', 'ac-keybox-new', 'ac-keybox-personal'].forEach(id => this.$(id).addEventListener('click', e => {
                 const btn = e.target.closest('[data-copy]');
                 if (btn) this.copy(btn.dataset.copy, btn);
             }));
@@ -366,6 +392,7 @@ const AgentChatModule = {
         this.shownKeys = (data.keys && data.keys.length) ? { roomId: id, keys: data.keys } : null;
         this.roomId = id;
         await this.loadRooms();
+        this.loadAccounts();
     },
 
     // ---------------------------------------------------------------- personnes
@@ -378,11 +405,26 @@ const AgentChatModule = {
         this.renderPeople();
     },
 
+    /** Une case = un bloc insécable (nom + Claude) ; retour à la ligne entre cases. */
     checkHtml(username, checked, extra) {
         return `<label class="ac-check">
             <input type="checkbox" value="${esc(username)}"${checked ? ' checked' : ''}>
-            <span>${esc(username)}</span>${extra || ''}
+            <span class="ac-check-name">${esc(username)}</span>${this.claudeTag(username)}${extra || ''}
         </label>`;
+    },
+
+    /** Claude personnel actif d'un compte (admin, d'après /claudes), ou null. */
+    personalOf(username) {
+        const a = this.accounts.find(x => x.username === username);
+        return a && a.claude && !a.claude.revoked ? a.claude : null;
+    },
+
+    claudeTag(username) {
+        if (!this.canManage() || !this.accounts.length) return '';
+        const c = this.personalOf(username);
+        return c
+            ? ` <span class="badge ac-claude-tag">${esc(c.name)}</span>`
+            : ` <span class="badge muted ac-claude-tag">${esc(this.t('no_claude'))}</span>`;
     },
 
     renderCreateUsers() {
@@ -391,13 +433,126 @@ const AgentChatModule = {
         box.innerHTML = this.candidates.length
             ? this.candidates.map(c => this.checkHtml(c.username, false)).join('')
             : `<span class="hint ac-hint">${esc(this.t('no_candidates'))}</span>`;
+        const me = this.$('ac-creator-claude');
+        if (me) {
+            const u = Auth.getUser();
+            const c = u ? this.personalOf(u.username) : null;
+            me.textContent = c ? this.t('creator_claude').replace('{n}', c.name) : this.t('creator_no_claude');
+        }
     },
 
     resetClaudes() {
         const box = this.$('ac-new-claudes');
         if (!box) return;
         box.innerHTML = '';
-        this.addClaudeRow(this.DEFAULT_CLAUDE);
+    },
+
+    // ---------------------------------------------------------------- Claude personnels
+
+    async loadAccounts() {
+        if (!this.canManage()) return;
+        const data = await this.api('/claudes');
+        if (!data) return;
+        this.accounts = data.accounts || [];
+        this.renderAccounts();
+        this.renderCreateUsers();
+        this.renderPeople();
+    },
+
+    defaultPersonalName(username) {
+        return this.t('personal_default_name').replace('{u}', username);
+    },
+
+    renderAccounts() {
+        const box = this.$('ac-personal-list');
+        if (!box) return;
+        // Noms en cours de saisie (compte sans Claude) : conservés à travers le repeint.
+        const typed = {};
+        box.querySelectorAll('input[data-personal-name]').forEach(inp => { typed[inp.dataset.personalName] = inp.value; });
+        if (!this.accounts.length) {
+            box.innerHTML = `<div class="hint ac-hint">${esc(this.t('personal_no_accounts'))}</div>`;
+            this.renderPersonalKey();
+            return;
+        }
+        box.innerHTML = this.accounts.map(a => {
+            const c = a.claude && !a.claude.revoked ? a.claude : null;
+            const rooms = c && c.rooms && c.rooms.length
+                ? this.t('personal_rooms').replace('{r}', c.rooms.join(', '))
+                : this.t('personal_no_rooms');
+            const u = esc(a.username);
+            return `<div class="ac-member ac-personal-row">
+                <span class="ac-member-name">${u}</span>
+                ${a.role ? `<span class="role-pill ${esc(a.role)}">${esc(a.role)}</span>` : ''}
+                ${c ? `<span class="badge online">${esc(c.name)}</span>`
+                    : `<span class="badge muted">${esc(this.t(a.claude ? 'revoked' : 'no_claude'))}</span>`}
+                ${c ? `<span class="hint ac-hint ac-personal-rooms">${esc(rooms)}</span>` : ''}
+                <div class="ac-personal-actions">
+                    <input class="form-input" maxlength="60" data-personal-name="${u}" placeholder="${esc(this.t('personal_name_ph'))}">
+                    <button class="btn btn-primary btn-sm" type="button" data-personal-action="${c ? 'rotate' : 'create'}" data-username="${u}">${esc(this.t(c ? 'personal_rotate' : 'personal_create'))}</button>
+                    ${c ? `<button class="btn btn-secondary btn-sm" type="button" data-personal-action="rename" data-username="${u}">${esc(this.t('personal_rename'))}</button>
+                    <button class="btn btn-danger btn-sm" type="button" data-personal-action="revoke" data-username="${u}">${esc(this.t('revoke'))}</button>` : ''}
+                </div>
+            </div>`;
+        }).join('');
+        // valeur des champs posée en DOM (pas d'interpolation dans un attribut value)
+        box.querySelectorAll('input[data-personal-name]').forEach(inp => {
+            const a = this.accounts.find(x => x.username === inp.dataset.personalName);
+            const live = a && a.claude && !a.claude.revoked ? a.claude.name : '';
+            inp.value = live || typed[inp.dataset.personalName] || (a && a.claude && a.claude.name)
+                || this.defaultPersonalName(inp.dataset.personalName);
+        });
+        this.renderPersonalKey();
+    },
+
+    async personalAction(action, username) {
+        if (!this.canManage() || !username) return;
+        const inp = Array.from(document.querySelectorAll('#ac-personal-list input[data-personal-name]'))
+            .find(x => x.dataset.personalName === username);
+        const name = inp ? inp.value.trim() : '';
+        const path = `/claudes/${encodeURIComponent(username)}`;
+        let data;
+        if (action === 'create' || action === 'rotate') {
+            if (!name) return;
+            if (action === 'rotate' && !window.confirm(this.t('personal_rotate_confirm').replace('{u}', username))) return;
+            data = await this.api(path, { method: 'POST', body: JSON.stringify({ name }) });
+            if (!data) return;
+            this.shownPersonal = { username, name: data.claude.name, key: data.key, cmd: data.mcp_command };
+        } else if (action === 'rename') {
+            if (!name) return;
+            data = await this.api(path + '/rename', { method: 'POST', body: JSON.stringify({ name }) });
+        } else if (action === 'revoke') {
+            if (!window.confirm(this.t('personal_revoke_confirm').replace('{u}', username))) return;
+            data = await this.api(path + '/revoke', { method: 'POST' });
+            if (data && this.shownPersonal && this.shownPersonal.username === username) this.shownPersonal = null;
+        } else {
+            return;
+        }
+        if (!data) return;
+        await this.loadAccounts();
+        await this.loadRooms();
+    },
+
+    /** Clé personnelle fraîchement créée : montrée une seule fois, avec la commande. */
+    renderPersonalKey() {
+        const box = this.$('ac-keybox-personal');
+        if (!box) return;
+        const sp = this.shownPersonal;
+        if (!sp) { box.classList.add('hidden'); box.innerHTML = ''; return; }
+        box.innerHTML = `<p class="ac-keybox-warn">${esc(this.t('key_once'))} ${esc(this.t('personal_key_once'))}</p>
+            <div class="ac-keybox-item">
+                <div class="ac-keybox-title">${esc(this.t('key_for'))} ${esc(sp.name)} (${esc(sp.username)})</div>
+                <label class="form-label">${esc(this.t('key'))}</label>
+                <div class="ac-copy-row">
+                    <code class="mono ac-code">${esc(sp.key)}</code>
+                    <button class="btn btn-secondary btn-sm" data-copy="${esc(sp.key)}">${esc(this.t('copy'))}</button>
+                </div>
+                <label class="form-label">${esc(this.t('command'))}</label>
+                <div class="ac-copy-row">
+                    <code class="mono ac-code">${esc(sp.cmd)}</code>
+                    <button class="btn btn-secondary btn-sm" data-copy="${esc(sp.cmd)}">${esc(this.t('copy'))}</button>
+                </div>
+            </div>`;
+        box.classList.remove('hidden');
     },
 
     addClaudeRow(value) {
@@ -446,6 +601,7 @@ const AgentChatModule = {
         btn.textContent = this.t('saved');
         setTimeout(() => { if (btn.isConnected) btn.textContent = this.t('save'); }, 1500);
         await this.loadRooms();
+        this.loadAccounts();
     },
 
     selectRoom(roomId) {
@@ -859,16 +1015,25 @@ const AgentChatModule = {
             box.innerHTML = `<div class="hint ac-hint">${esc(this.t(manage ? 'no_members' : 'no_members_dev'))}</div>`;
             return;
         }
-        box.innerHTML = members.map(m => `
+        // Révoqué : rien d'utile à lire pour un developer ; l'admin peut le retirer.
+        const shown = manage ? members : members.filter(m => !m.revoked);
+        if (!shown.length) {
+            box.innerHTML = `<div class="hint ac-hint">${esc(this.t('no_members_dev'))}</div>`;
+            return;
+        }
+        box.innerHTML = shown.map(m => `
             <div class="ac-member${m.revoked ? ' revoked' : ''}">
                 ${m.revoked
                     ? `<span class="ac-member-name">${esc(m.name)}</span>`
                     : `<button type="button" class="ac-member-name ac-mention-btn" data-mention="${esc(m.name)}" title="${esc(this.t('mention_title'))}">${esc(m.name)}</button>`}
+                ${m.owner ? `<span class="badge ac-owner">${esc(this.t('owner_badge').replace('{u}', m.owner))}</span>` : ''}
                 ${(this.pings[m.name] || []).length
                     ? `<span class="badge warn">${esc(this.t('pings_open').replace('{n}', (this.pings[m.name] || []).length))}</span>` : ''}
                 ${m.revoked
-                    ? `<span class="badge muted">${esc(this.t('revoked'))}</span>`
-                    : `<span class="badge online">${esc(this.t('active'))}</span>${manage
+                    ? `<span class="badge muted">${esc(this.t('revoked'))}</span>${manage
+                        ? `<button class="btn btn-secondary btn-sm" data-delete-member="${esc(m.id)}" data-name="${esc(m.name)}">${esc(this.t('remove'))}</button>`
+                        : ''}`
+                    : `<span class="badge online">${esc(this.t('active'))}</span>${manage && !m.owner
                         ? `<button class="btn btn-danger btn-sm" data-revoke="${esc(m.id)}" data-name="${esc(m.name)}">${esc(this.t('revoke'))}</button>`
                         : ''}`}
                 ${m.revoked ? '' : this.presenceHtml(m)}
@@ -933,6 +1098,16 @@ const AgentChatModule = {
         }
         btn.textContent = ok ? this.t('copied') : this.t('copy_failed');
         setTimeout(() => { if (btn.isConnected) btn.textContent = this.t('copy'); }, 1500);
+    },
+
+    async deleteMember(memberId, name) {
+        if (!this.roomId || !this.canManage()) return;
+        if (!window.confirm(this.t('delete_confirm') + ' ' + name)) return;
+        const data = await this.api(
+            `/rooms/${encodeURIComponent(this.roomId)}/members/${encodeURIComponent(memberId)}`,
+            { method: 'DELETE' });
+        if (!data) return;
+        await this.loadRooms();
     },
 
     async revoke(memberId, name) {

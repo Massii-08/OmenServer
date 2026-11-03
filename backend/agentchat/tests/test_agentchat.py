@@ -229,7 +229,8 @@ def test_mcp_ping_and_tools_list(ac_dir):
     tools = mcp(c, key, {"jsonrpc": "2.0", "id": 2, "method": "tools/list"}).json()["result"]["tools"]
     names = sorted(t["name"] for t in tools)
     assert names == ["envoyer_document", "envoyer_message", "lire_document", "lire_messages",
-                     "lire_tableau", "lister_documents", "mes_pings", "modifier_tableau", "presence"]
+                     "lire_tableau", "lister_documents", "lister_salons", "mes_pings",
+                     "modifier_tableau", "presence"]
     for t in tools:
         assert t["inputSchema"]["type"] == "object"
 
@@ -737,7 +738,7 @@ def test_server_version_and_instructions(ac_dir):
     setup_room(c)
     key = add_member(c)["key"]
     res = mcp(c, key, {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}).json()["result"]
-    assert res["serverInfo"]["version"] == "1.1.0"
+    assert res["serverInfo"]["version"] == "1.2.0"
     ins = res["instructions"]
     assert "mes_pings" in ins and "@Nom" in ins and "envoyer_document" in ins and "curl" in ins
 

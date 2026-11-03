@@ -2,6 +2,10 @@
 
 Disposition (dans ``AGENTCHAT_DIR``, surchargeable par monkeypatch) :
 - ``rooms.json``      : salons, tableau (board) et membres (clé stockée en sha256 seulement)
+- ``claudes.json``    : Claude personnels, un par compte du site (``{username: {name,
+  key_hash, created_at, revoked}}``) — UNE clé valable dans tous les salons où sa
+  personne est cochée ; il y apparaît comme un membre ``owner: <username>`` sans
+  clé propre (id de membre propre au salon : présence, pings, messages par salon)
 - ``<room_id>.jsonl`` : messages, une ligne JSON par message, id croissant à partir de 1
 - ``files/<room_id>/<file_id>`` (+ ``<file_id>.json``) : documents joints aux messages ;
   ``file_id`` = 16 hex aléatoires, le nom fourni par l'utilisateur ne sert JAMAIS de
@@ -186,11 +190,13 @@ def _get_room(rooms: Dict[str, Any], room_id: str) -> Dict[str, Any]:
 
 
 def public_member(m: Dict[str, Any]) -> Dict[str, Any]:
+    owner = m.get("owner")
     return {
         "id": m.get("id"),
         "name": m.get("name"),
         "created_at": m.get("created_at"),
         "revoked": bool(m.get("revoked")),
+        "owner": owner if isinstance(owner, str) else None,
     }
 
 
@@ -201,6 +207,7 @@ def public_room(room_id: str, room: Dict[str, Any]) -> Dict[str, Any]:
         "created_at": room.get("created_at"),
         "members": [public_member(m) for m in room.get("members", [])],
         "users": [u for u in (room.get("users") or []) if isinstance(u, str)],
+        "created_by": room.get("created_by") if isinstance(room.get("created_by"), str) else None,
     }
 
 
@@ -215,27 +222,37 @@ def get_room(room_id: str) -> Dict[str, Any]:
     return public_room(room_id, _get_room(_load_rooms(), room_id))
 
 
-def create_room(room_id: str, name: str, users: Optional[List[str]] = None) -> Dict[str, Any]:
+def create_room(room_id: str, name: str, users: Optional[List[str]] = None,
+                created_by: Optional[str] = None) -> Dict[str, Any]:
+    """Crée un salon. Le Claude personnel du créateur et de chaque personne
+    cochée y est ajouté automatiquement (``sync_personal_members``)."""
     validate_room_id(room_id)
     name = _clean_name(name)
     users = clean_users(users)
+    creator = clean_users([created_by])[0] if created_by else None
     with _LOCK:
         rooms = _load_rooms()
         if room_id in rooms:
             raise Conflict("Ce salon existe déjà")
-        rooms[room_id] = {"name": name, "created_at": _now(), "board": "", "members": [],
-                          "users": users}
+        room = {"name": name, "created_at": _now(), "board": "", "members": [],
+                "users": users}
+        if creator:
+            room["created_by"] = creator
+        rooms[room_id] = room
+        _sync_room(room, _load_personal())
         _save_rooms(rooms)
-        return public_room(room_id, rooms[room_id])
+        return public_room(room_id, room)
 
 
 def set_users(room_id: str, users: Any) -> Dict[str, Any]:
-    """Remplace la liste des personnes (comptes du site) qui ont accès au salon."""
+    """Remplace la liste des personnes (comptes du site) qui ont accès au salon,
+    puis synchronise leurs Claude personnels (ajout / retrait)."""
     users = clean_users(users)
     with _LOCK:
         rooms = _load_rooms()
         room = _get_room(rooms, room_id)
         room["users"] = users
+        _sync_room(room, _load_personal())
         _save_rooms(rooms)
         return public_room(room_id, room)
 
@@ -272,15 +289,41 @@ def revoke_member(room_id: str, member_id: str) -> Dict[str, Any]:
         room = _get_room(rooms, room_id)
         for m in room.get("members", []):
             if m.get("id") == member_id:
+                if m.get("owner") and not m.get("revoked"):
+                    # Il reviendrait à la prochaine synchronisation : on retire la personne.
+                    raise Invalid("Ce Claude suit sa personne : décoche-la dans Personnes "
+                                  "(ou révoque son Claude personnel)")
                 m["revoked"] = True
                 _save_rooms(rooms)
                 return public_member(m)
         raise NotFound("Membre introuvable")
 
 
+def delete_member(room_id: str, member_id: str) -> None:
+    """Supprime définitivement un membre DÉJÀ révoqué (ses messages restent,
+    signés de son nom). Un membre actif doit d'abord être révoqué (409)."""
+    with _LOCK:
+        rooms = _load_rooms()
+        room = _get_room(rooms, room_id)
+        members = room.get("members", [])
+        for i, m in enumerate(members):
+            if m.get("id") == member_id:
+                if not m.get("revoked"):
+                    raise Conflict("Seul un membre révoqué peut être retiré")
+                del members[i]
+                _save_rooms(rooms)
+                return
+        raise NotFound("Membre introuvable")
+
+
+def _valid_key(key: Any) -> bool:
+    return isinstance(key, str) and key.startswith(KEY_PREFIX) and len(key) <= 200
+
+
 def find_by_key(key: Any) -> Optional[Tuple[str, Dict[str, Any], Dict[str, Any]]]:
-    """Retrouve (room_id, room, membre) pour une clé valide et non révoquée."""
-    if not isinstance(key, str) or not key.startswith(KEY_PREFIX) or len(key) > 200:
+    """Retrouve (room_id, room, membre) pour une CLÉ DE SALON valide et non
+    révoquée. Une clé personnelle n'est pas une clé de salon : voir ``find_identity``."""
+    if not _valid_key(key):
         return None
     h = hash_key(key)
     found = None
@@ -290,6 +333,238 @@ def find_by_key(key: Any) -> Optional[Tuple[str, Dict[str, Any], Dict[str, Any]]
             if hmac.compare_digest(str(m.get("key_hash", "")), h) and not m.get("revoked"):
                 found = (rid, room, m)
     return found
+
+
+def find_identity(key: Any) -> Optional[Dict[str, Any]]:
+    """Identité d'une clé Agent Chat :
+
+    - clé de salon : ``{"kind": "room", "room_id", "room", "member"}`` ;
+    - clé personnelle : ``{"kind": "personal", "username", "claude",
+      "rooms": [(room_id, room, membre), ...]}`` (salons où son membre est actif,
+      triés par id) ;
+    - sinon None. Comparaisons en temps constant sur toutes les entrées."""
+    if not _valid_key(key):
+        return None
+    h = hash_key(key)
+    personal = _load_personal()
+    who = None
+    for username, c in personal.items():
+        if hmac.compare_digest(str(c.get("key_hash", "")), h) and not c.get("revoked"):
+            who = username
+    rooms = _load_rooms()
+    room_found = None
+    for rid, room in rooms.items():
+        for m in room.get("members", []):
+            if hmac.compare_digest(str(m.get("key_hash", "")), h) and not m.get("revoked"):
+                room_found = (rid, room, m)
+    if room_found is not None:
+        return {"kind": "room", "room_id": room_found[0], "room": room_found[1],
+                "member": room_found[2]}
+    if who is None:
+        return None
+    mine = []
+    for rid in sorted(rooms):
+        for m in rooms[rid].get("members", []):
+            if m.get("owner") == who and not m.get("revoked"):
+                mine.append((rid, rooms[rid], m))
+                break
+    return {"kind": "personal", "username": who, "claude": personal[who], "rooms": mine}
+
+
+# ---------------------------------------------------------------- Claude personnels
+
+def _load_personal() -> Dict[str, Any]:
+    p = _dir() / "claudes.json"
+    if not p.is_file():
+        return {}
+    try:
+        with open(str(p), "r", encoding="utf-8") as f:
+            d = json.load(f)
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(d, dict):
+        return {}
+    return {k: v for k, v in d.items() if isinstance(k, str) and isinstance(v, dict)}
+
+
+def _save_personal(personal: Dict[str, Any]) -> None:
+    _ensure_dir()
+    _write_atomic(_dir() / "claudes.json", json.dumps(personal, ensure_ascii=False, indent=2))
+
+
+def public_personal(username: str, c: Dict[str, Any]) -> Dict[str, Any]:
+    return {"username": username, "name": c.get("name"), "created_at": c.get("created_at"),
+            "revoked": bool(c.get("revoked"))}
+
+
+def get_personal(username: str) -> Optional[Dict[str, Any]]:
+    c = _load_personal().get(username)
+    return public_personal(username, c) if c is not None else None
+
+
+def list_personal() -> List[Dict[str, Any]]:
+    """Claude personnels (publics) + ``rooms`` = salons où il est membre actif."""
+    personal = _load_personal()
+    rooms = _load_rooms()
+    out = []
+    for username in sorted(personal):
+        pub = public_personal(username, personal[username])
+        pub["rooms"] = [rid for rid in sorted(rooms)
+                        if any(m.get("owner") == username and not m.get("revoked")
+                               for m in rooms[rid].get("members", []))]
+        out.append(pub)
+    return out
+
+
+def _check_personal_name(personal: Dict[str, Any], username: str, name: str) -> None:
+    for u, c in personal.items():
+        if u != username and not c.get("revoked") and str(c.get("name", "")).lower() == name.lower():
+            raise Conflict("Un autre Claude personnel porte déjà ce nom")
+
+
+def personal_names_for(usernames: List[str]) -> List[str]:
+    """Noms des Claude personnels actifs de ces comptes (pour détecter un doublon
+    avec un Claude invité avant de créer un salon)."""
+    personal = _load_personal()
+    return [personal[u]["name"] for u in usernames
+            if u in personal and not personal[u].get("revoked") and personal[u].get("name")]
+
+
+def _sync_all(personal: Dict[str, Any]) -> None:
+    rooms = _load_rooms()
+    changed = False
+    for room in rooms.values():
+        if _sync_room(room, personal):
+            changed = True
+    if changed:
+        _save_rooms(rooms)
+
+
+def create_or_rotate_personal(username: str, name: Any) -> Tuple[Dict[str, Any], str]:
+    """Crée le Claude personnel d'un compte ou lui donne une NOUVELLE clé (l'ancienne
+    ne marche plus). Renvoie (public, clé en clair) — la clé n'est montrée qu'ici.
+    Le Claude est ajouté (ou rattaché) partout où sa personne est cochée."""
+    username = clean_users([username])[0] if username else ""
+    if not username:
+        raise Invalid("Nom de compte invalide")
+    name = _clean_name(name)
+    with _LOCK:
+        personal = _load_personal()
+        _check_personal_name(personal, username, name)
+        key = KEY_PREFIX + secrets.token_urlsafe(32)
+        prev = personal.get(username) or {}
+        personal[username] = {
+            "name": name,
+            "key_hash": hash_key(key),
+            "created_at": prev.get("created_at") or _now(),
+            "rotated_at": _now(),
+            "revoked": False,
+        }
+        _save_personal(personal)
+        _sync_all(personal)
+        return public_personal(username, personal[username]), key
+
+
+def rename_personal(username: str, name: Any) -> Dict[str, Any]:
+    """Renomme le Claude personnel (et ses membres dans les salons). Les anciens
+    pings écrits pour l'ancien nom ne lui sont plus attribués."""
+    name = _clean_name(name)
+    with _LOCK:
+        personal = _load_personal()
+        c = personal.get(username)
+        if c is None:
+            raise NotFound("Claude personnel introuvable")
+        _check_personal_name(personal, username, name)
+        c["name"] = name
+        _save_personal(personal)
+        _sync_all(personal)
+        return public_personal(username, c)
+
+
+def revoke_personal(username: str) -> Dict[str, Any]:
+    """Révoque la clé personnelle ; ses membres quittent tous les salons."""
+    with _LOCK:
+        personal = _load_personal()
+        c = personal.get(username)
+        if c is None:
+            raise NotFound("Claude personnel introuvable")
+        c["revoked"] = True
+        _save_personal(personal)
+        _sync_all(personal)
+        return public_personal(username, c)
+
+
+def _sync_room(room: Dict[str, Any], personal: Dict[str, Any]) -> bool:
+    """Aligne les membres ``owner`` d'un salon (dict modifié en place, SANS verrou
+    ni écriture : l'appelant tient ``_LOCK`` et sauvegarde). Renvoie True si
+    quelque chose a changé.
+
+    Voulus = personnes cochées + créateur, ayant un Claude personnel non révoqué.
+    - membre ``owner`` existant (même révoqué) : réactivé, nom mis à jour ;
+    - sinon un ancien membre ACTIF à clé de salon portant le même nom est
+      RATTACHÉ (``owner`` posé, id/historique/clé de salon conservés) ;
+    - sinon un membre est créé (sans clé propre).
+    Un membre ``owner`` qui n'est plus voulu est révoqué et perd sa clé de salon
+    éventuelle (une réactivation ultérieure ne ressuscite pas une vieille clé)."""
+    members = room.setdefault("members", [])
+    wanted = []  # type: List[str]
+    for u in list(room.get("users") or []) + [room.get("created_by")]:
+        if isinstance(u, str) and u not in wanted:
+            c = personal.get(u)
+            if c is not None and not c.get("revoked") and c.get("name"):
+                wanted.append(u)
+    changed = False
+    for u in wanted:
+        name = personal[u]["name"]
+        m = next((x for x in members if x.get("owner") == u), None)
+        if m is None:
+            m = next((x for x in members if not x.get("owner") and not x.get("revoked")
+                      and str(x.get("name", "")).lower() == name.lower()), None)
+            if m is not None:
+                m["owner"] = u
+                changed = True
+        if m is None:
+            members.append({"id": secrets.token_hex(4), "name": name, "owner": u,
+                            "created_at": _now(), "revoked": False})
+            changed = True
+            continue
+        if m.get("revoked"):
+            m["revoked"] = False
+            m.pop("key_hash", None)
+            changed = True
+        if m.get("name") != name:
+            m["name"] = name
+            changed = True
+    for m in members:
+        if m.get("owner") and m["owner"] not in wanted and not m.get("revoked"):
+            m["revoked"] = True
+            m.pop("key_hash", None)
+            changed = True
+    return changed
+
+
+def set_creator(room_id: str, username: str) -> Dict[str, Any]:
+    """Pose ``created_by`` sur un salon (migration des salons d'avant ce champ)
+    puis synchronise : le Claude personnel du créateur y entre."""
+    username = clean_users([username])[0] if username else ""
+    if not username:
+        raise Invalid("Nom de compte invalide")
+    with _LOCK:
+        rooms = _load_rooms()
+        room = _get_room(rooms, room_id)
+        room["created_by"] = username
+        _sync_room(room, _load_personal())
+        _save_rooms(rooms)
+        return public_room(room_id, room)
+
+
+def sync_personal_members(room_id: str) -> Dict[str, Any]:
+    with _LOCK:
+        rooms = _load_rooms()
+        room = _get_room(rooms, room_id)
+        if _sync_room(room, _load_personal()):
+            _save_rooms(rooms)
+        return public_room(room_id, room)
 
 
 # ---------------------------------------------------------------- tableau

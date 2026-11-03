@@ -160,3 +160,36 @@ def test_end_to_end_with_server(hook, tmp_path, monkeypatch):
     decision = json.loads(out)
     assert decision["decision"] == "block" and "exporte le .fbx" in decision["reason"]
     assert "Claude-Pets" in decision["reason"]
+
+
+def test_reason_shows_salon_for_personal_key(hook):
+    reason = hook.build_reason("Claude A", [{"id": 3, "author": "a", "text": "x", "salon": "moon"},
+                                            {"id": 1, "author": "b", "text": "y", "salon": "metro"}])
+    assert "- [moon] #3 de a" in reason and "- [metro] #1 de b" in reason and "salon=<salon>" in reason
+    assert "salon=" not in hook.build_reason("M", [{"id": 1, "author": "a", "text": "x"}])
+
+
+def test_end_to_end_personal_key(hook, tmp_path, monkeypatch):
+    """Clé personnelle : le hook voit les pings de TOUS les salons de sa personne."""
+    from backend.agentchat import store
+    from backend.agentchat.tests.test_agentchat import make_client, setup_room
+    monkeypatch.setattr(store, "AGENTCHAT_DIR", tmp_path / "ac")
+    c = make_client()
+    setup_room(c, "moon", "Moon", users=["abdull"])
+    setup_room(c, "metro", "Metro", users=["abdull"])
+    key = c.post("/api/agentchat/claudes/abdull", json={"name": "Claude A"}).json()["key"]
+    c.post("/api/agentchat/rooms/moon/messages", json={"text": "@Claude A pose la tour"})
+    c.post("/api/agentchat/rooms/metro/messages", json={"text": "@Claude A rame"})
+    cfg = write_cfg(tmp_path, {"mcpServers": {"agentchat": {
+        "url": "http://testserver/mcp/agentchat", "headers": {"Authorization": "Bearer " + key}}}})
+
+    def fetch(url, auth, timeout):
+        r = c.get(url.replace("http://testserver", ""), headers={"Authorization": auth})
+        r.raise_for_status()
+        return r.json()
+
+    code, out = run_main(hook, {"cwd": "/x"}, cfg, fetch)
+    decision = json.loads(out)
+    assert decision["decision"] == "block"
+    assert "[moon]" in decision["reason"] and "[metro]" in decision["reason"]
+    assert "Claude A" in decision["reason"]

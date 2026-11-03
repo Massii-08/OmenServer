@@ -3,8 +3,11 @@
 - ``/api/agentchat/...`` : gestion des salons/membres/messages/tableau depuis le site
   (JWT du site, administrateur uniquement).
 - ``POST /mcp/agentchat`` : serveur MCP pour les instances de Claude Code. Auth
-  par ``Authorization: Bearer oac_...`` (clé de membre) — la clé désigne à la fois
-  le salon et l'auteur ; aucun champ client ne peut changer l'auteur.
+  par ``Authorization: Bearer oac_...``. Deux sortes de clés :
+  * clé de salon (historique) : désigne à la fois le salon et l'auteur ;
+  * clé personnelle (un Claude par compte du site) : vaut dans tous les salons où
+    sa personne est cochée ; chaque outil prend alors ``salon`` (implicite s'il n'en
+    a qu'un). L'auteur reste toujours déterminé par la clé, jamais par un champ client.
 - ``/mcp/agentchat/fichiers`` et ``/mcp/agentchat/pings`` : petites routes REST pour
   les agents (même clé Bearer) — gros documents binaires via ``curl`` et lecture
   des pings par le hook ``Stop`` de Claude Code (``tools/agentchat_ping_hook.py``).
@@ -153,13 +156,18 @@ def create_room(body: RoomIn, current_user: User = Depends(get_current_user),
     users = _check_users(db, body.users)
     # Noms des Claude validés AVANT de créer quoi que ce soit (pas de salon à moitié fait).
     claudes = []  # type: List[str]
+    taken = [n.lower() for n in store.personal_names_for(users + [current_user.username])]
     try:
         for n in body.claudes or []:
             n = store.clean_member_name(n)
             if n.lower() in [c.lower() for c in claudes]:
                 raise store.Invalid("Deux Claude portent le même nom : %s" % n)
+            if n.lower() in taken:
+                raise store.Invalid("%s est déjà le Claude personnel d'une personne cochée : "
+                                    "il sera ajouté automatiquement" % n)
             claudes.append(n)
-        room = store.create_room(body.room_id, body.name, users)
+        room = store.create_room(body.room_id, body.name, users,
+                                 created_by=current_user.username)
         keys = []
         for n in claudes:
             member, key = store.add_member(body.room_id, n)
@@ -211,6 +219,104 @@ def revoke_member(room_id: str, member_id: str, current_user: User = Depends(get
         raise _http(e)
     logger.info("Agent Chat: membre %s révoqué (salon %s)", member["name"], room_id)
     return {"member": member}
+
+
+@router.delete("/rooms/{room_id}/members/{member_id}")
+def delete_member(room_id: str, member_id: str, current_user: User = Depends(get_current_user)):
+    """Retire définitivement un membre déjà révoqué (409 s'il est actif)."""
+    _require_admin(current_user)
+    try:
+        store.delete_member(room_id, member_id)
+    except store.StoreError as e:
+        raise _http(e)
+    logger.info("Agent Chat: membre révoqué %s retiré du salon %s", member_id, room_id)
+    return {"ok": True}
+
+
+# ---------------------------------------------------------------- Claude personnels
+
+PERSONAL_ROLES = ("developer", "admin")
+
+
+class ClaudeIn(BaseModel):
+    name: str
+
+
+def _mcp_base(request: Request) -> str:
+    """URL du serveur MCP d'après la requête. Derrière le tunnel, uvicorn peut voir
+    ``http://omenserver.org`` : on repasse en https sauf pour localhost."""
+    base = str(request.base_url).rstrip("/")
+    host = (request.url.hostname or "").lower()
+    if base.startswith("http://") and host not in ("localhost", "127.0.0.1", "::1", "testserver"):
+        base = "https://" + base[len("http://"):]
+    return base + "/mcp/agentchat"
+
+
+def _mcp_command(request: Request, key: str) -> str:
+    return ('claude mcp add --transport http -s user agentchat %s --header "Authorization: Bearer %s"'
+            % (_mcp_base(request), key))
+
+
+def _personal_account(db: Session, username: str) -> User:
+    u = db.query(User).filter(User.username == username).first()
+    if u is None:
+        raise HTTPException(status_code=400, detail="Compte inconnu : %s" % username)
+    if not (u.is_admin or u.role in PERSONAL_ROLES):
+        raise HTTPException(status_code=400,
+                            detail="Ce compte n'a pas accès à la Discussion (rôle developer requis)")
+    return u
+
+
+@router.get("/claudes")
+def list_claudes(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """Comptes developer + admin, avec leur Claude personnel (jamais de hash)."""
+    _require_admin(current_user)
+    rows = db.query(User).order_by(User.username).all()
+    personal = {c["username"]: c for c in store.list_personal()}
+    out = []
+    for u in rows:
+        if not (u.is_admin or u.role in CHAT_ROLES):
+            continue
+        out.append({"username": u.username, "role": u.role, "is_admin": bool(u.is_admin),
+                    "claude": personal.get(u.username)})
+    return {"accounts": out}
+
+
+@router.post("/claudes/{username}")
+def create_claude(username: str, body: ClaudeIn, request: Request,
+                  current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """Crée ou régénère la clé personnelle (l'ancienne cesse de marcher). Clé montrée une fois."""
+    _require_admin(current_user)
+    _personal_account(db, username)
+    try:
+        claude, key = store.create_or_rotate_personal(username, body.name)
+    except store.StoreError as e:
+        raise _http(e)
+    claude = next((c for c in store.list_personal() if c["username"] == username), claude)
+    logger.info("Agent Chat: clé personnelle de %s (%s) générée par %s",
+                username, claude["name"], current_user.username)
+    return {"claude": claude, "key": key, "mcp_command": _mcp_command(request, key)}
+
+
+@router.post("/claudes/{username}/rename")
+def rename_claude(username: str, body: ClaudeIn, current_user: User = Depends(get_current_user)):
+    _require_admin(current_user)
+    try:
+        claude = store.rename_personal(username, body.name)
+    except store.StoreError as e:
+        raise _http(e)
+    return {"claude": claude}
+
+
+@router.post("/claudes/{username}/revoke")
+def revoke_claude(username: str, current_user: User = Depends(get_current_user)):
+    _require_admin(current_user)
+    try:
+        claude = store.revoke_personal(username)
+    except store.StoreError as e:
+        raise _http(e)
+    logger.info("Agent Chat: Claude personnel de %s révoqué par %s", username, current_user.username)
+    return {"claude": claude}
 
 
 @router.get("/rooms/{room_id}/messages")
@@ -354,7 +460,7 @@ def put_board(room_id: str, body: BoardIn, current_user: User = Depends(get_curr
 
 SUPPORTED_VERSIONS = ("2025-06-18", "2025-03-26", "2024-11-05")
 DEFAULT_VERSION = "2025-06-18"
-SERVER_INFO = {"name": "omenserver-agentchat", "version": "1.1.0"}
+SERVER_INFO = {"name": "omenserver-agentchat", "version": "1.2.0"}
 INLINE_DOC_MAX = 4 * 1024 * 1024
 IMAGE_INLINE_MAX = 5 * 1024 * 1024
 IMAGE_MIMES = ("image/png", "image/jpeg", "image/gif", "image/webp")
@@ -365,6 +471,8 @@ BYTES_WINDOW_MAX = 150000
 
 # Origine de la requête MCP en cours (citée dans les commandes curl).
 _ORIGIN = contextvars.ContextVar("agentchat_origin", default="<origine du serveur>")
+# « ?salon=<id> » à ajouter aux URL curl quand la clé est personnelle (sinon vide).
+_SALON_Q = contextvars.ContextVar("agentchat_salon_q", default="")
 _KEY_HINT = "<clé dans ~/.claude.json → mcpServers.agentchat.headers.Authorization>"
 SENDABLE_KINDS = ["info", "en_cours", "fait", "demande", "reponse"]
 
@@ -492,8 +600,60 @@ TOOLS = [
 ]
 
 
+TOOLS.insert(0, {
+    "name": "lister_salons",
+    "description": (
+        "Liste tes salons : id, nom, membres actifs et nombre de pings ouverts pour toi. "
+        "Avec une clé personnelle, passe ensuite salon=<id> aux autres outils."
+    ),
+    "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
+})
+SALON_PROP = {"type": "string", "maxLength": 40,
+              "description": "Id du salon (voir lister_salons). Facultatif si tu n'as qu'un salon."}
+for _t in TOOLS:
+    if _t["name"] != "lister_salons":
+        _t["inputSchema"]["properties"]["salon"] = SALON_PROP
+
+
 class ToolError(Exception):
     """Erreur d'outil : renvoyée en ``isError: true`` (pas en erreur JSON-RPC)."""
+
+
+_RULES = (
+        "- Avant de toucher un fichier partagé ou la zone d'un autre membre, envoie une "
+        "demande (type demande) et attends sa réponse SEULEMENT si le destinataire est en "
+        "ligne. S'il est hors ligne (outil presence, ou avertissement renvoyé par "
+        "envoyer_message), n'attends pas : prends la décision toi-même, agis, puis annonce-la "
+        "avec le type fait en expliquant ta décision pour qu'il la lise à son retour.\n"
+        "- Annonce avec en_cours ce que tu commences et avec fait ce que tu as fini.\n"
+        "- Pour demander quelque chose à un membre précis, mentionne-le avec @Nom (ou @tous) : "
+        "il reçoit un ping. Un ping qui t'est adressé reste ouvert tant que tu n'y as pas "
+        "répondu avec envoyer_message(reponse_a=<id>).\n"
+        "- Documents : envoyer_document pour partager un fichier, lister_documents et "
+        "lire_document pour les lire ; les gros binaires passent par curl sur "
+        "/mcp/agentchat/fichiers avec ta clé.\n"
+        "- Sois bref.")
+
+
+def _instructions_personal(ident: Dict[str, Any]) -> str:
+    rooms = ident["rooms"]
+    if rooms:
+        listing = ", ".join("%s (« %s »)" % (rid, room.get("name", rid)) for rid, room, _ in rooms)
+    else:
+        listing = "aucun pour l'instant"
+    salon_rule = ("- Passe salon=<id> à chaque appel d'outil (et ?salon=<id> aux URL curl). "
+                  "Une nouvelle discussion où ta personne est cochée apparaît d'elle-même : "
+                  "appelle lister_salons pour la voir.\n")
+    if len(rooms) == 1:
+        salon_rule = ("- Tu n'as qu'un salon : salon est facultatif. Si d'autres discussions "
+                      "apparaissent (lister_salons), passe alors salon=<id> à chaque appel.\n")
+    return (
+        "Tu es \"%s\", le Claude de %s, dans les salons Agent Chat où ta personne est "
+        "conviée, partagés avec d'autres instances de Claude Code. Tes salons : %s.\n%s"
+        "- Au début de chaque tâche, appelle lire_messages, mes_pings puis lire_tableau "
+        "(dans le salon du projet en cours).\n" % (
+            ident["claude"].get("name", ""), ident["username"], listing, salon_rule)
+        + _RULES)
 
 
 def _instructions(room: Dict[str, Any], member: Dict[str, Any]) -> str:
@@ -663,7 +823,8 @@ def _tool_envoyer_document(room_id, room, member, args):
         raise ToolError("argument reponse_a : entier attendu")
     too_big = ("document trop gros pour l'envoi en ligne (%d Mo max ici). Envoie-le avec curl : "
                'curl -H "Authorization: Bearer %s" -F "file=@<chemin>" -F "text=<message>" '
-               "%s/mcp/agentchat/fichiers" % (INLINE_DOC_MAX // (1024 * 1024), _KEY_HINT, _ORIGIN.get()))
+               "%s/mcp/agentchat/fichiers%s" % (INLINE_DOC_MAX // (1024 * 1024), _KEY_HINT, _ORIGIN.get(),
+                                     _SALON_Q.get()))
     if b64:
         compact = "".join(contenu.split())
         if len(compact) > (INLINE_DOC_MAX // 3 + 1) * 4:
@@ -730,8 +891,8 @@ def _tool_lire_document(room_id, room, member, args):
     parts = [head, "binaire : octets %d-%d sur %d (base64 ci-dessous)" % (start, end, total)]
     if end < total:
         parts.append('suite : lire_document(id="%s", debut=%d)' % (file_id, end))
-    parts.append('fichier entier : curl -H "Authorization: Bearer %s" %s/mcp/agentchat/fichiers/%s -o "%s"'
-                 % (_KEY_HINT, _ORIGIN.get(), file_id, meta["name"]))
+    parts.append('fichier entier : curl -H "Authorization: Bearer %s" "%s/mcp/agentchat/fichiers/%s%s" -o "%s"'
+                 % (_KEY_HINT, _ORIGIN.get(), file_id, _SALON_Q.get(), meta["name"]))
     parts += ["---", base64.b64encode(data[start:end]).decode("ascii")]
     return "\n".join(parts)
 
@@ -748,7 +909,7 @@ TOOL_HANDLERS = {
     "lire_document": _tool_lire_document,
 }
 
-NO_PING_FOOTER = ("mes_pings",)
+NO_PING_FOOTER = ("mes_pings", "lister_salons")
 
 
 def _ping_footer(room_id: str, member: Dict[str, Any]) -> str:
@@ -762,6 +923,86 @@ def _ping_footer(room_id: str, member: Dict[str, Any]) -> str:
         len(pings), ", ".join("#%d" % m["id"] for m in pings))
 
 
+def _personal_pings(ident: Dict[str, Any], only: Optional[str] = None) -> List[Tuple[str, Dict[str, Any]]]:
+    """[(room_id, message)] des pings ouverts du Claude personnel, tous salons
+    (ou seulement ``only``)."""
+    out = []  # type: List[Tuple[str, Dict[str, Any]]]
+    for rid, room, member in ident["rooms"]:
+        if only is not None and rid != only:
+            continue
+        try:
+            out += [(rid, m) for m in store.open_pings(rid, member["name"])]
+        except store.StoreError:
+            continue
+    return out
+
+
+def _ping_footer_personal(ident: Dict[str, Any]) -> str:
+    pings = _personal_pings(ident)
+    if not pings:
+        return ""
+    return ("\n\n[PING] %d ping(s) pour toi non traité(s) : %s — appelle mes_pings "
+            "avec le salon concerné." % (len(pings), ", ".join("%s #%d" % (rid, m["id"])
+                                                               for rid, m in pings)))
+
+
+def _salon_list(ident: Dict[str, Any]) -> str:
+    return ", ".join(rid for rid, _, _ in ident["rooms"]) or "(aucun)"
+
+
+def _resolve_room(ident: Dict[str, Any], salon: Any) -> Tuple[str, Dict[str, Any], Dict[str, Any]]:
+    """(room_id, salon, membre) visé par un appel. ToolError sinon."""
+    if salon is not None and not isinstance(salon, str):
+        raise ToolError("argument salon : chaîne attendue")
+    salon = (salon or "").strip() or None
+    if ident["kind"] == "room":
+        if salon is not None and salon != ident["room_id"]:
+            raise ToolError("salon introuvable : %s (ta clé ne vaut que pour %s)"
+                            % (salon, ident["room_id"]))
+        return ident["room_id"], ident["room"], ident["member"]
+    rooms = ident["rooms"]
+    if salon is not None:
+        for rid, room, member in rooms:
+            if rid == salon:
+                return rid, room, member
+        raise ToolError("salon introuvable : %s (tes salons : %s)" % (salon, _salon_list(ident)))
+    if len(rooms) == 1:
+        return rooms[0]
+    if not rooms:
+        raise ToolError("tu n'es membre d'aucun salon pour l'instant (lister_salons pour vérifier)")
+    raise ToolError("précise salon=<id> : tu es dans plusieurs salons (%s)" % _salon_list(ident))
+
+
+def _touch(ident: Dict[str, Any], room_id: Optional[str] = None) -> None:
+    """Présence : le membre du salon visé, sinon tous les membres de l'identité."""
+    if ident["kind"] == "room":
+        if ident["member"].get("id"):
+            presence.touch(ident["room_id"], ident["member"]["id"])
+        return
+    for rid, _, member in ident["rooms"]:
+        if (room_id is None or rid == room_id) and member.get("id"):
+            presence.touch(rid, member["id"])
+
+
+def _tool_lister_salons(ident: Dict[str, Any]) -> str:
+    if ident["kind"] == "room":
+        rooms = [(ident["room_id"], ident["room"], ident["member"])]
+    else:
+        rooms = ident["rooms"]
+    if not rooms:
+        return "Aucun salon pour l'instant : ta personne n'est cochée dans aucune discussion."
+    lines = ["Tes salons :"]
+    for rid, room, member in rooms:
+        actifs = [m.get("name", "") for m in room.get("members", []) if not m.get("revoked")]
+        try:
+            n = len(store.open_pings(rid, member["name"]))
+        except store.StoreError:
+            n = 0
+        lines.append("- %s « %s » · membres actifs : %s · pings ouverts pour toi : %d"
+                     % (rid, room.get("name", rid), ", ".join(actifs) or "(aucun)", n))
+    return "\n".join(lines)
+
+
 def _rpc_error(rid: Any, code: int, message: str) -> Dict[str, Any]:
     return {"jsonrpc": "2.0", "id": rid, "error": {"code": code, "message": message}}
 
@@ -770,19 +1011,23 @@ def _rpc_result(rid: Any, result: Any) -> Dict[str, Any]:
     return {"jsonrpc": "2.0", "id": rid, "result": result}
 
 
-def _handle_one(obj: Any, room_id: str, room: Dict[str, Any],
-                member: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+def _handle_one(obj: Any, ident: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """Traite une requête JSON-RPC ; renvoie None pour une notification."""
+    personal = ident["kind"] == "personal"
     if not isinstance(obj, dict) or obj.get("jsonrpc") != "2.0" or not isinstance(obj.get("method"), str):
         return _rpc_error(obj.get("id") if isinstance(obj, dict) else None, -32600, "Invalid Request")
     method = obj["method"]
     if "id" not in obj:
+        if personal:
+            _touch(ident)
         return None  # notification : pas de réponse
     rid = obj["id"]
     params = obj.get("params") or {}
     if not isinstance(params, dict):
         return _rpc_error(rid, -32602, "Invalid params")
 
+    if method != "tools/call" and personal:
+        _touch(ident)
     if method == "initialize":
         asked = params.get("protocolVersion")
         version = asked if asked in SUPPORTED_VERSIONS else DEFAULT_VERSION
@@ -790,7 +1035,8 @@ def _handle_one(obj: Any, room_id: str, room: Dict[str, Any],
             "protocolVersion": version,
             "capabilities": {"tools": {}},
             "serverInfo": SERVER_INFO,
-            "instructions": _instructions(room, member),
+            "instructions": (_instructions_personal(ident) if personal
+                             else _instructions(ident["room"], ident["member"])),
         })
     if method == "ping":
         return _rpc_result(rid, {})
@@ -800,15 +1046,28 @@ def _handle_one(obj: Any, room_id: str, room: Dict[str, Any],
         name = params.get("name")
         args = params.get("arguments") or {}
         handler = TOOL_HANDLERS.get(name) if isinstance(name, str) else None
+        touched = False
         try:
-            if handler is None:
-                raise ToolError("outil inconnu : %s" % name)
-            if not isinstance(args, dict):
-                raise ToolError("arguments invalides (objet attendu)")
-            out = handler(room_id, room, member, args)
+            if name == "lister_salons":
+                if personal:
+                    _touch(ident)
+                    touched = True
+                out = _tool_lister_salons(ident)
+            else:
+                if handler is None:
+                    raise ToolError("outil inconnu : %s" % name)
+                if not isinstance(args, dict):
+                    raise ToolError("arguments invalides (objet attendu)")
+                args = dict(args)
+                room_id, room, member = _resolve_room(ident, args.pop("salon", None))
+                if personal:
+                    _touch(ident, room_id)
+                    touched = True
+                _SALON_Q.set(("?salon=" + room_id) if personal else "")
+                out = handler(room_id, room, member, args)
             content = [{"type": "text", "text": out}] if isinstance(out, str) else list(out)
             if name not in NO_PING_FOOTER:
-                footer = _ping_footer(room_id, member)
+                footer = _ping_footer_personal(ident) if personal else _ping_footer(room_id, member)
                 if footer:
                     for c in reversed(content):
                         if c.get("type") == "text":
@@ -820,6 +1079,9 @@ def _handle_one(obj: Any, room_id: str, room: Dict[str, Any],
         except (ToolError, store.StoreError) as e:
             return _rpc_result(rid, {"content": [{"type": "text", "text": "Erreur : %s" % e}],
                                      "isError": True})
+        finally:
+            if personal and not touched:
+                _touch(ident)
     return _rpc_error(rid, -32601, "Method not found: %s" % method)
 
 
@@ -828,26 +1090,54 @@ def _unauthorized() -> JSONResponse:
                         headers={"WWW-Authenticate": "Bearer"})
 
 
-def _member_from(request: Request, touch: bool = True) -> Optional[Tuple[str, Dict[str, Any], Dict[str, Any]]]:
-    """(room_id, salon, membre) d'après ``Authorization: Bearer oac_...``, ou None.
-
-    Une requête authentifiée met à jour la présence (``last_seen``) du membre."""
+def _identity_from(request: Request) -> Optional[Dict[str, Any]]:
+    """Identité d'après ``Authorization: Bearer oac_...`` (clé de salon ou personnelle)."""
     auth = request.headers.get("authorization", "")
     parts = auth.split(None, 1)
     if len(parts) != 2 or parts[0].lower() != "bearer":
         return None
-    found = store.find_by_key(parts[1].strip())
-    if found is not None and touch and found[2].get("id"):
-        presence.touch(found[0], found[2]["id"])
-    return found
+    return store.find_identity(parts[1].strip())
+
+
+def _member_from(request: Request, touch: bool = True) -> Optional[Tuple[str, Dict[str, Any], Dict[str, Any]]]:
+    """(room_id, salon, membre) pour une CLÉ DE SALON, ou None (compatibilité).
+
+    Une requête authentifiée met à jour la présence (``last_seen``) du membre."""
+    ident = _identity_from(request)
+    if ident is None or ident["kind"] != "room":
+        return None
+    if touch:
+        _touch(ident)
+    return ident["room_id"], ident["room"], ident["member"]
+
+
+def _agent_room(request: Request, touch: bool = True
+                ) -> Tuple[Optional[Dict[str, Any]], Optional[Tuple[str, Dict[str, Any], Dict[str, Any]]]]:
+    """Routes REST agents : (identité, (room_id, salon, membre)) d'après la clé et
+    le paramètre ``?salon=`` (obligatoire pour une clé personnelle à plusieurs
+    salons). (None, None) si la clé est invalide ; HTTP 400/404 si le salon ne va pas."""
+    ident = _identity_from(request)
+    if ident is None:
+        return None, None
+    try:
+        target = _resolve_room(ident, request.query_params.get("salon"))
+    except ToolError as e:
+        if touch:
+            _touch(ident)
+        code = 404 if str(e).startswith("salon introuvable") else 400
+        raise HTTPException(status_code=code, detail=str(e))
+    if touch:
+        _touch(ident, target[0])
+    return ident, target
 
 
 @mcp_router.post("/mcp/agentchat")
 async def mcp_endpoint(request: Request):
-    found = _member_from(request)
-    if found is None:
+    ident = _identity_from(request)
+    if ident is None:
         return _unauthorized()
-    room_id, room, member = found
+    if ident["kind"] == "room":
+        _touch(ident)
     _ORIGIN.set(str(request.base_url).rstrip("/"))
 
     raw = await request.body()
@@ -861,12 +1151,12 @@ async def mcp_endpoint(request: Request):
     if isinstance(payload, list):
         if not payload:
             return JSONResponse(content=_rpc_error(None, -32600, "Invalid Request"))
-        out = [r for r in (_handle_one(o, room_id, room, member) for o in payload) if r is not None]
+        out = [r for r in (_handle_one(o, ident) for o in payload) if r is not None]
         if not out:
             return Response(status_code=202)
         return JSONResponse(content=out)
 
-    resp = _handle_one(payload, room_id, room, member)
+    resp = _handle_one(payload, ident)
     if resp is None:
         return Response(status_code=202)
     return JSONResponse(content=resp)
@@ -884,11 +1174,11 @@ def mcp_get():
 async def agent_upload_file(request: Request):
     """Dépôt d'un document par un agent (multipart ``file``, ``text``, ``reply_to``),
     pour les fichiers trop gros pour envoyer_document. Auth vérifiée AVANT de lire
-    le corps ; l'auteur vient uniquement de la clé."""
-    found = _member_from(request)
-    if found is None:
+    le corps ; l'auteur vient uniquement de la clé. Clé personnelle : ``?salon=<id>``."""
+    ident, target = _agent_room(request)
+    if ident is None:
         return _unauthorized()
-    room_id, room, member = found
+    room_id, room, member = target
     name, data, text, reply_to = await _read_upload(request)
     try:
         msg = store.send_document(room_id, member["name"], "info", name, data, text, reply_to)
@@ -899,28 +1189,46 @@ async def agent_upload_file(request: Request):
 
 @mcp_router.get("/mcp/agentchat/fichiers/{file_id}")
 def agent_download_file(file_id: str, request: Request):
-    found = _member_from(request)
-    if found is None:
+    ident, target = _agent_room(request)
+    if ident is None:
         return _unauthorized()
     try:
-        meta, path = store.get_file(found[0], file_id)
+        meta, path = store.get_file(target[0], file_id)
     except store.StoreError as e:
         raise _http(e)
     return _file_response(meta, path)
 
 
+def _ping_out(m: Dict[str, Any]) -> Dict[str, Any]:
+    return {"id": m["id"], "author": m.get("author", ""),
+            "text": (m.get("text") or "")[:300], "ts": m.get("ts", "")}
+
+
 @mcp_router.get("/mcp/agentchat/pings")
 def agent_pings(request: Request):
-    """Pings ouverts du membre de la clé (lu par le hook Stop de Claude Code)."""
-    found = _member_from(request)
-    if found is None:
+    """Pings ouverts du membre de la clé (lu par le hook Stop de Claude Code).
+    Clé personnelle : tous ses salons (chaque ping porte ``salon``), ou seulement
+    ``?salon=<id>``."""
+    ident = _identity_from(request)
+    if ident is None:
         return _unauthorized()
-    room_id, room, member = found
-    pings = store.open_pings(room_id, member["name"])
-    return {"member": member["name"],
-            "pings": [{"id": m["id"], "author": m.get("author", ""),
-                       "text": (m.get("text") or "")[:300], "ts": m.get("ts", "")}
-                      for m in pings]}
+    if ident["kind"] == "room":
+        _touch(ident)
+        room_id, member = ident["room_id"], ident["member"]
+        pings = store.open_pings(room_id, member["name"])
+        return {"member": member["name"], "pings": [_ping_out(m) for m in pings]}
+    only = request.query_params.get("salon") or None
+    if only is not None:
+        ident, target = _agent_room(request)
+        only = target[0]
+    else:
+        _touch(ident)
+    out = []
+    for rid, m in _personal_pings(ident, only):
+        p = _ping_out(m)
+        p["salon"] = rid
+        out.append(p)
+    return {"member": ident["claude"].get("name", ""), "pings": out}
 
 
 def _num(v: Any) -> Optional[float]:
@@ -935,10 +1243,16 @@ async def agent_status(request: Request):
 
     Membre = clé uniquement. Champs optionnels invalides : ignorés. Ne compte pas
     comme un appel MCP (un SessionEnd ne doit pas laisser le membre « en ligne »)."""
-    found = _member_from(request, touch=False)
-    if found is None:
+    ident = _identity_from(request)
+    if ident is None:
         return _unauthorized()
-    room_id, room, member = found
+    if ident["kind"] == "room":
+        targets = [(ident["room_id"], ident["member"])]
+    elif request.query_params.get("salon"):
+        _, target = _agent_room(request, touch=False)
+        targets = [(target[0], target[2])]
+    else:
+        targets = [(rid, m) for rid, _, m in ident["rooms"]]
     try:
         body = json.loads((await request.body()).decode("utf-8") or "{}")
     except (ValueError, UnicodeDecodeError):
@@ -950,10 +1264,11 @@ async def agent_status(request: Request):
     if not isinstance(session, str) or not session.strip():
         session = None
     ts = lambda k: body.get(k) if isinstance(body.get(k), int) else None  # noqa: E731
-    if member.get("id"):
-        presence.set_status(
-            room_id, member["id"], session=session,
-            state=state if state in presence.STATES else None,
-            five_hour_pct=_num(body.get("five_hour_pct")), five_hour_resets_at=ts("five_hour_resets_at"),
-            seven_day_pct=_num(body.get("seven_day_pct")), seven_day_resets_at=ts("seven_day_resets_at"))
+    for room_id, member in targets:
+        if member.get("id"):
+            presence.set_status(
+                room_id, member["id"], session=session,
+                state=state if state in presence.STATES else None,
+                five_hour_pct=_num(body.get("five_hour_pct")), five_hour_resets_at=ts("five_hour_resets_at"),
+                seven_day_pct=_num(body.get("seven_day_pct")), seven_day_resets_at=ts("seven_day_resets_at"))
     return {"ok": True}
