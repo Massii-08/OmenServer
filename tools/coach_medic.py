@@ -14,6 +14,17 @@ faire planter. S'il devait importer ``backend.bots.paper.store`` pour lire
 un fichier, une panne du paquet backend le rendrait aveugle pile quand il
 devrait le plus voir clair. Il lit donc les JSON/Markdown à la main.
 
+DÉPLOIEMENT RÉEL (lot 18) : le cron exécute la copie de PRODUCTION du script —
+la DÉTECTION lit donc les données de production via ``REPO_DIR``. Mais les
+sessions de réparation ne travaillent JAMAIS dans l'arbre de production (remis
+à zéro par l'auto-deploy à chaque nouveau commit sur ``main``) : elles tournent
+dans un clone dédié (``WORK_DIR`` = ``$COACH_MEDIC_WORK_DIR``, sinon
+``~/medic-work``), y font ``git fetch`` / ``checkout -B medic-fix`` et poussent
+``medic-fix:main``. La détection de poussée lit ce même clone. Le jeton du CLI
+Claude (``~/.config/claude-code-oauth.env``) est chargé par le script shell de
+la session ; un verrou (``~/coach-medic.lock``) interdit deux médics en même
+temps.
+
 INSTALL (crontab -e, toutes les 30 minutes, avec le python du venv prod) :
     */30 * * * * <chemin venv prod>/bin/python3 <chemin dépôt>/tools/coach_medic.py >> ~/coach-medic.cron.log 2>&1
 
@@ -24,12 +35,14 @@ Kill-switch : ``touch ~/coach-medic.disabled`` (le script sort en silence,
 code 0, tant que ce fichier existe). Le retirer réarme le médecin.
 """
 import hashlib
+import fcntl
 import json
 import logging
 import os
 import re
 import shlex
 import subprocess
+import sys
 import urllib.request
 from collections import namedtuple
 from datetime import datetime, timedelta, timezone
@@ -55,6 +68,17 @@ MEDIC_STATE_PATH = Path.home() / "coach-medic.state.json"
 MEDIC_DISABLED_PATH = Path.home() / "coach-medic.disabled"
 MEDIC_RUNS_DIR = Path.home() / "medic-runs"
 MEDIC_LOG_PATH = Path.home() / "coach-medic.log"
+MEDIC_LOCK_PATH = Path.home() / "coach-medic.lock"
+OAUTH_ENV_PATH = Path.home() / ".config" / "claude-code-oauth.env"
+
+
+def default_work_dir():
+    """Clone dédié aux sessions : ``$COACH_MEDIC_WORK_DIR`` sinon ``~/medic-work``."""
+    explicit = os.environ.get("COACH_MEDIC_WORK_DIR")
+    return Path(explicit) if explicit else Path.home() / "medic-work"
+
+
+WORK_DIR = default_work_dir()
 
 
 # --------------------------------------------------------------------------- #
@@ -285,6 +309,10 @@ def detect_code_error(journal_text, needle="backend/bots/paper"):
 COOLDOWN_HOURS = 24.0
 DAILY_CAP = 2
 
+OUTCOME_PUSHED = "pushed"
+OUTCOME_REPORTED = "reported"
+OUTCOME_FAILED = "failed"
+
 
 def already_handled(history, signature, now, cooldown_hours=COOLDOWN_HOURS):
     """Une session pour CETTE signature a-t-elle déjà tourné dans les
@@ -294,6 +322,8 @@ def already_handled(history, signature, now, cooldown_hours=COOLDOWN_HOURS):
     for entry in (history or []):
         if not isinstance(entry, dict) or entry.get("signature") != signature:
             continue
+        if entry.get("outcome") == OUTCOME_FAILED:
+            continue      # session qui n'a pas pu travailler : retentable
         ts = _parse_iso_utc(entry.get("ts"))
         if ts is not None and (now - ts).total_seconds() < cooldown_hours * 3600.0:
             return True
@@ -364,7 +394,10 @@ Tu ne touches QUE :
 
 ## Portes de sortie (dans cet ordre)
 
+0. Tu travailles dans un **clone dédié** (jamais l'arbre de production) : la
+   branche `medic-fix` est déjà créée sur `origin/main`.
 1. La suite complète `backend/bots/tests/` doit être VERTE.
+   Lance les tests avec : `{test_cmd}` (ce clone n'a pas de venv).
 2. Si `frontend/js/paper_module.js` a été touché : valide le parse avec
    `node -e "new Function(require('fs').readFileSync('frontend/js/paper_module.js','utf8'))"`
    et bump le cache-bust (`?v=` dans `index.html` + `sw.js`).
@@ -390,6 +423,7 @@ def build_dossier(failure, extracts, now_iso):
         signature=failure.signature, code=failure.code, now_iso=now_iso,
         detail=failure.detail, extracts=extracts_text,
         scope="\n- ".join(REPAIR_SCOPE), forbidden="\n- ".join(FORBIDDEN_ZONES),
+        test_cmd="%s -m pytest backend/bots/tests -q" % sys.executable,
     )
 
 
@@ -483,9 +517,10 @@ def _claude_bin():
 def git_remote_head(ref="origin/main", run=subprocess.run, cwd=None):
     """``git rev-parse <ref>``, ou ``None`` en cas d'échec — sert à détecter
     si la session de réparation a bien POUSSÉ un nouveau commit (avant/après
-    autour de :func:`run_repair_session`)."""
+    autour de :func:`run_repair_session`). Lit le clone de TRAVAIL, jamais le
+    dépôt de production (qui fait son propre ``git fetch`` chaque minute)."""
     try:
-        proc = run(["git", "rev-parse", ref], cwd=str(cwd or REPO_DIR),
+        proc = run(["git", "rev-parse", ref], cwd=str(cwd or WORK_DIR),
                   capture_output=True, text=True, timeout=20)
     except Exception:      # noqa: BLE001
         return None
@@ -494,7 +529,8 @@ def git_remote_head(ref="origin/main", run=subprocess.run, cwd=None):
 
 
 def run_repair_session(dossier_path, log_path, model="sonnet",
-                       claude_bin=None, popen=subprocess.Popen, cwd=None):
+                       claude_bin=None, popen=subprocess.Popen, cwd=None,
+                       oauth_env_path=None):
     """Lance la session de réparation, BLOQUANT (``.wait()``) — c'est ce qui
     permet à l'appelant d'envoyer le message Telegram de FIN dans la même
     invocation cron. ``start_new_session=True`` détache le sous-processus de
@@ -506,18 +542,96 @@ def run_repair_session(dossier_path, log_path, model="sonnet",
     `git checkout` échoue, le CLI Claude n'est JAMAIS lancé — pas de
     réparation à l'aveugle sur un dépôt dans un état inconnu."""
     binp = claude_bin or _claude_bin()
-    script = "; ".join([
-        "set -e",
+    oauth = oauth_env_path if oauth_env_path is not None else OAUTH_ENV_PATH
+    parts = ["set -e"]
+    if oauth and os.path.exists(str(oauth)):
+        # Le cron n'a pas le jeton du CLI : on charge le fichier (jamais lu ni
+        # journalisé par ce script) — ``set -a`` exporte ses lignes ``CLE=valeur``.
+        parts.append("set -a; . %s; set +a" % shlex.quote(str(oauth)))
+    script = "; ".join(parts + [
         "git fetch origin",
         "git checkout -B medic-fix origin/main",
         "%s --model %s --dangerously-skip-permissions -p < %s"
         % (shlex.quote(binp), shlex.quote(model), shlex.quote(str(dossier_path))),
     ])
     with open(str(log_path), "a", encoding="utf-8") as logf:
-        proc = popen(["bash", "-c", script], cwd=str(cwd or REPO_DIR),
+        proc = popen(["bash", "-c", script], cwd=str(cwd or WORK_DIR),
                      stdout=logf, stderr=subprocess.STDOUT,
                      start_new_session=True)
         return proc.wait()
+
+
+# --------------------------------------------------------------------------- #
+# issue d'une session — fonctions PURES
+# --------------------------------------------------------------------------- #
+
+_AUTH_FAILURE_RE = re.compile(
+    r"failed to authenticate|oauth|invalid api key|not logged in", re.IGNORECASE)
+_LOG_TAIL_LINES = 5
+_ERROR_MAX_CHARS = 200
+
+
+def _tail_lines(text, n=_LOG_TAIL_LINES):
+    lines = [l.strip() for l in (text or "").splitlines() if l.strip()]
+    return lines[-n:]
+
+
+def is_auth_failure(log_text):
+    """La FIN du journal (dernières lignes non vides) décrit-elle un échec
+    d'authentification ? (Le début d'un journal peut légitimement parler
+    d'OAuth : seule la fin compte.)"""
+    return any(_AUTH_FAILURE_RE.search(l) for l in _tail_lines(log_text))
+
+
+def last_error_line(log_text):
+    """Dernière ligne non vide du journal, tronquée à 200 caractères."""
+    lines = _tail_lines(log_text, 1)
+    return lines[0][:_ERROR_MAX_CHARS] if lines else ""
+
+
+def classify_outcome(rc, pushed, log_text):
+    """``failed`` (code non nul/inconnu, ou échec d'authentification en fin de
+    journal), sinon ``pushed`` (le distant du clone de travail a bougé), sinon
+    ``reported``."""
+    if rc != 0 or is_auth_failure(log_text):
+        return OUTCOME_FAILED
+    return OUTCOME_PUSHED if pushed else OUTCOME_REPORTED
+
+
+def consecutive_failures(history):
+    """Nombre d'entrées ``failed`` consécutives en FIN d'historique."""
+    count = 0
+    for entry in reversed(list(history or [])):
+        if isinstance(entry, dict) and entry.get("outcome") == OUTCOME_FAILED:
+            count += 1
+        else:
+            break
+    return count
+
+
+def _ordinal(n):
+    return "1ʳᵉ" if n == 1 else "%dᵉ" % n
+
+
+def end_message(outcome, signature, consecutive, error):
+    """Texte Telegram de FIN de session (distinct pour les trois issues)."""
+    if outcome == OUTCOME_PUSHED:
+        return "fix poussé : %s" % signature
+    if outcome == OUTCOME_REPORTED:
+        return "rapport sans fix : %s" % signature
+    return "ÉCHEC de session (%s d'affilée) : %s — %s" % (
+        _ordinal(consecutive), signature, error)
+
+
+def _work_dir_ok(work_dir):
+    """Garde : existe, contient un ``.git``, et n'est PAS le dépôt de production."""
+    try:
+        wd = Path(work_dir)
+        if not wd.is_dir() or not (wd / ".git").exists():
+            return False
+        return os.path.realpath(str(wd)) != os.path.realpath(str(REPO_DIR))
+    except OSError:
+        return False
 
 
 # --------------------------------------------------------------------------- #
@@ -601,14 +715,47 @@ def run_medic(now=None, disabled_path=None,
              journal_fetch=None, journal_reader=None, state_path=None,
              telegram_cfg=None, notifier=None, popen=subprocess.Popen,
              claude_bin=None, model="sonnet", git_run=subprocess.run,
-             runs_dir=None, weekly_check=None):
-    """Le cycle complet d'un passage de cron. NE LÈVE JAMAIS ce qui peut être
-    évité — un médecin qui plante est un médecin de moins.
+             runs_dir=None, weekly_check=None, work_dir=None,
+             oauth_env_path=None, lock_path=None):
+    """Le cycle complet d'un passage de cron, sous VERROU exclusif non
+    bloquant (``flock``) : un second médic rend ``{"action": "busy"}`` sans
+    rien faire. NE LÈVE JAMAIS ce qui peut être évité — un médecin qui plante
+    est un médecin de moins."""
+    lock_file = Path(lock_path or MEDIC_LOCK_PATH)
+    try:
+        lock_file.parent.mkdir(parents=True, exist_ok=True)
+        handle = open(str(lock_file), "a")
+    except OSError:
+        handle = None
+    if handle is not None:
+        try:
+            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            handle.close()
+            return {"action": "busy"}
+    try:
+        return _run_medic_locked(
+            now=now, disabled_path=disabled_path, ledger_path=ledger_path,
+            coach_state_path=coach_state_path,
+            newswatch_state_path=newswatch_state_path,
+            journal_fetch=journal_fetch, journal_reader=journal_reader,
+            state_path=state_path, telegram_cfg=telegram_cfg, notifier=notifier,
+            popen=popen, claude_bin=claude_bin, model=model, git_run=git_run,
+            runs_dir=runs_dir, weekly_check=weekly_check, work_dir=work_dir,
+            oauth_env_path=oauth_env_path)
+    finally:
+        if handle is not None:
+            handle.close()      # libère le flock
 
-    Sans ``weekly_check`` explicite, le chantier 3 (amélioration hebdomadaire
-    bornée) tourne par défaut via :func:`maybe_weekly_improvement` — le
-    dimanche soir, le carnet du coach est lu via ``journal_reader``
-    (injectable, sinon ``coach-vault/Journal.md`` sur disque)."""
+
+def _run_medic_locked(now, disabled_path, ledger_path, coach_state_path,
+                      newswatch_state_path, journal_fetch, journal_reader,
+                      state_path, telegram_cfg, notifier, popen, claude_bin,
+                      model, git_run, runs_dir, weekly_check, work_dir,
+                      oauth_env_path):
+    """Sans ``weekly_check`` explicite, le chantier 3 (amélioration
+    hebdomadaire bornée) tourne par défaut via
+    :func:`maybe_weekly_improvement`."""
     now = now or datetime.now(timezone.utc)
 
     if kill_switch_active(disabled_path):
@@ -645,32 +792,46 @@ def run_medic(now=None, disabled_path=None,
         return {"action": "idle", "failures": [f.code for f in failures]}
 
     now_iso = now.isoformat()
+    cfg = telegram_cfg if telegram_cfg is not None else load_telegram_cfg()
+    send = notifier if notifier is not None else notify
+    wd = Path(work_dir) if work_dir is not None else WORK_DIR
+
+    def _record(outcome, rc, error):
+        entry = {"signature": chosen.signature, "ts": now_iso, "kind": kind,
+                 "outcome": outcome, "rc": rc, "error": error}
+        new_history = list(history) + [entry]
+        save_medic_state({"sessions": new_history}, state_path)
+        send(end_message(outcome, chosen.signature,
+                         consecutive_failures(new_history), error), cfg)
+
+    if not _work_dir_ok(wd):
+        _record(OUTCOME_FAILED, None, "no_work_dir")
+        return {"action": kind, "signature": chosen.signature, "pushed": False,
+                "rc": None, "outcome": OUTCOME_FAILED, "error": "no_work_dir"}
+
     run_dir = Path(runs_dir or MEDIC_RUNS_DIR) / now_iso.replace(":", "-")
     run_dir.mkdir(parents=True, exist_ok=True)
     dossier_path = run_dir / "dossier.md"
     dossier_path.write_text(build_dossier(chosen, {}, now_iso), encoding="utf-8")
     log_path = run_dir / "session.log"
 
-    cfg = telegram_cfg if telegram_cfg is not None else load_telegram_cfg()
-    send = notifier if notifier is not None else notify
     verb = "réparation" if kind == "repair" else "amélioration"
     send("Le coach s'ouvre une session de %s : %s" % (verb, chosen.signature), cfg)
 
-    before = git_remote_head(run=git_run)
+    before = git_remote_head(run=git_run, cwd=wd)
     rc = run_repair_session(dossier_path, log_path, model=model,
-                            claude_bin=claude_bin, popen=popen)
-    after = git_remote_head(run=git_run)
+                            claude_bin=claude_bin, popen=popen, cwd=wd,
+                            oauth_env_path=oauth_env_path)
+    after = git_remote_head(run=git_run, cwd=wd)
     pushed = bool(before) and bool(after) and before != after
 
-    send("%s : %s" % ("fix poussé" if pushed else "rapport sans fix",
-                      chosen.signature), cfg)
-
-    history = list(history) + [{
-        "signature": chosen.signature, "ts": now_iso, "kind": kind,
-        "outcome": "pushed" if pushed else "reported",
-    }]
-    save_medic_state({"sessions": history}, state_path)
-    return {"action": kind, "signature": chosen.signature, "pushed": pushed, "rc": rc}
+    log_text = _read_text(log_path)
+    outcome = classify_outcome(rc, pushed, log_text)
+    error = last_error_line(log_text) if outcome == OUTCOME_FAILED else ""
+    _record(outcome, rc, error)
+    return {"action": kind, "signature": chosen.signature,
+            "pushed": outcome == OUTCOME_PUSHED, "rc": rc,
+            "outcome": outcome, "error": error}
 
 
 # --------------------------------------------------------------------------- #
@@ -737,6 +898,8 @@ def weekly_gate_ok(history, now, weekday=WEEKLY_RUN_WEEKDAY,
     for entry in (history or []):
         if not isinstance(entry, dict) or entry.get("kind") != WEEKLY_IMPROVEMENT_KIND:
             continue
+        if entry.get("outcome") == OUTCOME_FAILED:
+            continue      # échec : nouvelle tentative possible (bornée par le plafond)
         ts = _parse_iso_utc(entry.get("ts"))
         if ts is None:
             continue

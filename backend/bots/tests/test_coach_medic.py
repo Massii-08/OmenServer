@@ -20,6 +20,18 @@ sys.modules["coach_medic"] = medic
 _SPEC.loader.exec_module(medic)
 
 
+@pytest.fixture(autouse=True)
+def _isolated_medic_paths(tmp_path, monkeypatch):
+    """Lot 18 : ``run_medic`` exige un clone de travail valide, un verrou et
+    (optionnellement) un fichier de jeton. On les redirige vers ``tmp_path`` —
+    jamais le vrai dossier personnel."""
+    work = tmp_path / "medic-work-default"
+    (work / ".git").mkdir(parents=True)
+    monkeypatch.setattr(medic, "WORK_DIR", work)
+    monkeypatch.setattr(medic, "MEDIC_LOCK_PATH", tmp_path / "medic-default.lock")
+    monkeypatch.setattr(medic, "OAUTH_ENV_PATH", tmp_path / "no-oauth-default.env")
+
+
 # --------------------------------------------------------------------------- #
 # détection — panne LLM (coach.ledger.json)
 # --------------------------------------------------------------------------- #
