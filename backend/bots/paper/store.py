@@ -20,11 +20,14 @@ fichier fautif est renommé en ``<nom>.corrupt`` (on ne perd pas la donnée,
 on ne fait jamais planter l'appelant).
 """
 import json
+import logging
 import os
 import re
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+
+logger = logging.getLogger("omenserver")
 
 # backend/bots/paper/store.py -> racine projet = parents[3]
 _PROJECT_ROOT = Path(__file__).resolve().parents[3]
@@ -300,6 +303,90 @@ def save_ledger(username: str, rows: List[Dict[str, Any]]) -> None:
     (``coach_trader.MAX_LEDGER``) est de la RESPONSABILITÉ de l'appelant — ce
     module ne fait que l'I/O, jamais du métier (cf. tête de fichier)."""
     _atomic_write_json(ledger_path(username), {"rows": list(rows or [])})
+
+
+# --------------------------------------------------------------------------- #
+# LOT 18 — l'ARCHIVE du registre : un fichier JSONL par mois, jamais plafonné.
+#
+# Le registre ``<user>.ledger.json`` n'est qu'une fenêtre d'affichage
+# (``coach_trader.MAX_LEDGER`` lignes, ~12 jours en prod). L'historique complet
+# des décisions et des refus vit ici : ``<user>.ledger.<AAAA-MM>.jsonl``.
+# Un ``.jsonl`` n'est jamais pris pour un compte (les recensements ne lisent que
+# ``*.json`` sans point dans le radical).
+# --------------------------------------------------------------------------- #
+_MONTH_RE = re.compile(r"^\d{4}-\d{2}$")
+
+
+def _archive_month(entry: Any) -> str:
+    """Le mois ``AAAA-MM`` d'une ligne (``ts`` ISO), repli : mois courant."""
+    ts = entry.get("ts") if isinstance(entry, dict) else None
+    if isinstance(ts, str) and _MONTH_RE.match(ts[:7]):
+        return ts[:7]
+    return datetime.now().strftime("%Y-%m")
+
+
+def ledger_archive_path(username: str, month: str) -> Path:
+    safe = _sanitize_username(username)
+    return DATA_DIR / f"{safe}.ledger.{month}.jsonl"
+
+
+def _archive_files(username: str) -> List[Path]:
+    safe = _sanitize_username(username)
+    pat = re.compile(r"^" + re.escape(safe) + r"\.ledger\.(\d{4}-\d{2})\.jsonl$")
+    if not Path(DATA_DIR).is_dir():
+        return []
+    return sorted(p for p in Path(DATA_DIR).iterdir()
+                  if pat.match(p.name) and p.is_file())
+
+
+def _append_jsonl(path: Path, row: Any) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+    try:
+        os.fchmod(fd, 0o600)
+    except (AttributeError, OSError):
+        pass
+    with os.fdopen(fd, "a", encoding="utf-8") as f:
+        f.write(json.dumps(row, ensure_ascii=False) + "\n")
+
+
+def append_ledger_archive(username: str, entry: Dict[str, Any]) -> None:
+    """Ajoute UNE ligne à l'archive mensuelle. Best-effort : NE LÈVE JAMAIS.
+
+    Amorçage : si aucun fichier d'archive n'existe encore, les lignes
+    actuellement au registre (du plus ancien au plus récent) sont écrites
+    d'abord, chacune dans le fichier de son mois, puis la nouvelle.
+    """
+    try:
+        if not _archive_files(username):
+            for old in reversed(load_ledger(username)):
+                _append_jsonl(ledger_archive_path(username, _archive_month(old)),
+                              old)
+        _append_jsonl(ledger_archive_path(username, _archive_month(entry)), entry)
+    except Exception as e:                  # noqa: BLE001 — jamais fatal
+        logger.warning("paper ledger: archive non écrite (%s)", type(e).__name__)
+
+
+def load_ledger_archive(username: str, month: Optional[str] = None
+                        ) -> List[Dict[str, Any]]:
+    """Relit l'archive (un mois ``AAAA-MM`` ou tous), du plus ANCIEN au plus
+    récent. Lignes illisibles ignorées ; ne lève jamais."""
+    out: List[Dict[str, Any]] = []
+    try:
+        for path in _archive_files(username):
+            if month is not None and f".ledger.{month}.jsonl" not in path.name:
+                continue
+            with open(path, "r", encoding="utf-8") as f:
+                for line in f:
+                    try:
+                        row = json.loads(line)
+                    except ValueError:
+                        continue
+                    if isinstance(row, dict):
+                        out.append(row)
+    except Exception as e:                  # noqa: BLE001
+        logger.warning("paper ledger: archive illisible (%s)", type(e).__name__)
+    return out
 
 
 def equity_path(username: str) -> Path:

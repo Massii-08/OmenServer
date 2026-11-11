@@ -1657,6 +1657,10 @@ def build_coach_guardian_prompt(context: Optional[Dict[str, Any]],
         "devient alors OBLIGATOIRE, en une phrase précise (pas « je "
         "surveille », ça ne dit rien).",
     ] + _guardian_thesis_line(ctx.get("these")) + [
+        "Pour RESSERRER, un ``adjust_stop`` avec un NOUVEAU niveau, strictement "
+        "plus protecteur que le stop en place%s. Ne renvoie jamais un "
+        "`adjust_stop` au niveau déjà en place : ce n'est pas une action."
+        % _guardian_stop_hint(ctx.get("stop_loss")),
         "Termine IMPÉRATIVEMENT ta réponse par ce bloc, et RIEN après. "
         "``action`` vaut %s ; ``symbol`` est « %s » (rien d'autre n'a de sens "
         "ici, toute autre valeur est refusée) ; un ``sell``/``cover`` SANS "
@@ -1666,11 +1670,15 @@ def build_coach_guardian_prompt(context: Optional[Dict[str, Any]],
         "``threat``, qui passe toujours — et qui n'attend jamais."
         % (kinds, symbol, " | ".join(coach_trader.EXIT_REASONS)),
         "```%s\n"
-        '{"actions": [{"action": "adjust_stop", "symbol": "%s", "stop": %s}], '
-        '"note": "une phrase courte"}\n'
-        "```" % (coach_trader.ACTIONS_MARKER, symbol,
-                 _num_or_null(ctx.get("stop_loss"))),
+        '{"actions": [], "note": "une phrase précise"}\n'
+        "```" % coach_trader.ACTIONS_MARKER,
     ])
+
+
+def _guardian_stop_hint(stop: Any) -> str:
+    """`` (aujourd'hui 80.9)`` quand le stop en place est connu, sinon vide."""
+    value = _num_or_null(stop)
+    return "" if value == "null" else " (aujourd'hui %s)" % value
 
 
 def _num_or_null(value: Any) -> str:

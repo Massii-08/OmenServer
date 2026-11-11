@@ -44,7 +44,7 @@ import math
 import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 from zoneinfo import ZoneInfo
 
 from backend.bots.paper import fees, models, quotes, radar, risk
@@ -84,7 +84,7 @@ _SIDE_OF_ACTION = {"buy": "long", "sell": "long",
 LOCAL_TZ = "Europe/Rome"       # même convention que backup.py / weekly.py
 STATE_NAME = "coach_trader.state.json"
 
-MAX_LEDGER = 200               # le registre est une trace récente, pas une archive
+MAX_LEDGER = 200               # fenêtre d'AFFICHAGE ; l'archive complète vit dans les <user>.ledger.<AAAA-MM>.jsonl
 MAX_EQUITY_POINTS = 730        # deux ans de points quotidiens
 
 # --------------------------------------------------------------------------- #
@@ -3168,6 +3168,33 @@ def push_ledger(rows: Any, entry: Any, cap: int = MAX_LEDGER) -> List[Dict[str, 
         limit = MAX_LEDGER
     head = [entry] if isinstance(entry, dict) else []
     return (head + _dicts(rows))[:limit]
+
+
+def drop_noop_adjusts(actions: Any, positions: Any
+                      ) -> Tuple[List[Any], List[Any]]:
+    """Écarte les ``adjust_stop`` qui recopient le stop DÉJÀ en place (PUR).
+
+    Le modèle qui veut « ne rien changer » recopie parfois l'exemple du prompt :
+    un ``adjust_stop`` à l'identique (tolérance relative 1e-9). Ce n'est pas un
+    recul de stop, c'est un non-événement : il ne passe pas par la porte et
+    n'écrit aucune ligne de refus. Rend ``(gardées, écartées)`` ; une ligne sans
+    stop, un autre niveau ou une action d'un autre type est conservée.
+    """
+    lines = _dicts(positions)
+    kept: List[Any] = []
+    dropped: List[Any] = []
+    for action in (actions if isinstance(actions, (list, tuple)) else []):
+        if (isinstance(action, dict)
+                and _text(action.get("action")).lower() == "adjust_stop"):
+            line = _line_of(lines, _symbol(action.get("symbol")))
+            new = _val(action.get("stop"))
+            cur = _val(line.get("stop_loss")) if line is not None else None
+            if (new is not None and cur is not None
+                    and abs(new - cur) <= 1e-9 * max(abs(new), abs(cur))):
+                dropped.append(action)
+                continue
+        kept.append(action)
+    return kept, dropped
 
 
 # --------------------------------------------------------------------------- #

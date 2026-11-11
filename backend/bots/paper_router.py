@@ -2240,6 +2240,14 @@ def _push_coach_ledger(entries: List[Dict[str, Any]]) -> None:
     try:
         rows = store.load_ledger(coach_trader.COACH_USERNAME)
         for entry in entries:
+            # LOT 18 — archive complète (JSONL mensuel) AVANT la sauvegarde du
+            # registre : l'amorçage relit un registre encore SANS ces lignes,
+            # donc aucun doublon. Best-effort, ne lève jamais.
+            try:
+                store.append_ledger_archive(coach_trader.COACH_USERNAME, entry)
+            except Exception as e:          # noqa: BLE001 — jamais bloquant
+                logger.warning("paper coach: archive non écrite (%s)",
+                               type(e).__name__)
             rows = coach_trader.push_ledger(rows, entry)
         store.save_ledger(coach_trader.COACH_USERNAME, rows)
     except (ValueError, OSError) as e:
@@ -3004,6 +3012,10 @@ def _execute_coach_actions_locked(actions: Any, source: str,
 
     with _WRITE_LOCK:
         portfolio = _ensure_coach_account()
+        # LOT 18 — un ``adjust_stop`` qui recopie le stop DÉJÀ en place est un
+        # non-événement : ni porte, ni ligne de refus (``drop_noop_adjusts``).
+        pending, _noops = coach_trader.drop_noop_adjusts(
+            pending, portfolio.to_dict().get("positions"))
         if not pending:
             entry = coach_trader.ledger_entry(
                 now, source, "hold", "", True,
