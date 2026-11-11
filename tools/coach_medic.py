@@ -396,14 +396,21 @@ Tu ne touches QUE :
 
 0. Tu travailles dans un **clone dédié** (jamais l'arbre de production) : la
    branche `medic-fix` est déjà créée sur `origin/main`.
-1. La suite complète `backend/bots/tests/` doit être VERTE.
-   Lance les tests avec : `{test_cmd}` (ce clone n'a pas de venv).
-2. Si `frontend/js/paper_module.js` a été touché : valide le parse avec
+1. **Base de référence** : AVANT toute modification, lance la suite une fois
+   et NOTE les tests déjà rouges. Lance les tests avec : `{test_cmd}` (ce
+   clone n'a pas de venv).
+2. **Porte** = aucun NOUVEAU rouge par rapport à cette base ET tous les tests
+   `test_paper_*`, `test_coach_*` et `test_tvcoach_*` verts. Un rouge
+   préexistant hors périmètre (par exemple `test_mc_agent_*`) ne bloque pas
+   la poussée, mais cite-le dans le message de commit et dans `rapport.md`.
+   Au moindre doute sur le caractère préexistant d'un rouge : ne pousse pas,
+   écris `rapport.md`.
+   Si `frontend/js/paper_module.js` a été touché : valide le parse avec
    `node -e "new Function(require('fs').readFileSync('frontend/js/paper_module.js','utf8'))"`
    et bump le cache-bust (`?v=` dans `index.html` + `sw.js`).
-3. **Seulement si tout est vert** : `git add` les fichiers pertinents,
+3. **Seulement si la porte est franchie** : `git add` les fichiers pertinents,
    `git commit`, puis `git push origin medic-fix:main`.
-4. Si quoi que ce soit reste rouge : N'ESSAIE PAS de pousser. Écris à la
+4. Si la porte n'est pas franchie : N'ESSAIE PAS de pousser. Écris à la
    place un rapport dans `rapport.md` (même répertoire que ce dossier)
    expliquant ce qui bloque, et termine sans pousser.
 """
@@ -423,7 +430,7 @@ def build_dossier(failure, extracts, now_iso):
         signature=failure.signature, code=failure.code, now_iso=now_iso,
         detail=failure.detail, extracts=extracts_text,
         scope="\n- ".join(REPAIR_SCOPE), forbidden="\n- ".join(FORBIDDEN_ZONES),
-        test_cmd="%s -m pytest backend/bots/tests -q" % sys.executable,
+        test_cmd="%s -m pytest backend/bots/tests -q" % shlex.quote(sys.executable),
     )
 
 
@@ -538,9 +545,9 @@ def run_repair_session(dossier_path, log_path, model="sonnet",
     cf. ``bond-scanner`` : un ``git push`` déclenché en fin de session ne doit
     pas être tué si le cron parent est interrompu).
 
-    Le script shell est intentionnellement `set -e` : si `git fetch` ou
-    `git checkout` échoue, le CLI Claude n'est JAMAIS lancé — pas de
-    réparation à l'aveugle sur un dépôt dans un état inconnu."""
+    Le script shell ne contient plus de git : ``fetch`` / ``checkout -B
+    medic-fix`` sont faits en Python (:func:`prepare_work_dir`) AVANT, et leur
+    échec empêche toute session — pas de réparation à l'aveugle."""
     binp = claude_bin or _claude_bin()
     oauth = oauth_env_path if oauth_env_path is not None else OAUTH_ENV_PATH
     parts = ["set -e"]
@@ -549,8 +556,6 @@ def run_repair_session(dossier_path, log_path, model="sonnet",
         # journalisé par ce script) — ``set -a`` exporte ses lignes ``CLE=valeur``.
         parts.append("set -a; . %s; set +a" % shlex.quote(str(oauth)))
     script = "; ".join(parts + [
-        "git fetch origin",
-        "git checkout -B medic-fix origin/main",
         "%s --model %s --dangerously-skip-permissions -p < %s"
         % (shlex.quote(binp), shlex.quote(model), shlex.quote(str(dossier_path))),
     ])
@@ -566,7 +571,9 @@ def run_repair_session(dossier_path, log_path, model="sonnet",
 # --------------------------------------------------------------------------- #
 
 _AUTH_FAILURE_RE = re.compile(
-    r"failed to authenticate|oauth|invalid api key|not logged in", re.IGNORECASE)
+    r"failed to authenticate"
+    r"|oauth\s+(?:session|token)\b(?:\W+\w+){0,4}?\W+expired"
+    r"|invalid api key|not logged in|authentication_error", re.IGNORECASE)
 _LOG_TAIL_LINES = 5
 _ERROR_MAX_CHARS = 200
 
@@ -590,12 +597,41 @@ def last_error_line(log_text):
 
 
 def classify_outcome(rc, pushed, log_text):
-    """``failed`` (code non nul/inconnu, ou échec d'authentification en fin de
-    journal), sinon ``pushed`` (le distant du clone de travail a bougé), sinon
-    ``reported``."""
+    """``pushed`` d'abord (le commit de la session est sur ``origin/main`` :
+    c'est l'état du monde qui compte, même si le code de retour est non nul),
+    sinon ``failed`` (code non nul/inconnu, ou échec d'authentification en fin
+    de journal), sinon ``reported``."""
+    if pushed:
+        return OUTCOME_PUSHED
     if rc != 0 or is_auth_failure(log_text):
         return OUTCOME_FAILED
-    return OUTCOME_PUSHED if pushed else OUTCOME_REPORTED
+    return OUTCOME_REPORTED
+
+
+def push_detected(base, head, remote):
+    """Poussé ⇔ la session a créé un commit (``head != base``) ET ce commit
+    est sur ``origin/main`` (``remote == head``). Une poussée d'un tiers ne
+    satisfait jamais cette règle."""
+    return bool(base) and bool(head) and bool(remote) \
+        and head != base and remote == head
+
+
+def prepare_work_dir(wd, git_run=subprocess.run):
+    """``git fetch origin`` puis ``git checkout -B medic-fix origin/main`` dans
+    le clone de travail. Rend ``None`` si tout va bien, sinon
+    ``git_prepare: <dernière ligne de sortie>`` (≤ 200 caractères)."""
+    for cmd in (["git", "fetch", "origin"],
+                ["git", "checkout", "-B", "medic-fix", "origin/main"]):
+        try:
+            proc = git_run(cmd, cwd=str(wd), capture_output=True, text=True,
+                           timeout=120)
+        except Exception as exc:      # noqa: BLE001
+            return "git_prepare: %s" % (last_error_line(str(exc)) or type(exc).__name__)
+        if getattr(proc, "returncode", 0) != 0:
+            out = "%s\n%s" % (getattr(proc, "stdout", "") or "",
+                              getattr(proc, "stderr", "") or "")
+            return "git_prepare: %s" % last_error_line(out)
+    return None
 
 
 def consecutive_failures(history):
@@ -809,6 +845,12 @@ def _run_medic_locked(now, disabled_path, ledger_path, coach_state_path,
         return {"action": kind, "signature": chosen.signature, "pushed": False,
                 "rc": None, "outcome": OUTCOME_FAILED, "error": "no_work_dir"}
 
+    prep_error = prepare_work_dir(wd, git_run)
+    if prep_error is not None:
+        _record(OUTCOME_FAILED, None, prep_error)
+        return {"action": kind, "signature": chosen.signature, "pushed": False,
+                "rc": None, "outcome": OUTCOME_FAILED, "error": prep_error}
+
     run_dir = Path(runs_dir or MEDIC_RUNS_DIR) / now_iso.replace(":", "-")
     run_dir.mkdir(parents=True, exist_ok=True)
     dossier_path = run_dir / "dossier.md"
@@ -818,16 +860,17 @@ def _run_medic_locked(now, disabled_path, ledger_path, coach_state_path,
     verb = "réparation" if kind == "repair" else "amélioration"
     send("Le coach s'ouvre une session de %s : %s" % (verb, chosen.signature), cfg)
 
-    before = git_remote_head(run=git_run, cwd=wd)
+    base = git_remote_head("HEAD", run=git_run, cwd=wd)
     rc = run_repair_session(dossier_path, log_path, model=model,
                             claude_bin=claude_bin, popen=popen, cwd=wd,
                             oauth_env_path=oauth_env_path)
-    after = git_remote_head(run=git_run, cwd=wd)
-    pushed = bool(before) and bool(after) and before != after
+    head = git_remote_head("HEAD", run=git_run, cwd=wd)
+    remote = git_remote_head("origin/main", run=git_run, cwd=wd)
+    pushed = push_detected(base, head, remote)
 
     log_text = _read_text(log_path)
     outcome = classify_outcome(rc, pushed, log_text)
-    error = last_error_line(log_text) if outcome == OUTCOME_FAILED else ""
+    error = last_error_line(log_text) if (outcome == OUTCOME_FAILED or rc != 0) else ""
     _record(outcome, rc, error)
     return {"action": kind, "signature": chosen.signature,
             "pushed": outcome == OUTCOME_PUSHED, "rc": rc,

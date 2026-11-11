@@ -6,6 +6,7 @@ Telegram, aucun accès au vrai dossier personnel.
 import fcntl
 import importlib.util
 import json
+import shlex
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -63,15 +64,39 @@ def _popen_factory(rc=0, log_text=""):
     return _make
 
 
-def _git_heads(*heads):
-    it = iter(heads)
-    seen = []
+class _GitFake(object):
+    """Faux git piloté par commande : ``HEAD`` vaut ``base`` au 1er relevé puis
+    ``head`` ; ``origin/main`` vaut ``remote``. ``fail`` = sous-chaîne d'une
+    commande qui échoue (``raise_exc`` pour lever)."""
 
-    def _run(cmd, **kw):
-        seen.append((cmd, kw))
-        return _Completed(next(it) + "\n")
-    _run.seen = seen
-    return _run
+    def __init__(self, base, head, remote, fail=None, raise_exc=False, out="boom"):
+        self.base, self.head, self.remote = base, head, remote
+        self.fail, self.raise_exc, self.out = fail, raise_exc, out
+        self.head_reads = 0
+        self.seen = []
+
+    def __call__(self, cmd, **kw):
+        self.seen.append((cmd, kw))
+        text = " ".join(cmd)
+        if self.fail and self.fail in text:
+            if self.raise_exc:
+                raise OSError(self.out)
+            c = _Completed(self.out + "\n")
+            c.returncode = 128
+            return c
+        if cmd[:2] == ["git", "rev-parse"]:
+            if cmd[2] == "HEAD":
+                self.head_reads += 1
+                return _Completed((self.base if self.head_reads == 1 else self.head) + "\n")
+            return _Completed(self.remote + "\n")
+        return _Completed("")
+
+    def commands(self):
+        return [" ".join(c) for c, _ in self.seen]
+
+
+def _git(base, head, remote, **kw):
+    return _GitFake(base, head, remote, **kw)
 
 
 def _work_dir(tmp_path):
@@ -125,8 +150,8 @@ def test_is_auth_failure_matches_the_real_line():
 
 
 @pytest.mark.parametrize("line", [
-    "Invalid API key", "NOT LOGGED IN - please run /login", "oauth token revoked",
-    "failed to authenticate"])
+    "Invalid API key", "NOT LOGGED IN - please run /login", "OAuth token has expired",
+    "failed to authenticate", "authentication_error"])
 def test_is_auth_failure_is_case_insensitive(line):
     assert medic.is_auth_failure("blabla\n" + line + "\n") is True
 
@@ -149,7 +174,6 @@ def test_last_error_line_is_last_non_empty_and_truncated():
 
 def test_classify_outcome_failed_on_nonzero_rc():
     assert medic.classify_outcome(1, False, "boom") == "failed"
-    assert medic.classify_outcome(1, True, "boom") == "failed"
 
 
 def test_classify_outcome_failed_on_real_auth_line_even_with_rc_zero():
@@ -220,9 +244,9 @@ def test_failed_signature_is_retried_next_cycle_then_cap_stops_it(tmp_path):
         _entry(medic.detect_llm_failure([_row("pass", False, "llm_failed")] * 2).signature,
                MONDAY_NOON - timedelta(hours=1), "failed")]}, state_path)
     popen = _popen_factory(rc=0, log_text="ok\n")
-    out = _run(tmp_path, popen, _git_heads("a", "a"), state_path=state_path)
+    out = _run(tmp_path, popen, _git("a", "a", "a"), state_path=state_path)
     assert out["action"] == "repair"                    # relancée
-    out2 = _run(tmp_path, popen, _git_heads("a", "a"), state_path=state_path)
+    out2 = _run(tmp_path, popen, _git("a", "a", "a"), state_path=state_path)
     assert out2 == {"action": "cap_reached"}            # puis plafond
 
 
@@ -235,7 +259,7 @@ def test_session_runs_in_work_dir_with_oauth_loaded_when_present(tmp_path):
     oauth.write_text("CLAUDE_CODE_OAUTH_TOKEN=sekrit\n", encoding="utf-8")
     wd = _work_dir(tmp_path)
     popen = _popen_factory(rc=0, log_text="fin\n")
-    git = _git_heads("a", "b")
+    git = _git("a", "b", "b")
     out = _run(tmp_path, popen, git, work_dir=wd, oauth=oauth)
     call = popen.cls.calls[0]
     assert call.kw["cwd"] == str(wd)
@@ -254,14 +278,14 @@ def test_oauth_file_with_a_space_is_quoted(tmp_path):
     oauth = d / "o.env"
     oauth.write_text("A=b\n", encoding="utf-8")
     popen = _popen_factory()
-    _run(tmp_path, popen, _git_heads("a", "a"), oauth=oauth)
+    _run(tmp_path, popen, _git("a", "a", "a"), oauth=oauth)
     script = popen.cls.calls[0].cmd[2]
     assert "'%s'" % str(oauth) in script
 
 
 def test_oauth_not_loaded_when_the_file_is_absent(tmp_path):
     popen = _popen_factory()
-    _run(tmp_path, popen, _git_heads("a", "a"))
+    _run(tmp_path, popen, _git("a", "a", "a"))
     assert "set -a" not in popen.cls.calls[0].cmd[2]
 
 
@@ -295,7 +319,7 @@ def test_work_dir_default_comes_from_env(monkeypatch, tmp_path):
 def _assert_no_session(tmp_path, wd):
     popen = _popen_factory()
     sent = []
-    out = _run(tmp_path, popen, _git_heads("a", "b"), sent=sent, work_dir=wd)
+    out = _run(tmp_path, popen, _git("a", "b", "b"), sent=sent, work_dir=wd)
     assert popen.cls.calls == []
     assert out["outcome"] == "failed" and out["error"] == "no_work_dir"
     assert len(sent) == 1 and "ÉCHEC de session" in sent[0] and "no_work_dir" in sent[0]
@@ -330,7 +354,7 @@ def test_work_dir_symlinked_to_repo_dir_blocks_the_session(tmp_path):
 def test_real_auth_failure_is_recorded_as_failed_with_telegram(tmp_path):
     popen = _popen_factory(rc=1, log_text="début\n" + AUTH_LINE + "\n")
     sent = []
-    out = _run(tmp_path, popen, _git_heads("a", "a"), sent=sent)
+    out = _run(tmp_path, popen, _git("a", "a", "a"), sent=sent)
     assert out["outcome"] == "failed" and out["rc"] == 1
     assert out["error"] == AUTH_LINE
     assert sent[-1] == "ÉCHEC de session (1ʳᵉ d'affilée) : %s — %s" % (
@@ -346,14 +370,14 @@ def test_second_consecutive_failure_is_counted(tmp_path):
         _entry("old", MONDAY_NOON - timedelta(hours=30), "failed")]}, state_path)
     popen = _popen_factory(rc=1, log_text="boom\n")
     sent = []
-    _run(tmp_path, popen, _git_heads("a", "a"), sent=sent, state_path=state_path)
+    _run(tmp_path, popen, _git("a", "a", "a"), sent=sent, state_path=state_path)
     assert "2ᵉ d'affilée" in sent[-1]
 
 
 def test_rc_zero_without_push_is_reported(tmp_path):
     popen = _popen_factory(rc=0, log_text="rapport écrit\n")
     sent = []
-    out = _run(tmp_path, popen, _git_heads("same", "same"), sent=sent)
+    out = _run(tmp_path, popen, _git("s", "s", "s"), sent=sent)
     assert out["outcome"] == "reported" and out["pushed"] is False
     assert sent[-1] == "rapport sans fix : %s" % out["signature"]
     assert medic.load_medic_state(tmp_path / "state.json")["sessions"][0]["rc"] == 0
@@ -362,7 +386,7 @@ def test_rc_zero_without_push_is_reported(tmp_path):
 def test_moved_remote_ref_is_pushed(tmp_path):
     popen = _popen_factory(rc=0, log_text="poussé\n")
     sent = []
-    out = _run(tmp_path, popen, _git_heads("a", "b"), sent=sent)
+    out = _run(tmp_path, popen, _git("a", "b", "b"), sent=sent)
     assert out["outcome"] == "pushed" and out["pushed"] is True
     assert sent[-1] == "fix poussé : %s" % out["signature"]
 
@@ -374,7 +398,7 @@ def test_moved_remote_ref_is_pushed(tmp_path):
 def test_dossier_gives_the_exact_test_command_with_current_interpreter():
     f = medic.Failure(medic.FAIL_LLM, "llm_failed:abc", "d")
     d = medic.build_dossier(f, {}, "2026-08-30T10:00:00")
-    assert "Lance les tests avec : `%s -m pytest backend/bots/tests -q`" % sys.executable in d
+    assert "Lance les tests avec : `%s -m pytest backend/bots/tests -q`" % shlex.quote(sys.executable) in d
     assert "clone dédié" in d and "medic-fix:main" in d
 
 
@@ -389,7 +413,7 @@ def test_busy_when_the_lock_is_held_and_no_side_effect(tmp_path):
     try:
         popen = _popen_factory()
         sent = []
-        out = _run(tmp_path, popen, _git_heads("a", "b"), sent=sent, lock=lock)
+        out = _run(tmp_path, popen, _git("a", "b", "b"), sent=sent, lock=lock)
         assert out == {"action": "busy"}
         assert popen.cls.calls == [] and sent == []
         assert not (tmp_path / "state.json").exists()
@@ -401,7 +425,7 @@ def test_busy_when_the_lock_is_held_and_no_side_effect(tmp_path):
 def test_lock_is_released_after_the_cycle(tmp_path):
     lock = tmp_path / "medic.lock"
     popen = _popen_factory(rc=0, log_text="ok\n")
-    _run(tmp_path, popen, _git_heads("a", "a"), lock=lock)
+    _run(tmp_path, popen, _git("a", "a", "a"), lock=lock)
     probe = open(str(lock), "w")
     try:
         fcntl.flock(probe, fcntl.LOCK_EX | fcntl.LOCK_NB)      # ne doit pas lever
@@ -415,9 +439,112 @@ def test_lock_is_released_even_if_the_cycle_raises(tmp_path):
     def _boom(cmd, **kw):
         raise RuntimeError("boom")
     with pytest.raises(RuntimeError):
-        _run(tmp_path, _boom, _git_heads("a", "a"), lock=lock)
+        _run(tmp_path, _boom, _git("a", "a", "a"), lock=lock)
     probe = open(str(lock), "w")
     try:
         fcntl.flock(probe, fcntl.LOCK_EX | fcntl.LOCK_NB)
     finally:
         probe.close()
+
+
+# --------------------------------------------------------------------------- #
+# lot 18 bis — préparation git en Python, détection de poussée par commit
+# --------------------------------------------------------------------------- #
+
+def test_session_script_no_longer_contains_git(tmp_path):
+    popen = _popen_factory()
+    git = _git("a", "a", "a")
+    _run(tmp_path, popen, git)
+    script = popen.cls.calls[0].cmd[2]
+    assert "git " not in script and "/opt/claude" in script
+    assert script.startswith("set -e")
+    cmds = git.commands()
+    assert cmds[0] == "git fetch origin"
+    assert cmds[1] == "git checkout -B medic-fix origin/main"
+    wd = str(tmp_path / "medic-work")
+    assert all(kw["cwd"] == wd for _, kw in git.seen)
+
+
+@pytest.mark.parametrize("fail", ["fetch", "checkout"])
+def test_git_prepare_failure_blocks_the_session(tmp_path, fail):
+    popen = _popen_factory()
+    sent = []
+    git = _git("a", "a", "a", fail=fail, out="fatal: pas de réseau")
+    out = _run(tmp_path, popen, git, sent=sent)
+    assert popen.cls.calls == []
+    assert out["outcome"] == "failed"
+    assert out["error"] == "git_prepare: fatal: pas de réseau"
+    assert "git_prepare" in sent[-1] and "ÉCHEC" in sent[-1]
+    entry = medic.load_medic_state(tmp_path / "state.json")["sessions"][0]
+    assert entry["outcome"] == "failed"
+
+
+def test_git_prepare_exception_blocks_the_session(tmp_path):
+    popen = _popen_factory()
+    git = _git("a", "a", "a", fail="fetch", raise_exc=True, out="no git")
+    out = _run(tmp_path, popen, git)
+    assert popen.cls.calls == [] and out["error"] == "git_prepare: no git"
+
+
+def test_git_prepare_error_is_truncated(tmp_path):
+    git = _git("a", "a", "a", fail="fetch", out="x" * 500)
+    out = _run(tmp_path, _popen_factory(), git)
+    assert out["error"] == "git_prepare: " + "x" * 200
+
+
+def test_foreign_push_during_session_is_not_pushed(tmp_path):
+    # HEAD n'a pas bougé, mais origin/main oui (quelqu'un d'autre a poussé)
+    out = _run(tmp_path, _popen_factory(rc=0, log_text="ok\n"), _git("a", "a", "c"))
+    assert out["outcome"] == "reported" and out["pushed"] is False
+
+
+def test_session_commit_not_on_remote_is_not_pushed(tmp_path):
+    out = _run(tmp_path, _popen_factory(rc=0, log_text="ok\n"), _git("a", "b", "a"))
+    assert out["outcome"] == "reported"
+
+
+def test_session_commit_not_on_remote_after_foreign_push_is_not_pushed(tmp_path):
+    out = _run(tmp_path, _popen_factory(rc=0, log_text="ok\n"), _git("a", "b", "c"))
+    assert out["outcome"] == "reported"
+
+
+def test_pushed_wins_over_nonzero_rc_and_keeps_rc_and_error(tmp_path):
+    out = _run(tmp_path, _popen_factory(rc=2, log_text="poussé puis planté\n"),
+               _git("a", "b", "b"))
+    assert out["outcome"] == "pushed" and out["rc"] == 2
+    assert out["error"] == "poussé puis planté"
+    entry = medic.load_medic_state(tmp_path / "state.json")["sessions"][0]
+    assert entry["rc"] == 2 and entry["error"] == "poussé puis planté"
+
+
+def test_classify_outcome_pushed_beats_failures():
+    assert medic.classify_outcome(1, True, AUTH_LINE) == "pushed"
+    assert medic.classify_outcome(None, True, "") == "pushed"
+
+
+def test_oauth_word_in_a_successful_report_is_not_a_failure():
+    log = "travail\nJ'ai corrigé le rafraîchissement OAuth, suite verte\n"
+    assert medic.is_auth_failure(log) is False
+    assert medic.classify_outcome(0, False, log) == "reported"
+
+
+def test_oauth_session_with_words_before_expired_is_a_failure():
+    assert medic.is_auth_failure("OAuth session has already expired") is True
+
+
+def test_dossier_quotes_an_interpreter_path_with_a_space(monkeypatch):
+    monkeypatch.setattr(medic.sys, "executable", "/home/massii08/Projet serveur/venv/bin/python3")
+    f = medic.Failure(medic.FAIL_LLM, "llm_failed:abc", "d")
+    d = medic.build_dossier(f, {}, "2026-08-30T10:00:00")
+    assert "`'/home/massii08/Projet serveur/venv/bin/python3' -m pytest backend/bots/tests -q`" in d
+
+
+def test_dossier_exit_gates_compare_with_the_baseline():
+    f = medic.Failure(medic.FAIL_LLM, "llm_failed:abc", "d")
+    d = medic.build_dossier(f, {}, "2026-08-30T10:00:00")
+    assert "NOTE les tests déjà rouges" in d
+    assert "NOUVEAU rouge" in d
+    assert "test_paper_*" in d and "test_coach_*" in d and "test_tvcoach_*" in d
+    assert "message de commit" in d and "test_mc_agent_*" in d
+    assert "au moindre doute" in d.lower() and "rapport.md" in d
+    assert "git push origin medic-fix:main" in d

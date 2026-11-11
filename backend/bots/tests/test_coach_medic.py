@@ -512,8 +512,7 @@ def test_run_repair_session_builds_the_expected_shell_pipeline(tmp_path):
     assert rc == 0
     assert captured["cmd"][0] == "bash" and captured["cmd"][1] == "-c"
     script = captured["cmd"][2]
-    assert "git fetch origin" in script
-    assert "git checkout -B medic-fix origin/main" in script
+    assert "git " not in script      # lot 18 : git est préparé en Python
     assert "/opt/claude" in script and "--dangerously-skip-permissions" in script
     assert "--model sonnet" in script
     assert str(dossier) in script
@@ -652,7 +651,11 @@ def test_run_medic_runs_a_full_repair_session_and_records_it(tmp_path):
     heads = iter(["before123", "after456"])
 
     def _git_run(cmd, **kw):
-        return _FakeCompleted(next(heads) + "\n")
+        if cmd[:2] == ["git", "rev-parse"] and cmd[2] == "HEAD":
+            return _FakeCompleted(next(heads) + "\n")
+        if cmd[:2] == ["git", "rev-parse"]:
+            return _FakeCompleted("after456\n")
+        return _FakeCompleted("")
 
     def _popen(cmd, **kw):
         (Path(kw["cwd"]) if False else None)  # no-op, garde la signature lisible
