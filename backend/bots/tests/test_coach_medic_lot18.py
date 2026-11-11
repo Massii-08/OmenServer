@@ -459,8 +459,12 @@ def test_session_script_no_longer_contains_git(tmp_path):
     assert "git " not in script and "/opt/claude" in script
     assert script.startswith("set -e")
     cmds = git.commands()
-    assert cmds[0] == "git fetch origin"
-    assert cmds[1] == "git checkout -B medic-fix origin/main"
+    # Les restes d'une session précédente (fichiers modifiés jamais commités)
+    # sont mis de côté AVANT tout : sans ça ils suivraient le checkout et
+    # finiraient dans le commit de la session suivante.
+    assert cmds[0].startswith("git stash push --include-untracked")
+    assert cmds[1] == "git fetch origin"
+    assert cmds[2] == "git checkout -B medic-fix origin/main"
     wd = str(tmp_path / "medic-work")
     assert all(kw["cwd"] == wd for _, kw in git.seen)
 

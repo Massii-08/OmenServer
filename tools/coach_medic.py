@@ -620,7 +620,13 @@ def prepare_work_dir(wd, git_run=subprocess.run):
     """``git fetch origin`` puis ``git checkout -B medic-fix origin/main`` dans
     le clone de travail. Rend ``None`` si tout va bien, sinon
     ``git_prepare: <dernière ligne de sortie>`` (≤ 200 caractères)."""
-    for cmd in (["git", "fetch", "origin"],
+    # ``stash`` d'abord : une session précédente interrompue peut avoir laissé
+    # des fichiers modifiés non commités ; sans ça ils suivraient le checkout
+    # et partiraient dans le commit de la session suivante. Rien n'est perdu
+    # (``git stash list`` dans le clone), et sur un arbre propre c'est un no-op.
+    for cmd in (["git", "stash", "push", "--include-untracked", "-m",
+                 "medic: restes d'une session précédente"],
+                ["git", "fetch", "origin"],
                 ["git", "checkout", "-B", "medic-fix", "origin/main"]):
         try:
             proc = git_run(cmd, cwd=str(wd), capture_output=True, text=True,
