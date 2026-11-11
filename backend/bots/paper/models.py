@@ -170,6 +170,11 @@ class Position:
     horizon_days: Optional[int] = None
     invalidation: str = ""
     thesis_deadline: Optional[str] = None
+    # LOT 18 — le stop de l'ordre d'OUVERTURE, posé une fois et jamais touché
+    # par un resserrement (``adjust_stop`` ne modifie que ``stop_loss``) : c'est
+    # sur lui que se calcule le multiple R du ``Trade``. ``None`` = ligne
+    # ouverte avant ce lot (on retombe alors sur ``stop_loss``, comme avant).
+    initial_stop: Optional[float] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -197,6 +202,7 @@ class Position:
             horizon_days=_as_opt_int(data.get("horizon_days")),
             invalidation=_as_str(data.get("invalidation")),
             thesis_deadline=_as_opt_text(data.get("thesis_deadline")),
+            initial_stop=_as_opt_float(data.get("initial_stop")),
         )
 
 
@@ -374,6 +380,14 @@ class Trade:
     horizon_days: Optional[int] = None
     invalidation: str = ""
     thesis_deadline: Optional[str] = None
+    # LOT 18 — ``planned_stop`` est le stop INITIAL (celui de l'ouverture) ;
+    # ``final_stop`` le dernier niveau du stop à la clôture (différent s'il a
+    # été resserré — au-delà de l'entrée, c'est un stop suiveur qui
+    # verrouillait un gain). ``risk_chf`` = risque planifié à l'ouverture, au
+    # prorata de la quantité clôturée ; ``target`` = l'objectif de la ligne.
+    final_stop: Optional[float] = None
+    risk_chf: Optional[float] = None
+    target: Optional[float] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -411,6 +425,9 @@ class Trade:
             horizon_days=_as_opt_int(data.get("horizon_days")),
             invalidation=_as_str(data.get("invalidation")),
             thesis_deadline=_as_opt_text(data.get("thesis_deadline")),
+            final_stop=_as_opt_float(data.get("final_stop")),
+            risk_chf=_as_opt_float(data.get("risk_chf")),
+            target=_as_opt_float(data.get("target")),
         )
 
 

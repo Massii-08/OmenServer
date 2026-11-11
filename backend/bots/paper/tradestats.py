@@ -46,7 +46,9 @@ def _dicts(items: Any) -> List[Dict[str, Any]]:
 # B1 — MAE / MFE
 # --------------------------------------------------------------------------- #
 def excursions(candles: List[Dict[str, Any]], entry_price: Any,
-               side: str) -> Dict[str, float]:
+               side: str,
+               window: Optional[Tuple[float, float, float]] = None,
+               exit_price: Any = None) -> Dict[str, float]:
     """MAE/MFE en % de l'entrée, sur la période couverte par ``candles``.
 
     - ``mae_pct`` (Maximum Adverse Excursion) : pire creux flottant pendant la
@@ -63,15 +65,35 @@ def excursions(candles: List[Dict[str, Any]], entry_price: Any,
 
     ``{}`` (jamais un ``0.0``) si les bougies sont vides ou l'entrée
     inconnue/non positive : un zéro prétendrait avoir mesuré quelque chose.
+
+    LOT 18 — ``window = (début, fin, durée_bougie)`` (epochs en secondes UTC,
+    durée en secondes, cf. ``INTERVAL_SECONDS``) : seules les bougies
+    ENTIÈREMENT contenues dans la détention comptent (``ts >= début`` ET
+    ``ts + durée <= fin``, ``ts`` = DÉBUT de la bougie). Sans ce filtre, une
+    fenêtre Yahoo fixe (« 1mo ») faisait compter le krach d'AVANT l'entrée
+    (OKTA : MAE -20,10 % pour un pire creux réel de -3,6 %). Une bougie sans
+    ``ts`` lisible n'est pas situable : écartée. ``exit_price`` : l'entrée et
+    la sortie deviennent des points OBSERVÉS du min/max (un trade sorti au
+    stop a pour pire point au moins sa sortie) — et suffisent à eux seuls
+    quand des bougies ont été reçues mais qu'aucune ne tombe ENTIÈREMENT dans
+    la fenêtre. Aucune bougie reçue du tout -> ``{}`` (rien n'a été relu :
+    ce n'est pas une mesure, c'est une panne). Sans ``window`` :
+    comportement historique strictement inchangé (``scalps.py`` en dépend).
     """
     entry = _val(entry_price)
     if entry is None or entry <= 0 or not candles:
         return {}
     rows = [c for c in candles if isinstance(c, dict)]
+    if window is not None:
+        rows = _inside(rows, window)
     highs = [_val(c.get("high")) for c in rows]
     lows = [_val(c.get("low")) for c in rows]
     highs = [h for h in highs if h is not None]
     lows = [l for l in lows if l is not None]
+    exit_v = _val(exit_price)
+    if exit_v is not None and exit_v > 0:
+        highs += [entry, exit_v]
+        lows += [entry, exit_v]
     if not highs or not lows:
         return {}
 
@@ -88,6 +110,34 @@ def excursions(candles: List[Dict[str, Any]], entry_price: Any,
 
     return {"mae_pct": round(min(mae_raw, 0.0), 2),
             "mfe_pct": round(max(mfe_raw, 0.0), 2)}
+
+
+# Durée d'une bougie Yahoo, par intervalle — sert à ne retenir que les
+# bougies ENTIÈREMENT contenues dans la détention (``excursions(window=…)``).
+INTERVAL_SECONDS: Dict[str, int] = {
+    "15m": 15 * 60,
+    "1h": 3600,
+    "1d": 86400,
+    "1wk": 7 * 86400,
+}
+
+
+def _inside(rows: List[Dict[str, Any]],
+            window: Tuple[float, float, float]) -> List[Dict[str, Any]]:
+    """Les bougies dont ``[ts, ts + durée]`` tient dans ``[début, fin]``."""
+    try:
+        start, end, span = (float(window[0]), float(window[1]),
+                            float(window[2]))
+    except (TypeError, ValueError, IndexError):
+        return []
+    kept = []
+    for row in rows:
+        ts = _val(row.get("ts"))
+        if ts is None:
+            continue
+        if ts >= start and ts + span <= end:
+            kept.append(row)
+    return kept
 
 
 # Fenêtres FERMÉES pour la bougie d'excursion — MÊMES valeurs que

@@ -633,11 +633,26 @@ def test_a_mechanical_stop_close_never_carries_an_emotion_close(tmp_path, monkey
 
 # --- B1/B5 : MAE/MFE + « laissé sur la table », câblés aux clôtures --------
 
+def _open_two_hours_ago():
+    """LOT 18 — l'horloge des tests est figée : sans recul de l'ouverture, la
+    détention durerait zéro seconde et aucune bougie n'y tiendrait."""
+    raw = store.load_portfolio("tester")
+    raw["positions"][0]["opened_at"] = "2026-08-24T08:00:00"
+    store.save_portfolio("tester", raw)
+
+
+def _held_ts():
+    """Début d'une bougie de 15 min située DANS la détention 08:00 -> 10:00."""
+    return pr._local_epoch("2026-08-24T08:30:00")
+
+
 def test_close_position_attaches_mae_mfe_and_the_gap_left_on_the_table(tmp_path, monkeypatch):
     c, market = make_client(tmp_path, monkeypatch)
     buy(c, qty=10, thesis="Une thèse suffisamment longue pour passer le seuil du coach")
+    _open_two_hours_ago()
     market.prices["NESN.SW"] = (108.0, "CHF", "Nestle SA")
-    market.candles["NESN.SW"] = [{"high": 112.0, "low": 97.0}]
+    # LOT 18 — la bougie doit tomber DANS la détention (08:00 -> 10:00).
+    market.candles["NESN.SW"] = [{"ts": _held_ts(), "high": 112.0, "low": 97.0}]
 
     r = c.post("/api/paper/positions/NESN.SW/close", json={})
     trade = r.json()["fill"]["trade"]
@@ -653,8 +668,9 @@ def test_close_position_attaches_mae_mfe_and_the_gap_left_on_the_table(tmp_path,
 def test_a_market_sell_order_also_attaches_mae_mfe(tmp_path, monkeypatch):
     c, market = make_client(tmp_path, monkeypatch)
     buy(c, qty=10, thesis="Une thèse suffisamment longue pour passer le seuil du coach")
+    _open_two_hours_ago()
     market.prices["NESN.SW"] = (108.0, "CHF", "Nestle SA")
-    market.candles["NESN.SW"] = [{"high": 112.0, "low": 97.0}]
+    market.candles["NESN.SW"] = [{"ts": _held_ts(), "high": 112.0, "low": 97.0}]
 
     body = buy(c, side="sell", qty=10)
     trade = body["fill"]["trade"]
@@ -667,6 +683,9 @@ def test_tick_limit_sell_close_also_attaches_mae_mfe(tmp_path, monkeypatch):
     buy(c, side="sell", kind="limit", limit_price=110.0, qty=10)
     market.candles["NESN.SW"] = [
         {"ts": _ts(11), "open": 108.0, "high": 115.0, "low": 99.0, "close": 111.0}]
+    # LOT 18 — la clôture a lieu APRÈS la bougie de 11:00 qui la déclenche
+    # (horloge figée à 10:00 sinon : détention de durée nulle).
+    monkeypatch.setattr(pr, "_now_iso", lambda: "2026-08-24T12:00:00")
 
     result = c.post("/api/paper/tick").json()
     trade = result["fills"][0]["trade"]
@@ -751,8 +770,12 @@ def test_attach_trade_extras_mutates_both_the_trade_object_and_the_fill_dict(mon
     trade = _bare_trade()
     portfolio = m.Portfolio(trades=[trade])
     fill = {"trade": trade.to_dict()}
+    # LOT 18 — bougie située DANS la détention (09:00 -> 10:00), horloge figée.
+    monkeypatch.setattr(pr, "_now_iso", lambda: FIXED_NOW)
     monkeypatch.setattr(quotes, "get_candles",
-                        lambda symbol, range_, interval: [{"high": 112.0, "low": 97.0}])
+                        lambda symbol, range_, interval: [
+                            {"ts": pr._local_epoch("2026-08-24T09:00:00"),
+                             "high": 112.0, "low": 97.0}])
 
     pr._attach_trade_extras(portfolio, fill)
 
@@ -7566,9 +7589,13 @@ def test_the_excursions_of_a_short_are_measured_upside_down(tmp_path, monkeypatc
     ce test prouve que le chemin du coach le lui demande correctement."""
     c, market = make_client(tmp_path, monkeypatch)
     pr.execute_coach_actions([coach_short()], source="daily")
+    # LOT 18 — seule une bougie ENTIÈREMENT dans la détention compte : on
+    # rachète à 12:00 une ligne ouverte à 10:00, la bougie est à 11:00.
     market.candles["NESN.SW"] = [
-        {"ts": _ts(1), "open": 100.0, "high": 112.0, "low": 84.0, "close": 90.0}]
+        {"ts": pr._local_epoch("2026-08-24T11:00:00"), "open": 100.0,
+         "high": 112.0, "low": 84.0, "close": 90.0}]
     market.prices["NESN.SW"] = (90.0, "CHF", "Nestle SA")
+    monkeypatch.setattr(pr, "_now_iso", lambda: "2026-08-24T12:00:00")
     pr.execute_coach_actions([{"action": "cover", "exit_reason": "risk", "symbol": "NESN.SW"}],
                              source="daily")
 

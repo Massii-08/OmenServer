@@ -588,7 +588,10 @@ def build_postmortem_prompt(trade: Optional[Dict[str, Any]],
         "Post-mortem d'un trade CLÔTURÉ. ``thesis`` est la raison que Massii "
         "avait écrite AVANT d'entrer, ``planned_stop`` le niveau d'invalidation "
         "qu'il s'était fixé, ``r_multiple`` le résultat exprimé en multiples du "
-        "risque planifié (``null`` = aucun stop n'avait été planifié).",
+        "risque planifié (``null`` = aucun stop n'avait été planifié). "
+        "``final_stop`` est le dernier niveau du stop s'il a été déplacé après "
+        "l'entrée : un ``final_stop`` au-delà du prix d'entrée est un stop "
+        "suiveur qui verrouillait un gain, pas une erreur de saisie.",
         _block("TRADE", trade or {}),
         _block("CONTEXTE", context or {}),
         "Structure ta réponse en quatre parties, dans cet ordre et sans titres "

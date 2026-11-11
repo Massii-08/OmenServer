@@ -36,6 +36,7 @@ import time
 import uuid
 from datetime import datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -601,6 +602,8 @@ def _open_long(portfolio, order, price, fx_rate, notional, fee, now_iso) -> None
             currency=order.currency or models.DEFAULT_CURRENCY,
             fx_rate=float(fx_rate), opened_at=now_iso, side="long",
             thesis=order.thesis, stop_loss=order.stop_loss,
+            # LOT 18 — le stop d'OUVERTURE, figé : base du multiple R.
+            initial_stop=order.stop_loss,
             target=order.target, risk_chf=order.risk_chf,
             setup=order.setup, emotion=order.emotion,
             forced_warnings=list(order.forced_warnings),
@@ -640,6 +643,8 @@ def _open_short(portfolio, order, price, fx_rate, notional, fee, now_iso) -> Non
             currency=order.currency or models.DEFAULT_CURRENCY,
             fx_rate=float(fx_rate), opened_at=now_iso, side="short",
             thesis=order.thesis, stop_loss=order.stop_loss,
+            # LOT 18 — le stop d'OUVERTURE, figé : base du multiple R.
+            initial_stop=order.stop_loss,
             target=order.target, risk_chf=order.risk_chf,
             setup=order.setup, emotion=order.emotion,
             forced_warnings=list(order.forced_warnings),
@@ -676,6 +681,10 @@ def _average_into(position: models.Position, order: models.Order,
         position.thesis = order.thesis
     if order.stop_loss is not None:
         position.stop_loss = order.stop_loss
+        # LOT 18 — un renfort ne réécrit pas le stop INITIAL ; il ne le pose
+        # que si la ligne n'en avait aucun.
+        if position.initial_stop is None:
+            position.initial_stop = order.stop_loss
     if order.target is not None:
         position.target = order.target
     if order.risk_chf is not None:
@@ -860,6 +869,20 @@ def _close_leg(portfolio, order, price, fx_rate, notional, fee,
     pnl = round(gross - brokerage - stamp, 2)
     pnl_pct = round(pnl / entry_notional * 100.0, 2) if entry_notional > 0 else 0.0
 
+    # LOT 18 — le R se mesure sur le stop INITIAL : un stop resserré (stop
+    # suiveur remonté au-delà de l'entrée) rendait le risque <= 0, donc un R
+    # ``None`` sur précisément les gagnants bien gérés. Une ligne ouverte
+    # avant ce lot n'a pas d'``initial_stop`` : repli sur ``stop_loss``.
+    initial_stop = (position.initial_stop if position.initial_stop is not None
+                    else position.stop_loss)
+    # Risque planifié au prorata de la quantité clôturée (sur la ligne AVANT
+    # cette clôture) ; la part restante reste portée par la ligne, pour que
+    # la somme des clôtures partielles redonne le risque de l'ouverture.
+    trade_risk_chf: Optional[float] = None
+    if position.risk_chf is not None and position.qty > 0:
+        share = float(qty) / float(position.qty)
+        trade_risk_chf = round(position.risk_chf * share, 2)
+
     trade = models.Trade(
         symbol=symbol,
         side=position.side,
@@ -873,10 +896,13 @@ def _close_leg(portfolio, order, price, fx_rate, notional, fee,
         pnl_chf=pnl,
         pnl_pct=pnl_pct,
         r_multiple=risk.r_multiple(position.avg_price, float(price),
-                                   position.stop_loss, position.side),
+                                   initial_stop, position.side),
         thesis=position.thesis,
         exit_reason=exit_reason,
-        planned_stop=position.stop_loss,
+        planned_stop=initial_stop,
+        final_stop=position.stop_loss,
+        risk_chf=trade_risk_chf,
+        target=position.target,
         currency=position.currency,
         fx_rate=float(fx_rate),
         setup=position.setup,
@@ -897,6 +923,8 @@ def _close_leg(portfolio, order, price, fx_rate, notional, fee,
         portfolio.cash_chf = round(portfolio.cash_chf - notional - fee["total_chf"], 2)
 
     position.qty -= qty
+    if trade_risk_chf is not None and position.qty > 0:
+        position.risk_chf = round(position.risk_chf - trade_risk_chf, 2)
     orphans_cancelled: List[Dict[str, Any]] = []
     if position.qty <= 0:
         portfolio.positions = [p for p in portfolio.positions if p is not position]
@@ -1013,27 +1041,104 @@ def _attach_trade_extras(portfolio: models.Portfolio,
     trade_dict = fill["trade"]
     trade_obj = portfolio.trades[-1]
 
-    holding_days = _holding_days(trade_dict.get("entry_at"), trade_dict.get("exit_at"))
-    try:
-        range_, interval = tradestats.range_for(holding_days)
-        candles = quotes.get_candles(trade_dict.get("symbol") or "", range_, interval)
-        exc = tradestats.excursions(candles, trade_dict.get("entry_price"),
-                                    trade_dict.get("side"))
-    except Exception as e:                          # noqa: BLE001 - best-effort
-        logger.warning("paper: excursions indisponibles pour %s: %s",
-                       trade_dict.get("symbol"), type(e).__name__)
-        return
+    exc = _trade_excursions(trade_dict)
     if not exc:
         return
 
-    gap = tradestats.best_exit_gap(exc.get("mfe_pct"), trade_dict.get("pnl_pct"))
-
     trade_obj.mae_pct = exc.get("mae_pct")
     trade_obj.mfe_pct = exc.get("mfe_pct")
-    trade_obj.best_exit_gap_pct = gap
+    trade_obj.best_exit_gap_pct = exc.get("best_exit_gap_pct")
 
     trade_dict.update(exc)
-    trade_dict["best_exit_gap_pct"] = gap
+
+
+def _local_epoch(value: Any) -> Optional[float]:
+    """ISO NAÏF en heure locale de Rome (convention du simulateur) -> epoch
+    UTC en secondes, heure d'été comprise. ``None`` si illisible.
+
+    Ne pas confondre avec :func:`_epoch`, qui s'en remet au fuseau du
+    système : ici on compare à des bougies Yahoo en UTC, et l'Omen comme le
+    Mac pourraient un jour ne plus tourner à l'heure de Rome."""
+    parsed = _parse_iso(value)
+    if parsed is None:
+        return None
+    try:
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=ZoneInfo(coach_trader.LOCAL_TZ))
+        return parsed.timestamp()
+    except (OSError, OverflowError, ValueError):
+        return None
+
+
+def _trade_excursions(trade_dict: Any,
+                      now: Optional[datetime] = None) -> Dict[str, Any]:
+    """MAE/MFE + « laissé sur la table » d'un trade CLOS (LOT 2 B1/B5,
+    corrigé LOT 18) : ``{mae_pct, mfe_pct, best_exit_gap_pct}``.
+
+    La fenêtre demandée à Yahoo couvre de MAINTENANT jusqu'à l'ENTRÉE (l'âge
+    de l'entrée : égal à la détention au moment de la clôture, plus long
+    lors d'un recalcul a posteriori), et seules les bougies ENTIÈREMENT
+    contenues dans ``[entry_at, exit_at]`` comptent ; l'entrée et la sortie
+    sont des points observés. ``now`` : datetime NAÏF local (défaut
+    ``_now_iso()``, monkeypatchable).
+
+    Best-effort : ne lève JAMAIS, ``{}`` si impossible."""
+    try:
+        if not isinstance(trade_dict, dict):
+            return {}
+        symbol = trade_dict.get("symbol") or ""
+        start = _local_epoch(trade_dict.get("entry_at"))
+        end = _local_epoch(trade_dict.get("exit_at"))
+        if not symbol or start is None or end is None:
+            return {}
+        # L'âge se calcule en epochs : aucun mélange naïf / « aware » possible
+        # (un ``now`` aware est lu tel quel, un naïf à l'heure de Rome comme
+        # les dates du trade). Jamais plus court que la détention elle-même.
+        moment = now if now is not None else _parse_iso(_now_iso())
+        now_epoch = (_local_epoch(moment.isoformat())
+                     if isinstance(moment, datetime) else None)
+        if now_epoch is None or now_epoch < end:
+            now_epoch = end
+        age_days = (now_epoch - start) / 86400.0
+        range_, interval = tradestats.range_for(age_days)
+        span = tradestats.INTERVAL_SECONDS.get(interval)
+        if span is None:
+            return {}
+        candles = quotes.get_candles(symbol, range_, interval)
+        exc = tradestats.excursions(candles, trade_dict.get("entry_price"),
+                                    trade_dict.get("side"),
+                                    window=(start, end, span),
+                                    exit_price=trade_dict.get("exit_price"))
+        if not exc:
+            return {}
+        out: Dict[str, Any] = dict(exc)
+        out["best_exit_gap_pct"] = tradestats.best_exit_gap(
+            exc.get("mfe_pct"), trade_dict.get("pnl_pct"))
+        return out
+    except Exception as e:                          # noqa: BLE001 - best-effort
+        symbol = trade_dict.get("symbol") if isinstance(trade_dict, dict) else None
+        logger.warning("paper: excursions indisponibles pour %s: %s",
+                       symbol, type(e).__name__)
+        return {}
+
+
+def recompute_trade_excursions(portfolio: models.Portfolio,
+                               now: Optional[datetime] = None) -> int:
+    """Recalcule ``mae_pct``/``mfe_pct``/``best_exit_gap_pct`` de TOUS les
+    trades clos de ``portfolio`` (réparation de l'historique, LOT 18). MUTE
+    les ``Trade`` ; ne sauvegarde PAS (l'appelant sauvegarde). Rend le nombre
+    de trades mis à jour ; un trade dont le recalcul échoue garde ses
+    valeurs."""
+    updated = 0
+    for trade in list(getattr(portfolio, "trades", None) or []):
+        exc = _trade_excursions(trade.to_dict(), now=now)
+        if not exc:
+            continue
+        trade.mae_pct = exc.get("mae_pct")
+        trade.mfe_pct = exc.get("mfe_pct")
+        trade.best_exit_gap_pct = exc.get("best_exit_gap_pct")
+        updated += 1
+    return updated
 
 
 def _postmortem_auto_allowed(username: str, today: str) -> bool:
