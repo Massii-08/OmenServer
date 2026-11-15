@@ -78,6 +78,14 @@ def _risk_limit_for(username: Optional[str]) -> Optional[float]:
 
 MIN_THESIS_LEN = 15          # même seuil que coach._NO_THESIS_MIN_LEN
 
+# weekly_improvement — un ordre qui cumule PLUSIEURS avertissements pré-ordre
+# (``risk.preorder_warnings`` : no_thesis/no_stop/risk_high/.../oversize) ne se
+# contente plus d'un ``confirmed: true`` muet : il faut écrire pourquoi, et un
+# texte symbolique ("ok") ne compte pas. Même ordre de grandeur que
+# ``MIN_THESIS_LEN`` -- un peu plus strict, une justification n'est pas censée
+# être plus courte que la thèse qu'elle outrepasse.
+CONFIRM_JUSTIFICATION_MIN_LEN = 20
+
 MAX_QUOTE_SYMBOLS = 20
 MIN_SEARCH_LEN = 2
 
@@ -4372,6 +4380,11 @@ class OrderPayload(BaseModel):
     # ``True`` = « je sais, exécute quand même ». Ignoré silencieusement pour
     # un ordre de SORTIE (jamais gated, cf. ``risk.preorder_warnings``).
     confirmed: bool = False
+    # weekly_improvement — exigée EN PLUS de ``confirmed`` dès que l'ordre
+    # cumule PLUSIEURS codes (cf. ``CONFIRM_JUSTIFICATION_MIN_LEN``) : un
+    # cumul d'avertissements ne se franchit plus d'un simple clic. Ignorée
+    # (et jamais exigée) pour un ordre de SORTIE ou un code isolé.
+    confirm_justification: str = ""
 
 
 class ResetPayload(BaseModel):
@@ -4788,16 +4801,26 @@ def paper_place_order(data: OrderPayload,
         {"side": side, "symbol": symbol, "thesis": data.thesis,
          "stop_loss": data.stop_loss, "target": data.target, "qty": qty},
         portfolio.to_dict(), confirm_level)
-    if confirm_codes and not data.confirmed:
+    # weekly_improvement — un cumul de PLUSIEURS codes (no_thesis + no_stop +
+    # risk_high + ...) durcit la porte : au-delà d'un seul avertissement,
+    # ``confirmed: true`` seul ne suffit plus, il faut une justification
+    # ÉCRITE d'une longueur minimale (un texte symbolique ne compte pas).
+    stacked = len(confirm_codes) > 1
+    justification = str(data.confirm_justification or "").strip()
+    justified = len(justification) >= CONFIRM_JUSTIFICATION_MIN_LEN
+    if confirm_codes and (not data.confirmed or (stacked and not justified)):
         # 200, JAMAIS un refus dur (invariant 1 du module) : une pause, pas
         # un blocage — rien n'est exécuté, rien n'est mis en attente, rien
         # n'est sauvegardé.
-        return {"needs_confirm": True, "warnings": confirm_codes}
+        return {"needs_confirm": True, "warnings": confirm_codes,
+                "justification_required": stacked}
     if confirm_codes:
         # Le score de discipline pourra un jour les lire sur le Trade clos
         # (stocké, pas câblé — cf. mission) : posé sur l'ORDRE, il suit la
         # même chaîne que setup/emotion jusqu'à la Position puis le Trade.
         order.forced_warnings = confirm_codes
+        if stacked:
+            order.confirm_justification = justification
 
     fill = None
     if kind == "market":

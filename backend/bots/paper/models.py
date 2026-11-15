@@ -236,6 +236,12 @@ class Order:
     # LOT 3, C3 — cf. le même champ sur ``Position`` : posé par le router quand
     # l'ordre passe malgré des avertissements pré-ordre (``confirmed: true``).
     forced_warnings: List[str] = field(default_factory=list)
+    # weekly_improvement — la justification ÉCRITE exigée quand l'ordre a
+    # cumulé PLUSIEURS codes de ``forced_warnings`` (cf. ``paper_router.
+    # CONFIRM_JUSTIFICATION_MIN_LEN``) ; vide tant qu'un seul code (ou aucun)
+    # n'a été forcé -- le durcissement ne s'applique pas à un avertissement
+    # isolé.
+    confirm_justification: str = ""
     # LOT 9 — les EMBUSCADES (``kind="stop"`` sur un ``side`` d'ENTRÉE) : un
     # piège armé sur un niveau ne doit pas dormir indéfiniment. Le marché a
     # changé bien avant que le niveau soit atteint trois semaines plus tard —
@@ -303,6 +309,7 @@ class Order:
             setup=_as_str(data.get("setup")),
             emotion=_as_str(data.get("emotion")),
             forced_warnings=_as_str_list(data.get("forced_warnings")),
+            confirm_justification=_as_str(data.get("confirm_justification")),
             expires_at=_as_str(data.get("expires_at")),
             source=_as_str(data.get("source")),
             candidate_source=_as_opt_text(data.get("candidate_source")),

@@ -907,6 +907,10 @@ const Lang = {
             'paper.confirm_no_stop': "Pas de stop de protection — ta perte n'a pas de plancher.",
             'paper.confirm_risk_high': 'Risque planifié au-delà de 2 % du capital — plus que ce que la méthode recommande par trade.',
             'paper.confirm_oversize': "Position au-delà d'un quart du portefeuille — une seule ligne pèserait trop dans le total.",
+            // weekly_improvement — justification écrite quand plusieurs avertissements se cumulent
+            'paper.confirm_justification_label': 'Pourquoi quand même ? (obligatoire, plusieurs avertissements cumulés)',
+            'paper.confirm_justification_ph': "Explique par écrit pourquoi tu passes cet ordre malgré ces avertissements.",
+            'paper.confirm_justification_needed': "Écris une justification plus détaillée avant d'exécuter quand même.",
             // Paper Trading — LOT 3, C1 : post-mortem automatique
             'paper.postmortem_auto_ready': 'Post-mortem du coach prêt',
             // Paper Trading — remise a zero, grands portefeuilles (13F), radar
@@ -3384,6 +3388,10 @@ const Lang = {
             'paper.confirm_no_stop': "No protective stop — your loss has no floor.",
             'paper.confirm_risk_high': 'Planned risk above 2% of capital — more than the method recommends per trade.',
             'paper.confirm_oversize': 'Position above a quarter of the portfolio — one line would weigh too much in the total.',
+            // weekly_improvement — written justification when several warnings stack up
+            'paper.confirm_justification_label': 'Why anyway? (required, several warnings stacked up)',
+            'paper.confirm_justification_ph': 'Explain in writing why you are placing this order despite these warnings.',
+            'paper.confirm_justification_needed': 'Write a more detailed justification before executing anyway.',
             // Paper Trading — LOT 3, C1: automatic post-mortem
             'paper.postmortem_auto_ready': "Coach's post-mortem ready",
             // Paper Trading — reset, large portfolios (13F), radar
@@ -5859,6 +5867,10 @@ const Lang = {
             'paper.confirm_no_stop': 'Nessuno stop di protezione — la tua perdita non ha un fondo.',
             'paper.confirm_risk_high': 'Rischio pianificato oltre il 2% del capitale — più di quanto il metodo raccomandi per operazione.',
             'paper.confirm_oversize': 'Posizione oltre un quarto del portafoglio — una sola riga peserebbe troppo sul totale.',
+            // weekly_improvement — giustificazione scritta quando più avvisi si cumulano
+            'paper.confirm_justification_label': 'Perché comunque? (obbligatorio, più avvisi cumulati)',
+            'paper.confirm_justification_ph': 'Spiega per scritto perché passi questo ordine nonostante questi avvisi.',
+            'paper.confirm_justification_needed': 'Scrivi una giustificazione più dettagliata prima di eseguire comunque.',
             // Paper Trading — LOT 3, C1: post-mortem automatico
             'paper.postmortem_auto_ready': 'Post-mortem del coach pronto',
             // Paper Trading — azzeramento, grandi portafogli (13F), radar

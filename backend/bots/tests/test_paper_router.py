@@ -195,8 +195,16 @@ def order(client, **kwargs):
     # ce défaut, ils tomberaient tous sur ``needs_confirm`` au lieu
     # d'exécuter. Les tests qui visent SPÉCIFIQUEMENT la porte passent
     # ``confirmed=False`` explicitement.
+    #
+    # ``confirm_justification`` par défaut aussi (weekly_improvement) : un
+    # ordre nu cumule TOUJOURS ``no_thesis`` + ``no_stop`` (deux avertissements
+    # pré-ordre) -- depuis que la porte durcit sur un cumul, ``confirmed: True``
+    # seul ne suffit plus à exécuter. Les tests qui visent SPÉCIFIQUEMENT ce
+    # durcissement passent ``confirm_justification`` explicitement (vide ou
+    # trop court) pour le voir bloquer malgré tout.
     payload = {"symbol": "NESN.SW", "side": "buy", "kind": "market", "qty": 10,
-              "confirmed": True}
+              "confirmed": True,
+              "confirm_justification": "Ordre de test, hors périmètre de la porte de confirmation."}
     payload.update(kwargs)
     return client.post("/api/paper/orders", json=payload)
 
@@ -467,7 +475,10 @@ def test_an_order_with_warnings_needs_confirmation_when_not_confirmed(tmp_path, 
     assert body["needs_confirm"] is True
     assert "no_thesis" in body["warnings"]
     assert "no_stop" in body["warnings"]
-    assert sorted(body.keys()) == ["needs_confirm", "warnings"]
+    # Deux codes cumulés (weekly_improvement) : la porte le dit, pour que le
+    # frontend sache qu'un simple clic ne suffira pas.
+    assert body["justification_required"] is True
+    assert sorted(body.keys()) == ["justification_required", "needs_confirm", "warnings"]
 
 
 def test_needs_confirm_never_touches_the_portfolio(tmp_path, monkeypatch):
@@ -536,6 +547,81 @@ def test_a_pending_limit_order_can_also_need_confirmation(tmp_path, monkeypatch)
     body2 = r2.json()
     assert body2["fill"] is None
     assert body2["order"]["status"] == "open"
+
+
+# ================================================================
+#  weekly_improvement — un cumul de forced_warnings exige une
+#  justification ÉCRITE, un simple ``confirmed: true`` ne suffit plus
+# ================================================================
+
+def test_a_single_forced_warning_still_only_needs_the_boolean(tmp_path, monkeypatch):
+    """Un SEUL avertissement (stop posé, thèse vide) : le durcissement ne
+    s'applique pas -- ``confirmed: true`` seul reste suffisant, comme avant."""
+    c, _ = make_client(tmp_path, monkeypatch)
+    body = buy(c, qty=5, stop_loss=95.0, thesis="", confirmed=True,
+              confirm_justification="")
+    assert body["order"]["status"] == "filled"
+    assert body["order"]["forced_warnings"] == ["no_thesis"]
+
+
+def test_stacked_forced_warnings_block_despite_confirmed_true(tmp_path, monkeypatch):
+    """Thèse vide + pas de stop = DEUX avertissements : ``confirmed: true``
+    sans justification écrite ne suffit plus, la porte reste fermée."""
+    c, _ = make_client(tmp_path, monkeypatch)
+    r = order(c, thesis="", confirmed=True, confirm_justification="")
+    assert r.status_code == 200          # une pause, jamais un refus dur
+    body = r.json()
+    assert body["needs_confirm"] is True
+    assert body["justification_required"] is True
+    assert sorted(body["warnings"]) == ["no_stop", "no_thesis"]
+
+
+def test_stacked_forced_warnings_never_touch_the_portfolio_without_justification(
+        tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+    before = portfolio_of(c)["portfolio"]
+    order(c, thesis="", confirmed=True, confirm_justification="")
+    after = portfolio_of(c)["portfolio"]
+    assert after["cash_chf"] == before["cash_chf"]
+    assert after["positions"] == before["positions"] == []
+
+
+def test_a_too_short_justification_still_blocks_stacked_warnings(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+    r = order(c, thesis="", confirmed=True, confirm_justification="ok")
+    body = r.json()
+    assert body["needs_confirm"] is True
+    assert body["justification_required"] is True
+
+
+def test_a_written_justification_unblocks_stacked_warnings(tmp_path, monkeypatch):
+    c, _ = make_client(tmp_path, monkeypatch)
+    body = buy(c, thesis="", confirmed=True,
+              confirm_justification="J'accepte le risque : rebond technique "
+                                    "confirmé par le volume, je gère sans stop.")
+    assert body["order"]["status"] == "filled"
+    assert sorted(body["order"]["forced_warnings"]) == ["no_stop", "no_thesis"]
+    assert body["order"]["confirm_justification"].startswith("J'accepte")
+
+
+def test_blank_justification_is_the_same_as_no_justification(tmp_path, monkeypatch):
+    """Des espaces seuls ne comptent pas comme une justification écrite."""
+    c, _ = make_client(tmp_path, monkeypatch)
+    r = order(c, thesis="", confirmed=True, confirm_justification="   ")
+    body = r.json()
+    assert body["needs_confirm"] is True
+
+
+def test_sell_orders_never_need_a_justification_even_with_many_warnings(tmp_path, monkeypatch):
+    """Une SORTIE ne rend jamais de code (``risk.preorder_warnings``) : le
+    durcissement, qui ne regarde que les codes cumulés, ne la touche pas."""
+    c, _ = make_client(tmp_path, monkeypatch)
+    buy(c, qty=10, thesis="Thèse suffisamment longue pour passer le seuil")
+    r = order(c, side="sell", qty=4, thesis="", confirmed=True,
+             confirm_justification="")
+    body = r.json()
+    assert "needs_confirm" not in body
+    assert body["fill"]["trade"] is not None
 
 
 def test_forced_warnings_land_on_the_trade_at_close(tmp_path, monkeypatch):

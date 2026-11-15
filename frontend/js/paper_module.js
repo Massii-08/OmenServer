@@ -2320,12 +2320,26 @@ const PaperModule = {
         const codes = Array.isArray(state && state.warnings) ? state.warnings : [];
         const items = codes.map((code) =>
             '<li style="margin:4px 0;">' + esc(this._confirmMessage(code)) + '</li>').join('');
+        // weekly_improvement : au-delà d'un seul avertissement, un simple clic
+        // ne suffit plus -- une justification ÉCRITE est exigée (le backend la
+        // redemande tant qu'elle est absente ou trop courte).
+        const justificationBox = (state && state.justificationRequired)
+            ? '<div style="margin:0 0 10px;">' +
+                '<label class="form-label">' + esc(Lang.t('paper.confirm_justification_label')) +
+                  '</label>' +
+                '<textarea id="paper-confirm-justification" class="form-input" rows="3" ' +
+                     'style="resize:vertical;line-height:1.5;" ' +
+                     'placeholder="' + esc(Lang.t('paper.confirm_justification_ph')) + '">' +
+                  esc((state && state.justification) || '') + '</textarea>' +
+              '</div>'
+            : '';
         return '<div style="margin-top:14px;padding:12px 14px;border-radius:var(--r-md);' +
                    'border:1px solid var(--warning);background:var(--bg-elev-2);">' +
               '<div style="font-weight:600;color:var(--warning);margin-bottom:6px;">' +
                 esc(Lang.t('paper.confirm_title')) + '</div>' +
               '<ul style="margin:0 0 10px;padding-left:18px;font-size:13px;line-height:1.5;">' +
                 items + '</ul>' +
+              justificationBox +
               '<div style="display:flex;gap:8px;flex-wrap:wrap;">' +
                 '<button class="btn btn-ghost" data-paper-act="order-confirm-cancel">' +
                   esc(Lang.t('paper.confirm_fix')) + '</button>' +
@@ -2446,6 +2460,12 @@ const PaperModule = {
         // titre) -- capture seulement pour survivre a un re-rendu incident.
         const aop = val('paper-alert-op'); if (aop !== undefined) f.alert_op = aop;
         const apr = val('paper-alert-price'); if (apr !== undefined) f.alert_price = apr;
+        // Panneau de confirmation (weekly_improvement) : la justification écrite
+        // ne doit pas se perdre si un re-rendu incident survient pendant la saisie.
+        if (this._orderConfirm) {
+            const j = val('paper-confirm-justification');
+            if (j !== undefined) this._orderConfirm.justification = j;
+        }
     },
 
     // Prix d'entrée retenu pour le calcul : le prix POSÉ (limite/stop) prime sur
@@ -2564,6 +2584,10 @@ const PaperModule = {
         if (this._form.setup) body.setup = this._form.setup;
         if (this._form.emotion) body.emotion = this._form.emotion;
         if (forceConfirm) body.confirmed = true;
+        // weekly_improvement : la justification écrite voyage dès que le
+        // panneau de confirmation est ouvert -- ``undefined`` sinon (jamais
+        // envoyée sur un premier essai, elle n'existe pas encore).
+        if (this._orderConfirm) body.confirm_justification = this._orderConfirm.justification || '';
 
         let r = null;
         try { r = await Auth.apiCall('/api/paper/orders', { method: 'POST', body: JSON.stringify(body) }); }
@@ -2575,7 +2599,18 @@ const PaperModule = {
         // Porte de confirmation (LOT 3, C3) : une pause, pas un blocage --
         // rien n'a été exécuté, le formulaire reste tel quel.
         if (d && d.needs_confirm) {
-            this._orderConfirm = { warnings: Array.isArray(d.warnings) ? d.warnings : [] };
+            const justificationRequired = !!d.justification_required;
+            if (forceConfirm && justificationRequired) {
+                // Le clic « Exécuter quand même » n'a pas suffi (justification
+                // absente ou trop courte) -- la porte le redit, jamais en silence.
+                this._toast('warn', Lang.t('paper.confirm_justification_needed'));
+            }
+            const prevJustification = (this._orderConfirm &&
+                typeof this._orderConfirm.justification === 'string')
+                ? this._orderConfirm.justification : '';
+            this._orderConfirm = { warnings: Array.isArray(d.warnings) ? d.warnings : [],
+                justificationRequired: justificationRequired,
+                justification: prevJustification };
             this._renderBody();
             return;
         }
