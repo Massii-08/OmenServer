@@ -178,6 +178,22 @@ const BotsModule = {
             sharedWithYou: false,
         }) : '';
 
+        // Extraits de lives (clipping) — permission backend « clipping » =
+        // admin + developer : on teste le même rôle côté front.
+        const canSeeClipping = u && (u.is_admin || u.role === 'developer');
+        const clippingCard = canSeeClipping ? buildBotCard({
+            icon: 'CLP',
+            name: esc(Lang.t('clipping.title')),
+            type: 'media',
+            desc: esc(Lang.t('clipping.desc')),
+            status: 'online',
+            statusLabel: Lang.t('modules.active'),
+            onClick: 'BotsModule.openClipping()',
+            actions: `<button class="btn btn-ghost btn-sm">${esc(Lang.t('clipping.open'))}</button>`,
+            selected: false,
+            sharedWithYou: false,
+        }) : '';
+
         // Oracle virtual card (admin-only — Polymarket × Deribit, monitoring)
         const canSeeOracle = u && u.is_admin;
         const oracleCard = canSeeOracle ? buildBotCard({
@@ -201,6 +217,7 @@ const BotsModule = {
  ${scannerBotCard}
  ${marketCard}
  ${stocksCard}
+ ${clippingCard}
  ${mcAgentCard}
  ${harvesterCard}
  ${oracleCard}
@@ -251,6 +268,7 @@ const BotsModule = {
  ${scannerBotCard}
  ${marketCard}
  ${stocksCard}
+ ${clippingCard}
  ${mcAgentCard}
  ${harvesterCard}
  ${oracleCard}
@@ -1163,6 +1181,15 @@ const BotsModule = {
         if (this._refreshInterval) { clearInterval(this._refreshInterval); this._refreshInterval = null; }
         if (typeof StockScanModule !== 'undefined') {
             StockScanModule.render(this._container);
+        }
+    },
+
+    openClipping() {
+        const u = (typeof Auth !== 'undefined' && Auth.getUser) ? Auth.getUser() : null;
+        if (!u || !(u.is_admin || u.role === 'developer')) return;
+        if (this._refreshInterval) { clearInterval(this._refreshInterval); this._refreshInterval = null; }
+        if (typeof ClippingModule !== 'undefined') {
+            ClippingModule.render(this._container);
         }
     },
 

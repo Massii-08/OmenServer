@@ -73,6 +73,7 @@ ROLE_PERMISSIONS = {
         "create_website",    # Créer un site web (max 1)
         "delete",            # Supprimer ses propres serveurs/bots
         "invite",            # Créer des invitations (rôle player uniquement)
+        "clipping",          # Extraits de lives (consultation + téléchargement)
     ],
     "admin": [
         "view",
@@ -91,6 +92,7 @@ ROLE_PERMISSIONS = {
         "manage_users",      # Gérer les utilisateurs
         "yield_bot",         # Accès au Yield Bot
         "paper_trading",     # Accès au module Trading (simulateur paper)
+        "clipping",          # Extraits de lives (consultation + téléchargement)
     ],
 }
 
