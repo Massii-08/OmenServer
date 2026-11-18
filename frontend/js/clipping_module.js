@@ -19,6 +19,7 @@ const ClippingModule = {
     _gen: 0,
     _jours: 3,
     _data: null,
+    _montages: null,
     _error: false,
     _busy: false,
 
@@ -26,6 +27,7 @@ const ClippingModule = {
         this.unload();
         this._container = container;
         this._data = null;
+        this._montages = null;
         this._error = false;
         container.innerHTML = this._shell();
         this._bind();
@@ -127,6 +129,7 @@ const ClippingModule = {
         if (body) body.innerHTML = '<div style="padding:20px;color:var(--text-muted);text-align:center;">' +
             esc(Lang.t('clipping.loading')) + '</div>';
         let data = null;
+        let montages = null;
         let error = false;
         try {
             const res = await Auth.apiCall('/api/clipping/extraits?jours=' + this._jours);
@@ -135,8 +138,15 @@ const ClippingModule = {
         } catch (e) {
             error = true;
         }
+        try {
+            const resM = await Auth.apiCall('/api/clipping/montages?jours=' + this._jours);
+            if (resM && resM.ok) montages = await resM.json();
+        } catch (e) {
+            montages = null;
+        }
         if (gen !== this._gen) return;
         this._data = data;
+        this._montages = montages;
         this._error = error;
         this._renderBody();
     },
@@ -150,12 +160,56 @@ const ClippingModule = {
             return;
         }
         const jours = (this._data && Array.isArray(this._data.jours)) ? this._data.jours : [];
+        const raw = jours.length
+            ? jours.map(j => this._renderDay(j)).join('')
+            : '<div style="padding:20px;color:var(--text-muted);text-align:center;">' +
+              esc(Lang.t('clipping.empty')) + '</div>';
+        body.innerHTML = this._renderMontages() +
+            '<h4 style="margin:28px 0 0;">' + esc(Lang.t('clipping.raw_title')) + '</h4>' + raw;
+    },
+
+    _renderMontages() {
+        const jours = (this._montages && Array.isArray(this._montages.jours)) ? this._montages.jours : [];
+        const head = '<h4 style="margin:8px 0 0;">' + esc(Lang.t('clipping.montages_title')) + '</h4>';
         if (!jours.length) {
-            body.innerHTML = '<div style="padding:20px;color:var(--text-muted);text-align:center;">' +
-                esc(Lang.t('clipping.empty')) + '</div>';
-            return;
+            return head + '<div style="padding:16px;color:var(--text-muted);text-align:center;">' +
+                esc(Lang.t('clipping.montages_empty')) + '</div>';
         }
-        body.innerHTML = jours.map(j => this._renderDay(j)).join('');
+        return head + jours.map(j => this._renderMontageDay(j)).join('');
+    },
+
+    _renderMontageDay(j) {
+        const clips = Array.isArray(j.clips) ? j.clips : [];
+        const recap = (typeof j.recap === 'string')
+            ? '<details style="margin-top:8px;"><summary style="cursor:pointer;color:var(--text-muted);font-size:13px;">' +
+              esc(Lang.t('clipping.recap')) + '</summary>' +
+              '<pre style="white-space:pre-wrap;font-size:12px;margin:6px 0 0;">' + esc(j.recap) + '</pre></details>'
+            : '';
+        const rows = clips.map(c => {
+            const fiche = (typeof c.fiche === 'string')
+                ? '<details style="margin-top:4px;"><summary style="cursor:pointer;color:var(--text-muted);font-size:12px;">' +
+                  esc(Lang.t('clipping.fiche')) + '</summary>' +
+                  '<pre style="white-space:pre-wrap;font-size:12px;margin:4px 0 0;">' + esc(c.fiche) + '</pre></details>'
+                : '';
+            return '' +
+                '<div class="row" style="display:block;">' +
+                '<div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;">' +
+                '<div style="font-family:var(--font-mono);font-feature-settings:\'tnum\';font-size:13px;">' +
+                '<strong>' + esc(c.nom) + '</strong>' +
+                '<span style="color:var(--text-muted);margin-left:12px;">' + esc(this._fmtSize(c.taille)) + '</span></div>' +
+                this._btn('montage', j.date + '/' + c.chemin, Lang.t('clipping.dl_clip'), false) +
+                '</div>' + fiche + '</div>';
+        }).join('');
+        return '' +
+            '<div style="margin-top:16px;">' +
+            '<div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;' +
+            'padding-bottom:8px;border-bottom:1px solid var(--border);">' +
+            '<div><strong style="font-family:var(--font-mono);font-feature-settings:\'tnum\';">' + esc(j.date) + '</strong>' +
+            '<span style="color:var(--text-muted);font-size:13px;margin-left:10px;">' +
+            esc(clips.length + ' ' + Lang.t('clipping.clips')) + '</span></div>' +
+            (clips.length ? this._btn('montages_jour', j.date, Lang.t('clipping.dl_day'), true) : '') +
+            '</div>' + recap +
+            '<div class="row-list" style="margin-top:8px;">' + rows + '</div></div>';
     },
 
     _renderDay(j) {
@@ -229,7 +283,7 @@ const ClippingModule = {
                 if (typeof Toast !== 'undefined') Toast.error(Lang.t('clipping.dl_error'));
                 return;
             }
-            if (kind !== 'extrait' && typeof Toast !== 'undefined') Toast.info(Lang.t('clipping.zip_preparing'));
+            if (kind !== 'extrait' && kind !== 'montage' && typeof Toast !== 'undefined') Toast.info(Lang.t('clipping.zip_preparing'));
             window.location.href = url;
         } catch (e) {
             if (typeof Toast !== 'undefined') Toast.error(Lang.t('clipping.dl_error'));

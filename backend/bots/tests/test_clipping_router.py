@@ -305,3 +305,115 @@ def test_index_entry_escaping_live_ignored(root):
     jours = _client().get("/api/clipping/extraits?jours=5").json()["jours"]
     carl = [l for j in jours for l in j["lives"] if l["id"] == "2026-11-15/carl_1800"][0]
     assert len(carl["extraits"]) == 1
+
+
+# ------------------------------------------------------------------ montages
+
+def _write_montages(r):
+    m = r / "montages"
+    d1 = m / "2026-11-19"
+    (d1 / "bob").mkdir(parents=True)
+    (d1 / "alice").mkdir(parents=True)
+    (d1 / "lot_2026-11-19.md").write_text("# Lot <b>\nrecap", encoding="utf-8")
+    (d1 / "bob" / "2026-11-19_bob_lot-02.mp4").write_bytes(b"BOB2")
+    (d1 / "bob" / "2026-11-19_bob_lot-02.txt").write_text("fiche bob", encoding="utf-8")
+    (d1 / "bob" / "transcription.srt").write_text("srt")
+    (d1 / "alice" / "2026-11-19_alice_lot-01.mp4").write_bytes(b"ALICE1")
+    d0 = m / "2026-11-18"
+    (d0 / "x").mkdir(parents=True)
+    (d0 / "x" / "2026-11-18_x_lot-01.mp4").write_bytes(b"X")
+    return m
+
+
+def test_montages_listing(root):
+    _write_montages(root)
+    r = _client().get("/api/clipping/montages?jours=3")
+    assert r.status_code == 200
+    jours = r.json()["jours"]
+    assert [j["date"] for j in jours] == ["2026-11-19", "2026-11-18"]
+    d = jours[0]
+    assert d["recap"] == "# Lot <b>\nrecap"
+    assert [c["nom"] for c in d["clips"]] == ["2026-11-19_alice_lot-01.mp4", "2026-11-19_bob_lot-02.mp4"]
+    assert d["clips"][0]["chemin"] == "alice/2026-11-19_alice_lot-01.mp4"
+    assert d["clips"][0]["fiche"] is None
+    assert d["clips"][1]["fiche"] == "fiche bob"
+    assert d["clips"][1]["taille"] == 4
+    assert jours[1]["recap"] is None
+    assert str(root) not in r.text
+    assert len(_client().get("/api/clipping/montages?jours=1").json()["jours"]) == 1
+
+
+def test_montages_truncation(root):
+    m = _write_montages(root)
+    (m / "2026-11-19" / "lot_2026-11-19.md").write_text("a" * 30000)
+    (m / "2026-11-19" / "bob" / "2026-11-19_bob_lot-02.txt").write_text("b" * 9000)
+    d = _client().get("/api/clipping/montages").json()["jours"][0]
+    assert len(d["recap"]) == 20000
+    assert len(d["clips"][1]["fiche"]) == 4000
+
+
+def test_montages_root_absent(root):
+    assert _client().get("/api/clipping/montages").json() == {"jours": []}
+
+
+def test_montage_ticket_single_use(root):
+    _write_montages(root)
+    c = _client()
+    cible = "2026-11-19/bob/2026-11-19_bob_lot-02.mp4"
+    r = _ticket(c, "montage", cible)
+    assert r.status_code == 200
+    url = r.json()["url"]
+    d = c.get(url)
+    assert d.status_code == 200
+    assert d.content == b"BOB2"
+    assert c.get(url).status_code == 404
+
+
+def test_montages_jour_zip(root):
+    _write_montages(root)
+    c = _client()
+    url = _ticket(c, "montages_jour", "2026-11-19").json()["url"]
+    d = c.get(url)
+    assert d.status_code == 200
+    zf = zipfile.ZipFile(io.BytesIO(d.content))
+    assert sorted(zf.namelist()) == sorted([
+        "lot_2026-11-19.md",
+        "alice/2026-11-19_alice_lot-01.mp4",
+        "bob/2026-11-19_bob_lot-02.mp4",
+        "bob/2026-11-19_bob_lot-02.txt",
+    ])
+    assert zf.read("bob/2026-11-19_bob_lot-02.mp4") == b"BOB2"
+
+
+@pytest.mark.parametrize("cible", [
+    "2026-11-19/../../secret.mp4",
+    "2026-11-19/bob/../../../secret.mp4",
+    "../secret.mp4",
+    "2026-11-19/bob/transcription.srt",
+    "2026-11-19/bob/2026-11-19_bob_lot-02.txt",
+    "2026-11-19/2026-11-19_bob_lot-02.mp4",
+    "2026-11-19/bob/sub/x.mp4",
+])
+def test_montage_refused(root, cible):
+    _write_montages(root)
+    assert _ticket(_client(), "montage", cible).status_code in (400, 404)
+
+
+def test_montages_jour_bad_date(root):
+    _write_montages(root)
+    assert _ticket(_client(), "montages_jour", "../x").status_code == 400
+    assert _ticket(_client(), "montages_jour", "2026-01-01").status_code == 404
+
+
+def test_montage_symlink_refused(root, tmp_path):
+    m = _write_montages(root)
+    (m / "2026-11-19" / "bob" / "evil.mp4").symlink_to(tmp_path / "secret.mp4")
+    assert _ticket(_client(), "montage", "2026-11-19/bob/evil.mp4").status_code == 404
+    names = [c["nom"] for c in _client().get("/api/clipping/montages").json()["jours"][0]["clips"]]
+    assert "evil.mp4" not in names
+    # sous-dossier lien symbolique
+    (m / "2026-11-19" / "lnk").symlink_to(tmp_path)
+    assert _ticket(_client(), "montage", "2026-11-19/lnk/secret.mp4").status_code == 404
+    zf = zipfile.ZipFile(io.BytesIO(_client().get(
+        _ticket(_client(), "montages_jour", "2026-11-19").json()["url"]).content))
+    assert not any("secret" in n or "evil" in n for n in zf.namelist())

@@ -69,6 +69,10 @@ def _lives_dir() -> Path:
     return _root() / "lives"
 
 
+def _montages_dir() -> Path:
+    return _root() / "montages"
+
+
 def _valid_name(s: str) -> bool:
     return bool(s) and bool(_NAME_RE.match(s)) and s not in (".", "..") and ".." not in s
 
@@ -256,6 +260,105 @@ def list_extraits(jours: int = Query(3, ge=1, le=JOURS_MAX),
     return {"jours": result}
 
 
+# ------------------------------------------------------------------ montages (clips verticaux finis)
+#
+#   <RACINE>/montages/<YYYY-MM-DD>/lot_*.md
+#   <RACINE>/montages/<YYYY-MM-DD>/<sous-dossier>/<nom>.mp4 (+ <nom>.txt = fiche)
+# Les transcription.srt et tout le reste sont ignorés.
+
+RECAP_MAX = 20000
+FICHE_MAX = 4000
+
+
+def _read_text(base: Path, parts: List[str], limit: int) -> Optional[str]:
+    path = _confined(base, parts)
+    if path is None or not path.is_file():
+        return None
+    try:
+        with path.open("r", encoding="utf-8", errors="replace") as fh:
+            return fh.read(limit)
+    except OSError:
+        return None
+
+
+def _list_dirs(base: Path) -> List[str]:
+    try:
+        return sorted(p.name for p in base.iterdir()
+                      if _valid_name(p.name) and not p.name.startswith(".")
+                      and p.is_dir() and not p.is_symlink())
+    except OSError:
+        return []
+
+
+def _list_mp4(base: Path) -> List[str]:
+    try:
+        return sorted(p.name for p in base.iterdir()
+                      if _valid_name(p.name) and p.name.lower().endswith(".mp4")
+                      and p.is_file() and not p.is_symlink())
+    except OSError:
+        return []
+
+
+def _recap_name(day_dir: Path) -> Optional[str]:
+    try:
+        names = sorted(p.name for p in day_dir.iterdir()
+                       if _valid_name(p.name) and p.name.startswith("lot_")
+                       and p.name.lower().endswith(".md") and p.is_file() and not p.is_symlink())
+    except OSError:
+        return None
+    return names[0] if names else None
+
+
+def _day_clips(day_dir: Path) -> List[Tuple[str, Path]]:
+    """(chemin relatif au jour, chemin résolu) de chaque .mp4, trié par nom."""
+    out = []
+    for sub in _list_dirs(day_dir):
+        sub_dir = _confined(day_dir, [sub])
+        if sub_dir is None or not sub_dir.is_dir():
+            continue
+        for name in _list_mp4(sub_dir):
+            path = _confined(day_dir, [sub, name])
+            if path is not None and path.is_file():
+                out.append(("%s/%s" % (sub, name), path))
+    out.sort(key=lambda t: t[0].rsplit("/", 1)[-1])
+    return out
+
+
+@router.get("/montages")
+def list_montages(jours: int = Query(3, ge=1, le=JOURS_MAX),
+                  user: User = Depends(require_permission("clipping"))):
+    root = _montages_dir()
+    if not root.is_dir() or root.is_symlink():
+        return {"jours": []}
+    try:
+        dates = sorted((d.name for d in root.iterdir()
+                        if _DATE_RE.match(d.name) and d.is_dir() and not d.is_symlink()),
+                       reverse=True)
+    except OSError:
+        return {"jours": []}
+    result = []
+    for date in dates:
+        if len(result) >= jours:
+            break
+        day_dir = _confined(root, [date])
+        if day_dir is None:
+            continue
+        rname = _recap_name(day_dir)
+        recap = _read_text(day_dir, [rname], RECAP_MAX) if rname else None
+        clips = []
+        for rel, path in _day_clips(day_dir):
+            try:
+                size = path.stat().st_size
+            except OSError:
+                continue
+            sub, name = rel.split("/")
+            fiche = _read_text(day_dir, [sub, name[:-4] + ".txt"], FICHE_MAX)
+            clips.append({"chemin": rel, "nom": name, "taille": size, "fiche": fiche})
+        if clips or recap is not None:
+            result.append({"date": date, "recap": recap, "clips": clips})
+    return {"jours": result}
+
+
 # ------------------------------------------------------------------ résolution des cibles
 
 def _resolve_target(kind: str, cible: str) -> dict:
@@ -323,6 +426,40 @@ def _resolve_target(kind: str, cible: str) -> dict:
                                                    _int(entry.get("tranche")), rang)
                 return {"kind": "file", "path": path, "filename": fname}
         raise HTTPException(404, "Introuvable")
+
+    if kind == "montages_jour":
+        if len(parts) != 1 or not _DATE_RE.match(parts[0]):
+            raise HTTPException(400, "Cible invalide")
+        date = parts[0]
+        day_dir = _confined(_montages_dir(), [date])
+        if day_dir is None or not day_dir.is_dir():
+            raise HTTPException(404, "Introuvable")
+        members = []
+        rname = _recap_name(day_dir)
+        if rname:
+            rp = _confined(day_dir, [rname])
+            if rp is not None and rp.is_file():
+                members.append((rp, rname))
+        clips = _day_clips(day_dir)
+        for rel, path in clips:
+            members.append((path, rel))
+            sub, name = rel.split("/")
+            tp = _confined(day_dir, [sub, name[:-4] + ".txt"])
+            if tp is not None and tp.is_file():
+                members.append((tp, "%s/%s.txt" % (sub, name[:-4])))
+        if not clips:
+            raise HTTPException(404, "Introuvable")
+        return {"kind": "zip", "members": members, "filename": "montages_%s.zip" % date}
+
+    if kind == "montage":
+        if len(parts) != 3 or not _DATE_RE.match(parts[0]) \
+                or not all(_valid_name(p) for p in parts[1:]) \
+                or not parts[2].lower().endswith(".mp4"):
+            raise HTTPException(400, "Cible invalide")
+        path = _confined(_montages_dir(), parts)
+        if path is None or not path.is_file():
+            raise HTTPException(404, "Introuvable")
+        return {"kind": "file", "path": path, "filename": parts[2]}
 
     raise HTTPException(400, "Type invalide")
 
