@@ -17,6 +17,10 @@ Sécurité : toute cible venant du client est validée par regex stricte, chaque
 composant du chemin est refusé s'il est un lien symbolique, le chemin résolu
 doit rester sous <RACINE>/lives, et un extrait doit être un .mp4 LISTÉ dans
 l'index.json de son live. Aucune réponse ne contient de chemin absolu.
+
+Zips « live » et « jour » : arborescence de l'enregistreur reproduite
+(<dossier>/extraits/tranche_NN/extrait_MM.mp4) avec l'extraits/index.json de
+chaque live, pour que `python -m clipper lot <dossier>` les lise tels quels.
 """
 import json
 import logging
@@ -172,7 +176,15 @@ def _safe_fname(s: str) -> str:
 
 
 def _zip_member(dossier: str, entry: dict, parts: List[str]) -> str:
-    return "%s/tranche_%02d_%s" % (dossier, _int(entry.get("tranche")), parts[-1])
+    return "%s/%s" % (dossier, "/".join(parts))
+
+
+def _index_member(live_dir: Path, dossier: str) -> List[Tuple[Path, str]]:
+    """Membre zip de l'index.json du live (servi tel quel), s'il est sûr."""
+    path = _confined(live_dir, ["extraits", "index.json"])
+    if path is None or not path.is_file():
+        return []
+    return [(path, "%s/extraits/index.json" % dossier)]
 
 
 # ------------------------------------------------------------------ listing
@@ -271,6 +283,9 @@ def _resolve_target(kind: str, cible: str) -> dict:
             info = _live_info(date, dossier)
             if not info:
                 continue
+            if not info["extraits"]:
+                continue
+            members.extend(_index_member(info["dir"], dossier))
             for entry, rel, path in info["extraits"]:
                 members.append((path, _zip_member(dossier, entry, rel)))
         if not members:
@@ -284,7 +299,8 @@ def _resolve_target(kind: str, cible: str) -> dict:
         info = _live_info(date, dossier)
         if not info or not info["extraits"]:
             raise HTTPException(404, "Introuvable")
-        members = [(path, _zip_member(dossier, entry, rel)) for entry, rel, path in info["extraits"]]
+        members = _index_member(info["dir"], dossier)
+        members += [(path, _zip_member(dossier, entry, rel)) for entry, rel, path in info["extraits"]]
         return {"kind": "zip", "members": members,
                 "filename": "%s_%s.zip" % (date, _safe_fname(dossier))}
 

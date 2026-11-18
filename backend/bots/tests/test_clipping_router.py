@@ -162,12 +162,10 @@ def _zip_check(resp, root):
         for info in zf.infolist():
             assert info.compress_type == zipfile.ZIP_STORED
             assert info.flag_bits & 0x08  # data descriptor : flux sans seek
-            dossier, member = info.filename.split("/")
-            tranche = member[len("tranche_"):len("tranche_") + 2]
-            extrait = member[len("tranche_00_"):]
+            dossier, rel = info.filename.split("/", 1)
             src = None
             for live in lives.glob("*/" + dossier):
-                src = live / "extraits" / ("tranche_" + tranche) / extrait
+                src = live / rel
             assert src is not None and zf.read(info) == src.read_bytes()
             names.append(info.filename)
         return sorted(names)
@@ -179,7 +177,10 @@ def test_zip_live(root):
     r = c.get(url)
     assert r.status_code == 200
     assert 'filename="2026-11-16_bob_2130.zip"' in r.headers["content-disposition"]
-    assert _zip_check(r, root) == ["bob_2130/tranche_00_extrait_01.mp4", "bob_2130/tranche_00_extrait_03.mp4"]
+    assert _zip_check(r, root) == [
+        "bob_2130/extraits/index.json",
+        "bob_2130/extraits/tranche_00/extrait_01.mp4",
+        "bob_2130/extraits/tranche_00/extrait_03.mp4"]
     # Rien n'est écrit sur disque
     assert not (root / ".telechargements").exists()
 
@@ -188,9 +189,29 @@ def test_zip_jour(root):
     c = _client()
     r = c.get(_ticket(c, "jour", "2026-11-16").json()["url"])
     assert r.status_code == 200
-    assert _zip_check(r, root) == ["alice_0900/tranche_01_extrait_02.mp4",
-                                   "bob_2130/tranche_00_extrait_01.mp4",
-                                   "bob_2130/tranche_00_extrait_03.mp4"]
+    assert _zip_check(r, root) == [
+        "alice_0900/extraits/index.json",
+        "alice_0900/extraits/tranche_01/extrait_02.mp4",
+        "bob_2130/extraits/index.json",
+        "bob_2130/extraits/tranche_00/extrait_01.mp4",
+        "bob_2130/extraits/tranche_00/extrait_03.mp4"]
+
+
+def test_zip_live_readable_by_lot(root, tmp_path):
+    """Rejoue la logique de `clipper lot` sur le zip décompressé."""
+    c = _client()
+    r = c.get(_ticket(c, "live", "2026-11-16/bob_2130").json()["url"])
+    out = tmp_path / "decompresse"
+    with zipfile.ZipFile(io.BytesIO(r.content)) as zf:
+        zf.extractall(out)
+    indexes = list(out.rglob("extraits/index.json"))
+    assert len(indexes) == 1
+    racine_live = indexes[0].parent.parent
+    entries = json.loads(indexes[0].read_text())["extraits"]
+    servis = [e for e in entries if (racine_live / e["fichier"]).is_file()]
+    assert len(servis) == 2 == len(entries)
+    for e in servis:
+        assert (racine_live / e["fichier"]).read_bytes()[:3] == b"MP4"
 
 
 def test_zip_stream_chunks_big_file(root):
@@ -202,11 +223,13 @@ def test_zip_stream_chunks_big_file(root):
     assert len(blocks) >= 3  # données découpées en blocs ~1 Mo + répertoire central
     assert max(len(b) for b in blocks) <= 2 * clip.CHUNK
     with zipfile.ZipFile(io.BytesIO(b"".join(blocks))) as zf:
-        assert zf.read("carl_1800/tranche_00_extrait_00.mp4") == payload
+        assert zf.read("carl_1800/extraits/tranche_00/extrait_00.mp4") == payload
     # Et de bout en bout par HTTP
     c = _client()
     r = c.get(_ticket(c, "live", "2026-11-15/carl_1800").json()["url"])
-    assert _zip_check(r, root) == ["carl_1800/tranche_00_extrait_00.mp4"]
+    assert _zip_check(r, root) == [
+        "carl_1800/extraits/index.json",
+        "carl_1800/extraits/tranche_00/extrait_00.mp4"]
 
 
 def test_zip_stream_skips_vanished_file(root, caplog):
@@ -214,8 +237,11 @@ def test_zip_stream_skips_vanished_file(root, caplog):
     (root / "lives" / "2026-11-16" / "bob_2130" / "extraits" / "tranche_00" / "extrait_01.mp4").unlink()
     data = b"".join(clip._zip_stream(target["members"]))
     with zipfile.ZipFile(io.BytesIO(data)) as zf:
-        assert sorted(zf.namelist()) == ["alice_0900/tranche_01_extrait_02.mp4",
-                                         "bob_2130/tranche_00_extrait_03.mp4"]
+        assert sorted(zf.namelist()) == [
+            "alice_0900/extraits/index.json",
+            "alice_0900/extraits/tranche_01/extrait_02.mp4",
+            "bob_2130/extraits/index.json",
+            "bob_2130/extraits/tranche_00/extrait_03.mp4"]
     assert any("disparu" in rec.getMessage() for rec in caplog.records)
 
 
