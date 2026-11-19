@@ -52,6 +52,7 @@ def _write_live(lives, date, dossier, extraits, statut="termine", streamer="Bob"
 def root(tmp_path, monkeypatch):
     r = tmp_path / "donnees"
     monkeypatch.setenv("CLIPPING_DATA_DIR", str(r))
+    monkeypatch.setenv("CLIPPING_KEY_FILE", str(tmp_path / "cle" / "clipping_cle.json"))
     monkeypatch.setattr(clip, "_tickets", {})
     lives = r / "lives"
     _write_live(lives, "2026-11-16", "bob_2130", [(0, 3, 2), (0, 1, 1)])
@@ -417,3 +418,95 @@ def test_montage_symlink_refused(root, tmp_path):
     zf = zipfile.ZipFile(io.BytesIO(_client().get(
         _ticket(_client(), "montages_jour", "2026-11-19").json()["url"]).content))
     assert not any("secret" in n or "evil" in n for n in zf.namelist())
+
+
+# ------------------------------------------------------------------ clé pour scripts
+
+def _admin():
+    return _client(role="admin", is_admin=True)
+
+
+def _new_key():
+    return _admin().post("/api/clipping/cle").json()["cle"]
+
+
+def _kh(cle):
+    return {"X-Clip-Key": cle}
+
+
+def test_key_admin_only():
+    c = _client(role="developer", is_admin=False)
+    assert c.post("/api/clipping/cle").status_code == 403
+    assert c.get("/api/clipping/cle").status_code == 403
+    assert c.delete("/api/clipping/cle").status_code == 403
+    r = _admin().post("/api/clipping/cle")
+    assert r.status_code == 200 and r.json()["cle"].startswith("clp_")
+
+
+def test_key_never_in_get_and_file_has_only_hash():
+    a = _admin()
+    cle = a.post("/api/clipping/cle").json()["cle"]
+    st = a.get("/api/clipping/cle")
+    assert st.json()["active"] is True and st.json()["par"] == "tester"
+    assert cle not in st.text
+    raw = open(os.environ["CLIPPING_KEY_FILE"]).read()
+    assert cle not in raw
+    data = json.loads(raw)
+    assert data["sha256"] == clip._hash_key(cle) and set(data) == {"sha256", "cree", "par"}
+
+
+def test_key_file_mode_600():
+    _new_key()
+    assert (os.stat(os.environ["CLIPPING_KEY_FILE"]).st_mode & 0o777) == 0o600
+
+
+def test_key_status_inactive():
+    assert _admin().get("/api/clipping/cle").json()["active"] is False
+
+
+def test_key_montages_auth(root):
+    _write_montages(root)
+    c = _client(role="spectator")  # aucune session utile : seule la clé compte
+    assert c.get("/api/clipping/cle/montages").status_code == 401  # aucune clé configurée
+    cle = _new_key()
+    assert c.get("/api/clipping/cle/montages").status_code == 401
+    assert c.get("/api/clipping/cle/montages", headers=_kh("clp_mauvaise")).status_code == 401
+    r = c.get("/api/clipping/cle/montages?jours=3", headers=_kh(cle))
+    assert r.status_code == 200
+    assert r.json() == _client().get("/api/clipping/montages?jours=3").json()
+
+
+def test_key_fichier(root, tmp_path):
+    m = _write_montages(root)
+    cle = _new_key()
+    c = _client(role="spectator")
+    r = c.get("/api/clipping/cle/fichier", params={"chemin": "2026-11-19/bob/2026-11-19_bob_lot-02.mp4"},
+              headers=_kh(cle))
+    assert r.status_code == 200 and r.content == b"BOB2"
+    assert r.headers["content-length"] == "4"
+    assert c.get("/api/clipping/cle/fichier",
+                 params={"chemin": "2026-11-19/bob/2026-11-19_bob_lot-02.mp4"}).status_code == 401
+    for bad in ("2026-11-19/bob/../../../secret.mp4", "../secret.mp4", "2026-11-19/bob/transcription.srt",
+                "2026-11-19/bob/2026-11-19_bob_lot-02.txt", "2026-11-19/bob/absent.mp4"):
+        assert c.get("/api/clipping/cle/fichier", params={"chemin": bad},
+                     headers=_kh(cle)).status_code in (400, 404)
+    (m / "2026-11-19" / "bob" / "evil.mp4").symlink_to(tmp_path / "secret.mp4")
+    assert c.get("/api/clipping/cle/fichier", params={"chemin": "2026-11-19/bob/evil.mp4"},
+                 headers=_kh(cle)).status_code == 404
+
+
+def test_key_regenerate_invalidates_old(root):
+    _write_montages(root)
+    old = _new_key()
+    new = _new_key()
+    c = _client(role="spectator")
+    assert c.get("/api/clipping/cle/montages", headers=_kh(old)).status_code == 401
+    assert c.get("/api/clipping/cle/montages", headers=_kh(new)).status_code == 200
+
+
+def test_key_revoke(root):
+    cle = _new_key()
+    assert _admin().delete("/api/clipping/cle").status_code == 200
+    assert not os.path.exists(os.environ["CLIPPING_KEY_FILE"])
+    assert _client(role="spectator").get("/api/clipping/cle/montages", headers=_kh(cle)).status_code == 401
+    assert _admin().get("/api/clipping/cle").json()["active"] is False

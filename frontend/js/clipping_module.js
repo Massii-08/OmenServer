@@ -22,6 +22,13 @@ const ClippingModule = {
     _montages: null,
     _error: false,
     _busy: false,
+    _key: null,        // {active, cree, par} (admin seulement)
+    _newKey: '',       // clé fraîchement générée, affichée une seule fois
+
+    _isAdmin() {
+        const u = (typeof Auth !== 'undefined' && Auth.getUser) ? Auth.getUser() : null;
+        return !!(u && u.is_admin);
+    },
 
     async render(container) {
         this.unload();
@@ -29,6 +36,8 @@ const ClippingModule = {
         this._data = null;
         this._montages = null;
         this._error = false;
+        this._key = null;
+        this._newKey = '';
         container.innerHTML = this._shell();
         this._bind();
         await this._load();
@@ -108,6 +117,9 @@ const ClippingModule = {
                 ev.preventDefault();
                 if (act.dataset.clpAct === 'back') this.back();
                 else if (act.dataset.clpAct === 'refresh') this._load();
+                else if (act.dataset.clpAct === 'key-gen') this._keyGenerate();
+                else if (act.dataset.clpAct === 'key-revoke') this._keyRevoke();
+                else if (act.dataset.clpAct === 'key-copy') this._keyCopy();
             }
         };
         this._onChange = (ev) => {
@@ -144,11 +156,98 @@ const ClippingModule = {
         } catch (e) {
             montages = null;
         }
+        let key = null;
+        if (this._isAdmin()) {
+            try {
+                const resK = await Auth.apiCall('/api/clipping/cle');
+                if (resK && resK.ok) key = await resK.json();
+            } catch (e) {
+                key = null;
+            }
+        }
         if (gen !== this._gen) return;
         this._data = data;
         this._montages = montages;
         this._error = error;
+        this._key = key;
         this._renderBody();
+    },
+
+    // ------------------------------------------------------------- clé pour scripts (admin)
+
+    _renderKey() {
+        if (!this._isAdmin() || !this._key) return '';
+        const k = this._key;
+        const status = k.active
+            ? Lang.t('clipping.key_active').replace('{date}', esc(String(k.cree || '').replace('T', ' '))).replace('{by}', esc(k.par || ''))
+            : esc(Lang.t('clipping.key_none'));
+        const shown = this._newKey
+            ? '<div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap;align-items:center;">' +
+              '<input class="form-input" id="clp-newkey" readonly style="flex:1;min-width:240px;font-family:var(--font-mono);" value="' + esc(this._newKey) + '">' +
+              '<button class="btn btn-primary btn-sm" data-clp-act="key-copy">' + esc(Lang.t('clipping.key_copy')) + '</button></div>' +
+              '<p style="color:var(--warning);font-size:12px;margin:6px 0 0;">' + esc(Lang.t('clipping.key_once')) + '</p>'
+            : '';
+        return '<div style="margin:12px 0 4px;padding:12px;border:1px solid var(--border);border-radius:var(--r-md);">' +
+            '<strong>' + esc(Lang.t('clipping.key_title')) + '</strong>' +
+            '<p style="color:var(--text-muted);font-size:12px;margin:4px 0 0;">' + esc(Lang.t('clipping.key_desc')) + '</p>' +
+            '<p style="font-size:13px;margin:8px 0;">' + status + '</p>' +
+            '<div style="display:flex;gap:8px;flex-wrap:wrap;">' +
+            '<button class="btn btn-ghost btn-sm" data-clp-act="key-gen">' + esc(Lang.t('clipping.key_gen')) + '</button>' +
+            (k.active ? '<button class="btn btn-ghost btn-sm" data-clp-act="key-revoke">' + esc(Lang.t('clipping.key_revoke')) + '</button>' : '') +
+            '</div>' + shown + '</div>';
+    },
+
+    async _keyRefresh() {
+        try {
+            const res = await Auth.apiCall('/api/clipping/cle');
+            if (res && res.ok) this._key = await res.json();
+        } catch (e) { /* garde l'état précédent */ }
+        this._renderBody();
+    },
+
+    async _keyGenerate() {
+        if (this._key && this._key.active && !confirm(Lang.t('clipping.key_replace_confirm'))) return;
+        try {
+            const res = await Auth.apiCall('/api/clipping/cle', { method: 'POST' });
+            if (!res || !res.ok) {
+                if (typeof Toast !== 'undefined') Toast.error(Lang.t('clipping.key_error'));
+                return;
+            }
+            const data = await res.json();
+            this._newKey = (data && typeof data.cle === 'string') ? data.cle : '';
+        } catch (e) {
+            if (typeof Toast !== 'undefined') Toast.error(Lang.t('clipping.key_error'));
+            return;
+        }
+        await this._keyRefresh();
+    },
+
+    async _keyRevoke() {
+        if (!confirm(Lang.t('clipping.key_revoke_confirm'))) return;
+        try {
+            const res = await Auth.apiCall('/api/clipping/cle', { method: 'DELETE' });
+            if (!res || !res.ok) {
+                if (typeof Toast !== 'undefined') Toast.error(Lang.t('clipping.key_error'));
+                return;
+            }
+        } catch (e) {
+            if (typeof Toast !== 'undefined') Toast.error(Lang.t('clipping.key_error'));
+            return;
+        }
+        this._newKey = '';
+        await this._keyRefresh();
+    },
+
+    async _keyCopy() {
+        const input = document.getElementById('clp-newkey');
+        if (!input) return;
+        try {
+            await navigator.clipboard.writeText(input.value);
+        } catch (e) {
+            input.select();
+            try { document.execCommand('copy'); } catch (e2) { /* sélection manuelle */ }
+        }
+        if (typeof Toast !== 'undefined') Toast.success(Lang.t('clipping.key_copied'));
     },
 
     _renderBody() {
@@ -172,10 +271,10 @@ const ClippingModule = {
         const jours = (this._montages && Array.isArray(this._montages.jours)) ? this._montages.jours : [];
         const head = '<h4 style="margin:8px 0 0;">' + esc(Lang.t('clipping.montages_title')) + '</h4>';
         if (!jours.length) {
-            return head + '<div style="padding:16px;color:var(--text-muted);text-align:center;">' +
+            return head + this._renderKey() + '<div style="padding:16px;color:var(--text-muted);text-align:center;">' +
                 esc(Lang.t('clipping.montages_empty')) + '</div>';
         }
-        return head + jours.map(j => this._renderMontageDay(j)).join('');
+        return head + this._renderKey() + jours.map(j => this._renderMontageDay(j)).join('');
     },
 
     _renderMontageDay(j) {

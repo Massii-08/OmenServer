@@ -22,6 +22,8 @@ Zips « live » et « jour » : arborescence de l'enregistreur reproduite
 (<dossier>/extraits/tranche_NN/extrait_MM.mp4) avec l'extraits/index.json de
 chaque live, pour que `python -m clipper lot <dossier>` les lise tels quels.
 """
+import hashlib
+import hmac
 import json
 import logging
 import os
@@ -33,12 +35,13 @@ import zipfile
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
 
 from backend.auth.models import User
 from backend.auth.permissions import require_permission
+from backend.auth.utils import get_current_user
 
 logger = logging.getLogger("omenserver")
 
@@ -327,6 +330,10 @@ def _day_clips(day_dir: Path) -> List[Tuple[str, Path]]:
 @router.get("/montages")
 def list_montages(jours: int = Query(3, ge=1, le=JOURS_MAX),
                   user: User = Depends(require_permission("clipping"))):
+    return _montages_listing(jours)
+
+
+def _montages_listing(jours: int) -> dict:
     root = _montages_dir()
     if not root.is_dir() or root.is_symlink():
         return {"jours": []}
@@ -360,6 +367,18 @@ def list_montages(jours: int = Query(3, ge=1, le=JOURS_MAX),
 
 
 # ------------------------------------------------------------------ résolution des cibles
+
+def _resolve_montage(parts: List[str]) -> dict:
+    """Validation d'un clip monté <date>/<sous>/<nom>.mp4 (ticket ET clé)."""
+    if len(parts) != 3 or not _DATE_RE.match(parts[0]) \
+            or not all(_valid_name(p) for p in parts[1:]) \
+            or not parts[2].lower().endswith(".mp4"):
+        raise HTTPException(400, "Cible invalide")
+    path = _confined(_montages_dir(), parts)
+    if path is None or not path.is_file():
+        raise HTTPException(404, "Introuvable")
+    return {"kind": "file", "path": path, "filename": parts[2]}
+
 
 def _resolve_target(kind: str, cible: str) -> dict:
     """Valide une cible et renvoie ce qu'il faut pour la servir.
@@ -452,14 +471,7 @@ def _resolve_target(kind: str, cible: str) -> dict:
         return {"kind": "zip", "members": members, "filename": "montages_%s.zip" % date}
 
     if kind == "montage":
-        if len(parts) != 3 or not _DATE_RE.match(parts[0]) \
-                or not all(_valid_name(p) for p in parts[1:]) \
-                or not parts[2].lower().endswith(".mp4"):
-            raise HTTPException(400, "Cible invalide")
-        path = _confined(_montages_dir(), parts)
-        if path is None or not path.is_file():
-            raise HTTPException(404, "Introuvable")
-        return {"kind": "file", "path": path, "filename": parts[2]}
+        return _resolve_montage(parts)
 
     raise HTTPException(400, "Type invalide")
 
@@ -598,3 +610,106 @@ def download(ticket: str):
         media_type="application/zip",
         headers={"Content-Disposition": 'attachment; filename="%s"' % target["filename"]},
     )
+
+
+# ------------------------------------------------------------------ clé de téléchargement pour scripts
+#
+# Une clé dédiée, révocable, qui ne donne accès QU'aux clips montés (listing +
+# mp4). Seul son hash sha256 est stocké ; la clé n'est montrée qu'une fois.
+
+KEY_PREFIX = "clp_"
+
+
+def _key_path() -> Path:
+    env = os.environ.get("CLIPPING_KEY_FILE")
+    if env:
+        return Path(env).expanduser()
+    return Path(__file__).resolve().parents[2] / "data" / "clipping_cle.json"
+
+
+def _hash_key(cle: str) -> str:
+    return hashlib.sha256(cle.encode("utf-8")).hexdigest()
+
+
+def _read_key_record() -> Optional[dict]:
+    try:
+        with _key_path().open("r", encoding="utf-8") as fh:
+            data = json.load(fh)
+        if isinstance(data, dict) and isinstance(data.get("sha256"), str):
+            return data
+    except (OSError, ValueError):
+        pass
+    return None
+
+
+def _write_key_record(rec: dict) -> None:
+    """Écriture atomique, fichier créé en 0o600 (pas de fenêtre world-readable)."""
+    path = _key_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
+    fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        os.fchmod(fd, 0o600)
+    except (AttributeError, OSError):
+        pass
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        json.dump(rec, fh)
+    os.replace(str(tmp), str(path))
+
+
+def _require_admin(user) -> None:
+    if not getattr(user, "is_admin", False):
+        raise HTTPException(403, "Réservé aux administrateurs")
+
+
+@router.post("/cle")
+def create_key(user: User = Depends(get_current_user)):
+    _require_admin(user)
+    cle = KEY_PREFIX + secrets.token_urlsafe(32)
+    cree = time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(_now()))
+    _write_key_record({"sha256": _hash_key(cle), "cree": cree,
+                       "par": getattr(user, "username", "")})
+    logger.info("[clipping] clé de téléchargement générée par %s", getattr(user, "username", "?"))
+    return {"cle": cle, "cree": cree}
+
+
+@router.get("/cle")
+def key_status(user: User = Depends(get_current_user)):
+    _require_admin(user)
+    rec = _read_key_record()
+    if not rec:
+        return {"active": False, "cree": None, "par": None}
+    return {"active": True, "cree": rec.get("cree"), "par": rec.get("par")}
+
+
+@router.delete("/cle")
+def revoke_key(user: User = Depends(get_current_user)):
+    _require_admin(user)
+    try:
+        _key_path().unlink()
+    except FileNotFoundError:
+        pass
+    except OSError:
+        raise HTTPException(500, "Révocation impossible")
+    logger.info("[clipping] clé de téléchargement révoquée par %s", getattr(user, "username", "?"))
+    return {"active": False}
+
+
+def _require_key(x_clip_key: Optional[str] = Header(None)) -> None:
+    rec = _read_key_record()
+    ok = False
+    if rec and isinstance(x_clip_key, str) and x_clip_key:
+        ok = hmac.compare_digest(_hash_key(x_clip_key), rec["sha256"])
+    if not ok:
+        raise HTTPException(401, "Clé invalide")
+
+
+@router.get("/cle/montages")
+def key_list_montages(jours: int = Query(3, ge=1, le=JOURS_MAX), _k: None = Depends(_require_key)):
+    return _montages_listing(jours)
+
+
+@router.get("/cle/fichier")
+def key_montage_file(chemin: str = Query(..., max_length=512), _k: None = Depends(_require_key)):
+    target = _resolve_montage(chemin.split("/"))
+    return FileResponse(str(target["path"]), media_type="video/mp4", filename=target["filename"])
