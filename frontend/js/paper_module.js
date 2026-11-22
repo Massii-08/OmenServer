@@ -2308,7 +2308,16 @@ const PaperModule = {
     // eux-mêmes viennent du backend (``risk.preorder_warnings``) — pas de
     // liste fermée ici, ``_confirmMessage`` reste lisible même sur un code
     // que ce frontend ne connaît pas encore (cf. son commentaire).
-    _confirmMessage(code) {
+    //
+    // weekly_improvement : un avertissement peut désormais arriver comme un
+    // objet ``{code, message}`` au lieu d'un simple code -- ``message`` est
+    // une phrase déjà CHIFFRÉE par le backend (formule, prix de référence,
+    // seuil, cf. ``risk.reward_risk_detail_text``) et prime sur le libellé
+    // générique i18n, qui ne dirait de toute façon rien de plus qu'un code nu.
+    _confirmMessage(item) {
+        const code = (item && typeof item === 'object') ? item.code : item;
+        const detail = (item && typeof item === 'object') ? item.message : null;
+        if (detail) return String(detail);
         const key = 'paper.confirm_' + String(code || '');
         const label = Lang.t(key);
         // Un code que le frontend ne connaît pas encore reste lisible : la
@@ -2318,8 +2327,8 @@ const PaperModule = {
 
     _orderConfirmPanel(state) {
         const codes = Array.isArray(state && state.warnings) ? state.warnings : [];
-        const items = codes.map((code) =>
-            '<li style="margin:4px 0;">' + esc(this._confirmMessage(code)) + '</li>').join('');
+        const items = codes.map((item) =>
+            '<li style="margin:4px 0;">' + esc(this._confirmMessage(item)) + '</li>').join('');
         // weekly_improvement : au-delà d'un seul avertissement, un simple clic
         // ne suffit plus -- une justification ÉCRITE est exigée (le backend la
         // redemande tant qu'elle est absente ou trop courte).

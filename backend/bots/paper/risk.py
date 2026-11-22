@@ -306,6 +306,12 @@ PREORDER_MIN_THESIS_LEN = 15
 PREORDER_RISK_PCT = 2.0
 PREORDER_SIZE_PCT = 25.0
 
+# Seuil du code ``reward_risk_below_1`` : en-dessous, la cible rapporte MOINS
+# que ce que le stop risque. Nommé (plutôt qu'un ``1.0`` répété) pour que
+# :func:`reward_risk_detail_text` affiche EXACTEMENT le seuil qu'applique
+# :func:`preorder_warnings`, jamais un chiffre recopié qui divergerait.
+PREORDER_REWARD_RISK_MIN = 1.0
+
 
 def preorder_warnings(payload: Dict[str, Any], portfolio: Dict[str, Any],
                       level: Optional[float]) -> List[str]:
@@ -365,7 +371,7 @@ def preorder_warnings(payload: Dict[str, Any], portfolio: Dict[str, Any],
     target = _val((payload or {}).get("target"))
     if price is not None and stop_loss is not None and target is not None:
         ratio = r_multiple(price, target, stop_loss, wanted_side)
-        if ratio is not None and ratio < 1.0:
+        if ratio is not None and ratio < PREORDER_REWARD_RISK_MIN:
             out.append("reward_risk_below_1")
 
     if price is not None and qty > 0:
@@ -381,6 +387,28 @@ def preorder_warnings(payload: Dict[str, Any], portfolio: Dict[str, Any],
             out.append("oversize")
 
     return out
+
+
+def reward_risk_detail_text(entry: Any, target: Any, stop: Any,
+                            side: str = "long") -> Optional[str]:
+    """Phrase lisible et CHIFFRÉE du code ``reward_risk_below_1`` (PUR) : la
+    formule exacte, le prix de référence (celui qu'a reçu :func:`r_multiple`
+    -- jamais un autre), le stop, la cible et le seuil -- pour que l'alerte
+    s'explique au lieu de se limiter à un code.
+
+    Rend ``None`` dans les deux cas où il n'y a rien à expliquer : le ratio
+    n'est pas calculable (:func:`r_multiple`), ou il est au seuil ou
+    au-dessus -- même silence que la fonction qu'elle documente.
+    """
+    ratio = r_multiple(entry, target, stop, side)
+    if ratio is None or ratio >= PREORDER_REWARD_RISK_MIN:
+        return None
+    entry_v, target_v, stop_v = _val(entry), _val(target), _val(stop)
+    formula = ("(entrée - cible) / (stop - entrée)" if side == "short"
+              else "(cible - entrée) / (entrée - stop)")
+    return ("R = %s = %.2f -- sous le seuil de %.1f (prix de référence %.2f, "
+           "stop %.2f, cible %.2f)."
+           % (formula, ratio, PREORDER_REWARD_RISK_MIN, entry_v, stop_v, target_v))
 
 
 def _positions_cost_basis_chf(positions: List[Dict[str, Any]]) -> float:

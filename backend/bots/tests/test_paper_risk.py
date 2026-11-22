@@ -9,6 +9,7 @@ from backend.bots.paper.risk import (
     portfolio_stats,
     preorder_warnings,
     r_multiple,
+    reward_risk_detail_text,
     suggested_qty,
 )
 
@@ -368,6 +369,39 @@ def test_preorder_warnings_can_flag_risk_high_and_reward_risk_together():
               "target": 100.5}
     assert preorder_warnings(payload, _pf(), 100.0) == \
         ["risk_high", "reward_risk_below_1"]
+
+
+# --------------------------------------------------------------------------- #
+# weekly_improvement — le détail CHIFFRÉ de ``reward_risk_below_1`` (formule,
+# prix de référence, seuil) pour que l'alerte s'explique au lieu de se
+# limiter à un code.
+# --------------------------------------------------------------------------- #
+def test_reward_risk_detail_text_is_none_when_the_ratio_is_fine():
+    # Même ratio que ``test_preorder_warnings_does_not_flag_a_reward_risk_of_1_or_more``.
+    assert reward_risk_detail_text(100.0, 110.0, 95.0, "long") is None
+
+
+def test_reward_risk_detail_text_is_none_without_a_computable_ratio():
+    assert reward_risk_detail_text(100.0, 110.0, None, "long") is None
+    assert reward_risk_detail_text(100.0, 110.0, 105.0, "long") is None  # stop du mauvais côté
+
+
+def test_reward_risk_detail_text_shows_the_formula_price_and_threshold_long():
+    # Même chiffres que ``test_preorder_warnings_flags_reward_risk_below_1``.
+    text = reward_risk_detail_text(100.0, 100.5, 95.0, "long")
+    assert text is not None
+    assert "0.10" in text or "0,10" in text    # le ratio R calculé
+    assert "100.00" in text or "100,00" in text  # le prix de référence (l'entrée)
+    assert "1.0" in text or "1,0" in text        # le seuil
+    assert "95.00" in text or "95,00" in text    # le stop
+    assert "100.50" in text or "100,50" in text  # la cible
+
+
+def test_reward_risk_detail_text_mirrors_for_a_short():
+    # Même chiffres que ``test_preorder_warnings_reward_risk_mirrors_for_a_short``.
+    text = reward_risk_detail_text(100.0, 99.5, 105.0, "short")
+    assert text is not None
+    assert "0.10" in text or "0,10" in text
 
 
 # --------------------------------------------------------------------------- #

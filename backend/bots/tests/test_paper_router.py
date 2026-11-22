@@ -515,12 +515,35 @@ def test_a_poor_reward_risk_target_needs_confirmation(tmp_path, monkeypatch):
              confirmed=False)
     body = r.json()
     assert body["needs_confirm"] is True
-    assert body["warnings"] == ["reward_risk_below_1"]
+    # weekly_improvement — l'alerte se CHIFFRE désormais (formule, prix de
+    # référence, seuil) au lieu d'un code nu : {"code", "message"}.
+    assert len(body["warnings"]) == 1
+    warning = body["warnings"][0]
+    assert warning["code"] == "reward_risk_below_1"
+    assert "0.10" in warning["message"]      # le ratio R calculé
+    assert "100.00" in warning["message"]    # le prix de référence (l'entrée)
+    assert "1.0" in warning["message"]       # le seuil
 
 
 def test_a_good_reward_risk_target_does_not_need_confirmation(tmp_path, monkeypatch):
     c, _ = make_client(tmp_path, monkeypatch)
     r = order(c, qty=5, stop_loss=95.0, target=110.0,
+             thesis="Thèse suffisamment longue pour passer le seuil du coach",
+             confirmed=False)
+    body = r.json()
+    assert "needs_confirm" not in body
+    assert body["order"]["status"] == "filled"
+
+
+def test_reward_risk_check_uses_a_single_currency_on_a_foreign_short(tmp_path, monkeypatch):
+    # weekly_improvement : le prix de référence passait en CHF (fx 0.88) tout
+    # en comparant un stop/une cible restés en USD -- (65-58.85)/(68-65) = 2.05
+    # en USD (le ratio réel, cohérent), mais l'entrée CHF-isée (57.2) tombait
+    # SOUS la cible brute (58.85), rendant un gain négatif et une confirmation
+    # réclamée à tort.
+    c, market = make_client(tmp_path, monkeypatch)
+    market.prices["EWW"] = (65.0, "USD", "iShares MSCI Mexico")
+    r = order(c, symbol="EWW", side="short", qty=5, stop_loss=68.0, target=58.85,
              thesis="Thèse suffisamment longue pour passer le seuil du coach",
              confirmed=False)
     body = r.json()
@@ -6086,6 +6109,23 @@ def test_preorder_warnings_are_recorded_on_the_order(tmp_path, monkeypatch):
 def test_a_clean_entry_records_no_forced_warning(tmp_path, monkeypatch):
     c, _ = make_client(tmp_path, monkeypatch)
     pr.execute_coach_actions([coach_action()], source="daily")
+    assert coach_portfolio()["positions"][0]["forced_warnings"] == []
+
+
+def test_forced_warnings_use_a_single_currency_on_a_foreign_entry(tmp_path, monkeypatch):
+    # weekly_improvement : même bug de devise que côté humain (cf.
+    # ``test_reward_risk_check_uses_a_single_currency_on_a_foreign_short``),
+    # mais sur ``risk_high`` : risque réel = |100-112| x 15 x 0.95 = 171,00 CHF
+    # = 1,71 % (< 2 %, rien à signaler) ; la comparaison bogue (entrée en CHF,
+    # stop resté en EUR) rendait |95-112| x 15 = 255 CHF = 2,55 % (> 2 %, faux
+    # positif). Place allemande (``.DE``) : ouverte à l'heure figée du test
+    # (10h locale), contrairement à une place américaine.
+    c, market = make_client(tmp_path, monkeypatch)
+    market.prices["SAP.DE"] = (100.0, "EUR", "SAP SE")
+    market.fx["EUR"] = 0.95
+    pr.execute_coach_actions(
+        [coach_action(symbol="SAP.DE", action="short", qty=15, stop=112.0, target=70.0)],
+        source="daily")
     assert coach_portfolio()["positions"][0]["forced_warnings"] == []
 
 

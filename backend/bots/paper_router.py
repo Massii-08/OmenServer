@@ -2643,9 +2643,15 @@ def _coach_fill_market(portfolio: models.Portfolio, plan: Dict[str, Any],
     # d'avertir : 30 % contre 25 % sur la taille, et un stop est OBLIGATOIRE).
     # Les avertissements sont donc posés sur l'ordre — exactement comme pour un
     # humain qui confirme — et suivent la chaîne jusqu'au ``Trade`` clos.
+    #
+    # weekly_improvement — ``order.stop_loss``/``order.target`` subissent la
+    # MÊME conversion que ``price * fx_rate`` : même bug et même remède que
+    # côté humain (cf. le commentaire jumeau de ``paper_place_order``).
+    order_stop_chf = None if order.stop_loss is None else order.stop_loss * fx_rate
+    order_target_chf = None if order.target is None else order.target * fx_rate
     order.forced_warnings = risk.preorder_warnings(
         {"side": order.side, "symbol": order.symbol, "thesis": order.thesis,
-         "stop_loss": order.stop_loss, "target": order.target, "qty": order.qty},
+         "stop_loss": order_stop_chf, "target": order_target_chf, "qty": order.qty},
         portfolio.to_dict(), price * fx_rate)
 
     # LOT 15 — une SORTIE porte la raison que la porte a exigée
@@ -4796,10 +4802,23 @@ def paper_place_order(data: OrderPayload,
     # elle). Un ordre de SORTIE ne rend jamais de code (cf. la fonction) :
     # ``confirm_codes`` y est systématiquement vide, la porte ne se referme
     # donc jamais sur un ``sell``/``cover``.
+    #
+    # weekly_improvement — ``stop_loss``/``target`` DOIVENT subir la MÊME
+    # conversion que ``confirm_level`` : ``preorder_warnings`` compare les
+    # trois dans une seule unité (son propre invariant, cf. sa docstring).
+    # Lui passer une entrée en CHF et un stop/une cible restés dans la devise
+    # native (celle que l'humain a tapée) cassait le ratio pour TOUT titre
+    # étranger — un trade gagnant (R:R ~2) pouvait ressortir sous le seuil de
+    # 1 selon le sens et le taux du jour. Le ratio lui-même est invariant
+    # d'échelle (multiplier les trois termes par le même taux ne le change
+    # pas) : cette conversion ne fait QUE réparer ``risk_high``, qui lisait
+    # déjà ``price`` en CHF contre un stop en devise native.
     confirm_level = None if entry_estimate is None else entry_estimate * fx_rate
+    confirm_stop_chf = None if data.stop_loss is None else float(data.stop_loss) * fx_rate
+    confirm_target_chf = None if data.target is None else float(data.target) * fx_rate
     confirm_codes = risk.preorder_warnings(
         {"side": side, "symbol": symbol, "thesis": data.thesis,
-         "stop_loss": data.stop_loss, "target": data.target, "qty": qty},
+         "stop_loss": confirm_stop_chf, "target": confirm_target_chf, "qty": qty},
         portfolio.to_dict(), confirm_level)
     # weekly_improvement — un cumul de PLUSIEURS codes (no_thesis + no_stop +
     # risk_high + ...) durcit la porte : au-delà d'un seul avertissement,
@@ -4812,7 +4831,22 @@ def paper_place_order(data: OrderPayload,
         # 200, JAMAIS un refus dur (invariant 1 du module) : une pause, pas
         # un blocage — rien n'est exécuté, rien n'est mis en attente, rien
         # n'est sauvegardé.
-        return {"needs_confirm": True, "warnings": confirm_codes,
+        #
+        # weekly_improvement — ``reward_risk_below_1`` s'explique : formule,
+        # prix de référence (EN DEVISE NATIVE, celle que l'humain a tapée —
+        # le ratio est le même qu'en CHF, cf. commentaire ci-dessus) et seuil,
+        # au lieu d'un code nu. Les autres restent de simples codes, le
+        # frontend connaît déjà leur libellé (i18n).
+        display_warnings: List[Any] = []
+        for code in confirm_codes:
+            detail = None
+            if code == "reward_risk_below_1":
+                detail = risk.reward_risk_detail_text(
+                    entry_estimate, data.target, data.stop_loss,
+                    "short" if side == "short" else "long")
+            display_warnings.append({"code": code, "message": detail}
+                                    if detail else code)
+        return {"needs_confirm": True, "warnings": display_warnings,
                 "justification_required": stacked}
     if confirm_codes:
         # Le score de discipline pourra un jour les lire sur le Trade clos
