@@ -6167,15 +6167,25 @@ def test_the_gate_receives_the_atr_context_and_widens_the_noise_floor(tmp_path, 
     """LOT 12 : le MÊME stop à 2,4 % (accepté sans ATR, cf. le test jumeau)
     est REFUSÉ une fois l'ATR mocké à 5 % du cours (plancher 0,5x = 2,5 %) —
     preuve que ``_coach_execute_one`` transmet le contexte technique à
-    ``gate_decision``, pas seulement au prompt."""
+    ``gate_decision``, pas seulement au prompt.
+
+    LOT 19 — ADAPTÉ : la porte ne REFUSE plus ce stop, elle le CORRIGE (cf.
+    ``coach_trader.gate_entry``) ; la preuve devient le plancher de la
+    correction."""
     c, _ = make_client(tmp_path, monkeypatch)
     # LOT 14b : ``_coach_technical`` reçoit aussi le cours de la séance en
     # cours (``price=``) — la doublure l'accepte, sans rien changer au sujet.
     monkeypatch.setattr(pr, "_coach_technical",
                         lambda symbol, price=None: {"atr14_pct": 5.0})
-    rejected = pr.execute_coach_actions([coach_action(stop=97.6)], source="daily")
-    assert rejected[0]["accepted"] is False
-    assert rejected[0]["reason"] == "stop_in_noise"
+    rows = pr.execute_coach_actions([coach_action(stop=97.6)], source="daily")
+    # LOT 19 — le stop dans le bruit n'est plus REFUSÉ : la porte le CORRIGE
+    # (``coach_trader.gate_entry``). La preuve que l'ATR lui est arrivé est
+    # désormais le plancher de la correction : sans ATR le stop passait tel
+    # quel à 97,6 (cf. le test jumeau) ; avec 5 % d'ATR il est ramené à >= 5 %.
+    assert rows[0]["accepted"] is True
+    assert rows[0]["repair"]["stop_asked"] == 97.6
+    assert rows[0]["repair"]["floor_pct"] >= 5.0
+    assert coach_portfolio()["positions"][0]["stop_loss"] <= 95.0
 
 
 def test_the_fee_ratio_refusal_names_the_distance_and_the_floor(tmp_path, monkeypatch):
@@ -6195,6 +6205,12 @@ def test_the_stop_in_noise_refusal_names_the_distance(tmp_path, monkeypatch):
     (100) y tombe. ``target`` reste loin (140) pour ne trébucher ni sur
     ``fee_ratio`` ni sur ``edge_thin`` avant d'atteindre ce contrôle."""
     c, _ = make_client(tmp_path, monkeypatch)
+    # LOT 19 — ADAPTÉ : ce refus n'existe plus pour une ENTRÉE (la porte
+    # corrige le stop, cf. ``test_paper_lot19_porte.py``) sauf interrupteur
+    # ``REPAIR_TIGHT_STOP`` éteint, qui rend le comportement d'avant — c'est
+    # ce chemin-là que ce test continue de couvrir (le détail du refus sert
+    # toujours ``adjust_stop``).
+    monkeypatch.setattr(pr.coach_trader, "REPAIR_TIGHT_STOP", False)
     rows = pr.execute_coach_actions([coach_action(stop=99.5, target=140.0)],
                                     source="daily")
     assert rows[0]["reason"] == "stop_in_noise"
@@ -6744,7 +6760,7 @@ def test_coach_book_rend_les_cinq_cles_sur_un_compte_neuf(tmp_path, monkeypatch)
     market.prices.clear()
     book = pr.coach_book()
     assert set(book) == {"cash_chf", "equity_chf", "positions", "open_orders",
-                         "candidates", "deployment", "fees"}
+                         "candidates", "deployment", "fees", "edge"}
     # LOT 9 — un compte neuf est à 100 % en trésorerie : c'est EXACTEMENT le
     # cas que le mandat déployé vise, et le chiffre doit lui arriver.
     assert book["deployment"] == {"cash_pct": 100.0, "n_positions": 0,

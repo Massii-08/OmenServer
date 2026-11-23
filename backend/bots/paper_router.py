@@ -621,7 +621,9 @@ def _open_long(portfolio, order, price, fx_rate, notional, fee, now_iso) -> None
             # le touche pas (cf. :func:`_average_into`).
             horizon_days=order.horizon_days,
             invalidation=order.invalidation,
-            thesis_deadline=order.thesis_deadline))
+            thesis_deadline=order.thesis_deadline,
+            # LOT 19 — la ligne naît corrigée ou non ; un renfort n'y change rien.
+            repair=order.repair))
     else:
         _average_into(position, order, price, fx_rate)
     portfolio.cash_chf = round(portfolio.cash_chf - cost, 2)
@@ -662,7 +664,9 @@ def _open_short(portfolio, order, price, fx_rate, notional, fee, now_iso) -> Non
             # le touche pas (cf. :func:`_average_into`).
             horizon_days=order.horizon_days,
             invalidation=order.invalidation,
-            thesis_deadline=order.thesis_deadline))
+            thesis_deadline=order.thesis_deadline,
+            # LOT 19 — cf. :func:`_open_long`.
+            repair=order.repair))
     else:
         _average_into(position, order, price, fx_rate)
     portfolio.cash_chf = round(portfolio.cash_chf + notional - fee["total_chf"], 2)
@@ -922,6 +926,8 @@ def _close_leg(portfolio, order, price, fx_rate, notional, fee,
         horizon_days=position.horizon_days,
         invalidation=position.invalidation,
         thesis_deadline=position.thesis_deadline,
+        # LOT 19 — la correction de stop de l'ouverture, pour la mesure.
+        repair=position.repair,
     )
     portfolio.trades.append(trade)
 
@@ -2059,7 +2065,8 @@ def _coach_reject_detail(code: str, decision: Dict[str, Any],
                          portfolio: models.Portfolio,
                          quote: Optional[Dict[str, Any]],
                          now: Any = None, technical: Any = None,
-                         thesis: Any = None) -> Optional[str]:
+                         thesis: Any = None,
+                         radar_record: Any = None) -> Optional[str]:
     """La phrase LISIBLE et CHIFFRÉE qui accompagne un code de refus.
 
     Le code (``oversize``) dit CE QUI a été violé ; ce détail dit DE COMBIEN.
@@ -2078,7 +2085,8 @@ def _coach_reject_detail(code: str, decision: Dict[str, Any],
         # ``None`` pour tout autre code -> la suite de cette fonction.
         extra = coach_trader.reject_detail(code, decision,
                                           portfolio.to_dict(), quote, now=now,
-                                          technical=technical, thesis=thesis)
+                                          technical=technical, thesis=thesis,
+                                          radar_record=radar_record)
         if extra is not None:
             return extra
         symbol = str(decision.get("symbol") or "") or "?"
@@ -2443,6 +2451,38 @@ def _coach_inherited_contract(symbol: str, action: str,
     return coach_trader.radar_contract(hyp) if hyp is not None else None
 
 
+def _coach_radar_record(hypothesis_id: Optional[str],
+                        action: str) -> Optional[Dict[str, int]]:
+    """Le bilan du radar que la porte appliquera à une ENTRÉE (LOT 19) : celui
+    du SENS de l'hypothèse dont naît l'ordre, et seulement si l'ordre va dans
+    ce sens (``buy`` <-> ``up``, ``short`` <-> ``down``). Ordre qui ne naît pas
+    d'une idée du radar, ou à contre-sens d'elle -> ``None`` (seuil par
+    défaut). Réutilise la provenance déjà résolue pour le contrat de thèse
+    (:func:`_coach_origin`). Best-effort : radar illisible -> ``None``."""
+    try:
+        hyp = _radar_hypothesis_by_id(hypothesis_id)
+        if hyp is None:
+            return None
+        return coach_trader.radar_record_for(hyp, _radar_hypotheses(), action)
+    except Exception:                           # noqa: BLE001 — best-effort
+        return None
+
+
+def _coach_entry_extra(decision: Dict[str, Any], portfolio: Dict[str, Any],
+                       quote: Optional[Dict[str, Any]], now: Any,
+                       technical: Any, thesis: Any, radar_record: Any,
+                       kind: Any = None,
+                       repair: Any = None) -> Dict[str, Any]:
+    """``extra`` du registre pour une décision d'ENTRÉE (LOT 19) : le ``plan``
+    réellement jugé et, s'il y a eu correction de stop, ``repair``."""
+    extra: Dict[str, Any] = {"plan": coach_trader.entry_plan(
+        decision, portfolio, quote, now=now, technical=technical,
+        thesis=thesis, radar_record=radar_record, kind=kind)}
+    if repair:
+        extra["repair"] = repair
+    return extra
+
+
 def _coach_origin_map(candidates: Any) -> Dict[str, str]:
     """``{symbole canonique: source}`` depuis des lignes de candidats."""
     out: Dict[str, str] = {}
@@ -2476,6 +2516,8 @@ def _coach_execute_one(portfolio: models.Portfolio, action: Dict[str, Any],
         # pour le même titre (même geste que ``paper_place_order``).
         decision["symbol"] = symbol
 
+    is_entry = kind in coach_trader.ENTRY_ACTIONS
+
     # LOT 8 — le périmètre du GARDIEN. AVANT même de toucher un cours : une
     # décision hors périmètre ne mérite pas un appel réseau pour un cours
     # qu'elle n'utilisera jamais.
@@ -2484,13 +2526,18 @@ def _coach_execute_one(portfolio: models.Portfolio, action: Dict[str, Any],
         if scope_code is not None:
             return (coach_trader.ledger_entry(
                 now_iso, source, kind, symbol, False, reason=scope_code,
-                detail="hors du périmètre du gardien (%s)" % focus_symbol), None)
+                detail="hors du périmètre du gardien (%s)" % focus_symbol,
+                extra=(_coach_entry_extra(decision, {}, None, now_iso, None,
+                                          None, None) if is_entry else None)),
+                    None)
 
     quote = _coach_quote(symbol) if symbol else None
     if symbol and quote is None:
         return (coach_trader.ledger_entry(
             now_iso, source, kind, symbol, False, reason="no_quote",
-            detail="aucun cours exploitable pour %s" % symbol), None)
+            detail="aucun cours exploitable pour %s" % symbol,
+            extra=(_coach_entry_extra(decision, {}, None, now_iso, None, None,
+                                      None) if is_entry else None)), None)
 
     # LOT 12 — le contexte technique (ATR) élargit le plancher de bruit d'un
     # stop au-delà du seul seuil de frais quand le titre en réclame un plus
@@ -2503,9 +2550,13 @@ def _coach_execute_one(portfolio: models.Portfolio, action: Dict[str, Any],
     # contrat en paramètre (elle reste PURE, comme pour ``technical``).
     origin = None
     inherited = None
-    if symbol and kind in coach_trader.ENTRY_ACTIONS:
+    radar_rec = None
+    if symbol and is_entry:
         origin = _coach_origin(symbol, kind, portfolio, origins)
         inherited = _coach_inherited_contract(symbol, kind, portfolio, origin[1])
+        # LOT 19 — le rapport exigé suit le bilan du radar, mais seulement
+        # pour un ordre qui naît d'une de ses hypothèses, dans son sens.
+        radar_rec = _coach_radar_record(origin[1], kind)
     # LOT 17 — la FILE « à l'ouverture » : une décision sur un titre qui a
     # déjà un ordre en file le REMPLACE (même sens) ou l'ANNULE (décision
     # opposée à une entrée en file) — cf. ``coach_trader.queue_conflicts``.
@@ -2524,10 +2575,27 @@ def _coach_execute_one(portfolio: models.Portfolio, action: Dict[str, Any],
         gate_book["open_orders"] = [
             o for o in gate_book.get("open_orders") or []
             if str(o.get("id") or "") not in replace_ids]
-    verdict = coach_trader.gate_decision(decision, gate_book,
-                                         quote or {}, now=now_iso,
-                                         technical=technical,
-                                         thesis=inherited)
+    if is_entry:
+        # LOT 19 — la porte CORRIGE un stop trop serré au lieu de le refuser
+        # (``coach_trader.gate_entry``) ; ``verdict["decision"]`` est alors la
+        # décision CORRIGÉE, celle qui a réellement été jugée.
+        verdict = coach_trader.gate_entry(decision, gate_book, quote or {},
+                                          now=now_iso, technical=technical,
+                                          thesis=inherited,
+                                          radar_record=radar_rec)
+    else:
+        verdict = coach_trader.gate_decision(decision, gate_book,
+                                             quote or {}, now=now_iso,
+                                             technical=technical,
+                                             thesis=inherited)
+    judged = verdict.get("decision") or decision
+    repair_info = verdict.get("repair")
+    ledger_extra = None
+    if is_entry:
+        ledger_extra = _coach_entry_extra(
+            judged, gate_book, quote, now_iso, technical, inherited,
+            radar_rec, kind=(verdict.get("order") or {}).get("kind"),
+            repair=repair_info)
     if not verdict.get("accepted"):
         code = str(verdict.get("reason") or "")
         if code == "no_position" and extra_rows:
@@ -2536,11 +2604,15 @@ def _coach_execute_one(portfolio: models.Portfolio, action: Dict[str, Any],
             # vient d'être annulée. Un refus « aucune position » au registre
             # mentirait sur ce qui s'est passé.
             return (extra_rows, None)
+        detail = _coach_reject_detail(code, judged, portfolio, quote,
+                                      now=now_iso, technical=technical,
+                                      thesis=inherited, radar_record=radar_rec)
+        if repair_info:
+            detail = coach_trader.repair_note(repair_info, accepted=False) \
+                + (detail or "")
         return (extra_rows + [coach_trader.ledger_entry(
-            now_iso, source, kind, symbol, False, reason=code,
-            detail=_coach_reject_detail(code, decision, portfolio, quote,
-                                        now=now_iso, technical=technical,
-                                        thesis=inherited))], None)
+            now_iso, source, kind, symbol, False, reason=code, detail=detail,
+            extra=ledger_extra)], None)
     extra_rows += _coach_drop_queued(portfolio, replace_ids, source, now_iso,
                                      "remplacé par une nouvelle décision")
 
@@ -2569,7 +2641,8 @@ def _coach_execute_one(portfolio: models.Portfolio, action: Dict[str, Any],
                     and coach_trader._is_blank_qty(decision.get("qty")))
         return (extra_rows + [_coach_queue_at_open(
             portfolio, plan, quote, source, now_iso,
-            origin=(origin_source, origin_hyp), sell_all=sell_all)], None)
+            origin=(origin_source, origin_hyp), sell_all=sell_all,
+            ledger_extra=ledger_extra)], None)
 
     # LOT 9 — retirer une EMBUSCADE armée. Comme ``adjust_stop`` : rien ne
     # s'échange, aucune trésorerie ne bouge, c'est une consigne au carnet.
@@ -2584,18 +2657,31 @@ def _coach_execute_one(portfolio: models.Portfolio, action: Dict[str, Any],
     if plan.get("kind") == "stop":
         return (extra_rows + [_coach_arm_ambush(
             portfolio, plan, quote, source, now_iso,
-            origin=(origin_source, origin_hyp))], None)
+            origin=(origin_source, origin_hyp),
+            ledger_extra=ledger_extra)], None)
 
     entry, journal = _coach_fill_market(portfolio, plan, quote, source,
                                         now_iso, (origin_source, origin_hyp),
-                                        kind)
+                                        kind, ledger_extra=ledger_extra)
     return (extra_rows + [entry] if extra_rows else entry), journal
+
+
+def _with_repair_note(detail: str, ledger_extra: Optional[Dict[str, Any]],
+                      accepted: bool) -> str:
+    """``detail`` complété de la phrase de correction de stop (LOT 19), s'il y
+    en a une : suffixe pour une ligne acceptée, préfixe pour un refus."""
+    info = (ledger_extra or {}).get("repair")
+    note = coach_trader.repair_note(info, accepted=accepted)
+    if not note:
+        return detail
+    return (detail + note) if accepted else (note + detail)
 
 
 def _coach_fill_market(portfolio: models.Portfolio, plan: Dict[str, Any],
                        quote: Dict[str, Any], source: str, now_iso: str,
                        origin: Tuple[Optional[str], Optional[str]],
-                       ledger_action: str) -> Any:
+                       ledger_action: str,
+                       ledger_extra: Optional[Dict[str, Any]] = None) -> Any:
     """EXÉCUTE au marché un ordre que la porte vient d'accepter. MUTE
     ``portfolio``. Rend ``(entrée_de_registre, (titre, corps)|None)``.
 
@@ -2633,6 +2719,8 @@ def _coach_fill_market(portfolio: models.Portfolio, plan: Dict[str, Any],
         horizon_days=plan.get("horizon_days"),
         invalidation=str(plan.get("invalidation") or ""),
         thesis_deadline=plan.get("thesis_deadline"),
+        # LOT 19 — « stop_in_noise » si la porte a corrigé le stop.
+        repair=str(plan.get("repair") or ""),
     )
 
     # ⚠️ La porte de confirmation N'EST PAS contournée, elle est CONSIGNÉE.
@@ -2667,7 +2755,8 @@ def _coach_fill_market(portfolio: models.Portfolio, plan: Dict[str, Any],
         # ``coach_trader``), le moteur a le dernier mot.
         return (coach_trader.ledger_entry(
             now_iso, source, kind, symbol, False, reason="engine",
-            detail=str(e)[:200]), None)
+            detail=_with_repair_note(str(e)[:200], ledger_extra, False),
+            extra=ledger_extra), None)
 
     order.status = "filled"
     _attach_trade_extras(portfolio, fill, coach_trader.COACH_USERNAME)
@@ -2690,15 +2779,18 @@ def _coach_fill_market(portfolio: models.Portfolio, plan: Dict[str, Any],
 
     entry = coach_trader.ledger_entry(
         now_iso, source, kind, order.symbol, True,
-        detail="%d x %.2f %s" % (qty, price, order.currency),
-        exit_reason=plan.get("exit_reason"))
+        detail=_with_repair_note("%d x %.2f %s" % (qty, price, order.currency),
+                                 ledger_extra, True),
+        exit_reason=plan.get("exit_reason"), extra=ledger_extra)
     return entry, _coach_journal_entry(order, fill, source)
 
 
 def _coach_queue_at_open(portfolio: models.Portfolio, plan: Dict[str, Any],
                          quote: Dict[str, Any], source: str, now_iso: str,
                          origin: Tuple[Optional[str], Optional[str]] = (None, None),
-                         sell_all: bool = False) -> Dict[str, Any]:
+                         sell_all: bool = False,
+                         ledger_extra: Optional[Dict[str, Any]] = None,
+                         ) -> Dict[str, Any]:
     """MET EN FILE « à l'ouverture » une décision au marché prise marché fermé
     (LOT 17). MUTE ``portfolio``.
 
@@ -2745,16 +2837,22 @@ def _coach_queue_at_open(portfolio: models.Portfolio, plan: Dict[str, Any],
         ref_price=price,
         exit_reason=str(plan.get("exit_reason") or ""),
         sell_all=bool(sell_all),
+        # LOT 19 — l'étiquette suit l'ordre en file : à la réouverture, la
+        # porte re-ancre le stop d'un ordre corrigé.
+        repair=str(plan.get("repair") or ""),
     )
     portfolio.open_orders.append(order)
     quoi = ("toute la ligne" if sell_all else "%d x %s" % (qty, symbol))
     return coach_trader.ledger_entry(
         now_iso, source, "queue_open", symbol, True,
-        detail=("en file pour l'ouverture : %s %s au cours de la réouverture "
-                "(décidé à %.2f %s, re-jugé à l'ouverture, échéance %s)"
-                % (side, quoi, price, order.currency,
-                   (order.expires_at or "?")[:16].replace("T", " "))),
-        exit_reason=plan.get("exit_reason") if not is_entry else None)
+        detail=_with_repair_note(
+            "en file pour l'ouverture : %s %s au cours de la réouverture "
+            "(décidé à %.2f %s, re-jugé à l'ouverture, échéance %s)"
+            % (side, quoi, price, order.currency,
+               (order.expires_at or "?")[:16].replace("T", " ")),
+            ledger_extra, True),
+        exit_reason=plan.get("exit_reason") if not is_entry else None,
+        extra=ledger_extra)
 
 
 def _coach_drop_queued(portfolio: models.Portfolio, ids: Any, source: str,
@@ -2782,6 +2880,7 @@ def _coach_arm_ambush(portfolio: models.Portfolio, plan: Dict[str, Any],
                       quote: Dict[str, Any], source: str,
                       now_iso: str,
                       origin: Tuple[Optional[str], Optional[str]] = (None, None),
+                      ledger_extra: Optional[Dict[str, Any]] = None,
                       ) -> Dict[str, Any]:
     """ARME une embuscade — l'entrée déclenchée par NIVEAU. MUTE ``portfolio``.
 
@@ -2837,16 +2936,20 @@ def _coach_arm_ambush(portfolio: models.Portfolio, plan: Dict[str, Any],
         horizon_days=plan.get("horizon_days"),
         invalidation=str(plan.get("invalidation") or ""),
         thesis_deadline=plan.get("thesis_deadline"),
+        # LOT 19 — la position née du déclenchement hérite de l'étiquette.
+        repair=str(plan.get("repair") or ""),
     )
     portfolio.open_orders.append(order)
     sens = "au-dessus de" if order.side == "buy" else "sous"
     return coach_trader.ledger_entry(
         now_iso, source, "arm_ambush", symbol, True,
-        detail=("embuscade armée : %d x %s si le cours passe %s %.2f %s "
-                "(stop %s, échéance %s)"
-                % (qty, symbol, sens, trigger or 0.0, order.currency,
-                   ("%.2f" % stop_loss) if stop_loss is not None else "?",
-                   (order.expires_at or "?")[:10])))
+        detail=_with_repair_note(
+            "embuscade armée : %d x %s si le cours passe %s %.2f %s "
+            "(stop %s, échéance %s)"
+            % (qty, symbol, sens, trigger or 0.0, order.currency,
+               ("%.2f" % stop_loss) if stop_loss is not None else "?",
+               (order.expires_at or "?")[:10]), ledger_extra, True),
+        extra=ledger_extra)
 
 
 def _coach_cancel_ambush(portfolio: models.Portfolio, symbol: str,
@@ -3186,15 +3289,27 @@ def _coach_process_queue(portfolio: models.Portfolio, now_iso: str,
                      if order.side in coach_trader.ENTRY_ACTIONS else None)
         # Le contrat HÉRITÉ se recherche comme à la décision (hypothèse du
         # radar, ligne renforcée) : son échéance ne bouge pas pendant l'attente.
+        is_entry = order.side in coach_trader.ENTRY_ACTIONS
         inherited = (_coach_inherited_contract(order.symbol, order.side,
                                                portfolio, order.hypothesis_id)
-                     if order.side in coach_trader.ENTRY_ACTIONS else None)
-        verdict = coach_trader.gate_queued(order.to_dict(), portfolio.to_dict(),
+                     if is_entry else None)
+        radar_rec = (_coach_radar_record(order.hypothesis_id, order.side)
+                     if is_entry else None)
+        book = portfolio.to_dict()
+        verdict = coach_trader.gate_queued(order.to_dict(), book,
                                            quote, now_iso, technical=technical,
                                            open_price=open_price,
-                                           thesis=inherited)
+                                           thesis=inherited,
+                                           radar_record=radar_rec)
         portfolio.open_orders = [o for o in portfolio.open_orders
                                  if o is not order]
+        # LOT 19 — la trace d'une entrée re-jugée : valeurs réellement jugées
+        # (la décision corrigée/re-ancrée s'il y en a une) et correction.
+        judged = verdict.get("decision") or _queued_decision(order)
+        repair_info = verdict.get("repair")
+        ledger_extra = (_coach_entry_extra(
+            judged, book, quote, now_iso, technical, inherited, radar_rec,
+            kind="market", repair=repair_info) if is_entry else None)
         if not verdict.get("accepted"):
             order.status = "cancelled"
             code = str(verdict.get("reason") or "")
@@ -3204,17 +3319,22 @@ def _coach_process_queue(portfolio: models.Portfolio, now_iso: str,
                     technical)
             else:
                 detail = _coach_reject_detail(
-                    code, _queued_decision(order), portfolio, quote,
-                    now=now_iso, technical=technical, thesis=inherited)
+                    code, judged, portfolio, quote,
+                    now=now_iso, technical=technical, thesis=inherited,
+                    radar_record=radar_rec)
+                if repair_info:
+                    detail = coach_trader.repair_note(
+                        repair_info, accepted=False) + (detail or "")
             rows.append(coach_trader.ledger_entry(
                 now_iso, order.source, "queue_cancelled", order.symbol, False,
-                reason=code, detail=detail))
+                reason=code, detail=detail, extra=ledger_extra))
             continue
         order.status = "filled"
         plan = dict(verdict.get("order") or {})
         entry, journal_entry = _coach_fill_market(
             portfolio, plan, quote, order.source, now_iso,
-            (order.candidate_source, order.hypothesis_id), "queue_filled")
+            (order.candidate_source, order.hypothesis_id), "queue_filled",
+            ledger_extra=ledger_extra)
         rows.append(entry)
         if journal_entry is not None:
             journal.append(journal_entry)
@@ -3615,6 +3735,9 @@ def _coach_pass_context(portfolio: models.Portfolio,
         # LOT 12 — la saignée des frais. Déterministe, minuscule, et calculée
         # depuis les trades clos (cf. ``coach_trader.fees_view``).
         "fees": coach_trader.fees_view(portfolio.to_dict(), now_iso),
+        # LOT 19 — le seuil de rapport net exigé par sens, et le bilan du
+        # radar qui le justifie (``coach_trader.edge_view``).
+        "edge": coach_trader.edge_view(_radar_hypotheses()),
     }
     try:
         context["market_mood"] = mood.get() or {}
@@ -3885,6 +4008,8 @@ def coach_book() -> Dict[str, Any]:
             "deployment": coach_trader.deployment_view(portfolio.to_dict()),
             # LOT 12 — même geste pour la saignée des frais.
             "fees": coach_trader.fees_view(portfolio.to_dict(), _now_iso()),
+            # LOT 19 — même geste pour le bloc ``edge`` (seuils par sens).
+            "edge": coach_trader.edge_view(_radar_hypotheses()),
         }
     except Exception as e:                  # noqa: BLE001 — jamais fatal
         logger.warning("paper coach: livre indisponible pour le digest (%s)",

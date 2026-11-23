@@ -175,6 +175,11 @@ class Position:
     # sur lui que se calcule le multiple R du ``Trade``. ``None`` = ligne
     # ouverte avant ce lot (on retombe alors sur ``stop_loss``, comme avant).
     initial_stop: Optional[float] = None
+    # LOT 19 — ``"stop_in_noise"`` quand la porte du coach a CORRIGÉ le stop
+    # de l'ordre d'ouverture (cf. ``coach_trader.gate_entry``) ; ``""`` = passé
+    # tel que demandé (et tout ce qui précède ce lot). Posé sur l'ordre, porté
+    # à la position puis au ``Trade`` clos ; un RENFORT ne le change pas.
+    repair: str = ""
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -203,6 +208,7 @@ class Position:
             invalidation=_as_str(data.get("invalidation")),
             thesis_deadline=_as_opt_text(data.get("thesis_deadline")),
             initial_stop=_as_opt_float(data.get("initial_stop")),
+            repair=_as_str(data.get("repair")),
         )
 
 
@@ -283,6 +289,9 @@ class Order:
     ref_price: Optional[float] = None
     exit_reason: str = ""
     sell_all: bool = False
+    # LOT 19 — cf. ``Position.repair`` : le stop de cette ENTRÉE a été corrigé
+    # par la porte du coach (``""`` = tel que demandé).
+    repair: str = ""
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -320,6 +329,7 @@ class Order:
             ref_price=_as_opt_float(data.get("ref_price")),
             exit_reason=_as_str(data.get("exit_reason")),
             sell_all=data.get("sell_all") is True,
+            repair=_as_str(data.get("repair")),
         )
 
 
@@ -395,6 +405,8 @@ class Trade:
     final_stop: Optional[float] = None
     risk_chf: Optional[float] = None
     target: Optional[float] = None
+    # LOT 19 — cf. ``Position.repair`` (recopié à la clôture).
+    repair: str = ""
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -435,6 +447,7 @@ class Trade:
             final_stop=_as_opt_float(data.get("final_stop")),
             risk_chf=_as_opt_float(data.get("risk_chf")),
             target=_as_opt_float(data.get("target")),
+            repair=_as_str(data.get("repair")),
         )
 
 

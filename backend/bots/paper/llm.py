@@ -1022,7 +1022,17 @@ def _coach_book_of(context: Any) -> Dict[str, Any]:
         # geste que ``deployment`` : le mandat « conscient des frais » vit
         # dans le bloc PARTAGÉ.
         "fees": ctx.get("fees") or {},
+        # LOT 19 — le rapport net EXIGÉ par sens et le bilan du radar qui le
+        # justifie (``coach_trader.edge_view``) : le seuil de ``edge_thin`` n'est
+        # plus une constante, il se lit ici.
+        "edge": ctx.get("edge") or {},
     }
+
+
+def _rr(value: Any) -> str:
+    """Un seuil de rapport net à la française avec UNE décimale (« 1,5 »,
+    « 1,0 », « 2,0 ») : ce texte se LIT, il ne se sérialise pas."""
+    return ("%.1f" % float(value)).replace(".", ",")
 
 
 def _deployment_lines(view: Any) -> list:
@@ -1254,7 +1264,15 @@ def coach_actions_block(book: Any) -> str:
         "produit, tue l'idée) — sinon refusée (``no_horizon``). Ton stop se "
         "dimensionne pour cet horizon : plancher de bruit = ATR x 0,8 x "
         "racine(jours restants), entre 1 et 4 ATR ; la taille rétrécit "
-        "d'autant, le risque reste sous %s. Une SORTIE porte ``exit_reason`` "
+        "d'autant, le risque reste sous %s. UN STOP PLUS SERRÉ QUE CE PLANCHER "
+        "N'EST PLUS REFUSÉ : la porte l'écarte AU plancher (arrondi du côté "
+        "sûr), RÉDUIT la quantité pour que le risque reste sous le plafond, "
+        "REJUGE tout l'ordre corrigé (taille, rapport net, objectif…) — et "
+        "le registre le dit, « ordre corrigé : stop X → Y, N → M titres ». "
+        "Un ordre corrigé qui ne passe plus l'une des autres règles est "
+        "refusé avec CE motif-là. Seul ``adjust_stop`` ne bénéficie pas de "
+        "cette correction : resserrer un stop dans le bruit reste refusé. "
+        "Une SORTIE porte ``exit_reason`` "
         "parmi %s — c'est MESURÉ (``economics_view``), jamais un motif de "
         "refus : une sortie sans raison passe quand même, enregistrée "
         "« inconnue ». ``threat`` passe TOUJOURS : une menace ne se discute "
@@ -1285,19 +1303,32 @@ def coach_actions_block(book: Any) -> str:
         "tradables à thèse valable, tu DOIS expliquer pourquoi tu n'es pas "
         "déployé.",
         "MAIS LE CASH EST UNE POSITION. Une entrée dont l'espérance NETTE DE "
-        "FRAIS est sous %s n'est PAS un trade. Ce rapport se lit "
+        "FRAIS est sous le seuil exigé n'est PAS un trade. Ce rapport se lit "
         "net = (gain visé - aller-retour) / (risque + aller-retour), tout en "
         "pourcentage du prix d'entrée : l'aller-retour se paie DEUX fois, il "
         "ampute ce que le trade peut rapporter ET s'ajoute à ce qu'il peut "
-        "coûter. Refuser une telle entrée n'est pas de l'attentisme, c'est la "
-        "RÈGLE — et le garde-fou la refusera de toute façon "
-        "(``edge_thin``). Si AUCUN candidat ne passe, tu ne trades pas : "
+        "coûter. LE SEUIL DÉPEND DU BILAN DU RADAR dans le sens de l'idée "
+        "dont naît ton ordre (achat <-> hausse, vente à découvert <-> "
+        "baisse) : %s par défaut ; %s si, sur ses %d dernières hypothèses "
+        "notées dans ce sens (au moins %d tranchées), ses justes valent au "
+        "moins deux fois ses fausses — il a fait ses preuves ; %s s'il a "
+        "plus de fausses que de justes — il ne les a pas faites. Un ordre "
+        "qui ne naît pas d'une idée du radar, ou qui va à contre-sens d'elle, "
+        "garde %s. Le bloc ``edge`` de TON COMPTE te donne, pour chaque sens "
+        "(``up``/``down``), le seuil exigé (``required``) et le bilan "
+        "(``hits`` justes, ``misses`` fausses) : lis-le AVANT de viser un "
+        "objectif. Refuser une entrée sous le seuil n'est pas de "
+        "l'attentisme, c'est la RÈGLE — et le garde-fou la refusera de toute "
+        "façon (``edge_thin``). Si AUCUN candidat ne passe, tu ne trades pas : "
         "rester en cash est une décision LÉGITIME, et tu l'écris dans ta "
         "note en disant CE QUI MANQUE — objectif trop proche, stop dans le "
         "bruit, rapport net insuffisant. Un « rien à faire » argumenté est "
         "une décision complète ; un trade forcé pour avoir l'air déployé est "
         "une perte chiffrée d'avance."
-        % ("%g" % coach_trader.MIN_NET_RR).replace(".", ","),
+        % (_rr(coach_trader.MIN_NET_RR), _rr(coach_trader.NET_RR_PROVEN),
+           coach_trader.RADAR_RECORD_WINDOW,
+           coach_trader.RADAR_RECORD_MIN_DECIDED,
+           _rr(coach_trader.NET_RR_UNPROVEN), _rr(coach_trader.MIN_NET_RR)),
     ] + _thesis_lines(book.get("positions")) + _deployment_lines(
         book.get("deployment")) + _fees_lines(book.get("fees")) + [
         # LOT 9 — le vrai « ne plus attendre ». Le coach écrivait « j'attends

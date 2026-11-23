@@ -23,6 +23,14 @@ de l'équité — refusé : oversize »). Un garde-fou qui corrige en douce
 n'enseigne rien et masque la dérive du modèle ; un garde-fou qui refuse la
 montre.
 
+**Une SEULE exception (LOT 19), explicite et tracée** : un stop d'ENTRÉE du bon
+côté mais plus serré que le plancher de bruit n'est plus refusé
+(``stop_in_noise``) — :func:`gate_entry` l'écarte AU plancher, réduit la
+quantité pour garder le risque sous :data:`MAX_RISK_PCT`, REJUGE tout l'ordre
+corrigé, et le dit : ``verdict["repair"]``, étiquette ``repair`` de l'ordre,
+phrase « ordre corrigé : stop … → … » au registre. Tout le reste (taille,
+risque, objectif, thèse…) reste un refus, jamais un rognage.
+
 **LOT 5 — le short est OUVERT au coach.** Vécu en prod : quatre passes de
 suite se sont soldées par un refus d'entrer, parce que ses meilleures thèses
 étaient BAISSIÈRES et donc « inexécutables en achat seul ». Le moteur d'ordres
@@ -118,6 +126,28 @@ MIN_CASH_PCT = 5.0        # trésorerie plancher : on ne se met jamais à sec
 # ``reward_risk_below_1`` de ``risk.preorder_warnings`` — mais ce n'est qu'un
 # AVERTISSEMENT forcé, et ils sont tous partis quand même. Ici, c'est un REFUS.
 MIN_NET_RR = 1.5
+# --- LOT 19 — le rapport exigé suit le BILAN DU RADAR ---------------------- #
+# Le radar note ses hypothèses à l'échéance (juste / fausse / indécise), SENS
+# PAR SENS. Mesuré : 24 justes pour 5 fausses à la baisse, 9 pour 14 à la
+# hausse. Exiger le même rapport net d'un ordre qui naît d'une idée à la
+# baisse (un radar PROUVÉ) et d'une idée à la hausse (un radar qui se trompe
+# plus qu'il n'a raison) n'a pas de sens : le seuil se desserre quand le radar
+# a fait ses preuves dans CE sens, se durcit quand il ne les a pas faites, et
+# reste à :data:`MIN_NET_RR` quand on ne sait pas (moins de
+# :data:`RADAR_RECORD_MIN_DECIDED` hypothèses tranchées, ordre qui ne naît pas
+# d'une idée du radar, ou qui va à contre-sens d'elle).
+RR_BY_RADAR_RECORD = True
+NET_RR_PROVEN = 1.0
+NET_RR_UNPROVEN = 2.0
+RADAR_RECORD_WINDOW = 30
+RADAR_RECORD_MIN_DECIDED = 15
+# --- LOT 19 — la porte CORRIGE un stop trop serré au lieu de le refuser ----- #
+# Mesuré : 20 refus d'entrée sur 41 étaient des ``stop_in_noise`` — un stop
+# technique à 4-6 % quand le plancher vaut ~10 % — et rejouées, ces idées
+# étaient gagnantes. Seule exception à « on rejette, on ne rogne jamais »
+# (cf. tête de fichier) : :func:`gate_entry`. Interrupteur : ``False`` rend le
+# comportement d'avant.
+REPAIR_TIGHT_STOP = True
 # Fenêtre du rachat-réflexe, en jours civils et INCLUSE (``<= 5``). Les quatre
 # re-entrées réelles du compte sont tombées à J+0 (FRO), J+3 (GM), J+3 (PINS)
 # et J+4 (WYNN) : un seuil plus court n'en attraperait qu'une, la règle serait
@@ -685,6 +715,12 @@ def economics_view(portfolio: Any,
         routeur depuis l'état du radar ; ``None`` = en attente) : sans lui,
         tout va sous ``unknown`` — un verdict n'est JAMAIS deviné. Seules les
         cases non vides sont présentes.
+
+    LOT 19 — ``by_repair`` : ``{"repaired": {...}, "as_asked": {...}}``
+    (``n_trades``, ``n_wins``, ``net_pnl_chf``), les trades dont le stop a été
+    CORRIGÉ par la porte (``Trade.repair`` non vide) contre ceux passés tels
+    que demandés (dont tout ce qui précède ce lot). C'est ce qui dira si
+    corriger un stop serré plutôt que refuser paie. Cases vides omises.
     """
     book = portfolio if isinstance(portfolio, dict) else {}
     trades = _dicts(book.get("trades"))
@@ -712,6 +748,17 @@ def economics_view(portfolio: Any,
         row["net_pnl_chf"] = round(row["net_pnl_chf"], 2)
         row["gross_pnl_chf"] = round(row["gross_pnl_chf"], 2)
     by_exit_reason, by_thesis_verdict = _thesis_measure(trades, verdicts)
+    by_repair: Dict[str, Dict[str, Any]] = {}
+    for trade in trades:
+        key = "repaired" if _text(trade.get("repair")) else "as_asked"
+        pnl = _val(trade.get("pnl_chf")) or 0.0
+        row = by_repair.setdefault(key, {"n_trades": 0, "n_wins": 0,
+                                         "net_pnl_chf": 0.0})
+        row["n_trades"] += 1
+        row["n_wins"] += 1 if pnl > 0 else 0
+        row["net_pnl_chf"] += pnl
+    for row in by_repair.values():
+        row["net_pnl_chf"] = round(row["net_pnl_chf"], 2)
     n_trades = len(trades)
     gross_pnl = net_pnl + fees_paid
 
@@ -734,6 +781,7 @@ def economics_view(portfolio: Any,
         "by_source": by_source,
         "by_exit_reason": by_exit_reason,
         "by_thesis_verdict": by_thesis_verdict,
+        "by_repair": by_repair,
     }
 
 
@@ -1490,16 +1538,119 @@ def position_contract(position: Any) -> Optional[Dict[str, Any]]:
 
 
 # --------------------------------------------------------------------------- #
+# LOT 19 — le BILAN du radar, sens par sens (PUR)
+# --------------------------------------------------------------------------- #
+
+_RADAR_SCORED = ("hit", "miss", "unclear")
+_RADAR_DOWN_WORDS = ("down", "baisse", "bear", "bearish", "short", "descente")
+_RECORD_DIRECTION_OF_ACTION = {"buy": "up", "short": "down"}
+
+
+def _radar_direction(value: Any) -> str:
+    """``up``/``down`` d'une hypothèse du radar — même règle que
+    ``radar._clamp_direction`` (inconnue -> ``up``), recopiée ici pour ne pas
+    importer un helper privé : un test verrouille l'équivalence."""
+    return "down" if _text(value).lower() in _RADAR_DOWN_WORDS else "up"
+
+
+def radar_record(hypotheses: Any, direction: Any,
+                 window: int = RADAR_RECORD_WINDOW) -> Dict[str, int]:
+    """Le bilan du radar dans un SENS (``up``/``down``) sur ses ``window``
+    hypothèses NOTÉES les plus récentes (PUR) :
+    ``{"hits", "misses", "n"}``.
+
+    Notée = ``outcome`` dans ``hit``/``miss``/``unclear`` (une hypothèse ouverte
+    ou évincée sans verdict n'a PAS de note). Une ``unclear`` occupe une place
+    de la fenêtre — le radar n'a pas tranché, et la fenêtre mesure son
+    historique récent, pas ses seuls coups — mais ne compte ni en juste ni en
+    fausse. ``n`` = le nombre d'hypothèses de la fenêtre. Tri par
+    ``created_at`` (chaînes ISO, comparées telles quelles : aucun mélange de
+    datetimes naïfs et aware).
+    """
+    want = "down" if _text(direction).lower() == "down" else "up"
+    try:
+        size = max(0, int(window))
+    except (TypeError, ValueError):
+        size = RADAR_RECORD_WINDOW
+    scored = [h for h in _dicts(hypotheses)
+              if _text(h.get("outcome")).lower() in _RADAR_SCORED
+              and _radar_direction(h.get("direction")) == want]
+    scored.sort(key=lambda h: _text(h.get("created_at")), reverse=True)
+    scored = scored[:size]
+    outcomes = [_text(h.get("outcome")).lower() for h in scored]
+    return {"hits": outcomes.count("hit"), "misses": outcomes.count("miss"),
+            "n": len(scored)}
+
+
+def required_net_rr(record: Any) -> float:
+    """Le rapport net minimal exigé d'une ENTRÉE, selon le bilan du radar
+    (PUR — LOT 19). :data:`MIN_NET_RR` sans bilan, interrupteur éteint ou moins
+    de :data:`RADAR_RECORD_MIN_DECIDED` tranchées ; :data:`NET_RR_PROVEN` si
+    les justes valent au moins deux fois les fausses ; :data:`NET_RR_UNPROVEN`
+    si les fausses dépassent les justes ; :data:`MIN_NET_RR` entre les deux."""
+    if not RR_BY_RADAR_RECORD or not isinstance(record, dict):
+        return MIN_NET_RR
+    hits = _val(record.get("hits"))
+    misses = _val(record.get("misses"))
+    if hits is None or misses is None:
+        return MIN_NET_RR
+    if hits + misses < RADAR_RECORD_MIN_DECIDED:
+        return MIN_NET_RR
+    if hits >= 2.0 * misses:
+        return NET_RR_PROVEN
+    if misses > hits:
+        return NET_RR_UNPROVEN
+    return MIN_NET_RR
+
+
+def radar_record_for(hypothesis: Any, hypotheses: Any,
+                     action: Any) -> Optional[Dict[str, int]]:
+    """Le bilan à passer à la porte pour un ordre qui naît de ``hypothesis``
+    (PUR — LOT 19) : celui de SON sens, et seulement si l'ordre va dans ce
+    sens (``buy`` <-> ``up``, ``short`` <-> ``down``). Pas d'hypothèse, ou
+    ordre à contre-sens de l'idée -> ``None`` : on n'invoque pas le palmarès
+    d'un sens pour juger un pari sur l'autre."""
+    if not isinstance(hypothesis, dict):
+        return None
+    want = _RECORD_DIRECTION_OF_ACTION.get(_text(action).lower())
+    if want is None or _radar_direction(hypothesis.get("direction")) != want:
+        return None
+    return radar_record(hypotheses, want)
+
+
+def edge_view(hypotheses: Any) -> Dict[str, Dict[str, Any]]:
+    """Le bloc ``edge`` du livre du coach (PUR — LOT 19) :
+    ``{"up": {"required", "hits", "misses"}, "down": {...}}`` — le seuil que la
+    porte exigera d'un ordre né d'une idée du radar, et le bilan qui le
+    justifie."""
+    out: Dict[str, Dict[str, Any]] = {}
+    for direction in ("up", "down"):
+        rec = radar_record(hypotheses, direction)
+        out[direction] = {"required": required_net_rr(rec),
+                          "hits": rec["hits"], "misses": rec["misses"]}
+    return out
+
+
+# --------------------------------------------------------------------------- #
 # PUR — le garde-fou
 # --------------------------------------------------------------------------- #
 
 def gate_decision(decision: Any, portfolio: Any, quote: Any,
                   now: Any = None, technical: Any = None,
-                  thesis: Any = None) -> Dict[str, Any]:
+                  thesis: Any = None,
+                  radar_record: Any = None) -> Dict[str, Any]:
     """Une décision du modèle passe-t-elle le mandat ? (PUR)
 
     **On REJETTE, on ne rogne JAMAIS en silence** (cf. tête de fichier) : le
     refus est pédagogique, il sera AFFICHÉ tel quel et archivé au registre.
+    Une seule exception, hors de cette fonction et TRACÉE : :func:`gate_entry`
+    corrige un stop d'entrée trop serré (``stop_in_noise``) puis rejoue cette
+    porte EN ENTIER ; cette fonction-ci, elle, refuse toujours.
+
+    ``radar_record`` (LOT 19) : le bilan du radar dans le sens de l'idée dont
+    naît l'ordre (:func:`radar_record_for`), ou ``None`` — seul le rapport net
+    exigé par ``edge_thin`` en dépend (:func:`required_net_rr`). ``None`` =
+    comportement d'avant, à l'identique.
 
     ``decision`` : le dict BRUT rendu par le modèle
     (``{"action","symbol","qty","stop","target","thesis","setup"}``) — tout
@@ -1847,7 +1998,8 @@ def gate_decision(decision: Any, portfolio: Any, quote: Any,
     # comptés des deux côtés. ``None`` (incalculable) ne refuse pas : on
     # n'invente pas un motif sur un chiffre qu'on n'a pas su faire.
     net_rr = _net_rr(entry, target, stop, round_trip)
-    if net_rr is not None and net_rr < MIN_NET_RR:
+    # LOT 19 — le seuil suit le bilan du radar (``None`` -> MIN_NET_RR).
+    if net_rr is not None and net_rr < required_net_rr(radar_record):
         return _reject("edge_thin")
 
     # Le stop INITIAL d'une entrée n'a encore verrouillé aucun gain (la ligne
@@ -1872,6 +2024,284 @@ def gate_decision(decision: Any, portfolio: Any, quote: Any,
     return _accept(symbol, action, qty, decision,
                    kind=AT_OPEN_KIND if at_open else plan_kind,
                    trigger=trigger, contract=contract)
+
+
+# --------------------------------------------------------------------------- #
+# LOT 19 — la porte CORRIGE un stop d'entrée trop serré (PUR)
+# --------------------------------------------------------------------------- #
+
+def _safe_stop(side: str, entry: float, floor_pct: float) -> Optional[float]:
+    """Le stop à ``floor_pct`` % du niveau d'entrée, arrondi à 2 décimales du
+    côté SÛR (plus loin du cours : vers le bas pour un achat, vers le haut
+    pour un short). ``None`` si le niveau n'a pas de sens (stop <= 0)."""
+    if side == "long":
+        value = math.floor(entry * (1.0 - floor_pct / 100.0) * 100.0) / 100.0
+    else:
+        value = math.ceil(entry * (1.0 + floor_pct / 100.0) * 100.0) / 100.0
+    return value if value > 0 else None
+
+
+def repair_tight_stop(decision: Any, portfolio: Any, quote: Any,
+                      now: Any = None, technical: Any = None,
+                      thesis: Any = None,
+                      reanchor: bool = False) -> Optional[Tuple[Dict[str, Any],
+                                                                 Dict[str, Any]]]:
+    """Corrige le stop d'une ENTRÉE posé plus serré que le plancher de bruit
+    (PUR — LOT 19). Rend ``(décision_corrigée, info)`` ou ``None``.
+
+    Entrée = ``buy``/``short``, au marché, en file ou en embuscade
+    (``kind: "stop"`` : le niveau de référence est alors le ``trigger``). Le
+    stop doit être du BON côté ; il est ramené à ``plancher`` % du niveau de
+    référence, arrondi du côté sûr (cf. :func:`_safe_stop`), avec EXACTEMENT les
+    helpers de la porte (:func:`_round_trip_pct`, :func:`_atr_pct`,
+    :func:`_noise_floor_pct`, jours restants du contrat de thèse). La quantité
+    devient ``min(demandée, plus grande quantité qui garde le risque sous
+    MAX_RISK_PCT % de l'équité)``. ⚠️ L'aller-retour dépend de la quantité (frais
+    minimum) : réduire la quantité alourdit les frais relatifs, donc le
+    plancher, donc le stop — on itère jusqu'à stabilité (3 tours suffisent en
+    pratique, 8 en filet), et la décision rendue ne retombe JAMAIS en
+    ``stop_in_noise`` (re-vérifié avec le test même de la porte, le stop reculé
+    d'un centime tant qu'il le faut). Pas de point fixe : ``None`` (le refus
+    d'origine tient).
+
+    ``None`` aussi : interrupteur :data:`REPAIR_TIGHT_STOP` éteint, pas une
+    entrée, stop absent ou du mauvais côté, pas de cotation, pas de contrat de
+    thèse, stop DÉJÀ au-delà du plancher (rien à corriger), quantité < 1 une
+    fois le risque tenu.
+
+    ``reanchor=True`` (ordres en file « à l'ouverture ») : le stop stocké est
+    sémantiquement « le plancher depuis le prix d'exécution » ; on le recalcule
+    donc depuis le cours FOURNI même s'il n'est pas dans le bruit — sans quoi le
+    moindre écart d'ouverture dans le bon sens agrandit la distance et fait
+    annuler l'ordre pour ``risk_high``.
+
+    ``info`` = ``{"code": "stop_in_noise", "stop_asked", "stop", "qty_asked",
+    "qty", "floor_pct"}``.
+    """
+    if not REPAIR_TIGHT_STOP:
+        return None
+    decision = decision if isinstance(decision, dict) else {}
+    portfolio = portfolio if isinstance(portfolio, dict) else {}
+    quote = quote if isinstance(quote, dict) else {}
+
+    action = _text(decision.get("action")).lower()
+    if action not in ENTRY_ACTIONS:
+        return None
+    plan_kind = _text(decision.get("kind")).lower() or "market"
+    if plan_kind not in ORDER_PLANS:
+        return None
+    side = _SIDE_OF_ACTION[action]
+
+    price = _val(quote.get("price"))
+    fx = _val(quote.get("fx_rate"))
+    if price is None or price <= 0 or fx is None or fx <= 0:
+        return None
+    entry = price
+    if plan_kind == "stop":
+        trigger = _val(decision.get("trigger"))
+        if trigger is None or trigger <= 0:
+            return None
+        entry = trigger
+
+    stop = _val(decision.get("stop"))
+    if stop is None or not _stop_protects(side, stop, entry):
+        return None
+    qty_asked = _as_qty(decision.get("qty"))
+    if qty_asked is None:
+        return None
+    contract, _code = thesis_contract(decision, thesis, now)
+    if contract is None:
+        return None
+    days = contract.get("days_left")
+    atr = _atr_pct(technical)
+    symbol = _symbol(decision.get("symbol"))
+    equity = _equity_chf(portfolio.get("cash_chf"),
+                         _dicts(portfolio.get("positions")))
+    if equity <= 0:
+        return None
+    profile = portfolio.get("fee_profile")
+    level_chf = entry * fx
+    cap_chf = equity * MAX_RISK_PCT / 100.0
+
+    def costs(qty: int) -> Tuple[float, float]:
+        trip = _round_trip_pct(profile, qty * level_chf, symbol)
+        return trip, _noise_floor_pct(trip, atr, days)
+
+    if not reanchor:
+        trip, _floor = costs(qty_asked)
+        distance = abs(entry - stop) / entry * 100.0
+        if not _stop_in_noise(distance, trip, atr, 0.0, days):
+            return None                      # rien à corriger
+
+    qty = qty_asked
+    for _round in range(8):
+        trip, floor = costs(qty)
+        cand = _safe_stop(side, entry, floor)
+        for _nudge in range(6):
+            if cand is None:
+                return None
+            distance = abs(entry - cand) / entry * 100.0
+            if not _stop_in_noise(distance, trip, atr, 0.0, days):
+                break
+            cand = round(cand - 0.01 if side == "long" else cand + 0.01, 2)
+        else:
+            return None
+        per_share = abs(level_chf - cand * fx)
+        if per_share <= 0:
+            return None
+        limit = int(cap_chf / per_share)
+        while limit >= 1 and per_share * limit > cap_chf:
+            limit -= 1
+        new_qty = min(qty, limit)
+        if new_qty < 1:
+            return None
+        if new_qty == qty:
+            break
+        qty = new_qty
+    else:
+        return None
+
+    fixed = dict(decision)
+    fixed["stop"] = cand
+    fixed["qty"] = qty
+    info = {"code": "stop_in_noise", "stop_asked": stop, "stop": cand,
+            "qty_asked": qty_asked, "qty": qty,
+            "floor_pct": round(floor, 2)}
+    return fixed, info
+
+
+def _tag_repair(verdict: Dict[str, Any], fixed: Dict[str, Any],
+                info: Dict[str, Any]) -> Dict[str, Any]:
+    """Le verdict du SECOND passage, enrichi de la correction qui l'a rendu
+    possible (``repair``, ``decision``, étiquette sur l'ordre accepté)."""
+    out = dict(verdict)
+    out["repair"] = info
+    out["decision"] = fixed
+    order = out.get("order")
+    if out.get("accepted") and isinstance(order, dict):
+        order = dict(order)
+        order["repair"] = info.get("code")
+        out["order"] = order
+    return out
+
+
+def gate_entry(decision: Any, portfolio: Any, quote: Any, now: Any = None,
+               technical: Any = None, thesis: Any = None,
+               radar_record: Any = None,
+               reanchor: bool = False) -> Dict[str, Any]:
+    """:func:`gate_decision`, MOINS le refus ``stop_in_noise`` d'une entrée
+    (PUR — LOT 19).
+
+    Si la porte refuse une ENTRÉE pour ``stop_in_noise`` et que
+    :func:`repair_tight_stop` sait la corriger, la décision corrigée est REJOUÉE
+    en entier (:func:`gate_decision` : taille, risque, ``edge_thin`` au seuil du
+    bilan… tout) et c'est CE second verdict qui est rendu — avec son propre code
+    s'il refuse (``edge_thin``, ``too_small``…). Il porte alors
+    ``verdict["repair"]`` (l'info de correction), ``verdict["decision"]`` (la
+    décision corrigée, celle qui a été jugée) et, s'il est accepté,
+    ``order["repair"] == "stop_in_noise"``. Sans correction, le verdict est
+    celui de :func:`gate_decision`, sans aucune clé de plus.
+
+    ``adjust_stop`` n'est PAS concerné : resserrer un stop dans le bruit reste
+    refusé. ``reanchor`` : cf. :func:`repair_tight_stop` (ordres en file).
+    """
+    kw = dict(now=now, technical=technical, thesis=thesis,
+              radar_record=radar_record)
+    if reanchor:
+        fixed = repair_tight_stop(decision, portfolio, quote, now=now,
+                                  technical=technical, thesis=thesis,
+                                  reanchor=True)
+        if fixed is not None:
+            return _tag_repair(gate_decision(fixed[0], portfolio, quote, **kw),
+                               fixed[0], fixed[1])
+    verdict = gate_decision(decision, portfolio, quote, **kw)
+    if verdict.get("accepted") or verdict.get("reason") != "stop_in_noise":
+        return verdict
+    fixed = repair_tight_stop(decision, portfolio, quote, now=now,
+                              technical=technical, thesis=thesis)
+    if fixed is None:
+        return verdict
+    return _tag_repair(gate_decision(fixed[0], portfolio, quote, **kw),
+                       fixed[0], fixed[1])
+
+
+def repair_note(info: Any, accepted: bool) -> str:
+    """La phrase de registre d'une correction (PUR — LOT 19). Acceptée : un
+    SUFFIXE (`` — ordre corrigé : stop 89,50 → 94,21 (plancher de bruit
+    10,6 %), 43 → 40 titres``) ; refusée : un PRÉFIXE (``ordre corrigé (stop
+    89,50 → 94,21, 43 → 40 titres) puis refusé : ``). Vide sans correction."""
+    if not isinstance(info, dict):
+        return ""
+    stop_asked, stop = _val(info.get("stop_asked")), _val(info.get("stop"))
+    if stop_asked is None or stop is None:
+        return ""
+    qty_asked, qty = info.get("qty_asked"), info.get("qty")
+    moved = "stop %s → %s" % (_fr(stop_asked), _fr(stop))
+    sized = ("%s → %s titres" % (qty_asked, qty)
+             if qty_asked is not None and qty is not None
+             and qty_asked != qty else "")
+    floor = _val(info.get("floor_pct"))
+    if accepted:
+        text = " — ordre corrigé : " + moved
+        if floor is not None:
+            text += " (plancher de bruit %s %%)" % _fr(floor, 1)
+        return text + (", " + sized if sized else "")
+    return ("ordre corrigé (" + moved + (", " + sized if sized else "")
+            + ") puis refusé : ")
+
+
+def entry_plan(decision: Any, portfolio: Any, quote: Any, now: Any = None,
+               technical: Any = None, thesis: Any = None,
+               radar_record: Any = None,
+               kind: Any = None) -> Dict[str, Any]:
+    """Les valeurs RÉELLEMENT jugées d'une décision d'ENTRÉE, pour le registre
+    (PUR — LOT 19) : ``{"qty", "level", "stop", "target", "kind",
+    "horizon_days", "atr_pct", "floor_pct", "net_rr", "required_rr",
+    "fx_rate"}``. ``None`` pour toute valeur inconnue — jamais inventée. Mêmes
+    helpers que la porte ; ``kind`` = la forme retenue (``market``/``stop``/
+    ``at_open``), à défaut celle de la décision. **NE LÈVE JAMAIS.**"""
+    plan: Dict[str, Any] = {k: None for k in (
+        "qty", "level", "stop", "target", "kind", "horizon_days", "atr_pct",
+        "floor_pct", "net_rr", "required_rr", "fx_rate")}
+    try:
+        decision = decision if isinstance(decision, dict) else {}
+        portfolio = portfolio if isinstance(portfolio, dict) else {}
+        quote = quote if isinstance(quote, dict) else {}
+        qty = _as_qty(decision.get("qty"))
+        stop = _val(decision.get("stop"))
+        target = _val(decision.get("target"))
+        plan_kind = _text(kind) or _text(decision.get("kind")).lower() \
+            or "market"
+        price = _val(quote.get("price"))
+        fx = _val(quote.get("fx_rate"))
+        level = price
+        if _text(decision.get("kind")).lower() == "stop":
+            trigger = _val(decision.get("trigger"))
+            level = trigger if trigger is not None and trigger > 0 else None
+        if level is not None and level <= 0:
+            level = None
+        if fx is not None and fx <= 0:
+            fx = None
+        contract, _code = thesis_contract(decision, thesis, now)
+        days = contract.get("days_left") if contract else None
+        atr = _atr_pct(technical)
+        plan.update({
+            "qty": qty, "level": level, "stop": stop, "target": target,
+            "kind": plan_kind,
+            "horizon_days": contract.get("horizon_days") if contract else None,
+            "atr_pct": atr, "fx_rate": fx,
+            "required_rr": required_net_rr(radar_record),
+        })
+        if level is not None and fx is not None and qty is not None:
+            trip = _round_trip_pct(portfolio.get("fee_profile"),
+                                   qty * (level * fx),
+                                   _symbol(decision.get("symbol")))
+            plan["floor_pct"] = round(_noise_floor_pct(trip, atr, days), 2)
+            ratio = _net_rr(level, target, stop, trip)
+            plan["net_rr"] = round(ratio, 2) if ratio is not None else None
+    except Exception:                    # noqa: BLE001 — jamais fatal
+        pass
+    return plan
 
 
 def _open_gap(order: Dict[str, Any], prices: List[float],
@@ -1947,7 +2377,8 @@ def open_gap_detail(order: Any, prices: Any, technical: Any = None) -> str:
 def gate_queued(order: Any, portfolio: Any, quote: Any, now: Any,
                 technical: Any = None,
                 open_price: Any = None,
-                thesis: Any = None) -> Dict[str, Any]:
+                thesis: Any = None,
+                radar_record: Any = None) -> Dict[str, Any]:
     """RE-JUGE un ordre de la FILE « à l'ouverture » sur la cotation FRAÎCHE
     (PUR — LOT 17). Même contrat de retour que :func:`gate_decision`.
 
@@ -1959,9 +2390,14 @@ def gate_queued(order: Any, portfolio: Any, quote: Any, now: Any,
 
     1. ENTRÉE : la garde d'écart (:func:`_open_gap`) d'abord — ``open_gap``
        si l'ouverture a déjà joué ou cassé le trade ;
-    2. puis :func:`gate_decision` TOUT ENTIÈRE, rejouée sur le vrai prix,
-       l'ordre lui-même retiré du livre (il ne doit compter ni comme front ni
-       dans le cumul en attente qu'il va justement quitter).
+    2. puis la porte TOUTE ENTIÈRE, rejouée sur le vrai prix, l'ordre
+       lui-même retiré du livre (il ne doit compter ni comme front ni dans le
+       cumul en attente qu'il va justement quitter). LOT 19 : pour une
+       entrée, c'est :func:`gate_entry` — un ordre déjà corrigé (``repair``)
+       voit son stop RE-ANCRÉ sur ce vrai prix (plancher depuis le prix
+       d'exécution, quantité réduite si le risque dépasse), un autre dont le
+       stop tombe dans le bruit est corrigé comme à la décision. ``radar_record``
+       : le bilan du radar, comme pour :func:`gate_decision`.
 
     ``thesis`` : le contrat HÉRITÉ, exactement comme pour :func:`
     gate_decision` (le routeur le recherche de la même façon : hypothèse du
@@ -1998,8 +2434,22 @@ def gate_queued(order: Any, portfolio: Any, quote: Any, now: Any,
         "invalidation": row.get("invalidation"),
         "exit_reason": row.get("exit_reason"),
     }
-    return gate_decision(decision, book, quote, now=now, technical=technical,
-                         thesis=thesis if side in ENTRY_ACTIONS else None)
+    if side not in ENTRY_ACTIONS:
+        return gate_decision(decision, book, quote, now=now,
+                             technical=technical)
+    # LOT 19 — une entrée en file passe par la MÊME logique que la décision
+    # directe (:func:`gate_entry`). Si l'ordre a déjà été corrigé (étiquette
+    # ``repair``), son stop est re-ancré sur la cotation fraîche AVANT jugement.
+    label = _text(row.get("repair"))
+    verdict = gate_entry(decision, book, quote, now=now, technical=technical,
+                         thesis=thesis, radar_record=radar_record,
+                         reanchor=bool(label))
+    order_out = verdict.get("order")
+    if label and verdict.get("accepted") and isinstance(order_out, dict) \
+            and not order_out.get("repair"):
+        verdict = dict(verdict)
+        verdict["order"] = dict(order_out, repair=label)
+    return verdict
 
 
 def _stop_protects(side: str, stop: float, price: float) -> bool:
@@ -2270,7 +2720,8 @@ def _stop_in_noise_detail(decision: Dict[str, Any], portfolio: Dict[str, Any],
 
 def reject_detail(code: Any, decision: Any, portfolio: Any, quote: Any,
                   now: Any = None, technical: Any = None,
-                  thesis: Any = None) -> Optional[str]:
+                  thesis: Any = None,
+                  radar_record: Any = None) -> Optional[str]:
     """La phrase lisible et CHIFFRÉE des trois refus du LOT 13 (PUR), et
     depuis LOT 14 de ``too_many_positions`` et ``market_closed`` — deux
     phrases que le routeur servait FAUSSES (cf. :func:`_fronts` et
@@ -2365,10 +2816,24 @@ def reject_detail(code: Any, decision: Any, portfolio: Any, quote: Any,
             ratio = _net_rr(entry, target, stop, round_trip)
             if ratio is None:
                 return None
-            return ("espérance nette de %s pour %s minimum — gain visé %s %%, "
+            # LOT 19 — le seuil EXIGÉ (celui du bilan du radar, le cas
+            # échéant) et, quand il en vient, pourquoi.
+            required = required_net_rr(radar_record)
+            why = ""
+            if required != MIN_NET_RR and isinstance(radar_record, dict):
+                sens = ("à la baisse"
+                        if _text(decision.get("action")).lower() == "short"
+                        else "à la hausse")
+                why = (" — le radar compte %d justes pour %d fausses %s sur "
+                       "ses %d dernières hypothèses notées"
+                       % (int(_val(radar_record.get("hits")) or 0),
+                          int(_val(radar_record.get("misses")) or 0), sens,
+                          int(_val(radar_record.get("n"))
+                              or RADAR_RECORD_WINDOW)))
+            return ("espérance nette de %s pour %s minimum%s — gain visé %s %%, "
                     "risque %s %%, et l'aller-retour (%s %%) se paie DEUX "
                     "fois : il ampute le gain ET s'ajoute à la perte"
-                    % (_fr(ratio, 2), _fr(MIN_NET_RR, 1),
+                    % (_fr(ratio, 2), _fr(required, 1), why,
                        _fr(abs(target - entry) / entry * 100.0),
                        _fr(abs(entry - stop) / entry * 100.0),
                        _fr(round_trip)))
@@ -3128,7 +3593,8 @@ def guardian_gate(decision: Any, focus_symbol: Any) -> Optional[str]:
 
 def ledger_entry(ts: Any, source: Any, action: Any, symbol: Any, accepted: Any,
                  reason: Any = None, detail: Any = None,
-                 exit_reason: Any = None) -> Dict[str, Any]:
+                 exit_reason: Any = None,
+                 extra: Any = None) -> Dict[str, Any]:
     """Une ligne de registre.
 
     Les REFUS y sont archivés AVEC leur code : c'est le cœur de « voir COMMENT
@@ -3139,6 +3605,12 @@ def ledger_entry(ts: Any, source: Any, action: Any, symbol: Any, accepted: Any,
     normalisée mais pas policée : un registre CONSIGNE ce qui s'est passé, il
     ne valide pas — inventer « digest » à la place d'une valeur inattendue
     falsifierait la trace.
+
+    ``extra`` (LOT 19) : ``{"plan": {...}, "repair": {...}}`` — les valeurs
+    RÉELLEMENT jugées d'une entrée (:func:`entry_plan`) et la correction de
+    stop que la porte y a faite (:func:`repair_tight_stop`). Seules ces deux
+    clés passent, et seulement si elles portent quelque chose : les autres
+    lignes gardent leur forme d'avant.
     """
     row = {
         "ts": _text(ts),
@@ -3153,6 +3625,10 @@ def ledger_entry(ts: Any, source: Any, action: Any, symbol: Any, accepted: Any,
     # il y en a une : les autres lignes gardent leur forme d'avant.
     if _text(exit_reason):
         row["exit_reason"] = _text(exit_reason).lower()
+    if isinstance(extra, dict):
+        for key in ("plan", "repair"):
+            if extra.get(key):
+                row[key] = extra[key]
     return row
 
 

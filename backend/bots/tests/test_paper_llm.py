@@ -1004,7 +1004,8 @@ def test_build_coach_trader_prompt_reprend_les_trois_interdits():
 def test_coach_book_of_porte_desormais_six_cles_dont_candidates_et_deploiement():
     book = llm._coach_book_of(CTX)
     assert set(book) == {"cash_chf", "equity_chf", "positions", "open_orders",
-                         "candidates", "deployment", "fees"}
+                         "candidates", "deployment", "fees", "edge"}
+    assert book["edge"] == {}                       # idem (LOT 19)
     assert book["candidates"] == []                 # absent du contexte CTX
     assert book["deployment"] == {}                 # idem (LOT 9)
     assert book["fees"] == {}                       # idem (LOT 12)
