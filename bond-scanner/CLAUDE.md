@@ -1,5 +1,7 @@
 # 🧠 CLAUDE.md — Mémoire Projet Bond Scanner
 
+@../docs/context/bonds-yield.md
+
 > Ce fichier contient tout le contexte nécessaire pour travailler sur le Bond Scanner.
 > Dernière mise à jour : 14 mai 2026
 
